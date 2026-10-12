@@ -325,6 +325,24 @@ export class GitLabClient {
   }
 
   /**
+   * Merge it — `PUT /projects/{id}/merge_requests/{iid}/merge`.
+   *
+   * `sha`, when given, is GitLab's own guard against merging a branch that moved out from
+   * under the human after they looked at it: GitLab answers with a 409 if the source
+   * branch's current head does not match. Refusals go through the same {@link write}
+   * every other mutation does, so "not mergeable" (405), blocked (406), a moved SHA (409),
+   * or a validation failure (422) all surface as a {@link GitLabError} carrying GitLab's own
+   * message rather than a generic one of ours.
+   */
+  mergeMergeRequest(projectId: number, iid: number, sha?: string): Promise<GitLabMergeRequest> {
+    return this.write<GitLabMergeRequest>(
+      `/projects/${projectId}/merge_requests/${iid}/merge`,
+      'PUT',
+      sha ? { sha } : undefined,
+    );
+  }
+
+  /**
    * Open a merge request — `POST /projects/{path}/merge_requests`.
    *
    * Addressed by the **URL-encoded project path** (`group%2Fsub%2Fproj`) rather than by the

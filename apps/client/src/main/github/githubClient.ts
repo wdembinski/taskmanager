@@ -174,8 +174,28 @@ export interface GitHubPullRequest {
    */
   mergeable?: boolean | null;
   /** The source branch and, crucially, the head SHA the check runs hang off. */
-  head?: { ref?: string; sha?: string; repo?: { id?: number; full_name?: string } | null } | null;
-  base?: { ref?: string; repo?: { id?: number; full_name?: string } | null } | null;
+  head?: { ref?: string; sha?: string; repo?: GitHubRepoRef | null } | null;
+  base?: { ref?: string; repo?: GitHubRepoRef | null } | null;
+}
+
+/**
+ * The repository object GitHub embeds in `head`/`base`, which is the FULL repository
+ * representation and not just an id — including the three merge-method toggles
+ * {@link GitHubClient.mergePullRequest} reads to decide `merge_method`.
+ */
+export interface GitHubRepoRef {
+  id?: number;
+  full_name?: string;
+  allow_merge_commit?: boolean | null;
+  allow_squash_merge?: boolean | null;
+  allow_rebase_merge?: boolean | null;
+}
+
+/** `PUT /repos/{owner}/{repo}/pulls/{number}/merge` — what GitHub hands back, not a PR. */
+export interface GitHubMergeResult {
+  sha?: string;
+  merged?: boolean;
+  message?: string;
 }
 
 /**
@@ -310,6 +330,25 @@ export function toPullRequestState(pr: {
 }): MergeRequestState {
   if (pr.merged === true || pr.merged_at || pr.pull_request?.merged_at) return 'merged';
   return pr.state === 'open' ? 'opened' : 'closed';
+}
+
+/**
+ * Which `merge_method` to send, given a repository's three merge-method toggles.
+ *
+ * A plain merge commit first, then squash, then rebase — each skipped only when the
+ * repository explicitly disabled it (`false`; a toggle GitHub omitted, which old Enterprise
+ * Server versions do, is read as allowed). If somehow all three are off GitHub would refuse
+ * the merge outright, so `merge` is sent anyway and let the 405 explain why.
+ */
+export function pickMergeMethod(repo: {
+  allow_merge_commit?: boolean | null;
+  allow_squash_merge?: boolean | null;
+  allow_rebase_merge?: boolean | null;
+}): 'merge' | 'squash' | 'rebase' {
+  if (repo.allow_merge_commit !== false) return 'merge';
+  if (repo.allow_squash_merge !== false) return 'squash';
+  if (repo.allow_rebase_merge !== false) return 'rebase';
+  return 'merge';
 }
 
 /**
@@ -676,6 +715,35 @@ export class GitHubClient {
    */
   async updateBranch(owner: string, repo: string, number: number): Promise<void> {
     await this.write<unknown>(`${repoPath(owner, repo)}/pulls/${number}/update-branch`, 'PUT');
+  }
+
+  /**
+   * Merge it — `PUT /repos/{owner}/{repo}/pulls/{number}/merge`.
+   *
+   * `merge_method` is never left for GitHub to default: the repository's own
+   * `allow_merge_commit`/`allow_squash_merge`/`allow_rebase_merge` toggles are read off a
+   * fresh {@link getPullRequest} (`base.repo` carries the full repository, not just its id —
+   * see {@link GitHubRepoRef}) and resolved with {@link pickMergeMethod}, so a repository that
+   * disabled plain merge commits gets squash instead of a refusal.
+   *
+   * `sha`, when given, is GitHub's own guard against merging a branch that moved out from
+   * under the human after they looked at it — a mismatch answers with a 409. That refusal,
+   * same as "not mergeable" (405) or a merge GitHub itself blocks (406/422), goes through the
+   * same {@link write} every other mutation does, so it surfaces as a {@link GitHubError}
+   * carrying GitHub's own message.
+   */
+  async mergePullRequest(
+    owner: string,
+    repo: string,
+    number: number,
+    sha?: string,
+  ): Promise<GitHubMergeResult> {
+    const pr = await this.getPullRequest(owner, repo, number);
+    const merge_method = pickMergeMethod(pr.base?.repo ?? {});
+    return this.write<GitHubMergeResult>(`${repoPath(owner, repo)}/pulls/${number}/merge`, 'PUT', {
+      ...(sha ? { sha } : {}),
+      merge_method,
+    });
   }
 
   /**

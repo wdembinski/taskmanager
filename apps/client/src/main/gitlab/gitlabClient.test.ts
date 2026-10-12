@@ -87,6 +87,39 @@ describe('GitLabClient', () => {
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('PUT');
   });
 
+  it('merges with a PUT to /merge_requests/:iid/merge, sending the sha when given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12, 'deadbeef');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://gitlab.com/api/v4/projects/42/merge_requests/12/merge');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ sha: 'deadbeef' });
+  });
+
+  it('merges with no body at all when no sha is given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.body).toBeUndefined();
+  });
+
+  it('surfaces a refused merge as a GitLabError carrying GitLab’s own message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ message: 'Method Not Allowed' }, 405)),
+    );
+    await expect(client().mergeMergeRequest(42, 12)).rejects.toMatchObject({
+      status: 405,
+    });
+    await expect(client().mergeMergeRequest(42, 12)).rejects.toBeInstanceOf(GitLabError);
+  });
+
   it('updates only the description — the refresh-on-push never touches the title', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, description: 'new' }));
     vi.stubGlobal('fetch', fetchMock);
