@@ -13,7 +13,7 @@
  */
 import type { ForgeProvider, MergeRequest, PrWatchAction } from '@shared/mergeRequest';
 import { forgeName, mrRef, prWatchAction } from '@shared/mergeRequest';
-import type { Task } from '@shared/model';
+import type { ChatRefusal, ChatSendResult, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { GitHubClient } from '../github/githubClient';
 import { GitLabClient } from '../gitlab/gitlabClient';
@@ -35,6 +35,8 @@ export interface PrWatcherDeps {
    * note on its behalf.
    */
   resolveForgeConflict(taskId: string, mr: MergeRequest): void;
+  /** Hand a failing pipeline to the card's agent — `Scheduler.chatWithAgent`. */
+  chatWithAgent(taskId: string, message: string): ChatSendResult;
   /** File a note on the card's timeline. */
   note(projectId: string, taskId: string, body: string): void;
   /** Remember that this MR's head commit has already been acted on, and which action it was. */
@@ -112,13 +114,15 @@ async function act(
       // to note, or to stamp here.
       deps.resolveForgeConflict(task.id, mr);
       return;
-    case 'note-pipeline-failed':
-      deps.note(
-        task.projectId,
+    case 'fix-pipeline': {
+      const result = deps.chatWithAgent(
         task.id,
-        `${mrRef(mr)}'s pipeline failed: ${mr.pipelineUrl ?? mr.webUrl}`,
+        `${mrRef(mr)}'s pipeline failed: ${mr.pipelineUrl ?? mr.webUrl}. Please look at what ` +
+          `broke, fix it, and push.`,
       );
+      deps.note(task.projectId, task.id, pipelineFixNote(mr, result));
       return;
+    }
     case 'note-pipeline-passed':
       deps.note(task.projectId, task.id, `${mrRef(mr)}'s pipeline passed.`);
       return;
@@ -140,4 +144,35 @@ async function forgeRebase(mr: MergeRequest, deps: PrWatcherDeps): Promise<void>
   if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
   const client = new GitHubClient({ baseUrl: forgeBaseUrl('github', settings), token });
   await client.updateBranch(owner, repo, mr.number);
+}
+
+/** What to write on the card's timeline once the agent has (or hasn't) been asked to fix a
+ * failing pipeline. */
+function pipelineFixNote(mr: MergeRequest, result: ChatSendResult): string {
+  if (result.status !== 'refused') {
+    return `${mrRef(mr)}'s pipeline failed — asked the agent to fix it.`;
+  }
+  return (
+    `${mrRef(mr)}'s pipeline failed, but it could not be handed to the agent ` +
+    `(${explainRefusal(result.reason)}). Fix it by hand, or ask again from the card.`
+  );
+}
+
+function explainRefusal(reason: ChatRefusal): string {
+  switch (reason) {
+    case 'never-ran':
+      return 'this card has never run, so there is no conversation to continue';
+    case 'limit':
+      return 'a usage limit is holding all work right now';
+    case 'signed-out':
+      return 'claude is signed out';
+    case 'awaiting-decision':
+      return 'the card is already waiting on a decision';
+    case 'chain-busy':
+      return 'the card is mid-chain';
+    case 'not-running':
+      return 'the app is shutting down';
+    default:
+      return reason;
+  }
 }

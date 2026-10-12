@@ -626,8 +626,8 @@ export interface FeatureSettings {
   ticketsToOwnBoard: boolean;
   /**
    * Watch the PRs/MRs this app opened and act on `prWatchAction`'s behalf: ask the forge to
-   * rebase a stale branch, climb the conflict ladder on a conflicted one, and note a
-   * pipeline that just failed or just went green.
+   * rebase a stale branch, climb the conflict ladder on a conflicted one, ask the card's own
+   * agent to fix a pipeline that just failed, and note one that just went green.
    *
    * A conflict is rebased onto the target and force-pushed back with `--force-with-lease` —
    * the same mechanical/scripted rungs an ordinary base-branch merge already climbs (union-

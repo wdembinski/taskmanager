@@ -577,8 +577,8 @@ describe('prWatchAction', () => {
     ).toBe('resolve-conflicts');
   });
 
-  it('notes a failed pipeline, and a passed one', () => {
-    expect(prWatchAction(watchable({ pipelineStatus: 'failed' }), {})).toBe('note-pipeline-failed');
+  it('asks the agent to fix a failed pipeline, and just notes a passed one', () => {
+    expect(prWatchAction(watchable({ pipelineStatus: 'failed' }), {})).toBe('fix-pipeline');
     expect(prWatchAction(watchable({ pipelineStatus: 'success' }), {})).toBe(
       'note-pipeline-passed',
     );

@@ -502,7 +502,7 @@ export function mrNeedsRebase(mr: MergeReadiness): boolean {
 
 /** What {@link prWatchAction} decided to do about one merge request on this sync. */
 export type PrWatchAction =
-  'none' | 'forge-rebase' | 'resolve-conflicts' | 'note-pipeline-failed' | 'note-pipeline-passed';
+  'none' | 'forge-rebase' | 'resolve-conflicts' | 'fix-pipeline' | 'note-pipeline-passed';
 
 /** Just the fields {@link prWatchAction} reads. */
 export type PrWatchable = MergeReadiness & Pick<MergeRequest, 'headSha'>;
@@ -528,10 +528,14 @@ export interface PrWatchContext {
 }
 
 /** Actions that attempt to FIX the branch rather than merely report on it. */
-const REMEDIATIONS: ReadonlySet<PrWatchAction> = new Set(['forge-rebase', 'resolve-conflicts']);
+const REMEDIATIONS: ReadonlySet<PrWatchAction> = new Set([
+  'forge-rebase',
+  'resolve-conflicts',
+  'fix-pipeline',
+]);
 
 /** Actions that only tell the human something, and change nothing upstream. */
-const NOTES: ReadonlySet<PrWatchAction> = new Set(['note-pipeline-failed', 'note-pipeline-passed']);
+const NOTES: ReadonlySet<PrWatchAction> = new Set(['note-pipeline-passed']);
 
 /**
  * What the PR/MR watcher (Phase: observe PR/MR state and resolve conflicts) should do about
@@ -552,7 +556,8 @@ const NOTES: ReadonlySet<PrWatchAction> = new Set(['note-pipeline-failed', 'note
  * until it is resolved), then a stale branch (the forge can fix that one on its own), then
  * the pipeline's own verdict — and only a RESOLVED verdict (`failed`/`success`): `unknown`,
  * `running` and the rest are "not an answer yet", not a reason to stay quiet forever, but not
- * a reason to speak up either.
+ * a reason to speak up either. A failed pipeline is handed to the card's own agent to fix,
+ * the same as a conflict is; a passed one has nothing to do, so it only gets a note.
  *
  * The candidate found this way is then checked against memory — but, unlike before, memory
  * is keyed on the ACTION that fired last, not just the commit it fired on. A commit this
@@ -562,9 +567,10 @@ const NOTES: ReadonlySet<PrWatchAction> = new Set(['note-pipeline-failed', 'note
  * reach the human. So the candidate is suppressed on an unchanged head only when:
  *
  *  - it is the exact same action as last time (no point re-noting a still-green pipeline);
- *  - the last action was a **remediation** (`forge-rebase`/`resolve-conflicts`) — one of
- *    those is either still running or waiting on a push, and nothing else may fire on its
- *    commit until a new push settles it, whatever the new candidate turns out to be; or
+ *  - the last action was a **remediation** (`forge-rebase`/`resolve-conflicts`/`fix-pipeline`)
+ *    — one of those is either still running or waiting on a push, and nothing else may fire
+ *    on its commit until a new push settles it, whatever the new candidate turns out to be;
+ *    or
  *  - the last action is unknown (a legacy row, written before this field existed) AND the
  *    candidate is a **note** — preserving the old behaviour for rows with no history to
  *    consult, but only for the half of it that was ever about silencing a repeat notice. A
@@ -580,7 +586,7 @@ export function prWatchAction(mr: PrWatchable, ctx: PrWatchContext): PrWatchActi
   let candidate: PrWatchAction = 'none';
   if (blockers.includes('conflict')) candidate = 'resolve-conflicts';
   else if (mrNeedsRebase(mr)) candidate = 'forge-rebase';
-  else if (mr.pipelineStatus === 'failed') candidate = 'note-pipeline-failed';
+  else if (mr.pipelineStatus === 'failed') candidate = 'fix-pipeline';
   else if (mr.pipelineStatus === 'success') candidate = 'note-pipeline-passed';
 
   if (mr.headSha !== ctx.lastActedSha) return candidate;
