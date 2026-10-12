@@ -25,6 +25,13 @@
  * partial unique index `idx_activity_log_run_once` from the schema (or widening it off
  * `run-started`/`run-finished`) makes section 3's duplicate-run check fail, because the
  * second `appendActivity` would then actually insert instead of being ignored.
+ *
+ * Section 8 covers F2.5's backfill (`activityBackfill.ts`) on a SEPARATE scratch database:
+ * seeding raw `task_events`/`task_activity` rows the way a database that predates F2.4's
+ * live recorders would hold them, then letting `createStore` derive thirty days of
+ * `activity_log` history from them exactly once. Narrowing the 30-day window, or dropping
+ * the `app_state` guard check, makes its "nothing older than thirty days" or "unchanged on a
+ * second boot" assertions fail.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -165,6 +172,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { createStore } from '__REPO__/src/main/store';
 import { decodeCursor } from '@shared/activity';
+import { ACTIVITY_BACKFILL_DAYS, ACTIVITY_BACKFILL_KEY } from '__REPO__/src/main/activityBackfill';
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -780,6 +788,218 @@ check(
 
 raw.close();
 store.close();
+
+// ---------------------------------------------------------------------------
+section('8. activityBackfill: thirty days of history, derived once, guarded forever');
+
+// A SEPARATE scratch database — this backfill reads task_events/task_activity, which the
+// sections above have already filled with rows this backfill was never meant to see.
+const bfScratch = '__SCRATCH__-backfill';
+rmSync(bfScratch, { recursive: true, force: true });
+mkdirSync(bfScratch, { recursive: true });
+const bfDbPath = bfScratch + '/orchestrator.db';
+
+// First boot: an empty database. Nothing to derive, but this is also what stamps the guard
+// key — it must be cleared below to simulate a database that predates the backfill.
+createStore(bfDbPath).close();
+
+const bf = new Database(bfDbPath);
+bf.prepare('DELETE FROM app_state WHERE key = ?').run(ACTIVITY_BACKFILL_KEY);
+
+const day = 24 * 60 * 60 * 1000;
+const now = Date.now();
+
+function insertEvent(taskId, runId, event, createdAt) {
+  bf.prepare(
+    'INSERT INTO task_events (projectId, taskId, runId, event, createdAt) VALUES (?, ?, ?, ?, ?)',
+  ).run('proj-bf', taskId, runId, JSON.stringify(event), createdAt);
+}
+function insertMove(taskId, fromStatus, toStatus, createdAt) {
+  bf.prepare(
+    'INSERT INTO task_activity (projectId, taskId, kind, fromStatus, toStatus, createdAt)' +
+      ' VALUES (?, ?, ?, ?, ?, ?)',
+  ).run('proj-bf', taskId, 'status', fromStatus, toStatus, createdAt);
+}
+
+bf.prepare(
+  'INSERT INTO projects (id, name, path, planPath, defaultModel, defaultPermissionMode, createdAt)' +
+    ' VALUES (?, ?, ?, ?, ?, ?, ?)',
+).run('proj-bf', 'Backfill Co', '/tmp/proj-bf', '/tmp/proj-bf/PLAN.md', 'sonnet', 'default', now);
+// 'task-kept' survives; 'task-deleted' never gets a row — the deleted-card case.
+bf.prepare(
+  'INSERT INTO tasks (id, projectId, phase, title, status, "order") VALUES (?, ?, ?, ?, ?, ?)',
+).run('task-kept', 'proj-bf', 'build', 'Kept card', 'doing', 0);
+
+// run-ok: started + a successful result. Within the window, card survives.
+insertEvent('task-kept', 'run-ok', { kind: 'started' }, now - 5 * day);
+insertEvent('task-kept', 'run-ok', { kind: 'result', success: true, costUsd: 2.5 }, now - 5 * day + 1000);
+
+// run-resurrected: started + TWO results — the second (later id) must be the one that wins,
+// per memory settled-run-resurrection-trap. Card is the deleted one, so title reads back ''.
+insertEvent('task-deleted', 'run-resurrected', { kind: 'started' }, now - 4 * day);
+insertEvent(
+  'task-deleted',
+  'run-resurrected',
+  { kind: 'result', success: true, costUsd: 0.1 },
+  now - 4 * day + 1000,
+);
+insertEvent(
+  'task-deleted',
+  'run-resurrected',
+  { kind: 'result', success: false, costUsd: 0.2 },
+  now - 4 * day + 2000,
+);
+
+// run-failed: a lone result, no started counterpart, costUsd genuinely unknown (NULL, not 0).
+insertEvent('task-kept', 'run-failed', { kind: 'result', success: false, costUsd: null }, now - 3 * day);
+
+// An ordinary column move, and a comment on the same card — the comment must be ignored.
+insertMove('task-kept', 'todo', 'doing', now - 2 * day);
+bf.prepare(
+  'INSERT INTO task_activity (projectId, taskId, kind, body, createdAt) VALUES (?, ?, ?, ?, ?)',
+).run('proj-bf', 'task-kept', 'comment', 'a comment', now - 2 * day + 500);
+
+// A started event and a status move, both 31 days old — past the retention window, neither
+// must produce a row.
+insertEvent('task-kept', 'run-too-old', { kind: 'started' }, now - 31 * day);
+insertMove('task-kept', 's-old', 'e-old', now - 31 * day);
+
+// A LIVE (non-backfilled) row, as if F2.6/F2.8's recorder had already logged this move
+// itself — this is the untilMs ceiling the rest of the window is measured against.
+const liveAt = now - 1 * day;
+bf.prepare(
+  'INSERT INTO activity_log (at, projectId, taskId, runId, kind, outcome, origin, title, costUsd, detail)' +
+    ' VALUES (?, ?, ?, NULL, ?, NULL, ?, ?, NULL, ?)',
+).run(liveAt, 'proj-bf', 'task-kept', 'status-moved', 'human', 'Kept card', JSON.stringify({ from: 'b', to: 'c' }));
+// Older than the live row: still fair game for the backfill to derive.
+insertMove('task-kept', 'x1', 'y1', liveAt - 12 * 60 * 60 * 1000);
+// Newer than the live row: the live recorder already covers this — must NOT be derived.
+insertMove('task-kept', 'x2', 'y2', liveAt + 12 * 60 * 60 * 1000);
+
+// The second boot: this is the run that actually derives the history above.
+const bfStore = createStore(bfDbPath);
+
+function bfRow(runId, kind) {
+  return bf.prepare('SELECT * FROM activity_log WHERE runId = ? AND kind = ?').get(runId, kind);
+}
+function moveRow(fromStatus, toStatus) {
+  return bf
+    .prepare(
+      "SELECT * FROM activity_log WHERE kind = 'status-moved'" +
+        " AND json_extract(detail, '$.from') = ? AND json_extract(detail, '$.to') = ?",
+    )
+    .get(fromStatus, toStatus);
+}
+
+const okStarted = bfRow('run-ok', 'run-started');
+check(
+  'run-started for an ordinary run: at, title, outcome/costUsd NULL, backfilled',
+  Boolean(okStarted) &&
+    okStarted.at === now - 5 * day &&
+    okStarted.title === 'Kept card' &&
+    okStarted.outcome === null &&
+    okStarted.costUsd === null &&
+    JSON.parse(okStarted.detail).backfilled === true,
+  JSON.stringify(okStarted),
+);
+const okFinished = bfRow('run-ok', 'run-finished');
+check(
+  "run-finished for the same run: outcome 'done', its costUsd, origin NULL",
+  Boolean(okFinished) &&
+    okFinished.outcome === 'done' &&
+    okFinished.costUsd === 2.5 &&
+    okFinished.origin === null,
+  JSON.stringify(okFinished),
+);
+
+const deletedStarted = bfRow('run-resurrected', 'run-started');
+check(
+  "a run whose card is gone still gets a row, title '' rather than missing",
+  Boolean(deletedStarted) && deletedStarted.title === '',
+  JSON.stringify(deletedStarted),
+);
+const resurrectedFinished = bfRow('run-resurrected', 'run-finished');
+check(
+  'run-finished for a twice-settled run takes the LATER result, not the first',
+  Boolean(resurrectedFinished) &&
+    resurrectedFinished.outcome === 'failed' &&
+    resurrectedFinished.costUsd === 0.2,
+  JSON.stringify(resurrectedFinished),
+);
+
+const failedFinished = bfRow('run-failed', 'run-finished');
+check(
+  'a failed result with no started counterpart still gets a run-finished row, costUsd stays NULL',
+  Boolean(failedFinished) && failedFinished.outcome === 'failed' && failedFinished.costUsd === null,
+  JSON.stringify(failedFinished),
+);
+check('that run never got a run-started row — none was seeded', !bfRow('run-failed', 'run-started'));
+
+const ordinaryMove = moveRow('todo', 'doing');
+check(
+  'status-moved: origin human, runId NULL, detail carries from/to',
+  Boolean(ordinaryMove) &&
+    ordinaryMove.origin === 'human' &&
+    ordinaryMove.runId === null &&
+    ordinaryMove.title === 'Kept card',
+  JSON.stringify(ordinaryMove),
+);
+check(
+  'the comment on the same card produced no activity_log row of its own',
+  bf.prepare("SELECT COUNT(*) AS n FROM activity_log WHERE kind = 'comment'").get().n === 0,
+);
+check(
+  'no kind outside the three this backfill derives was ever written',
+  bf.prepare(
+    "SELECT COUNT(*) AS n FROM activity_log WHERE kind NOT IN ('run-started','run-finished','status-moved')",
+  ).get().n === 0,
+);
+
+check('the 31-day-old started event produced no row', !bfRow('run-too-old', 'run-started'));
+check('the 31-day-old status move produced no row', !moveRow('s-old', 'e-old'));
+check(
+  'nothing derived is older than the thirty-day floor',
+  bf.prepare('SELECT MIN(at) AS at FROM activity_log WHERE at < ?').get(now - ACTIVITY_BACKFILL_DAYS * day).at ===
+    null,
+);
+
+check('a move OLDER than the live row still lands', Boolean(moveRow('x1', 'y1')));
+check(
+  "a move NEWER than the live row does not — the live recorder already covers it",
+  !moveRow('x2', 'y2'),
+);
+
+const guardRow = bf.prepare('SELECT value FROM app_state WHERE key = ?').get(ACTIVITY_BACKFILL_KEY);
+check('the guard key is set', Boolean(guardRow));
+const guardCounts = guardRow ? JSON.parse(guardRow.value) : null;
+check(
+  'and holds the counts this pass actually derived',
+  Boolean(guardCounts) &&
+    guardCounts.runsStarted === 2 &&
+    guardCounts.runsFinished === 3 &&
+    guardCounts.moves === 2,
+  JSON.stringify(guardCounts),
+);
+
+const countAfterFirstPass = bf.prepare('SELECT COUNT(*) AS n FROM activity_log').get().n;
+check(
+  'total rows: 2 started + 3 finished + 2 moves derived, plus the 1 live row seeded directly',
+  countAfterFirstPass === 8,
+  String(countAfterFirstPass),
+);
+bfStore.close();
+
+// Second boot: the guard is already set, so this must change nothing.
+const bfStore2 = createStore(bfDbPath);
+const countAfterSecondBoot = bf.prepare('SELECT COUNT(*) AS n FROM activity_log').get().n;
+check(
+  'activity_log row count is unchanged after a second boot',
+  countAfterSecondBoot === countAfterFirstPass,
+  countAfterFirstPass + ' then ' + countAfterSecondBoot,
+);
+
+bf.close();
+bfStore2.close();
 
 console.log('');
 if (failures > 0) {
