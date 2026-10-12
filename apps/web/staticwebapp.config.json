@@ -1,7 +1,7 @@
 {
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["*.{css,js,map,gif,jpg,jpeg,png,svg,webp,woff,woff2,ico}"]
+    "exclude": ["*.{css,js,map,gif,jpg,jpeg,png,svg,webp,woff,woff2,ico,webmanifest}"]
   },
   "responseOverrides": {
     "404": {
@@ -13,5 +13,8 @@
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin"
+  },
+  "mimeTypes": {
+    ".webmanifest": "application/manifest+json"
   }
 }

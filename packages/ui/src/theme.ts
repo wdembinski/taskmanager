@@ -279,6 +279,17 @@ export const GRAPH_INK = {
 } as const;
 
 /**
+ * The document's backdrop, wherever the shell is mounted: the Electron window's own
+ * `backgroundColor`, the DOM background {@link useGlobalStyles} paints under it, and now
+ * `apps/web`'s manifest `background_color`/`theme_color` (`manifest.test.ts` holds the two
+ * in step). Matches Fluent's `colorNeutralBackground2`. Exported as a constant, not just a
+ * literal below, because a PWA manifest is static JSON with no theme import of its own — the
+ * only way its colour can track this one is a value both sides read, with a test standing
+ * in for the import neither can have.
+ */
+export const PAGE_BACKGROUND = '#1f1f1f';
+
+/**
  * Everything about the app looking like *this app*, at the document level.
  *
  * Here rather than in either host's `index.css` because both hosts want the identical thing
@@ -296,7 +307,7 @@ export const useGlobalStyles = makeStaticStyles({
    * Tell the engine (and native scrollbars/form controls) this is a dark surface,
    * and paint the document background dark. Without a background here the DOM's
    * default is white, which flashes for a frame when the window is restored from the
-   * taskbar before Fluent's dark UI repaints. #1f1f1f matches both the Electron
+   * taskbar before Fluent's dark UI repaints. PAGE_BACKGROUND matches both the Electron
    * window `backgroundColor` and Fluent's colorNeutralBackground2, so restore is
    * seamless.
    */
@@ -307,7 +318,7 @@ export const useGlobalStyles = makeStaticStyles({
     margin: 0,
     padding: 0,
     height: '100%',
-    backgroundColor: '#1f1f1f',
+    backgroundColor: PAGE_BACKGROUND,
   },
 
   /* The shell never scrolls; inner panes manage their own overflow. */
