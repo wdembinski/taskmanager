@@ -495,6 +495,42 @@ jobs:
           gh release edit "$TAG" --draft=false
           echo "::notice::$TAG is published."
 
+      # Only needed from here down: the two prune steps below run a script out of this
+      # checkout. Confirm/Publish above needed nothing but `gh` and the env block's tokens.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No pnpm and no install: prune-release-assets.mjs has zero dependencies, same as
+      # next-version.mjs above.
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Every asset on every OTHER release — the installers and feeds `windows`/`linux`
+      # uploaded there, going back to this repo's first release. `$TAG` is already
+      # published by this point, so a failure here never undoes it — see the warning below.
+      - name: Prune packages from earlier releases
+        run: |
+          set -uo pipefail
+          node scripts/prune-release-assets.mjs --keep "$TAG" || echo "::warning::Could not prune packages from earlier releases. $TAG is published and unaffected."
+
+      # The "Keep a copy" backstop in the windows/linux jobs above, for every release but
+      # this one. Those artifacts are a backstop for a promotion gone wrong, not a permanent
+      # archive, and `actions: write` (granted at the top of this workflow) is what lets this
+      # delete them.
+      - name: Prune earlier backup artifacts
+        run: |
+          set -uo pipefail
+          WINDOWS_NAME="windows-$TAG"
+          LINUX_NAME="linux-$TAG"
+          gh api "repos/$GH_REPO/actions/artifacts" --paginate --jq \
+            ".artifacts[] | select((.name | test(\"^(windows|linux)-v\")) and .name != \"$WINDOWS_NAME\" and .name != \"$LINUX_NAME\") | .id" \
+            | while read -r id; do
+                echo "deleting artifact $id"
+                gh api --method DELETE "repos/$GH_REPO/actions/artifacts/$id"
+              done || echo "::warning::Could not prune earlier backup artifacts. $TAG is published and unaffected."
+
       # The cloud is not this workflow's business — except for this one thread, which no
       # other workflow can pull.
       #
