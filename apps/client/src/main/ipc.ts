@@ -77,6 +77,7 @@ import {
   restingStatus,
 } from '@shared/board';
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
+import { toMoveActivity, transitionThenRecord } from './moveActivity';
 import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
 import { createAutomationHandlers } from './automationHandlers';
@@ -1468,15 +1469,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // cancelled card that came back reading "Done" would have lost the distinction the
     // user reached for the dropdown to make.
     const move = resolveMove(existing, columnForStatus(status));
-    const outcome = await writeMoveToForge(existing, move, columnForStatus(status));
-    const patch: Parameters<Store['updateTask']>[1] = {
-      ...humanStatusPatch(existing, status),
-      preBlockStatus: preBlockMarker(move, outcome),
-      ...(outcome?.patch ?? {}),
-    };
-
-    const task = store.updateTask(taskId, patch);
-    if (!task) throw new Error('Task not found.');
+    const task = await transitionThenRecord(
+      async () => {
+        const outcome = await writeMoveToForge(existing, move, columnForStatus(status));
+        const patch: Parameters<Store['updateTask']>[1] = {
+          ...humanStatusPatch(existing, status),
+          preBlockStatus: preBlockMarker(move, outcome),
+          ...(outcome?.patch ?? {}),
+        };
+        const updated = store.updateTask(taskId, patch);
+        if (!updated) throw new Error('Task not found.');
+        return updated;
+      },
+      (result) => {
+        const row = toMoveActivity(result, from, status);
+        if (row) store.appendActivity(row);
+      },
+      logMain,
+    );
     store.recordStatusChange(task.projectId, taskId, from, status);
     send('task:changed', { task, runId: null });
     // Closing the card answers everything it was asking. See `task:move` for the reasoning.
@@ -4249,16 +4259,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const move = resolveMove(existing, toColumn);
     if (move.noop) return existing;
 
-    const outcome = await writeMoveToForge(existing, move, toColumn);
-    const patch: Parameters<Store['updateTask']>[1] = {
-      ...humanStatusPatch(existing, move.localStatus),
-      preBlockStatus: preBlockMarker(move, outcome),
-      ...(outcome?.patch ?? {}),
-    };
-
-    const task = store.updateTask(taskId, patch);
-    if (!task) throw new Error('Task not found.');
-    store.recordStatusChange(task.projectId, taskId, restingStatus(existing), move.localStatus);
+    const from = restingStatus(existing);
+    const task = await transitionThenRecord(
+      async () => {
+        const outcome = await writeMoveToForge(existing, move, toColumn);
+        const patch: Parameters<Store['updateTask']>[1] = {
+          ...humanStatusPatch(existing, move.localStatus),
+          preBlockStatus: preBlockMarker(move, outcome),
+          ...(outcome?.patch ?? {}),
+        };
+        const updated = store.updateTask(taskId, patch);
+        if (!updated) throw new Error('Task not found.');
+        return updated;
+      },
+      (result) => {
+        const row = toMoveActivity(result, from, move.localStatus);
+        if (row) store.appendActivity(row);
+      },
+      logMain,
+    );
+    store.recordStatusChange(task.projectId, taskId, from, move.localStatus);
     send('task:changed', { task, runId: null });
     // Dropped into DONE: the human is finished with this card, so nothing it was asking is
     // still a live question. The ring goes quiet by itself (`chainNeedsAttention` overrides
