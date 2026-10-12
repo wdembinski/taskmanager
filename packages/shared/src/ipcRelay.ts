@@ -300,6 +300,7 @@ export const RELAY_POLICY: {
   'mr:markEventsSeen': 'relay',
   'mr:rebase': 'relay',
   'mr:merge': 'relay',
+  'mr:mergeProposal': 'relay',
 
   'cloud:getConfigStatus': 'relay',
   'cloud:setCredentials': 'host-only',
