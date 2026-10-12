@@ -6198,6 +6198,190 @@ describe('a parked release or chat run comes back as what it was', () => {
 });
 
 /**
+ * F2.7: a gate park and its later resume each write their own row to the activity log — the
+ * gate is the only thing that remembers work across the pause, and the feed needs to say so
+ * too. The harness below is the same shape as `a parked release or chat run comes back as
+ * what it was` and the `startTaskNow` gate-origin tests above, with an activity recorder
+ * wired on top.
+ */
+describe('Scheduler — activity log (F2.7)', () => {
+  function setup() {
+    const project = {
+      id: 'p',
+      path: 'C:/w',
+      planPath: 'C:/w/plan.md',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const card = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'Ship the export dialog',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'board',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: null,
+      parentTaskId: null,
+    } as unknown as Task;
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getTasks: () => [card],
+      getProject: (id: string) => (id === 'p' ? project : undefined),
+      getSubtasks: () => [],
+      listProjects: () => [project],
+      listTaskLinks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === card.id) Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      saveParkedRuns: vi.fn(),
+      loadParkedRuns: () => [],
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, opts: { runId?: string }) => ({
+      runId: opts?.runId ?? 'r-new',
+    }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    const { rows, append } = createFakeAppendActivity();
+    scheduler.setActivityRecorder(createActivityRecorder({ append }));
+    return { scheduler, project, card, start, rows };
+  }
+
+  /** Start a run the way each caller does, with the opts that make it what it is. */
+  const startRun = (
+    scheduler: Scheduler,
+    project: Project,
+    task: Task,
+    opts: { chatPrompt?: string; releaseSeed?: boolean; permissionMode?: PermissionMode },
+  ): string =>
+    (
+      scheduler as unknown as {
+        startTask: (p: Project, t: Task, o: typeof opts) => string;
+      }
+    ).startTask(project, task, opts);
+
+  /** The account hits its usage limit, parking everything in flight. */
+  const hitLimit = (scheduler: Scheduler): void =>
+    (scheduler as unknown as { engageLimit: (s: unknown) => void }).engageLimit({
+      kind: 'rate-limit',
+      status: 'rejected',
+      rateLimitType: 'five_hour',
+      resetsAt: null,
+    });
+
+  /** The run the reset started: the only one that has not settled. */
+  const resumedRun = (scheduler: Scheduler): { runId: string } | undefined =>
+    [
+      ...(
+        scheduler as unknown as { runs: Map<string, { runId: string; settled: boolean }> }
+      ).runs.values(),
+    ].find((r) => !r.settled);
+
+  /** The credential is dead, reported by the run that proved it — raises the sign-in gate. */
+  const hitSignedOut = (scheduler: Scheduler, runId: string): void => {
+    const engine = scheduler as unknown as {
+      runs: Map<string, { runId: string }>;
+      engageAuthFailure: (failing: { runId: string }, reason: string) => void;
+    };
+    engine.engageAuthFailure(engine.runs.get(runId)!, 'OAuth session expired');
+  };
+
+  it('records a limit park then its resume, both reason "limit", the resume carrying the new run and origin "resume"', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, {});
+    hitLimit(h.scheduler);
+
+    const parked = h.rows.filter((r) => r.kind === 'parked');
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({
+      taskId: 't1',
+      runId: expect.any(String),
+      origin: 'human',
+      detail: { reason: 'limit' },
+    });
+
+    h.scheduler.resumeLimitNow();
+    const run = resumedRun(h.scheduler);
+
+    const resumed = h.rows.filter((r) => r.kind === 'resumed');
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]).toMatchObject({
+      taskId: 't1',
+      runId: run?.runId,
+      origin: 'resume',
+      detail: { reason: 'limit' },
+    });
+  });
+
+  it('adds no second parked row while a second engageLimit drains into the standing gate', () => {
+    const h = setup();
+    startRun(h.scheduler, h.project, h.card, {});
+    hitLimit(h.scheduler);
+    hitLimit(h.scheduler); // the same account-wide wall, hit again before the reset
+
+    expect(h.rows.filter((r) => r.kind === 'parked')).toHaveLength(1);
+  });
+
+  it('records one parked row with origin "human" when Start is pressed during a limit', () => {
+    const h = setup();
+    hitLimit(h.scheduler); // raises the gate with nothing in flight to park
+    h.scheduler.startTaskNow('t1');
+
+    const parked = h.rows.filter((r) => r.kind === 'parked');
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toMatchObject({ taskId: 't1', runId: null, origin: 'human' });
+  });
+
+  it('records a sign-in park then a resume with reason "sign-in" once signedIn() fires', () => {
+    const h = setup();
+    const runId = startRun(h.scheduler, h.project, h.card, {});
+    hitSignedOut(h.scheduler, runId);
+
+    const parked = h.rows.filter((r) => r.kind === 'parked');
+    expect(parked).toHaveLength(1);
+    expect(parked[0].detail).toEqual({ reason: 'sign-in' });
+
+    h.scheduler.signedIn();
+
+    const resumed = h.rows.filter((r) => r.kind === 'resumed');
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]).toMatchObject({ origin: 'resume', detail: { reason: 'sign-in' } });
+  });
+
+  it('a throwing append does not stop the park or the resume', () => {
+    const h = setup();
+    h.scheduler.setActivityRecorder(
+      createActivityRecorder({
+        append: () => {
+          throw new Error('disk full');
+        },
+      }),
+    );
+    startRun(h.scheduler, h.project, h.card, {});
+
+    expect(() => hitLimit(h.scheduler)).not.toThrow();
+    expect(h.card.status).toBe('blocked-by-limit');
+
+    expect(() => h.scheduler.resumeLimitNow()).not.toThrow();
+    expect(resumedRun(h.scheduler)).toBeDefined();
+  });
+});
+
+/**
  * "Open a PR when finished" — the alternative to merging, taken at the moment the work is
  * written.
  *
