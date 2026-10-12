@@ -61,6 +61,7 @@ import type {
 } from './model';
 import type { AddAgentProfileInput, AgentProfile, AgentProfilePatch } from './agent';
 import type { PastedAttachment, TaskAttachment, UploadedAttachment } from './attachments';
+import type { IssuePage, IssueProviderId, IssueQuery } from './issues';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
@@ -1407,6 +1408,22 @@ export interface IpcApi {
    * so the button can be shown optimistically.
    */
   'update:install': () => Promise<void>;
+
+  // --- Issues (F5): the read-only browser over a tracker's open issues, and the ---------
+  // one-click import that puts one on the board. See `@shared/issues` for the model.
+  /**
+   * One page of a tracker's issues matching `query`. The provider does the clamping
+   * (`clampIssuePage`) before this resolves, so the size guarantee is the provider's, not
+   * the caller's to enforce.
+   */
+  'issues:list': (query: IssueQuery) => Promise<IssuePage>;
+  /**
+   * Import one issue onto the board — the browser's "Add to board" / "Hand to agent"
+   * actions. Idempotent by `(externalSource, externalKey)`: importing the same issue twice
+   * returns the same card rather than creating a second one. Sets `Task.pinnedImport`, so
+   * the next sync does not archive a card that was never inside its query to begin with.
+   */
+  'issues:import': (provider: IssueProviderId, key: string) => Promise<Task>;
 }
 
 /**

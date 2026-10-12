@@ -336,6 +336,11 @@ export const RELAY_POLICY: {
   'update:get': 'relay',
   'update:check': 'relay',
   'update:install': 'host-only',
+
+  // The web reaches the desktop's tracker credentials over `ipc-invoke`; the token never
+  // leaves it — same reasoning as `github:sync`.
+  'issues:list': 'relay',
+  'issues:import': 'relay',
 };
 
 /** Whether this channel may be run on a desktop client on a browser's behalf. */

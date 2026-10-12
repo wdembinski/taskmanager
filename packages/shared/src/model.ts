@@ -952,6 +952,18 @@ export interface Task {
    */
   retainedSince?: number | null;
   /**
+   * True for a card created by `issues:import` (F5) — the issue browser's "Hand to agent" /
+   * "Add to board" actions — rather than one the sync itself brought in. Set once, at
+   * import, and never cleared.
+   *
+   * A sync archives a card the moment its issue stops matching the configured query
+   * (`TaskArchiveReason 'left-query'`); an issue someone deliberately imported was never
+   * IN that query to begin with, so without this flag the very next poll would archive a
+   * card the human just asked for. `jiraSync.ts` / `githubIssueSync.ts` skip a
+   * `pinnedImport` card when computing which cards left the query.
+   */
+  pinnedImport?: boolean | null;
+  /**
    * Epoch ms this card was **taken off the board**, or null while it is on it.
    *
    * A card that stops matching the query leaves the BOARD, not the database. The row carries
