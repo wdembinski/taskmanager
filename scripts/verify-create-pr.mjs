@@ -36,7 +36,8 @@
  *
  *  1. `openPullRequest` pushes the card's branch into the bare origin, and the commit really
  *     is there afterwards under `refs/heads/<branch>`.
- *  2. It POSTs to `/repos/{owner}/{repo}/pulls` carrying the card's title, base and body.
+ *  2. It POSTs to `/repos/{owner}/{repo}/pulls` carrying a commit-style title built from the
+ *     card, the base branch, and a body summarising the branch's own commits.
  *  3. A `merge_requests` row appears **against the card**, under the id the next sync will
  *     use (`gh-{repoId}-{number}`), so the card shows the PR now and the reconciler
  *     recognises it later rather than filing a duplicate beside it.
@@ -60,6 +61,25 @@
  *  10. A database written **before** `openedForTaskId` existed upgrades into it and is writable
  *     afterwards. Every installed copy is that database, and this is the only harness in the
  *     repo that can open one at all (see `the-store-has-no-tests`).
+ *  11. **The remote is checked before the push.** A second repo/bare-origin pair, so advancing
+ *     the remote's copy of `base` here cannot alter anything the checks above already proved.
+ *     Someone pushes straight to the bare origin — the shape `base` moving on the remote
+ *     without this process ever fetching it — and `openPullRequest` is driven through the
+ *     REAL `WorktreeManager.syncOntoRemoteBase`, not a stub: the branch lands on the far side
+ *     already rebased onto that push, carrying both its own commit and the remote's.
+ *  12. **A second rebase of an already-open pull request pushes with a LEASE.** Base moves on
+ *     the remote a second time, after the branch has already been pushed once: the rebase
+ *     rewrites its commits again, and an ORDINARY push would now be rejected as non-fast-forward
+ *     against what check 11 already put there. `git.pushBranch`'s `--force-with-lease` is what
+ *     lets it through anyway — leased against the branch's own tip, fetched fresh.
+ *  13. **Work already on the remote base refuses, and POSTs nothing.** A branch whose one
+ *     commit has already been merged into `base` on the far side — the shape a card's PR takes
+ *     once its own work has already landed, while this worktree's copy of base is still stale.
+ *     The rebase the remote check does finds nothing left to replay, and the refusal names that.
+ *  14. **A conflict with the remote refuses, naming the file, pushing nothing.** Base and the
+ *     branch edit the same line differently; the rebase the remote check does conflicts, and
+ *     neither mechanical rung can resolve it. The branch is left exactly as it was — checked
+ *     out, no rebase paused, no conflict markers — and nothing reaches the bare origin.
  *
  * ## Prove it can fail
  *
@@ -88,9 +108,31 @@
  * `store.ts`: the fresh database above is unaffected — every check up to 9 still passes — and
  * re-opening the older one dies on `no such column`, which is what an installed copy would do
  * on the first press of the button.
+ *
+ * For check 11, delete the call to `deps.syncOntoRemoteBase` in `createPr.ts` (or revert it to
+ * stop before the push): the branch still pushes and the pull request still opens, so this is
+ * exactly the kind of regression nothing else in this file would catch — only check 11 looks at
+ * whether the far side actually got the remote's own commit along with the branch's.
+ *
+ * For check 12, drop the `forceWithLease` field from the `pushBranch` call in `createPr.ts` (push
+ * plainly even after a sync that rebased). Check 11 still passes — that branch had never been
+ * pushed before — and only the SECOND round, against a branch the remote already has under an
+ * older history, goes red: git rejects it as non-fast-forward and `openPullRequest` throws.
+ *
+ * For check 13, delete the post-sync `commitsAhead` re-check in `createPr.ts` (the one run only
+ * when `sync.status === 'synced'`). The branch still rebases onto the merged base, still ends
+ * up with nothing new to push, and now sails straight through to a POST for a pull request with
+ * an empty diff — exactly the one this check exists to catch.
+ *
+ * For check 14, drop the `abortRebase` call in `syncOntoRemoteBase`'s conflict branch (in
+ * `worktreeManager.ts`) — the refusal and its message are unaffected, so the first two parts of
+ * check 14 stay green, and only "the branch itself is untouched" and "its work tree is clean"
+ * go red: the worktree is left mid-rebase, `HEAD` detached onto a commit rather than the
+ * branch, and the conflict markers from `resolveMechanically`'s failed attempt still sitting in
+ * `shared.txt`.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -129,6 +171,10 @@ if (!process.versions.electron) {
         '--platform=node',
         '--format=cjs',
         `--alias:@shared=${join(root, 'packages', 'shared', 'src')}`,
+        // `cloudDelta.ts` — reached from `store.ts` — imports `@protocol/wire`, the same
+        // tsconfig path alias as `@shared`, just for a package esbuild has no other way to
+        // find outside of actually resolving the workspace's own `node_modules` symlinks.
+        `--alias:@protocol=${join(root, 'packages', 'protocol', 'src')}`,
         ...(external ? [`--external:${external}`] : []),
         `--outfile=${outfile}`,
         '--log-level=error',
@@ -137,8 +183,8 @@ if (!process.versions.electron) {
     );
 
   // Neither of these imports Electron — `createPr.ts` reaches git, the exec hosts and
-  // `fetch`, and `store.ts` reaches only node:*, better-sqlite3 and @shared/*. That is what
-  // lets both be pulled out of the app and run on their own like this.
+  // `fetch`, and `store.ts` reaches only node:*, better-sqlite3, @shared/* and @protocol/*.
+  // That is what lets both be pulled out of the app and run on their own like this.
   bundle(join(root, 'apps/client/src/main/forge/createPr.ts'), join(scratch, 'createPr.cjs'));
   bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'), 'better-sqlite3');
   // The reconciler checks 8 and 9 run — pure, and the third module here that reaches no
@@ -147,6 +193,12 @@ if (!process.versions.electron) {
   // The board index check 9 builds through, the exact expression `ipc.ts` calls it with —
   // also pure, also no Electron.
   bundle(join(root, 'apps/client/src/main/forge/boardIndex.ts'), join(scratch, 'boardIndex.cjs'));
+  // Check 11's `syncOntoRemoteBase` — also pure: `./exec` and `./git` are both system
+  // binaries and `node:*`, same as `createPr.ts` itself.
+  bundle(
+    join(root, 'apps/client/src/main/worktreeManager.ts'),
+    join(scratch, 'worktreeManager.cjs'),
+  );
 
   const electron = join(
     clientModules,
@@ -176,6 +228,7 @@ const { openPullRequest } = require(join(work, 'createPr.cjs'));
 const { createStore } = require(join(work, 'store.cjs'));
 const { reconcilePullRequests } = require(join(work, 'prSync.cjs'));
 const { buildBoardIndex } = require(join(work, 'boardIndex.cjs'));
+const { WorktreeManager } = require(join(work, 'worktreeManager.cjs'));
 
 let failures = 0;
 const check = (label, ok, detail) => {
@@ -257,7 +310,10 @@ globalThis.fetch = async (url, init) => {
   const branch = sent.head ?? BRANCH;
   let pr = prsByBranch.get(branch);
   if (!pr) {
-    pr = { number: nextPrNumber++, htmlUrl: `https://github.com/acme/checkout/pull/${nextPrNumber - 1}` };
+    pr = {
+      number: nextPrNumber++,
+      htmlUrl: `https://github.com/acme/checkout/pull/${nextPrNumber - 1}`,
+    };
     prsByBranch.set(branch, pr);
   }
   const body = {
@@ -280,6 +336,11 @@ globalThis.fetch = async (url, init) => {
   };
 };
 
+// The REAL `syncOntoRemoteBase` for every scenario below, not a stub — check 11 is what this
+// buys: without it, a regression that drops the remote check (or breaks it) would push and
+// open a pull request successfully in every check above and go unnoticed by all of them.
+const wtm = new WorktreeManager(work);
+
 const notes = [];
 const deps = {
   getTask: (id) => store.getTask(id),
@@ -290,6 +351,8 @@ const deps = {
   // Standing in for `WorktreeManager.inspect`, the one dependency this scenario has no use
   // for: it exists to READ a branch/base pair off disk, and here they are already known.
   inspect: async () => ({ cwd: repo, branch: BRANCH, base }),
+  syncOntoRemoteBase: (project, base, worktree, opts) =>
+    wtm.syncOntoRemoteBase(project, base, worktree, opts),
   tokenFor: () => TOKEN,
   note: (_projectId, _taskId, body) => notes.push(body),
   now: () => 1_760_000_000_000,
@@ -320,13 +383,13 @@ check(
 );
 const sent = JSON.parse(String(post?.init.body ?? '{}'));
 check(
-  'with the card title and its base branch',
-  sent.title === 'Fix the export dialog' && sent.base === base,
+  'with a commit-style title built from the card and its base branch',
+  sent.title === 'fix: fix the export dialog' && sent.base === base,
   JSON.stringify(sent),
 );
 check(
-  'and the card description as the body',
-  String(sent.body).includes('forgets the last folder'),
+  "and the branch's own commit summarised as the body",
+  String(sent.body).includes('add the export dialog'),
   String(sent.body),
 );
 
@@ -617,6 +680,309 @@ check(
   `taskId is ${String(afterBoardSync?.taskId)}, card is ${boardCard.id}`,
 );
 
+// ── 11: the branch is rebased onto base AS THE REMOTE HAS IT, before it is pushed ────
+// A repo and bare origin of its OWN, so advancing this origin's copy of base cannot alter
+// anything the checks above already proved — those never push base itself to `bare`, but
+// there is no reason to tempt that.
+const resyncRepo = join(work, 'resync-repo');
+const resyncOrigin = join(work, 'resync-origin.git');
+git(work, 'init', resyncRepo);
+git(resyncRepo, 'config', 'user.email', 'verify@example.com');
+git(resyncRepo, 'config', 'user.name', 'Verify');
+git(resyncRepo, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(resyncRepo, 'README.md'), '# resync\n');
+git(resyncRepo, 'add', '-A');
+git(resyncRepo, 'commit', '--no-verify', '-m', 'initial');
+const resyncBase = git(resyncRepo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+git(work, 'init', '--bare', resyncOrigin);
+// Seed the bare origin with that same initial commit — directly by path, no app code
+// involved yet — so the branch built below and the remote's own push share an ancestor.
+git(resyncRepo, 'push', resyncOrigin, resyncBase);
+
+// The card's own branch and work, built on top of that shared ancestor.
+const RESYNC_BRANCH = 'feat/resync-me';
+git(resyncRepo, 'checkout', '-b', RESYNC_BRANCH);
+writeFileSync(join(resyncRepo, 'mine.ts'), 'export const mine = true;\n');
+git(resyncRepo, 'add', '-A');
+git(resyncRepo, 'commit', '--no-verify', '-m', 'add my own file');
+
+// Someone else pushes straight to the bare origin while this branch sits untouched — base
+// moving on the remote without this process ever fetching it.
+const resyncClone = join(work, 'resync-clone');
+git(work, 'clone', resyncOrigin, resyncClone);
+git(resyncClone, 'config', 'user.email', 'verify@example.com');
+git(resyncClone, 'config', 'user.name', 'Verify');
+git(resyncClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(resyncClone, 'from-elsewhere.txt'), 'pushed directly\n');
+git(resyncClone, 'add', '-A');
+git(resyncClone, 'commit', '--no-verify', '-m', 'pushed directly to origin');
+git(resyncClone, 'push', 'origin', `HEAD:${resyncBase}`);
+const resyncRemoteHead = git(resyncClone, 'rev-parse', 'HEAD').stdout.trim();
+
+// Point this repo's own "origin" at a fake https URL and redirect it to the bare repo — the
+// same trick the main scenario's `REMOTE`/`bare` pair uses, so the app's tokenized fetch and
+// push both land here instead of at the real github.com.
+git(resyncRepo, 'remote', 'add', 'origin', 'https://github.com/acme/resync.git');
+writeFileSync(
+  gitConfig,
+  readFileSync(gitConfig, 'utf8') +
+    `[url "file://${resyncOrigin.replace(/\\/g, '/')}"]\n` +
+    `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/resync.git\n`,
+  'utf8',
+);
+
+const resyncProject = store.addProject({
+  path: resyncRepo,
+  name: 'Resync',
+  kind: 'agent',
+  baseBranch: resyncBase,
+});
+const resyncCard = store.createTask('personal', { title: 'Do my own thing' });
+store.updateTask(resyncCard.id, {
+  agentProjectId: resyncProject.id,
+  agentBranch: RESYNC_BRANCH,
+});
+
+const resyncOpened = await openPullRequest(
+  {
+    ...deps,
+    inspect: async () => ({ cwd: resyncRepo, branch: RESYNC_BRANCH, base: resyncBase }),
+  },
+  resyncCard.id,
+);
+check(
+  'a pull request opens even though base moved on the remote underneath it',
+  resyncOpened.existed === false,
+  JSON.stringify(resyncOpened),
+);
+
+// The branch landed on the far side already rebased onto the remote's new tip: it carries
+// BOTH the commit pushed "by someone else" and its own.
+const resyncLanded = git(resyncOrigin, 'rev-parse', `refs/heads/${RESYNC_BRANCH}`);
+check(
+  'the pushed branch lands in the bare origin',
+  resyncLanded.code === 0,
+  resyncLanded.stderr.trim() || resyncLanded.stdout.trim(),
+);
+const resyncHead = resyncLanded.stdout.trim();
+check(
+  'carrying the commit that was pushed directly to the remote',
+  git(resyncOrigin, 'cat-file', '-e', `${resyncHead}:from-elsewhere.txt`).code === 0,
+);
+check(
+  'and its own work, rebased on top of it',
+  git(resyncOrigin, 'cat-file', '-e', `${resyncHead}:mine.ts`).code === 0,
+);
+
+// The local base ref was fast-forwarded to match what the remote had — `resyncRepo` is
+// checked out on `RESYNC_BRANCH`, not `resyncBase`, so this exercises the bare ref-move half
+// of `updateLocalBase` (the merge half is `worktreeManager.test.ts`'s own job).
+check(
+  'the local base ref was fast-forwarded to match what the remote had',
+  git(resyncRepo, 'rev-parse', resyncBase).stdout.trim() === resyncRemoteHead,
+);
+
+// ── 12: a SECOND rebase of an already-open pull request pushes with a LEASE ──────────
+// Check 11's push above was the branch's first ever — nothing existed on `resyncOrigin` under
+// its name, so an ordinary push would have succeeded too. The lease only earns its keep once
+// the branch has ALREADY been pushed once (there is an open pull request for it) and base
+// moves on the remote a second time: the rebase rewrites the branch's commits again, so the
+// remote's own copy — still sitting at what check 11 pushed — is no longer an ancestor of
+// what is about to be pushed, and a plain push is rejected as non-fast-forward.
+git(resyncClone, 'pull', '--ff-only');
+writeFileSync(join(resyncClone, 'from-elsewhere-2.txt'), 'pushed directly, again\n');
+git(resyncClone, 'add', '-A');
+git(resyncClone, 'commit', '--no-verify', '-m', 'pushed directly to origin, again');
+git(resyncClone, 'push', 'origin', resyncBase);
+rmSync(resyncClone, { recursive: true, force: true });
+
+const resyncOpenedAgain = await openPullRequest(
+  {
+    ...deps,
+    inspect: async () => ({ cwd: resyncRepo, branch: RESYNC_BRANCH, base: resyncBase }),
+  },
+  resyncCard.id,
+);
+check(
+  'the already-open pull request is reported again, not opened twice',
+  resyncOpenedAgain.existed === true && resyncOpenedAgain.url === resyncOpened.url,
+  JSON.stringify(resyncOpenedAgain),
+);
+const resyncLandedAgain = git(resyncOrigin, 'rev-parse', `refs/heads/${RESYNC_BRANCH}`);
+check(
+  'the leased push succeeds even though the branch was rewritten a second time',
+  resyncLandedAgain.code === 0 && resyncLandedAgain.stdout.trim() !== resyncHead,
+  resyncLandedAgain.stderr.trim() || resyncLandedAgain.stdout.trim(),
+);
+check(
+  'carrying every commit pushed directly to the remote, both rounds',
+  git(resyncOrigin, 'cat-file', '-e', `${resyncLandedAgain.stdout.trim()}:from-elsewhere.txt`)
+    .code === 0 &&
+    git(resyncOrigin, 'cat-file', '-e', `${resyncLandedAgain.stdout.trim()}:from-elsewhere-2.txt`)
+      .code === 0,
+);
+
+// ── 13: work already on origin refuses, and POSTs nothing ───────────────────────────
+// The shape a card's pull request takes once its own work has already landed on `base` —
+// merged on the forge, or by hand — while this worktree's own copy of base is still the
+// stale one it had the last time it looked. The EARLIER "nothing to open a pull request for"
+// check only ever compares against that stale copy; this is the first point a freshly
+// fetched base can be trusted, and it has to refuse the same way, just a step later.
+const refuseRepo = join(work, 'refuse-repo');
+const refuseOrigin = join(work, 'refuse-origin.git');
+git(work, 'init', refuseRepo);
+git(refuseRepo, 'config', 'user.email', 'verify@example.com');
+git(refuseRepo, 'config', 'user.name', 'Verify');
+git(refuseRepo, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(refuseRepo, 'README.md'), '# refuse\n');
+git(refuseRepo, 'add', '-A');
+git(refuseRepo, 'commit', '--no-verify', '-m', 'initial');
+const refuseBase = git(refuseRepo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+git(work, 'init', '--bare', refuseOrigin);
+git(refuseRepo, 'push', refuseOrigin, refuseBase);
+
+const REFUSE_BRANCH = 'feat/already-merged';
+git(refuseRepo, 'checkout', '-b', REFUSE_BRANCH);
+writeFileSync(join(refuseRepo, 'mine.ts'), 'export const mine = true;\n');
+git(refuseRepo, 'add', '-A');
+git(refuseRepo, 'commit', '--no-verify', '-m', 'the work');
+// Pushed once, as if a pull request had been opened for it before —
+git(refuseRepo, 'push', refuseOrigin, REFUSE_BRANCH);
+
+// — then merged straight into base on the far side, through a throwaway clone so `refuseRepo`
+// itself never learns about it: its own `refuseBase` stays exactly where it started.
+const refuseMergeClone = join(work, 'refuse-merge-clone');
+git(work, 'clone', refuseOrigin, refuseMergeClone);
+git(refuseMergeClone, 'config', 'user.email', 'verify@example.com');
+git(refuseMergeClone, 'config', 'user.name', 'Verify');
+git(refuseMergeClone, 'config', 'commit.gpgsign', 'false');
+git(refuseMergeClone, 'checkout', refuseBase);
+git(refuseMergeClone, 'merge', '--ff-only', `origin/${REFUSE_BRANCH}`);
+git(refuseMergeClone, 'push', 'origin', refuseBase);
+rmSync(refuseMergeClone, { recursive: true, force: true });
+
+git(refuseRepo, 'remote', 'add', 'origin', 'https://github.com/acme/refuse.git');
+writeFileSync(
+  gitConfig,
+  readFileSync(gitConfig, 'utf8') +
+    `[url "file://${refuseOrigin.replace(/\\/g, '/')}"]\n` +
+    `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/refuse.git\n`,
+  'utf8',
+);
+const refuseProject = store.addProject({
+  path: refuseRepo,
+  name: 'Refuse',
+  kind: 'agent',
+  baseBranch: refuseBase,
+});
+const refuseCard = store.createTask('personal', { title: 'Work that is already upstream' });
+store.updateTask(refuseCard.id, { agentProjectId: refuseProject.id, agentBranch: REFUSE_BRANCH });
+
+const postsBeforeRefuse = calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length;
+const refusedAlreadyLanded = await openPullRequest(
+  { ...deps, inspect: async () => ({ cwd: refuseRepo, branch: REFUSE_BRANCH, base: refuseBase }) },
+  refuseCard.id,
+).then(
+  () => null,
+  (e) => String(e?.message ?? e),
+);
+check(
+  'a branch whose work is already on the remote base refuses, naming it',
+  Boolean(refusedAlreadyLanded && /already have/i.test(refusedAlreadyLanded)),
+  refusedAlreadyLanded ?? '(it did not refuse)',
+);
+check(
+  'and nothing was POSTed for it',
+  calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length === postsBeforeRefuse,
+  `${calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length} POST(s), was ${postsBeforeRefuse}`,
+);
+
+// ── 14: a conflict with the remote refuses naming the file, pushes nothing, and leaves the
+//        branch untouched (no paused rebase left behind) ────────────────────────────────
+const conflictRepo = join(work, 'conflict-repo');
+const conflictOrigin = join(work, 'conflict-origin.git');
+git(work, 'init', conflictRepo);
+git(conflictRepo, 'config', 'user.email', 'verify@example.com');
+git(conflictRepo, 'config', 'user.name', 'Verify');
+git(conflictRepo, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(conflictRepo, 'shared.txt'), 'original\n');
+git(conflictRepo, 'add', '-A');
+git(conflictRepo, 'commit', '--no-verify', '-m', 'initial');
+const conflictBase = git(conflictRepo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+git(work, 'init', '--bare', conflictOrigin);
+git(conflictRepo, 'push', conflictOrigin, conflictBase);
+
+const CONFLICT_BRANCH = 'feat/conflicts-with-remote';
+git(conflictRepo, 'checkout', '-b', CONFLICT_BRANCH);
+writeFileSync(join(conflictRepo, 'shared.txt'), 'BRANCH-EDIT\n');
+git(conflictRepo, 'commit', '--no-verify', '-am', 'branch edits shared.txt');
+
+// Someone else edits the SAME line on the remote, directly.
+const conflictClone = join(work, 'conflict-clone');
+git(work, 'clone', conflictOrigin, conflictClone);
+git(conflictClone, 'config', 'user.email', 'verify@example.com');
+git(conflictClone, 'config', 'user.name', 'Verify');
+git(conflictClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(conflictClone, 'shared.txt'), 'REMOTE-EDIT\n');
+git(conflictClone, 'commit', '--no-verify', '-am', 'remote edits shared.txt');
+git(conflictClone, 'push', 'origin', conflictBase);
+rmSync(conflictClone, { recursive: true, force: true });
+
+git(conflictRepo, 'remote', 'add', 'origin', 'https://github.com/acme/conflict.git');
+writeFileSync(
+  gitConfig,
+  readFileSync(gitConfig, 'utf8') +
+    `[url "file://${conflictOrigin.replace(/\\/g, '/')}"]\n` +
+    `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/conflict.git\n`,
+  'utf8',
+);
+const conflictProject = store.addProject({
+  path: conflictRepo,
+  name: 'Conflict',
+  kind: 'agent',
+  baseBranch: conflictBase,
+});
+const conflictCard = store.createTask('personal', { title: 'Work that conflicts upstream' });
+store.updateTask(conflictCard.id, {
+  agentProjectId: conflictProject.id,
+  agentBranch: CONFLICT_BRANCH,
+});
+
+const postsBeforeConflict = calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length;
+const conflictRefusal = await openPullRequest(
+  {
+    ...deps,
+    inspect: async () => ({ cwd: conflictRepo, branch: CONFLICT_BRANCH, base: conflictBase }),
+  },
+  conflictCard.id,
+).then(
+  () => null,
+  (e) => String(e?.message ?? e),
+);
+check(
+  'a conflict with the remote refuses, naming the file',
+  Boolean(conflictRefusal && /conflicts on.*shared\.txt/i.test(conflictRefusal)),
+  conflictRefusal ?? '(it did not refuse)',
+);
+check(
+  'nothing was pushed to the bare origin',
+  git(conflictOrigin, 'rev-parse', '--verify', '--quiet', `refs/heads/${CONFLICT_BRANCH}`).code !==
+    0,
+);
+check(
+  'and nothing was POSTed for it either',
+  calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length === postsBeforeConflict,
+  `${calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length} POST(s), was ${postsBeforeConflict}`,
+);
+check(
+  'the branch itself is untouched — checked out, no rebase left paused mid-conflict',
+  git(conflictRepo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim() === CONFLICT_BRANCH,
+);
+check(
+  'and its work tree is clean, no conflict markers left behind',
+  git(conflictRepo, 'diff', '--quiet').code === 0,
+);
+
 store.close();
 
 // ── 10: a database written BEFORE the column upgrades into it ────────────────────────
@@ -647,11 +1013,7 @@ try {
 } catch (e) {
   openError = String(e?.message ?? e);
 }
-check(
-  'opening an older database does not fall over',
-  upgraded !== null,
-  openError ?? undefined,
-);
+check('opening an older database does not fall over', upgraded !== null, openError ?? undefined);
 if (upgraded) {
   const row9 = upgraded.listMergeRequests().find((r) => r.id === 'gh-555-12');
   check(

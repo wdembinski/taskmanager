@@ -29,8 +29,8 @@ export interface GitResult {
  * its own host and the identical argv runs inside the distro instead.
  *
  * `env` is added to this process' environment for the one command, and is only ever passed
- * by {@link pushBranch} — see {@link NO_PROMPT_ENV} for the single thing it is for. Omitted
- * everywhere else, so no other git call's environment changes at all.
+ * by {@link pushBranch} and {@link fetchRef} — see {@link NO_PROMPT_ENV} for the single thing
+ * it is for. Omitted everywhere else, so no other git call's environment changes at all.
  */
 export async function git(
   cwd: string,
@@ -267,14 +267,26 @@ function attributesConfig(attributesFile?: string): string[] {
  * code with conflicts means the caller must resolve (or `abortRebase`). When
  * `attributesFile` is given, its merge attributes apply — e.g. `path merge=union` lets
  * additive files (`.gitignore`, workspace lists) auto-resolve instead of conflicting.
+ *
+ * `autostash`, when true, passes `--autostash`: uncommitted changes in the worktree are
+ * stashed before the rebase starts and popped back once it finishes, instead of the rebase
+ * refusing outright with "cannot rebase: you have unstaged changes". `integrate` never needs
+ * this — it commits everything first — but the pre-PR remote check runs on a worktree that
+ * may still have an agent's uncommitted edits sitting in it, and failing there with a generic
+ * git error is a worse outcome than stashing work that is about to be rebased anyway.
  */
 export async function rebaseOnto(
   worktreePath: string,
   baseRef: string,
   attributesFile?: string,
   host?: ExecHost,
+  autostash?: boolean,
 ): Promise<GitResult> {
-  return git(worktreePath, [...attributesConfig(attributesFile), 'rebase', baseRef], host);
+  return git(
+    worktreePath,
+    [...attributesConfig(attributesFile), 'rebase', ...(autostash ? ['--autostash'] : []), baseRef],
+    host,
+  );
 }
 
 /** Abort an in-progress rebase, restoring the branch to its pre-rebase state. */
@@ -615,6 +627,10 @@ export interface PushOptions {
    * `--force-with-lease`. Lets a rewritten branch (e.g. after a rebase onto a PR's base)
    * overwrite the remote without blindly clobbering a commit someone else pushed there
    * since we last fetched it.
+   *
+   * An EMPTY `expected` leases against the branch's absence — "push only if the remote does
+   * not have this branch at all yet" — which is git's own reading of `--force-with-lease=
+   * <ref>:` with nothing after the colon, and what {@link remoteBranchSha}'s `null` maps to.
    */
   forceWithLease?: { expected: string };
 }
@@ -720,6 +736,29 @@ export async function fetchRef(
     stdout: redactSecrets(res.stdout, opts.secrets),
     stderr: redactSecrets(res.stderr, opts.secrets),
   };
+}
+
+/**
+ * The commit `branch` points at on `remote` right now, fetched fresh — or **null** when the
+ * remote doesn't have it (or the fetch couldn't be asked at all; the two are not told apart,
+ * same contract as {@link fetchRef}). Exists to feed {@link PushOptions.forceWithLease}: a
+ * leased push must refuse unless the remote is exactly what this process just SAW, never a
+ * remote-tracking ref that may have gone stale while the worktree sat idle.
+ *
+ * Fetched into a scratch ref of its own (`refs/orch/remote-branch`) rather than read from
+ * `FETCH_HEAD`, the same choice the pre-PR base check makes, so the two never share state.
+ */
+export async function remoteBranchSha(
+  cwd: string,
+  remote: string,
+  branch: string,
+  opts: PushOptions = {},
+): Promise<string | null> {
+  const localRef = 'refs/orch/remote-branch';
+  const fetched = await fetchRef(cwd, remote, branch, localRef, opts);
+  if (fetched.code !== 0) return null;
+  const res = await git(cwd, ['rev-parse', localRef], opts.host);
+  return res.code === 0 ? res.stdout.trim() : null;
 }
 
 /**

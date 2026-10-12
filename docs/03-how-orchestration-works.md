@@ -401,6 +401,43 @@ card's own timeline said *review it, then choose Merge on the card*.
 The switch is read when the run **finishes**, not when it starts, so you can change your
 mind while the agent is still working.
 
+### Opening a pull request
+
+The other way a finished branch leaves its worktree: **Create PR** on the card, or the
+card's own *Open a PR when finished* switch, push the branch and open it against GitHub or
+GitLab instead of merging it locally. Pressing it again once the pull request is open is not
+an error — it pushes whatever has been written since (another step, a re-run, a chat reply)
+into the *same* pull request rather than opening a second one.
+
+**The branch is rebased onto base as the remote has it, before anything is pushed.** A
+card's worktree can sit for a while between being built and a human pressing the button, and
+nothing in that gap ever fetches — another pull request landing straight on the forge, a
+teammate pushing to base by hand, a release branch moving. Opening a pull request against a
+base the branch has already fallen behind is exactly how a conflict turns up on the forge
+that nothing here ever saw coming, so the check happens first: `origin`'s current copy of the
+base branch is fetched, and if it has moved, the branch is rebased onto the fresh tip — the
+same mechanical rungs a local merge uses (an additive `.gitignore`-style file unions, a
+lockfile is rebuilt, a version-only `package.json` clash takes base's number) get a chance at
+it before a human ever would. The local base ref is advanced to match, too.
+
+A conflict neither rung can resolve refuses the whole thing, naming the files it hit —
+pull the latest base, resolve it there, and press the button again. Unlike a merge conflict,
+nothing is left paused in the worktree for an agent or a *Resolved* button to pick up: this
+check is undone (`git rebase --abort`) rather than parked the moment it can't finish cleanly,
+because there is no ladder here to hand a paused rebase up to.
+
+**Rebasing onto a fresher base can also mean there is nothing left to push.** If the branch's
+own work has already landed in base — merged on the forge, or by hand, while the worktree sat
+idle — the rebase leaves it with no commits of its own, and the button refuses the same way
+an empty branch always did: there is nothing to open a pull request for.
+
+**The push itself is leased whenever the rebase actually ran.** A branch that already has an
+open pull request has already been pushed once; rebasing it again gives its commits new SHAs,
+so an ordinary push would be rejected by the forge as non-fast-forward the moment it sees the
+branch already has history it doesn't recognise. `git push --force-with-lease` is what lets it
+through anyway, leased against the branch's own tip on the remote, fetched moments before —
+never against a stale local record of what used to be there.
+
 ### Releasing after the merge
 
 A merge is not always the end of the job. If a repo knows how to release itself, the
