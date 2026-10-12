@@ -233,6 +233,16 @@ function resumeWithNotePrompt(note: string): string {
 }
 
 /**
+ * Prepend a pre-run sync's agent-facing instruction (`WorktreePrep.agentNote` — a paused
+ * rebase it could not finish automatically) to whatever a RESUMED session was about to be
+ * told, fresh brief or not. The chore it names has to happen before anything else, so it
+ * always comes first; everything else about the resumed prompt is unchanged.
+ */
+function withAgentNote(agentNote: string | undefined, body: string): string {
+  return agentNote ? `${agentNote}\n\n${body}` : body;
+}
+
+/**
  * How many times the orchestrator lets the AGENT try to resolve a branch's rebase
  * conflicts (team-orchestrator conflict ladder, Rung 2) before parking it for a human
  * (Rung 3). Mechanical union-merge (Rung 1) runs first, inside the integration itself.
@@ -574,6 +584,9 @@ export function selectNextPending<T extends Schedulable>(
  *     plan file (owned by the main tree) and should commit its work on the branch.
  *   - `failureNote` (AI-assisted retry): a previous attempt failed; the agent is told
  *     the reason and asked to diagnose and fix it. Combines with either mode above.
+ *   - `agentNote` (pre-run sync): the worktree's branch rebase paused on a conflict before
+ *     this run even started. Rendered FIRST, ahead of everything else — it names a chore
+ *     the agent must clear before the task below, not context about the task itself.
  *
  * Contract-first (Phase C), layered on top of the above:
  *   - `contractSiblings` (this is a `@contract` task): the agent authors the shared
@@ -588,6 +601,7 @@ export function buildTaskPrompt(
     planRelPath?: string;
     branch?: string;
     failureNote?: string;
+    agentNote?: string;
     contractSiblings?: string[];
     hasContract?: boolean;
     isScaffold?: boolean;
@@ -600,11 +614,14 @@ export function buildTaskPrompt(
     projectPath?: string;
   } = {},
 ): string {
-  const { planRelPath, branch, failureNote, contractSiblings, hasContract } = options;
+  const { planRelPath, branch, failureNote, agentNote, contractSiblings, hasContract } = options;
   const { isScaffold, hasScaffold, worktreePath, projectPath } = options;
   const isContract = contractSiblings !== undefined;
   const instructions = (options.instructions ?? '').trim();
   return [
+    // A pre-run sync's paused-rebase chore, ahead of even the opening sentence — it must be
+    // cleared before anything about the task itself is relevant.
+    ...(agentNote ? [agentNote, ''] : []),
     `You are working through the plan for the project "${projectName}".`,
     '',
     // Standing setup knowledge first: it often decides HOW every later command runs.
@@ -3277,7 +3294,11 @@ export class Scheduler {
         this.chain.startPointFor(task),
         // A paused rebase in the worktree is normally debris to clear before the run (see
         // `rescueDetached`) — unless resolving it IS the run, which only the scheduler knows.
-        { resumingRebase: this.isResolvingConflict(task) },
+        // `skipSync` holds the pre-run branch rebase off a CHAT reply: it is a resume
+        // mid-conversation, and inserting a rebase ahead of what the human is about to say
+        // would be a surprise rather than a convenience (a resumed conflict-fix already skips
+        // via `resumingRebase`, so this is only for the plain-chat case that one doesn't cover).
+        { resumingRebase: this.isResolvingConflict(task), skipSync: Boolean(run.chatPrompt) },
       );
     } catch (err) {
       // Preparation blew up (odd git state). For a worktree-enabled repo, never fall back
@@ -3411,6 +3432,10 @@ export class Scheduler {
       run.base = prep.base;
       run.worktree = prep.cwd;
     }
+    // A pre-run sync (`WorktreeManager.syncBranch`) left the worktree mid-rebase on a
+    // conflict it couldn't resolve itself. It is a chore the agent has to clear before the
+    // task below, so it is told first — on a fresh brief and on a resume alike.
+    const agentNote = prep.mode === 'worktree' ? prep.agentNote : undefined;
     // The plan file's path relative to the project dir, so a shared-dir agent can
     // edit it. Worktree agents get the isolated (no-plan-edit) prompt instead.
     const planRel = planRelPath(project);
@@ -3434,13 +3459,15 @@ export class Scheduler {
     const prompt =
       run.chatPrompt ??
       (resumeSessionId
-        ? failureNote
-          ? resumeWithNotePrompt(failureNote)
-          : (run.resumeNudge ?? RESUME_NUDGE)
+        ? withAgentNote(
+            agentNote,
+            failureNote ? resumeWithNotePrompt(failureNote) : (run.resumeNudge ?? RESUME_NUDGE),
+          )
         : this.buildPrompt(project, task, {
             branch,
             planRel,
             failureNote,
+            agentNote,
             comments,
             worktreePath,
             permissionMode: run.permissionMode,
@@ -3479,13 +3506,15 @@ export class Scheduler {
       branch?: string;
       planRel: string;
       failureNote?: string;
+      /** A pre-run sync's paused-rebase instruction — see `launch`'s own doc comment. */
+      agentNote?: string;
       comments: BoundedHistory<AgentPromptComment>;
       worktreePath?: string;
       /** The RUN's mode, which may be a one-turn override of the task's. See {@link Run}. */
       permissionMode?: PermissionMode;
     },
   ): string {
-    const { branch, planRel, failureNote, comments, worktreePath } = opts;
+    const { branch, planRel, failureNote, agentNote, comments, worktreePath } = opts;
     // Standing setup knowledge and the two directory names travel with every shape of
     // prompt, so an agent is never left guessing which tree its work is in.
     const context = {
@@ -3498,6 +3527,7 @@ export class Scheduler {
       const subtaskPrompt = this.buildSubtaskPrompt(project, task, {
         branch,
         failureNote,
+        agentNote,
         ...context,
       });
       if (subtaskPrompt) return subtaskPrompt;
@@ -3507,6 +3537,7 @@ export class Scheduler {
       return buildAgentTaskPrompt(project.name, task, {
         branch,
         failureNote,
+        agentNote,
         comments: comments.kept,
         commentsOmitted: comments.omitted,
         notes: notes.kept,
@@ -3527,6 +3558,7 @@ export class Scheduler {
       ...modeOpts,
       ...this.contractPromptOptions(task),
       failureNote,
+      agentNote,
       ...context,
     });
   }
@@ -3543,6 +3575,7 @@ export class Scheduler {
     opts: {
       branch?: string;
       failureNote?: string;
+      agentNote?: string;
       instructions?: string;
       worktreePath?: string;
       projectPath?: string;
@@ -3563,6 +3596,7 @@ export class Scheduler {
       notesOmitted: notes.omitted,
       branch: opts.branch,
       failureNote: opts.failureNote,
+      agentNote: opts.agentNote,
       instructions: opts.instructions,
       worktreePath: opts.worktreePath,
       projectPath: opts.projectPath,

@@ -39,6 +39,7 @@ import {
   currentBranch,
   deleteBranch,
   fastForwardRef,
+  fetchRef,
   gitPreflight,
   hasCommits,
   hasConflicts,
@@ -59,6 +60,7 @@ import {
   restoreConflicted,
   skipRebase,
   stagePaths,
+  upstreamOf,
   workingFileSha,
 } from './git';
 
@@ -254,6 +256,23 @@ function splitPath(path: string): { dir: string; name: string } {
 }
 
 /**
+ * The agent-facing instruction for a pre-run sync (`syncBranch`) that paused mid-rebase on a
+ * real conflict. Unlike Rung 2's conflict-fix note (`scheduler.ts`'s `dispatchConflictFix`),
+ * which tells the agent to stage its resolutions and let the orchestrator finish the rebase,
+ * this one tells the agent to drive `rebase --continue` itself: this pause happens BEFORE the
+ * task's own session has started, so there is no later orchestrator step that will come back
+ * to finish it — the agent that reads this note is the only one who can.
+ */
+function pausedSyncConflictNote(branch: string, base: string, files: readonly string[]): string {
+  return (
+    `Before starting the task below: rebasing your branch "${branch}" onto the latest ` +
+    `"${base}" paused with merge conflicts in ${files.join(', ') || 'this worktree'}. Resolve ` +
+    `them, \`git add\` each fixed file, then run \`git rebase --continue\` (repeat if it stops ` +
+    `again on another commit) before doing anything else.`
+  );
+}
+
+/**
  * Where a task's agent should run, and (in worktree mode) how to integrate it.
  *   - `worktree`: isolated branch/worktree the orchestrator integrates back into base.
  *   - `shared`  : run in the project dir (non-repo or worktrees disabled).
@@ -268,10 +287,19 @@ export type WorktreePrep =
       base: string;
       /**
        * Something preparation had to CHANGE in the base repo to make the run possible (today:
-       * born an unborn HEAD). The run proceeds, but a write to the human's repo that they did
-       * not ask for has to appear in the task's activity rather than only in git's reflog.
+       * born an unborn HEAD, advanced the base onto its upstream, rebased a live branch onto
+       * it). The run proceeds, but a write to the human's repo that they did not ask for has
+       * to appear in the task's activity rather than only in git's reflog.
        */
       note?: string;
+      /**
+       * An instruction for the AGENT, not the timeline: the pre-run sync (`syncBranch`) left
+       * this worktree's branch mid-rebase because a conflict needed judgement. Unlike `note`,
+       * which only ever reports what already happened, this names a chore the run must finish
+       * BEFORE the task it was actually asked to do — so the caller puts it at the head of the
+       * prompt rather than beside the task brief.
+       */
+      agentNote?: string;
     }
   | { mode: 'shared'; cwd: string }
   | { mode: 'failed'; reason: string };
@@ -477,6 +505,12 @@ export class WorktreeManager {
    * paused — the conflict ladder's AI rung, or a human pressing Start while a merge conflict
    * is parked. It changes exactly one thing: the paused rebase is handed over rather than
    * cleared away. See {@link WorktreeManager.rescueDetached}.
+   *
+   * `opts.skipSync` says this run must not have its branch rebased before it starts — a chat
+   * reply, mid-conversation, where inserting a rebase ahead of what the human is about to say
+   * would be a surprise rather than a convenience. It only suppresses {@link syncBranch}'s
+   * per-branch rebase; {@link refreshBase}'s base-branch advance still runs regardless, since
+   * that never touches this task's own worktree or branch.
    */
   async prepare(
     project: Project,
@@ -484,7 +518,7 @@ export class WorktreeManager {
     ownerTaskId = task.id,
     branchName?: string,
     startPoint?: string,
-    opts?: { resumingRebase?: boolean },
+    opts?: { resumingRebase?: boolean; skipSync?: boolean },
   ): Promise<WorktreePrep> {
     const { host, root } = await this.workspaceFor(project);
     if (!project.useWorktrees || !(await isRepo(project.path, host))) {
@@ -550,6 +584,12 @@ export class WorktreeManager {
           `not run in the base tree.`,
       };
     }
+    // Bring the local base up to date with whatever it tracks upstream BEFORE anything is
+    // cut from it or rebased onto it, so a worktree built below starts from the freshest
+    // base rather than a stale local copy. Fails soft — see `refreshBase`.
+    const refreshed = await this.refreshBase(project, base, host);
+    if (refreshed) note = `${note ? `${note} ` : ''}${refreshed}`;
+
     const branch = branchName?.trim() || taskBranch(ownerTaskId);
     const paths = this.candidatePaths(root, project.id, ownerTaskId);
     const live = await this.findLive(paths, host);
@@ -569,6 +609,13 @@ export class WorktreeManager {
       // whole step, and then merged nothing because no branch by that name exists. Refusing
       // costs one interrupted run; the alternative silently drops the work.
       const actual = await currentBranch(live, host);
+      let liveBranch: string;
+      // Whether this call just pulled the worktree back from a detached HEAD — a repair
+      // action with its own note, unrelated to whatever left it that way. Chaining a sync
+      // straight onto it is not safe to assume: `rescueDetached`'s abort only undoes the
+      // REBASE attempt, not whatever divergence caused it, so a sync immediately afterward
+      // can walk straight back into the identical conflict it was just rescued from.
+      let justRescued = false;
       if (!actual) {
         const rescued = await this.rescueDetached(live, host, opts?.resumingRebase === true);
         if (rescued.branch === null) {
@@ -578,9 +625,26 @@ export class WorktreeManager {
           };
         }
         if (rescued.note) note = `${note ? `${note} ` : ''}${rescued.note}`;
-        return { mode: 'worktree', cwd: live, branch: rescued.branch, base, note };
+        liveBranch = rescued.branch;
+        justRescued = true;
+      } else {
+        liveBranch = actual;
       }
-      return { mode: 'worktree', cwd: live, branch: actual, base, note };
+
+      // The branch rebase is skipped for a just-rescued worktree (above), a conflict-fix
+      // resumption (a rebase may already be paused here on purpose — see
+      // `opts.resumingRebase`'s own doc comment above), a branch `stacked` on a predecessor's
+      // (its base is that branch, not this one — "behind base" is not the question that
+      // matters for it), and a caller-requested skip (a chat reply, mid-conversation, where
+      // this run must not insert a rebase ahead of what the human is about to say).
+      const stacked = Boolean(startPoint?.trim());
+      let agentNote: string | undefined;
+      if (!justRescued && !opts?.resumingRebase && !stacked && !opts?.skipSync) {
+        const synced = await this.syncBranch(live, liveBranch, base, host);
+        if (synced.note) note = `${note ? `${note} ` : ''}${synced.note}`;
+        agentNote = synced.agentNote;
+      }
+      return { mode: 'worktree', cwd: live, branch: liveBranch, base, note, agentNote };
     }
 
     // No live worktree, so one has to be built — and the only thing that can stand in the
@@ -797,8 +861,9 @@ export class WorktreeManager {
    * loop resolving anything Rung 1.5 can fix (a lockfile, a version line a release bumped)
    * until the rebase finishes or a real conflict is left for the rungs above.
    *
-   * Shared by {@link integrate} and {@link rebaseForPullRequest} — both start a fresh rebase
-   * this way and differ only in what happens once it is clean (fast-forward base vs. nothing).
+   * Shared by {@link integrate}, {@link rebaseForPullRequest} and the pre-run `syncBranch` —
+   * all start a fresh rebase this way and differ only in what happens once it is clean
+   * (fast-forward base vs. nothing).
    * Returns the rebase's own final `GitResult` (0 = clean) rather than an `IntegrationResult`:
    * what a non-zero code MEANS — `conflict` vs. `error` — depends on state only the caller
    * can still see after this returns (whether `abortRebase` is safe to run), so that decision
@@ -845,6 +910,146 @@ export class WorktreeManager {
     } finally {
       attrs.cleanup();
     }
+  }
+
+  /**
+   * Advance the project's local base branch onto whatever it tracks upstream, before anything
+   * is cut from it or rebased onto it (`prepare`). Enqueued through the same per-project chain
+   * `integrate` uses — moving the base ref and fast-forwarding a checked-out branch are exactly
+   * the operations `integrate` itself performs under that lock, so running this outside it
+   * would let a task's pre-run sync race another task's merge in the same project.
+   *
+   * Fails soft, always: no upstream configured (a normal, local-only base — silent, not even a
+   * note), an unreachable remote, a diverged base, and a dirty or collision-blocked checkout
+   * all leave the local base exactly as it was, with a note explaining why so the write (or the
+   * refusal to write) isn't invisible on the task's timeline. Returns that note, or `undefined`
+   * when there is nothing to say — including the ordinary case where base is already even
+   * with, or ahead of, its upstream.
+   */
+  private refreshBase(project: Project, base: string, host: ExecHost): Promise<string | undefined> {
+    return this.enqueue(project.id, () => this.doRefreshBase(project, base, host));
+  }
+
+  private async doRefreshBase(
+    project: Project,
+    base: string,
+    host: ExecHost,
+  ): Promise<string | undefined> {
+    const upstream = await upstreamOf(project.path, base, host);
+    if (!upstream) return undefined; // no upstream configured — a normal, local-only base
+    const { remote, ref } = upstream;
+    const upstreamRef = `${remote}/${ref}`;
+
+    // Into the remote-tracking ref a plain `git fetch <remote>` would have updated.
+    const fetched = await fetchRef(project.path, remote, ref, `refs/remotes/${upstreamRef}`, {
+      host,
+    });
+    if (fetched.code !== 0) {
+      return (
+        `Couldn't fetch "${base}"'s upstream (${upstreamRef}) before starting this task: ` +
+        `${fetched.stderr.trim() || 'git fetch failed'}. Continuing against the local base as it is.`
+      );
+    }
+
+    const baseIsAncestor = await isAncestor(project.path, base, upstreamRef, host);
+    const upstreamIsAncestor = await isAncestor(project.path, upstreamRef, base, host);
+    if (upstreamIsAncestor) return undefined; // base is already even with, or ahead of, upstream
+    if (!baseIsAncestor) {
+      return (
+        `"${base}" has commits "${upstreamRef}" does not, so it has diverged from its ` +
+        `upstream and was left as-is before starting this task. Fast-forwarding would ` +
+        `discard local history — reconcile it by hand.`
+      );
+    }
+
+    // Genuinely behind: advance it, exactly the way `fastForward` advances base onto a
+    // finished branch — a pure ref move if nobody has it checked out, otherwise an ff-only
+    // merge with the same untracked-collision handling.
+    if ((await currentBranch(project.path, host)) !== base) {
+      const advanced = await fastForwardRef(project.path, upstreamRef, base, host);
+      return advanced.code === 0
+        ? undefined
+        : `Couldn't advance "${base}" to "${upstreamRef}" before starting this task: ` +
+            `${advanced.stderr.trim() || 'git fetch . failed'}. Continuing against the local base as it is.`;
+    }
+    if (!(await isClean(project.path, host))) {
+      return (
+        `"${base}" is behind its upstream "${upstreamRef}" but the checkout has uncommitted ` +
+        `changes, so it was left as-is before starting this task. Commit or stash them and pull.`
+      );
+    }
+    const { identical, differing } = await classifyUntrackedCollisions(
+      project.path,
+      base,
+      upstreamRef,
+      host,
+    );
+    if (identical.length > 0) await removeUntracked(project.path, identical, host);
+    if (differing.length > 0) {
+      const stash = await preserveUntracked(project.path, differing, `orch-preserve ${base}`, host);
+      if (!stash.ok) {
+        return (
+          `"${base}" is behind its upstream "${upstreamRef}" but untracked files in the ` +
+          `checkout collide with it and could not be preserved, so it was left as-is before ` +
+          `starting this task.`
+        );
+      }
+    }
+    const merged = await mergeFfOnly(project.path, upstreamRef, host);
+    return merged.code === 0
+      ? undefined
+      : `Couldn't fast-forward "${base}" to "${upstreamRef}" before starting this task: ` +
+          `${merged.stderr.trim() || 'merge failed'}. Continuing against the local base as it is.`;
+  }
+
+  /**
+   * Rebase a LIVE worktree's branch onto `base`, if it is genuinely behind — the same ladder
+   * `integrate` runs at merge time, run instead before the task starts so the agent begins on
+   * fresh code rather than discovering the drift (and paying for a merge conflict) itself.
+   *
+   * Touches nothing, and says nothing, when the worktree is dirty (an agent's own half-done
+   * work from a prior run is not this step's to touch — the same boundary `fastForward`'s
+   * dirty-base case draws) or when the branch is not behind `base` at all (nothing to rebase
+   * onto; a freshly built worktree is always in this state, since it was just cut from the
+   * base `refreshBase` already advanced).
+   */
+  private async syncBranch(
+    cwd: string,
+    branch: string,
+    base: string,
+    host: ExecHost,
+  ): Promise<{ note?: string; agentNote?: string }> {
+    if (!(await isClean(cwd, host))) return {};
+    // Behind-count, not ahead-count: swap base/branch into `commitsAhead`'s own arguments to
+    // ask "how many commits does `base` have that `branch` doesn't" — `-1` ("don't know") is
+    // folded into the same no-op as zero, since rebasing blind is worse than doing nothing.
+    const behind = await commitsAhead(cwd, branch, base, host);
+    if (behind <= 0) return {};
+
+    // The same Rung 1 / Rung 1.5 ladder `integrate` and `rebaseForPullRequest` run.
+    const { rebased, autoResolved } = await this.runRebaseLadder(cwd, base, host);
+    if (rebased.code !== 0) {
+      // A real conflict stays PAUSED for the agent — never aborted.
+      if (await hasConflicts(cwd, host)) {
+        const files = await conflictedFiles(cwd, host);
+        return { agentNote: pausedSyncConflictNote(branch, base, files) };
+      }
+      // Safe to abort: this rebase is one THIS call started, a few lines above.
+      await abortRebase(cwd, host);
+      return {
+        note:
+          `Couldn't rebase this task's branch "${branch}" onto the latest "${base}" before ` +
+          `starting: ${rebased.stderr || 'rebase failed'}. Continuing on the branch as it was.`,
+      };
+    }
+    const resolved = [...new Set(autoResolved)];
+    return resolved.length > 0
+      ? {
+          note:
+            `This task's branch "${branch}" was rebased onto the latest "${base}" before ` +
+            `starting (auto-resolved: ${resolved.join(', ')}).`,
+        }
+      : {};
   }
 
   /**

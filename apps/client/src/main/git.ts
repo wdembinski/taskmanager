@@ -156,6 +156,34 @@ export async function isClean(dir: string, host?: ExecHost): Promise<boolean> {
   return res.code === 0 && res.stdout.trim() === '';
 }
 
+/**
+ * The remote and ref `branch` tracks (`branch.<name>.remote`/`.merge`), or **null** when it
+ * has none configured.
+ *
+ * Read from config rather than `<branch>@{upstream}`: the latter answers with a single
+ * `remote/ref` string that has to be split back apart, and splitting on the first `/` breaks
+ * the moment a tracked branch name itself contains one (`feature/foo`) — exactly the kind of
+ * name this app's own branches use. The two config keys are what git itself writes when a
+ * branch is told to track something, and reading them back apart avoids ever having to guess
+ * where the remote's name ends.
+ *
+ * A branch with no upstream at all — a purely local repo, or one nobody has pushed — is a
+ * normal, supported state here, not a failure: every caller treats `null` as "there is
+ * nothing to sync against" and carries on against the local branch exactly as before.
+ */
+export async function upstreamOf(
+  dir: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<{ remote: string; ref: string } | null> {
+  const remote = await git(dir, ['config', '--get', `branch.${branch}.remote`], host);
+  const merge = await git(dir, ['config', '--get', `branch.${branch}.merge`], host);
+  const remoteName = remote.code === 0 ? remote.stdout.trim() : '';
+  const mergeRef = merge.code === 0 ? merge.stdout.trim() : '';
+  if (!remoteName || !mergeRef.startsWith('refs/heads/')) return null;
+  return { remote: remoteName, ref: mergeRef.slice('refs/heads/'.length) };
+}
+
 /** True if the given branch name already exists. */
 export async function branchExists(dir: string, branch: string, host?: ExecHost): Promise<boolean> {
   const res = await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], host);
