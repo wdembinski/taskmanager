@@ -2,13 +2,12 @@
 
 Three workflows, in [`.github/workflows/`](../.github/workflows/). Together they mean a
 merge into `development` is the whole release: the desktop app is tagged, packaged for
-Windows, and published, while the cloud service is deployed in parallel. Linux is no longer
-built or released — see [`RELEASE.md`](../RELEASE.md#6-linux-releases-are-discontinued).
+Windows **and** Linux, and published, while the cloud service is deployed in parallel.
 
 | Workflow                                          | Trigger                                      | What it does                                                                                       |
 | ------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | [`ci.yml`](../.github/workflows/ci.yml)           | pull request → `development`                 | The gates, the server image, and (when the desktop app is touched) a full package                  |
-| [`release.yml`](../.github/workflows/release.yml) | push → `development`, or `workflow_dispatch` | Tags, drafts, packages Windows, publishes — [`RELEASE.md`](../RELEASE.md) run by a machine         |
+| [`release.yml`](../.github/workflows/release.yml) | push → `development`, or `workflow_dispatch` | Tags, drafts, packages Windows and Linux, publishes — [`RELEASE.md`](../RELEASE.md) run by a machine         |
 | [`deploy.yml`](../.github/workflows/deploy.yml)   | push → `development`, or `workflow_dispatch` | Deploys `@tm/server` to Azure Container Apps and `@tm/web` to Static Web Apps                      |
 
 There is no `main` in this repository; `development` is the integration branch, and it is
@@ -55,7 +54,8 @@ the tag exists.
 | `gates`   | ubuntu  | §1 — nothing is tagged from a red tree                                |
 | `version` | ubuntu  | §0 idempotence, §2 the version, §3 the tag, §4 the **draft**          |
 | `windows` | windows | §5 — package into the draft, then the headless addon smoke test       |
-| `promote` | ubuntu  | §7 — publish the draft once Windows has uploaded (rule 4)             |
+| `linux`   | ubuntu  | §6 — package into the draft, then the ELF and v130 ABI checks         |
+| `promote` | ubuntu  | §7 — publish the draft once Windows **and** Linux have uploaded (rule 4), then prune earlier releases' assets |
 
 `deploy.yml` filters by path, and can run either half, both, or neither:
 
@@ -321,11 +321,13 @@ and the infrastructure repo, and none of it is repeated here.
 Which re-run to use depends on **whether the tag was pushed**, because that decides what
 `scripts/next-version.mjs` computes the second time.
 
-**The failure was in `windows` or `promote`** — the tag exists and the draft exists.
+**The failure was in `windows`, `linux` or `promote`** — the tag exists and the draft exists.
 Use **Re-run failed jobs** on the same run (Actions → the run → _Re-run failed jobs_). The
 successful `version` job is not re-run and its outputs — `version`, `tag`, `release` — are
 preserved, so the retried jobs package the same tag into the same draft. This is almost
-always the one you want.
+always the one you want — including when only one of `windows`/`linux` failed: `promote`
+`needs:` both (rule 4), so it was skipped rather than run, and re-running failed jobs picks
+it back up once the platform that actually failed goes green.
 
 > Do **not** reach for `workflow_dispatch` here. A fresh run recomputes the version from
 > scratch, and by then the manifest is no longer ahead of the highest tag — so
