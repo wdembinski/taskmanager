@@ -26,6 +26,7 @@ import {
   SettingsRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
+import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { Performance } from '@tm/ui/Performance';
@@ -44,6 +45,7 @@ import { useCloudAuth } from './auth/useCloudAuth';
 import { BoardScreen } from './board/BoardScreen';
 import { SettingsScreen } from './settings/SettingsScreen';
 import { ClientPicker } from './board/ClientPicker';
+import { worstConnectionState, type ConnectionState } from './board/connectionState';
 import { desktopPresence } from './board/desktopPresence';
 import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
@@ -51,7 +53,24 @@ import { boardIsReady, syncBusyLabel, syncCurtainText, syncStatusLabel } from '.
 import { UnreachableBanner } from './board/UnreachableBanner';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
+import { CompactApp } from './compact/CompactApp';
 import { loadWebConfig } from './env';
+
+/** The wide layout's banner strip, moved onto `worstConnectionState`'s single verdict rather
+ *  than the nested ternary it used to be — same three components, same props, so the
+ *  rendered tree is unchanged; only the ordering rule's home moves to `connectionState.ts`. */
+function connectionBanner(connection: ConnectionState | null): JSX.Element | null {
+  switch (connection?.kind) {
+    case undefined:
+      return null;
+    case 'unreachable':
+      return <UnreachableBanner message={connection.message} />;
+    case 'stale':
+      return <StaleBanner everSeenClient={connection.everSeenClient} />;
+    case 'skew':
+      return <SkewBanner skew={connection.skew} client={connection.client} />;
+  }
+}
 
 const useStyles = makeStyles({
   /**
@@ -234,11 +253,38 @@ function SignedInBoard({
   // account is nothing to warn about while nothing is being sent to it.
   const skew = versionSkew(board.targetClient);
 
+  // At most one of the three, in this order, and the order is the point — see
+  // `connectionState.ts`'s own header for why unreachable outranks stale outranks skew.
+  const connection = worstConnectionState(
+    board.pollError,
+    presence === 'offline' ? { everSeenClient: board.targetClientId !== null } : null,
+    skew && board.targetClient ? { skew, client: board.targetClient } : null,
+  );
+
   /** What `Fleet` writes through — plain REST, not the transport (see its own docstring). */
   const apiDeps = useMemo(
     () => ({ apiBase: config.cloudApiBase, getAccessToken: () => auth.getAccessToken() }),
     [config.cloudApiBase, auth],
   );
+
+  const layoutMode = useLayoutMode();
+  if (layoutMode === 'compact') {
+    return (
+      <TransportProvider transport={board.transport}>
+        <CompactApp
+          board={board}
+          presence={presence}
+          skew={skew}
+          attentionCount={attentionCount}
+          now={now}
+          busy={busy}
+          apiBase={config.cloudApiBase}
+          getAccessToken={() => auth.getAccessToken()}
+          onSignOut={onSignOut}
+        />
+      </TransportProvider>
+    );
+  }
 
   return (
     <TransportProvider transport={board.transport}>
@@ -272,25 +318,11 @@ function SignedInBoard({
         banners={
           // The shell's own banner strip, which is where the desktop's outage bars go too —
           // above the screen rather than inside it, so the board below is the board and
-          // nothing shifts the columns down but a thing that had to be said.
-          //
-          // At most one of the three, in this order, and the order is the point:
-          //
-          //  1. **This tab cannot read at all.** Everything below is a claim about what the
-          //     server said, and it has said nothing. Reporting "no desktop app has synced"
-          //     here would be blaming another machine for a failure in this one — which is
-          //     precisely what sent somebody hunting through a perfectly healthy desktop.
-          //  2. **No desktop client is polling, and the outage has outlasted the grace
-          //     window** (`desktopPresence.ts`) — never on the strength of one empty response,
-          //     since a healthy desktop can legitimately vanish for a deploy's worth of time.
-          //  3. **Version skew**, which cannot matter until a Client is back.
-          board.pollError ? (
-            <UnreachableBanner message={board.pollError} />
-          ) : presence === 'offline' ? (
-            <StaleBanner everSeenClient={board.targetClientId !== null} />
-          ) : skew && board.targetClient ? (
-            <SkewBanner skew={skew} client={board.targetClient} />
-          ) : null
+          // nothing shifts the columns down but a thing that had to be said. The ordering
+          // rule itself — unreachable outranks stale outranks skew — now lives in
+          // `connectionState.ts`'s `worstConnectionState`, computed above, so the compact
+          // strip can apply the exact same rule rather than a second copy of it.
+          connectionBanner(connection)
         }
         status={
           <StatusBar attention={attentionCount > 0}>

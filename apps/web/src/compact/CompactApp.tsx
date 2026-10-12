@@ -1,0 +1,198 @@
+/**
+ * The compact shell's own root (F3.2) — what `SignedInBoard` (`../App.tsx`) renders instead
+ * of its wide `AppShell` tree once `useLayoutMode()` says `'compact'`. Not a new data layer:
+ * every prop here is a value `SignedInBoard` already computes for the wide layout (the same
+ * `board`, `presence`, `skew`, `attentionCount`, `now`, `busy`, auth/config deps and
+ * `onSignOut`), so the two layouts stay two views of one set of facts rather than two
+ * independent readings of the board that could disagree.
+ *
+ * ## Design decisions fixed here (do not re-derive in later edits)
+ *
+ * - **Four tabs**: Inbox (a danger `CounterBadge` carrying `attentionCount`, the same badge
+ *   `App.tsx`'s `NavRail` shows today), Board, Search, Settings. `useHashRoute()` is this
+ *   component's only navigation state — `tabForRoute`/`routeForTab` (`compactRoute.ts`)
+ *   translate between the active route and which tab reads as selected in `BottomTabBar`.
+ * - **Screens are placeholders where a later step owns the real one**:
+ *   - `inbox` → the existing `<Attention />` as-is; F3.3 replaces it with a compact-specific
+ *     view.
+ *   - `board` and `card` routes both render today's `BoardScreen` (gated by `boardIsReady`,
+ *     `<SyncCurtain>` otherwise) exactly as the wide layout does — F3.5/F3.6 replace this
+ *     with the tap-to-move compact board and the sectioned card detail (`CardSection`). A
+ *     `card` route still highlights the Board tab (`tabForRoute`), even though the screen
+ *     drawn today is the same `BoardScreen` a bare `board` route shows.
+ *   - `search` → a Fluent `Input` plus result rows from `searchCards(Object.values(
+ *     board.state.tasks), query)` (`CloudBoardState.tasks` is keyed by id, not an array);
+ *     tapping a row navigates to `#/card/<id>/chat` (the `chat` section is the default
+ *     `parseCompactRoute` already gives a bare card id).
+ *   - `settings` → a **Sign out** button above the unchanged `SettingsScreen` — the wide
+ *     rail's Account dropdown (where sign-out lives today) has no compact equivalent, so this
+ *     is its only other home. No gate of any kind in front of it: a signed-in tab can always
+ *     reach the control that signs it out.
+ * - **No `transport.invoke` anywhere in this file or in `StatusStrip`.** The only relayed
+ *   read in the compact tree is `attentionCount`'s existing `attention:list` effect, which
+ *   already lives in `SignedInBoard` and is passed in rather than re-fetched here — this
+ *   component gates nothing on a relay of its own.
+ */
+import { useState } from 'react';
+import { Button, CounterBadge, Input, makeStyles } from '@fluentui/react-components';
+import {
+  AlertRegular,
+  SearchRegular,
+  SettingsRegular,
+  TaskListSquareLtrRegular,
+} from '@fluentui/react-icons';
+import type { ClientPresence } from '@tm/protocol/wire';
+import { BottomTabBar, type BottomTabBarItem } from '@tm/ui/shell/BottomTabBar';
+import { CompactShell } from '@tm/ui/shell/CompactShell';
+import { Attention } from '@tm/ui/Attention';
+import { SyncCurtain } from '@tm/ui/SyncCurtain';
+import { routeForTab, tabForRoute, type CompactTab } from '@tm/ui/layout/compactRoute';
+import { BoardScreen } from '../board/BoardScreen';
+import { worstConnectionState } from '../board/connectionState';
+import type { DesktopPresence } from '../board/desktopPresence';
+import { boardIsReady, syncBusyLabel, syncCurtainText, syncStatusLabel } from '../board/syncGate';
+import type { VersionSkew } from '../board/targetClient';
+import type { CloudBoardApi } from '../board/useCloudBoard';
+import { SettingsScreen } from '../settings/SettingsScreen';
+import { searchCards } from './searchCards';
+import { StatusStrip } from './StatusStrip';
+import { useHashRoute } from './useHashRoute';
+
+const useStyles = makeStyles({
+  search: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' },
+  results: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  resultRow: { justifyContent: 'flex-start', textAlign: 'left' },
+  settings: { display: 'flex', flexDirection: 'column' },
+  signOut: { alignSelf: 'flex-end', margin: '8px' },
+});
+
+export interface CompactAppProps {
+  board: CloudBoardApi;
+  /** This tab's own read of whether a desktop Client is out there — see
+   *  `desktopPresence.ts`. */
+  presence: DesktopPresence;
+  /** `versionSkew(board.targetClient)` — `null` when there is no mismatch to report. */
+  skew: VersionSkew | null;
+  attentionCount: number;
+  /** The slow tick `App.tsx` already runs, so the strip's "synced Ns ago" keeps counting up
+   *  between polls without this component starting a second timer. */
+  now: number;
+  /** The same delayed busy flag `App.tsx`'s status bar reads — a relay or a draining page
+   *  still in flight. */
+  busy: boolean;
+  /** Where `SettingsScreen`'s token section and `Fleet`-style REST calls post to — this
+   *  tab's `config.cloudApiBase`. */
+  apiBase: string;
+  /** This tab's own bearer — `AuthedApp`'s `auth.getAccessToken`. */
+  getAccessToken: () => Promise<string | null>;
+  /** Already clears the stored refresh token and flips `useCloudAuth`'s own state — see
+   *  `App.tsx`'s identical prop on `SignedInBoard`. */
+  onSignOut: () => void;
+}
+
+export function CompactApp({
+  board,
+  presence,
+  skew,
+  attentionCount,
+  now,
+  busy,
+  apiBase,
+  getAccessToken,
+  onSignOut,
+}: CompactAppProps): JSX.Element {
+  const styles = useStyles();
+  const client: ClientPresence | null = board.targetClient;
+  const [route, navigate] = useHashRoute();
+  const [query, setQuery] = useState('');
+
+  const connection = worstConnectionState(
+    board.pollError,
+    presence === 'offline' ? { everSeenClient: board.targetClientId !== null } : null,
+    skew && client ? { skew, client } : null,
+  );
+  // A relay or draining page still in flight outranks the plain poll age here too, same as
+  // the wide status bar's separate `StatusBusy` — the strip has no second line to put it on.
+  const busyLabel = busy ? syncBusyLabel(board.syncProgress, board.pendingRelays) : null;
+  const syncLabel = board.pollError
+    ? 'not syncing'
+    : (busyLabel ?? syncStatusLabel(board.syncProgress, board.lastPolledAt, now));
+
+  const tabs: readonly BottomTabBarItem[] = [
+    {
+      id: 'inbox',
+      label: 'Inbox',
+      icon: <AlertRegular />,
+      badge: attentionCount > 0 && (
+        <CounterBadge count={attentionCount} color="danger" size="small" appearance="filled" />
+      ),
+    },
+    { id: 'board', label: 'Board', icon: <TaskListSquareLtrRegular /> },
+    { id: 'search', label: 'Search', icon: <SearchRegular /> },
+    { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
+  ];
+
+  return (
+    <CompactShell
+      strip={<StatusStrip connection={connection} client={client} syncLabel={syncLabel} />}
+      tabBar={
+        <BottomTabBar
+          items={tabs}
+          selected={tabForRoute(route)}
+          onSelect={(id) => navigate(routeForTab(id as CompactTab))}
+        />
+      }
+    >
+      {route.kind === 'inbox' && <Attention />}
+
+      {(route.kind === 'board' || route.kind === 'card') &&
+        (boardIsReady(board.syncProgress) ? (
+          <BoardScreen
+            state={board.state}
+            onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
+            onStatusNoted={board.noteStatus}
+          />
+        ) : (
+          <SyncCurtain
+            {...syncCurtainText(board.syncProgress)}
+            error={board.syncProgress.lastError}
+          />
+        ))}
+
+      {route.kind === 'search' && (
+        <div className={styles.search}>
+          <Input
+            value={query}
+            onChange={(_e, d) => setQuery(d.value)}
+            placeholder="Search title or ticket key"
+          />
+          <div className={styles.results}>
+            {searchCards(Object.values(board.state.tasks), query).map((task) => (
+              <Button
+                key={task.id}
+                appearance="subtle"
+                className={styles.resultRow}
+                onClick={() => navigate({ kind: 'card', id: task.id, section: 'chat' })}
+              >
+                {task.ticketKey ? `${task.ticketKey} · ${task.title}` : task.title}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {route.kind === 'settings' && (
+        <div className={styles.settings}>
+          <Button className={styles.signOut} onClick={onSignOut}>
+            Sign out
+          </Button>
+          <SettingsScreen
+            projects={board.state.projects}
+            apiBase={apiBase}
+            getAccessToken={getAccessToken}
+          />
+        </div>
+      )}
+    </CompactShell>
+  );
+}
