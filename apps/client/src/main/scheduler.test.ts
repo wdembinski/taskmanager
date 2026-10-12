@@ -27,10 +27,35 @@ import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { MergeRequest } from '@shared/mergeRequest';
+import type { ActivityRow } from '@shared/activity';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
+import { createActivityRecorder } from './activityRecorder';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type { WorktreeManager } from './worktreeManager';
+
+/**
+ * An in-memory `appendActivity` that mimics `activity_log`'s partial unique index: a second
+ * `run-started`/`run-finished` for the same `runId` is refused (returns `null`), exactly as
+ * the real store's `INSERT OR IGNORE` is. Used to assert on what the recorder actually wrote.
+ */
+function createFakeAppendActivity(): {
+  rows: ActivityRow[];
+  append: (row: Omit<ActivityRow, 'id'>) => ActivityRow | null;
+} {
+  const rows: ActivityRow[] = [];
+  let nextId = 1;
+  return {
+    rows,
+    append(row) {
+      const deduped = row.kind === 'run-started' || row.kind === 'run-finished';
+      if (deduped && rows.some((r) => r.runId === row.runId && r.kind === row.kind)) return null;
+      const stored: ActivityRow = { id: nextId++, ...row };
+      rows.push(stored);
+      return stored;
+    },
+  };
+}
 
 /**
  * Inbox persistence, stubbed inert.
@@ -2263,6 +2288,34 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     scheduler.runTask('s2');
     await flush();
     expect(prepared).toEqual([{ taskId: 's2', owner: 't1' }]);
+  });
+
+  /**
+   * F2.6: the first step is the human's own Start, and the chain's own advance into the
+   * next step is `advanceSubtasks` calling `startTask` with `origin: 'chain'` — see
+   * `docs/plan/feature-roadmap/F2-activity-dashboard.md`.
+   */
+  it('records a human origin for the first step and a chain origin for the one the chain advances to', async () => {
+    const { scheduler, fire, start } = setup();
+    const { rows, append } = createFakeAppendActivity();
+    scheduler.setActivityRecorder(createActivityRecorder({ append }));
+
+    scheduler.runTask('s1');
+    await flush();
+    const [, firstOpts] = start.mock.calls[0] as [unknown, { runId: string }];
+    await fire(firstOpts.runId, okResult);
+    await flush();
+
+    const started = rows.filter((r) => r.kind === 'run-started');
+    expect(started).toHaveLength(2);
+    expect(started.find((r) => r.taskId === 's1')?.origin).toBe('human');
+    expect(started.find((r) => r.taskId === 's2')?.origin).toBe('chain');
+
+    const [, secondOpts] = start.mock.calls[1] as [unknown, { runId: string }];
+    await fire(secondOpts.runId, okResult);
+
+    const finished = rows.filter((r) => r.kind === 'run-finished');
+    expect(finished.find((r) => r.taskId === 's2')?.origin).toBe('chain');
   });
 
   /**
@@ -5849,6 +5902,22 @@ describe('a parked release or chat run comes back as what it was', () => {
     expect(opts.resumeSessionId).toBe('sess-1');
   });
 
+  /** F2.6: the gate's own resume carries `origin: 'resume'`, not the card's original origin. */
+  it('records the run the limit resumes with origin "resume"', () => {
+    const h = setup();
+    const { rows, append } = createFakeAppendActivity();
+    h.scheduler.setActivityRecorder(createActivityRecorder({ append }));
+
+    startRun(h.scheduler, h.project, h.card, {});
+    hitLimit(h.scheduler);
+    h.scheduler.resumeLimitNow();
+
+    const run = resumedRun(h.scheduler);
+    const started = rows.filter((r) => r.kind === 'run-started' && r.runId === run?.runId);
+    expect(started).toHaveLength(1);
+    expect(started[0].origin).toBe('resume');
+  });
+
   it('drops the recipe once its park is over', () => {
     const h = setup();
     startRun(h.scheduler, h.project, h.card, { releaseSeed: true, chatPrompt: RELEASE_PROMPT });
@@ -6552,5 +6621,142 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
 
     expect(fetchCalls).toEqual([]);
     expect(rebaseCalls).toEqual([]);
+  });
+});
+
+/**
+ * F2.6: the scheduler records a run's start and outcome into the activity log at the
+ * moments it actually decides them — see `docs/plan/feature-roadmap/F2-activity-dashboard.md`.
+ */
+describe('Scheduler — activity log (F2.6)', () => {
+  function setup(permissionMode: PermissionMode = 'acceptEdits') {
+    const project = {
+      id: 'p',
+      path: 'C:/w',
+      planPath: 'C:/w/plan.md',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: permissionMode,
+    } as Project;
+    const task: Task = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'board',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+    } as unknown as Task;
+    const store = {
+      getTasks: () => [task],
+      getProject: () => project,
+      getTask: (id: string) => (id === 't1' ? task : undefined),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id === 't1') Object.assign(task, patch);
+        return task;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSubtasks: () => [],
+      listTaskLinks: () => [],
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      saveLimitGate: vi.fn(),
+      addComment: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    let captured: { runId: string; onEvent: (event: unknown) => Promise<void> } | undefined;
+    const start = vi.fn(
+      (_req: unknown, opts: { runId: string; onEvent: (event: unknown) => Promise<void> }) => {
+        captured = opts;
+        return { runId: opts.runId };
+      },
+    );
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    const { rows, append } = createFakeAppendActivity();
+    scheduler.setActivityRecorder(createActivityRecorder({ append }));
+    return {
+      scheduler,
+      task,
+      rows,
+      fire: (event: unknown): Promise<void> => captured!.onEvent(event),
+    };
+  }
+
+  const okResult = {
+    kind: 'result',
+    success: true,
+    resultText: 'Fixed it — see the diff.',
+    costUsd: 0.42,
+    durationMs: 1000,
+    stopReason: 'end_turn',
+    terminalReason: null,
+    usage: { inputTokens: 10, outputTokens: 5, cacheCreationTokens: 0, cacheReadTokens: 0 },
+  };
+
+  it('records one run-started and one run-finished even when `result` arrives twice, and a trailing `exited` adds nothing', async () => {
+    const { scheduler, rows, fire } = setup();
+    scheduler.runTask('t1');
+    await fire(okResult);
+    await fire(okResult); // the run is already settled — this must not produce a second row
+    await fire({ kind: 'exited', code: 0 });
+
+    expect(rows.filter((r) => r.kind === 'run-started')).toHaveLength(1);
+    const finished = rows.filter((r) => r.kind === 'run-finished');
+    expect(finished).toHaveLength(1);
+    expect(finished[0]).toMatchObject({ outcome: 'done', costUsd: 0.42, origin: 'human' });
+  });
+
+  it("records outcome 'empty' for a plan-mode run that never presented a plan", async () => {
+    const { scheduler, rows, fire } = setup('plan');
+    scheduler.runTask('t1');
+    await fire(okResult);
+
+    const finished = rows.filter((r) => r.kind === 'run-finished');
+    expect(finished).toHaveLength(1);
+    expect(finished[0].outcome).toBe('empty');
+  });
+
+  it('does not fail the run when a raw, throwing recorder is injected', async () => {
+    const { scheduler, task, fire } = setup();
+    scheduler.setActivityRecorder({
+      record: () => {
+        throw new Error('boom');
+      },
+      runStarted: () => {
+        throw new Error('boom');
+      },
+      runFinished: () => {
+        throw new Error('boom');
+      },
+    });
+
+    scheduler.runTask('t1');
+    await fire(okResult);
+
+    expect(task.status).toBe('in-progress'); // settled normally despite the throwing recorder
+  });
+
+  it('does not fail the run when createActivityRecorder wraps a throwing append', async () => {
+    const { scheduler, task, fire } = setup();
+    scheduler.setActivityRecorder(
+      createActivityRecorder({
+        append: () => {
+          throw new Error('disk full');
+        },
+      }),
+    );
+
+    scheduler.runTask('t1');
+    await fire(okResult);
+
+    expect(task.status).toBe('in-progress');
   });
 });

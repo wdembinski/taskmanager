@@ -34,6 +34,9 @@ import type {
   TaskActivityEntry,
   TaskStatus,
 } from '@shared/model';
+import type { ActivityOrigin, ActivityOutcome } from '@shared/activity';
+import { type ActivityRecorder, NULL_ACTIVITY_RECORDER } from './activityRecorder';
+import { logMain } from './log';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
 import { forgeName, mrAbbrev, mrRef, type MergeRequest } from '@shared/mergeRequest';
@@ -746,6 +749,12 @@ interface Run {
   projectId: string;
   runId: string;
   /**
+   * What started this run (F2.6, `@shared/activity`) — a human on the board, the chain
+   * runner, a gate resume, or an auto-release publish. Recorded on every activity-log row
+   * this run produces; defaults to `'human'` for every caller that doesn't say otherwise.
+   */
+  origin: ActivityOrigin;
+  /**
    * Permission mode / model this run was started with. Set from the task's
    * per-assignment override when it has one, else the project default; kept on the run
    * so `decidePermission` judges the run the human actually authorized.
@@ -857,7 +866,13 @@ interface Run {
    * Cleared the moment an answer really is delivered: the CLI is taking another turn, and
    * that turn's own `result` is the outcome now.
    */
-  deferredResult?: { status: 'done' | 'failed'; reason: string };
+  deferredResult?: {
+    status: 'done' | 'failed';
+    reason: string;
+    /** The activity-log outcome this verdict will record — distinguishes `empty` from `failed`. */
+    outcome: ActivityOutcome;
+    costUsd: number | null;
+  };
   /** (Worktree mode) the task's branch, set once the worktree is prepared. */
   branch?: string;
   /** (Worktree mode) the base branch this task integrates back into. */
@@ -1246,6 +1261,13 @@ export class Scheduler {
    */
   private ticketComments: ((task: Task) => Promise<AgentPromptComment[]>) | null = null;
   /**
+   * Records run starts/outcomes into the cross-board activity log (F2.6). A no-op until
+   * `ipc.ts` wires the real one (`setActivityRecorder`) — same pattern as
+   * {@link Scheduler.gate}/{@link Scheduler.ticketComments} — so every test stub stays
+   * unchanged and the 9-arg constructor grows no tenth argument for it.
+   */
+  private activity: ActivityRecorder = NULL_ACTIVITY_RECORDER;
+  /**
    * `userData` — the root every attachment path is built under (Phase 22). Injected by the
    * IPC layer, which owns `app.getPath`; null in tests, where a prompt then carries no
    * legend rather than a path assembled from a guess.
@@ -1373,7 +1395,7 @@ export class Scheduler {
         this.store.addComment(projectId, taskId, body);
         this.tasksChanged?.(projectId);
       },
-      runTask: (id) => this.runTask(id) !== null,
+      runTask: (id) => this.runTask(id, { origin: 'chain' }) !== null,
       // Written as the HUMAN's move, not the scheduler's: `humanStatusPatch` puts it in
       // `preRunStatus` if a run has already borrowed `status`, and never meets
       // `guardCardStatus`, which would send a bare `in-progress` straight back to where
@@ -1406,6 +1428,15 @@ export class Scheduler {
    */
   setTicketCommentProvider(provider: (task: Task) => Promise<AgentPromptComment[]>): void {
     this.ticketComments = provider;
+  }
+
+  /**
+   * Wire the activity recorder (F2.6), once the store and its `activity:appended` listener
+   * are up. Before this, every run start/outcome is recorded into {@link NULL_ACTIVITY_RECORDER}
+   * — a no-op, not a queue, so nothing replays once the real one is wired.
+   */
+  setActivityRecorder(recorder: ActivityRecorder): void {
+    this.activity = recorder;
   }
 
   /**
@@ -1524,6 +1555,7 @@ export class Scheduler {
     for (const run of [...this.runs.values()]) {
       if (run.projectId !== projectId) continue;
       run.settled = true; // we're deciding the outcome here, not the exit code
+      this.recordRunFinished(run, 'stopped', null);
       this.clearRunAttention(run.runId); // drop any parked inbox items for this run
       this.sessions.stop(run.runId); // triggers `exited`, which cleans up bookkeeping
       this.updateTask(run.taskId, { status: 'stopped' }, null);
@@ -1602,8 +1634,8 @@ export class Scheduler {
    * waiting runs THAT (see {@link Scheduler.nextRunnableStep}) — one session each, which is
    * the whole point of writing steps.
    */
-  runTask(taskId: string): { runId: string } | null {
-    const outcome = this.startTaskNow(taskId);
+  runTask(taskId: string, opts: { origin?: ActivityOrigin } = {}): { runId: string } | null {
+    const outcome = this.startTaskNow(taskId, { origin: opts.origin });
     return 'runId' in outcome ? outcome : null;
   }
 
@@ -1632,7 +1664,10 @@ export class Scheduler {
    * parks the start instead: the run that eventually happens is the gate's resume, and by
    * then a usage limit really is what the agent last waited on.
    */
-  startTaskNow(taskId: string, opts: { resumeNudge?: string } = {}): RunOutcome {
+  startTaskNow(
+    taskId: string,
+    opts: { resumeNudge?: string; origin?: ActivityOrigin } = {},
+  ): RunOutcome {
     if (this.disposed) return { refused: 'shutting-down' };
     // Already reserved or running: starting a second session for one task would give it
     // two agents in one worktree. (Reachable from the UI: a parked step offers "Run this
@@ -1662,7 +1697,12 @@ export class Scheduler {
       this.parkForSignIn(target);
       return { refused: 'signed-out' };
     }
-    return { runId: this.startTask(project, target, { resumeNudge: opts.resumeNudge }) };
+    return {
+      runId: this.startTask(project, target, {
+        resumeNudge: opts.resumeNudge,
+        origin: opts.origin,
+      }),
+    };
   }
 
   /**
@@ -1989,6 +2029,7 @@ export class Scheduler {
     for (const run of [...this.runs.values()]) {
       if (!owned.has(run.taskId)) continue;
       run.settled = true; // we're deciding the outcome here, not the exit code
+      this.recordRunFinished(run, 'stopped', null);
       this.clearRunAttention(run.runId);
       this.sessions.stop(run.runId); // `exited` cleans up the bookkeeping
       if (run.taskId !== taskId) this.updateTask(run.taskId, { status: 'stopped' }, null);
@@ -3128,6 +3169,8 @@ export class Scheduler {
       replan?: boolean;
       /** This re-plan replaces a round in place rather than appending — see {@link Run.replaceRound}. */
       replaceRound?: number;
+      /** What started this run (F2.6) — see {@link Run.origin}. Defaults to `'human'`. */
+      origin?: ActivityOrigin;
     } = {},
   ): string {
     const runId = randomUUID();
@@ -3172,6 +3215,7 @@ export class Scheduler {
       taskId: task.id,
       projectId: project.id,
       runId,
+      origin: opts.origin ?? 'human',
       settled: false,
       chatPrompt: opts.chatPrompt,
       resumeNudge: opts.resumeNudge,
@@ -3303,6 +3347,51 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Record this run's start in the activity log (F2.6), right before the session actually
+   * spawns — never in `startTask`, so a reservation released during worktree prep (stopped,
+   * parked, or a prep failure) before any process exists records nothing.
+   *
+   * Wrapped in its own try/catch, on top of {@link ActivityRecorder}'s own: a recorder
+   * injected directly (bypassing `createActivityRecorder`'s safety) must still never be able
+   * to fail the run it is merely observing.
+   */
+  private recordRunStarted(run: Run, task: Task): void {
+    try {
+      this.activity.runStarted({
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        title: task.title,
+        origin: run.origin,
+      });
+    } catch (err) {
+      logMain('activity: could not record run-started', err);
+    }
+  }
+
+  /**
+   * Record this run's outcome in the activity log (F2.6), at the moment it is actually
+   * decided — `case 'result'`, `case 'exited'`, and `settleDeferred`, never inside `settle`
+   * itself, which only ever sees `'done' | 'failed'` and cannot tell `empty` from `failed`.
+   * See the same double try/catch note on {@link Scheduler.recordRunStarted}.
+   */
+  private recordRunFinished(run: Run, outcome: ActivityOutcome, costUsd: number | null): void {
+    try {
+      this.activity.runFinished({
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        title: this.store.getTask(run.taskId)?.title ?? '',
+        origin: run.origin,
+        outcome,
+        costUsd,
+      });
+    } catch (err) {
+      logMain('activity: could not record run-finished', err);
+    }
+  }
+
   /** Spawn the session for a reserved run in the prepared working directory. */
   private launch(
     project: Project,
@@ -3364,6 +3453,7 @@ export class Scheduler {
       model: run.model ?? project.defaultModel,
       permissionMode: run.permissionMode ?? project.defaultPermissionMode,
     };
+    this.recordRunStarted(run, task);
     this.sessions.start(request, {
       runId: run.runId, // use the reserved id so events and bookkeeping line up
       onEvent: (event) => this.onRunEvent(run.runId, event),
@@ -3946,6 +4036,11 @@ export class Scheduler {
             empty ??
             (event.terminalReason || event.stopReason || 'the session ended without success');
           this.settle(run, empty || !event.success ? 'failed' : 'done', reason);
+          this.recordRunFinished(
+            run,
+            empty ? 'empty' : event.success ? 'done' : 'failed',
+            event.costUsd,
+          );
         }
         // stdin is held open in Phase 4, so the process won't exit by itself —
         // end it explicitly now that the task is done.
@@ -3961,6 +4056,8 @@ export class Scheduler {
             event.code === 0 ? 'done' : 'failed',
             `the process exited with code ${event.code ?? 'unknown'}`,
           );
+          // No `result` ever arrived, so there is no cost to attribute to this outcome.
+          this.recordRunFinished(run, event.code === 0 ? 'done' : 'failed', null);
         }
         this.clearRunAttention(runId); // a dead run can't be answered — drop its items
         this.runs.delete(runId);
@@ -4000,7 +4097,9 @@ export class Scheduler {
           // the human's — `handleRunFailure` asks for `pending` and gets back wherever
           // they left the card (see `cardStatusGuard`) — so requiring `pending` here is
           // what would silently drop the retry for every card not sitting in TO DO.
-          if (project && task && !this.inFlight.has(task.id)) this.startTask(project, task);
+          if (project && task && !this.inFlight.has(task.id)) {
+            this.startTask(project, task, { origin: run.origin });
+          }
         }
         break;
 
@@ -4306,7 +4405,7 @@ export class Scheduler {
       // …as the run it WAS: a release run comes back releasing, a chat reply comes back
       // carrying what the human typed, and everything else gets `{}` — a bare start, which
       // is what every parked run used to get. Resumes by task.sessionId when there is one.
-      this.startTask(project, task, rebuild);
+      this.startTask(project, task, { ...rebuild, origin: 'resume' });
     }
     // A step parked by `advanceSubtasks` is resumed by its own entry above; this covers the
     // card whose chain simply had nothing running to park. A chain stopped at a failed or
@@ -4414,7 +4513,7 @@ export class Scheduler {
       if (!project) continue;
       // …as the run it was (a release, a chat reply, or plain work — see `resumeOpts`).
       // Resumes by task.sessionId when there is one.
-      this.startTask(project, task, rebuild);
+      this.startTask(project, task, { ...rebuild, origin: 'resume' });
     }
     for (const parentId of chains) {
       if (parkedStep(this.store.getSubtasks(parentId))) continue;
@@ -4681,7 +4780,10 @@ export class Scheduler {
    * The item itself stays open on purpose: the question was real and the answer is still
    * wanted. Only its claim on a tool is gone.
    */
-  private deferResult(run: Run, event: SettledResult & { success: boolean }): void {
+  private deferResult(
+    run: Run,
+    event: SettledResult & { success: boolean; costUsd: number | null },
+  ): void {
     const empty = describeEmptyOutcome(
       run.permissionMode,
       run.planPresented,
@@ -4692,6 +4794,8 @@ export class Scheduler {
       status: empty || !event.success ? 'failed' : 'done',
       reason:
         empty ?? (event.terminalReason || event.stopReason || 'the session ended without success'),
+      outcome: empty ? 'empty' : event.success ? 'done' : 'failed',
+      costUsd: event.costUsd,
     };
     for (const [itemId, decision] of [...this.pendingDecisions.entries()]) {
       if (decision.runId !== run.runId) continue;
@@ -4723,10 +4827,11 @@ export class Scheduler {
   }
 
   /** Finish a run whose turn ended under a parked item that has now gone. */
-  private settleDeferred(run: Run, deferred: { status: 'done' | 'failed'; reason: string }): void {
+  private settleDeferred(run: Run, deferred: NonNullable<Run['deferredResult']>): void {
     run.settled = true;
     run.deferredResult = undefined;
     this.settle(run, deferred.status, deferred.reason);
+    this.recordRunFinished(run, deferred.outcome, deferred.costUsd);
     // As the ordinary `result` path does: stdin is held open, so the process will not end
     // by itself, and `exited` is what clears `runs`/`inFlight` and pumps the queue.
     this.sessions.stop(run.runId);
@@ -5961,7 +6066,7 @@ export class Scheduler {
     }
     const project = this.runProjectFor(next);
     if (!project) return;
-    this.startTask(project, next);
+    this.startTask(project, next, { origin: 'chain' });
   }
 
   /**
@@ -6197,6 +6302,7 @@ export class Scheduler {
     );
     this.startTask(project, card, {
       releaseSeed: true,
+      origin: 'auto-release',
       // `plan` is the one mode that structurally cannot do this job — it may read and
       // nothing else — and it is the commonest mode a card carries, since planning a card
       // is how most chains start. Inheriting it would make every planned card's release a
