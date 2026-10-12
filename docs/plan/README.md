@@ -6445,6 +6445,25 @@ touched it. Nothing here touches code; the next step changes what a pre-PR rebas
 the remote base it just fetched (`REMOTE_BASE_REF`), not `development` itself — so opening a PR
 stops depending on a ref that can never catch up.
 
+### After it ships
+
+Not a step — nothing left here touches code. `syncOntoRemoteBase`'s best-effort rebase
+(`025b397`, `3393e17`) and the new `retryPullRequest` action (`39af370`) only change what a
+PR opened *from now on* does; the six `attention_items` rows this bug already parked
+(F2.7, F2.10, F2.11, F2.12, F3.3, F3.9) were written with `kind: 'integration'` before either
+commit existed, and nothing here migrates a stored row — so their inbox entry still offers only
+`INTEGRATION_FAILURE_OPTIONS` (`scheduler.ts:331-336`), never `retryPullRequest`. Pressing
+**"Retry integration"** on one would still call `integrateWorktree` and merge it straight onto
+local `development`, reopening the exact divergence this fix closes.
+
+`options` is a snapshot written into the row at park time (`raiseTaskFailed`), not recomputed
+from `kind` on read or on `rehydrateAttention`, so no later deploy changes what an *existing*
+row offers — only a failure parked after this ships gets to choose **"Retry the pull
+request"**. For these six, the human instead presses **Create PR** directly on the card (the
+same button `createPr.ts` always exposed, independent of any inbox item), then separately
+dismisses the stale inbox entry with **"Leave the branch"** — `openPullRequestFor` succeeding
+does not itself touch `attention_items`, so the old row sits there unless someone clears it.
+
 ---
 
 ## Conventions for every phase
