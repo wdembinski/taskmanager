@@ -36,7 +36,8 @@
  *
  *  1. `openPullRequest` pushes the card's branch into the bare origin, and the commit really
  *     is there afterwards under `refs/heads/<branch>`.
- *  2. It POSTs to `/repos/{owner}/{repo}/pulls` carrying the card's title, base and body.
+ *  2. It POSTs to `/repos/{owner}/{repo}/pulls` carrying a commit-style title built from the
+ *     card, the base branch, and a body summarising the branch's own commits.
  *  3. A `merge_requests` row appears **against the card**, under the id the next sync will
  *     use (`gh-{repoId}-{number}`), so the card shows the PR now and the reconciler
  *     recognises it later rather than filing a duplicate beside it.
@@ -131,7 +132,7 @@
  * `shared.txt`.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -309,7 +310,10 @@ globalThis.fetch = async (url, init) => {
   const branch = sent.head ?? BRANCH;
   let pr = prsByBranch.get(branch);
   if (!pr) {
-    pr = { number: nextPrNumber++, htmlUrl: `https://github.com/acme/checkout/pull/${nextPrNumber - 1}` };
+    pr = {
+      number: nextPrNumber++,
+      htmlUrl: `https://github.com/acme/checkout/pull/${nextPrNumber - 1}`,
+    };
     prsByBranch.set(branch, pr);
   }
   const body = {
@@ -379,13 +383,13 @@ check(
 );
 const sent = JSON.parse(String(post?.init.body ?? '{}'));
 check(
-  'with the card title and its base branch',
-  sent.title === 'Fix the export dialog' && sent.base === base,
+  'with a commit-style title built from the card and its base branch',
+  sent.title === 'fix: fix the export dialog' && sent.base === base,
   JSON.stringify(sent),
 );
 check(
-  'and the card description as the body',
-  String(sent.body).includes('forgets the last folder'),
+  "and the branch's own commit summarised as the body",
+  String(sent.body).includes('add the export dialog'),
   String(sent.body),
 );
 
@@ -1009,11 +1013,7 @@ try {
 } catch (e) {
   openError = String(e?.message ?? e);
 }
-check(
-  'opening an older database does not fall over',
-  upgraded !== null,
-  openError ?? undefined,
-);
+check('opening an older database does not fall over', upgraded !== null, openError ?? undefined);
 if (upgraded) {
   const row9 = upgraded.listMergeRequests().find((r) => r.id === 'gh-555-12');
   check(
