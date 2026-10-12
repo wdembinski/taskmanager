@@ -526,6 +526,7 @@ function mrRow(over) {
     draft: false,
     headSha: 'headsha1',
     lastActedSha: null,
+    lastActedAction: null,
     pipelineStatus: 'unknown',
     pipelineStages: [],
     pipelineUrl: null,
@@ -630,7 +631,7 @@ const deps = {
   tokenFor: () => 'stub-token',
   resolveForgeConflict: (taskId, mr) => scheduler.resolveForgeConflict(taskId, mr),
   note: (projectId, taskId, body) => store.addComment(projectId, taskId, body),
-  markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
+  markActed: (mrId, headSha, action) => store.markMergeRequestActed(mrId, headSha, action),
 };
 
 await watchMergeRequests([conflictMr], deps);
@@ -900,16 +901,19 @@ const dbPath = join(work, 'orchestrator.db');
 store.close();
 
 // ===========================================================================
-section('7. an older database — written before headSha/lastActedSha existed — migrates');
+section('7. an older database — written before headSha/lastActedSha/lastActedAction existed — migrates');
 
 const raw = new (require('better-sqlite3'))(dbPath);
 raw.exec(`ALTER TABLE merge_requests DROP COLUMN headSha`);
 raw.exec(`ALTER TABLE merge_requests DROP COLUMN lastActedSha`);
+raw.exec(`ALTER TABLE merge_requests DROP COLUMN lastActedAction`);
 const columnsNow = raw.prepare(`PRAGMA table_info(merge_requests)`).all().map((c) => c.name);
 raw.close();
 check(
-  'both columns can be taken away, so the migration has something to do',
-  !columnsNow.includes('headSha') && !columnsNow.includes('lastActedSha'),
+  'all three columns can be taken away, so the migration has something to do',
+  !columnsNow.includes('headSha') &&
+    !columnsNow.includes('lastActedSha') &&
+    !columnsNow.includes('lastActedAction'),
   JSON.stringify(columnsNow),
 );
 
@@ -924,17 +928,21 @@ check('opening the older database does not throw', upgraded !== null, openError 
 if (upgraded) {
   const row = upgraded.listMergeRequests().find((r) => r.id === conflictMr.id);
   check(
-    'the migration adds both columns back, empty',
-    row !== undefined && row.headSha === null && row.lastActedSha === null,
+    'the migration adds all three columns back, empty',
+    row !== undefined &&
+      row.headSha === null &&
+      row.lastActedSha === null &&
+      row.lastActedAction === null,
     JSON.stringify(row ?? null),
   );
   // Writable afterwards — an ALTER that ran but left the UPSERT naming a column that is not
   // there would only be found here.
-  upgraded.markMergeRequestActed(conflictMr.id, 'after-migration-sha');
+  upgraded.markMergeRequestActed(conflictMr.id, 'after-migration-sha', 'resolve-conflicts');
   const rewritten = upgraded.listMergeRequests().find((r) => r.id === conflictMr.id);
   check(
     'and the new columns can be written and read back through it',
-    rewritten?.lastActedSha === 'after-migration-sha',
+    rewritten?.lastActedSha === 'after-migration-sha' &&
+      rewritten?.lastActedAction === 'resolve-conflicts',
     JSON.stringify(rewritten),
   );
   upgraded.close();

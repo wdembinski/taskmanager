@@ -40,6 +40,7 @@ const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   draft: false,
   headSha: null,
   lastActedSha: null,
+  lastActedAction: null,
   pipelineStatus: 'success',
   pipelineStages: [],
   pipelineUrl: null,
@@ -606,11 +607,40 @@ describe('prWatchAction', () => {
     );
   });
 
-  it('acts once per head SHA, and again once the branch moves', () => {
-    const ctx = { lastActedSha: 'abc123' };
-    expect(prWatchAction(watchable({ detailedMergeStatus: 'conflict' }), ctx)).toBe('none');
+  it('suppresses a repeat of the exact same action on the same head', () => {
+    const ctx = { lastActedSha: 'abc123', lastActedAction: 'note-pipeline-passed' as const };
+    expect(prWatchAction(watchable({ pipelineStatus: 'success' }), ctx)).toBe('none');
+  });
+
+  it('reopens once the branch moves to a new head', () => {
+    const ctx = { lastActedSha: 'abc123', lastActedAction: 'note-pipeline-passed' as const };
+    expect(prWatchAction(watchable({ pipelineStatus: 'success', headSha: 'def456' }), ctx)).toBe(
+      'note-pipeline-passed',
+    );
+  });
+
+  // #20/#57: a passed pipeline silenced itself on this commit, but the target branch then
+  // moved under it and left the SAME commit conflicted. That is a different fact than the one
+  // already noted, and must still reach the human even though the head never moved.
+  it('fires a new action on the same head when a pipeline-passed note is followed by a conflict', () => {
+    const ctx = { lastActedSha: 'abc123', lastActedAction: 'note-pipeline-passed' as const };
     expect(
-      prWatchAction(watchable({ detailedMergeStatus: 'conflict', headSha: 'def456' }), ctx),
+      prWatchAction(watchable({ detailedMergeStatus: 'conflict', hasConflicts: true }), ctx),
     ).toBe('resolve-conflicts');
+  });
+
+  it('keeps suppressing while a remediation is still outstanding on the same head', () => {
+    const ctx = { lastActedSha: 'abc123', lastActedAction: 'resolve-conflicts' as const };
+    expect(
+      prWatchAction(watchable({ detailedMergeStatus: 'conflict', hasConflicts: true }), ctx),
+    ).toBe('none');
+  });
+
+  it('a legacy null action: a conflict on the same head fires, a passed pipeline does not re-note', () => {
+    const ctx = { lastActedSha: 'abc123' };
+    expect(
+      prWatchAction(watchable({ detailedMergeStatus: 'conflict', hasConflicts: true }), ctx),
+    ).toBe('resolve-conflicts');
+    expect(prWatchAction(watchable({ pipelineStatus: 'success' }), ctx)).toBe('none');
   });
 });

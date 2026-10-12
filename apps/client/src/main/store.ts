@@ -105,6 +105,7 @@ import type {
   MergeRequestState,
   PipelineStage,
   PipelineStatus,
+  PrWatchAction,
 } from '@shared/mergeRequest';
 import type { AttentionItem } from '@shared/attention';
 import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
@@ -799,8 +800,15 @@ export interface Store {
   setMergeRequestName(id: string, name: string | null): MergeRequest | undefined;
   markMergeRequestRead(id: string, at: number): MergeRequest | undefined;
   markMergeRequestEventsSeen(id: string, at: number): MergeRequest | undefined;
-  /** Remember that the PR/MR watcher has acted on this commit — see `MergeRequest.lastActedSha`. */
-  markMergeRequestActed(id: string, headSha: string): MergeRequest | undefined;
+  /**
+   * Remember that the PR/MR watcher has acted on this commit, and which action it took —
+   * see `MergeRequest.lastActedSha`/`lastActedAction`.
+   */
+  markMergeRequestActed(
+    id: string,
+    headSha: string,
+    action: PrWatchAction,
+  ): MergeRequest | undefined;
   /**
    * The last `discoverModelCatalog` sweep, so a model picker opens with a real reading
    * instead of an empty list on every app start. `null` before the first sweep ever
@@ -1337,6 +1345,7 @@ export function createStore(dbPath: string): Store {
       draft             INTEGER NOT NULL,
       headSha           TEXT,               -- the head commit's SHA; NULL = never read
       lastActedSha      TEXT,               -- the commit the PR watcher last acted on; NULL = never
+      lastActedAction   TEXT,               -- which action it was; NULL = never, or a legacy row
       pipelineStatus    TEXT NOT NULL,
       pipelineStages    TEXT,               -- JSON array of {name,status}; NULL = not read
       pipelineUrl       TEXT,
@@ -1883,6 +1892,14 @@ export function createStore(dbPath: string): Store {
   // forward exactly like every other row the watcher has already touched.
   if (!mrColumns.some((c) => c.name === 'lastActedSha')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN lastActedSha TEXT`);
+  }
+
+  // Migrate databases from before the watcher remembered WHICH action it took, not just the
+  // commit — see `MergeRequest.lastActedAction`. NULL on every existing row reads as a legacy
+  // row, exactly what it is: `prWatchAction` already treats that as "a note, never a
+  // remediation" rather than guessing.
+  if (!mrColumns.some((c) => c.name === 'lastActedAction')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN lastActedAction TEXT`);
   }
 
   // Migrate databases from before this app could OPEN a merge request itself. NULL on every
@@ -2588,6 +2605,8 @@ export function createStore(dbPath: string): Store {
     headSha: string | null;
     /** The commit the PR watcher last acted on; NULL on rows it has never acted on. */
     lastActedSha: string | null;
+    /** Which action that was; NULL on rows it never acted on, or a legacy row from before. */
+    lastActedAction: string | null;
     pipelineStatus: string;
     /** JSON array of {name,status}; NULL on rows written before stages existed. */
     pipelineStages: string | null;
@@ -2652,6 +2671,7 @@ export function createStore(dbPath: string): Store {
       draft: r.draft === 1,
       headSha: r.headSha ?? null,
       lastActedSha: r.lastActedSha ?? null,
+      lastActedAction: (r.lastActedAction as PrWatchAction | null) ?? null,
       pipelineStatus: r.pipelineStatus as PipelineStatus,
       pipelineStages,
       pipelineUrl: r.pipelineUrl,
@@ -2676,7 +2696,8 @@ export function createStore(dbPath: string): Store {
     `INSERT INTO merge_requests
        (id, taskId, openedForTaskId, provider, repoId, projectPath, "number", title,
         displayName, webUrl,
-        sourceBranch, targetBranch, state, draft, headSha, lastActedSha, pipelineStatus,
+        sourceBranch, targetBranch, state, draft, headSha, lastActedSha, lastActedAction,
+        pipelineStatus,
         pipelineStages,
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested,
@@ -2685,7 +2706,8 @@ export function createStore(dbPath: string): Store {
      VALUES
        (@id, @taskId, @openedForTaskId, @provider, @repoId, @projectPath, @number, @title,
         @displayName, @webUrl,
-        @sourceBranch, @targetBranch, @state, @draft, @headSha, @lastActedSha, @pipelineStatus,
+        @sourceBranch, @targetBranch, @state, @draft, @headSha, @lastActedSha, @lastActedAction,
+        @pipelineStatus,
         @pipelineStages,
         @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested,
@@ -2707,6 +2729,7 @@ export function createStore(dbPath: string): Store {
        -- supply this, so a NULL coming in from a reconciler that forgot to carry it forward
        -- must not be allowed to erase the watcher's own memory.
        lastActedSha = COALESCE(excluded.lastActedSha, merge_requests.lastActedSha),
+       lastActedAction = COALESCE(excluded.lastActedAction, merge_requests.lastActedAction),
        pipelineStatus = excluded.pipelineStatus,
        pipelineStages = excluded.pipelineStages, pipelineUrl = excluded.pipelineUrl,
        approvalsRequired = excluded.approvalsRequired,
@@ -3006,7 +3029,9 @@ export function createStore(dbPath: string): Store {
   const setMrName = db.prepare(`UPDATE merge_requests SET displayName = ? WHERE id = ?`);
   const markMrRead = db.prepare(`UPDATE merge_requests SET lastReadAt = ? WHERE id = ?`);
   const markMrEventsSeen = db.prepare(`UPDATE merge_requests SET lastEventSeenAt = ? WHERE id = ?`);
-  const markMrActed = db.prepare(`UPDATE merge_requests SET lastActedSha = ? WHERE id = ?`);
+  const markMrActed = db.prepare(
+    `UPDATE merge_requests SET lastActedSha = ?, lastActedAction = ? WHERE id = ?`,
+  );
 
   // ---------------------------------------------------------------------------
   // One-shot: split "what this card is about" out of "where it runs".
@@ -5047,8 +5072,8 @@ export function createStore(dbPath: string): Store {
       return row ? rowToMergeRequest(row) : undefined;
     },
 
-    markMergeRequestActed(id, headSha) {
-      markMrActed.run(headSha, id);
+    markMergeRequestActed(id, headSha, action) {
+      markMrActed.run(headSha, action, id);
       const row = selectMergeRequest.get(id) as MergeRequestRow | undefined;
       return row ? rowToMergeRequest(row) : undefined;
     },

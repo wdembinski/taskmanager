@@ -2000,7 +2000,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       store.addComment(projectId, taskId, body);
       send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
     },
-    markActed: (mrId, headSha) => store.markMergeRequestActed(mrId, headSha),
+    markActed: (mrId, headSha, action) => store.markMergeRequestActed(mrId, headSha, action),
   });
 
   // The PR/MR conflict ladder's fetch and force-with-lease push (`Scheduler.

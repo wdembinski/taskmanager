@@ -35,6 +35,7 @@ function mr(over: Partial<MergeRequest> = {}): MergeRequest {
     draft: false,
     headSha: 'sha0',
     lastActedSha: null,
+    lastActedAction: null,
     pipelineStatus: 'running',
     pipelineStages: [],
     pipelineUrl: null,
@@ -84,7 +85,7 @@ function settings(prAutoResolve = true, over: Partial<AppSettings> = {}): AppSet
 interface Rig {
   deps: PrWatcherDeps;
   notes: Array<{ projectId: string; taskId: string; body: string }>;
-  marked: Array<{ mrId: string; headSha: string }>;
+  marked: Array<{ mrId: string; headSha: string; action: string }>;
   resolveForgeConflictCalls: Array<{ taskId: string; mr: MergeRequest }>;
 }
 
@@ -100,7 +101,7 @@ function rig(partial: Partial<PrWatcherDeps> = {}): Rig {
       resolveForgeConflictCalls.push({ taskId, mr });
     },
     note: (projectId, taskId, body) => notes.push({ projectId, taskId, body }),
-    markActed: (mrId, headSha) => marked.push({ mrId, headSha }),
+    markActed: (mrId, headSha, action) => marked.push({ mrId, headSha, action }),
     ...partial,
   };
   return { deps, notes, marked, resolveForgeConflictCalls };
@@ -179,7 +180,7 @@ describe('watchMergeRequests: forge-rebase', () => {
         body: '!1 had fallen behind "main" — asked GitLab to rebase it.',
       },
     ]);
-    expect(marked).toEqual([{ mrId: row.id, headSha: 'sha-rebase' }]);
+    expect(marked).toEqual([{ mrId: row.id, headSha: 'sha-rebase', action: 'forge-rebase' }]);
   });
 
   it('PUTs the GitHub update-branch endpoint for a pull request that has fallen behind', async () => {
@@ -259,7 +260,9 @@ describe('watchMergeRequests: resolve-conflicts', () => {
 
     expect(resolveForgeConflictCalls).toEqual([{ taskId: 'task-1', mr: row }]);
     expect(notes).toEqual([]);
-    expect(marked).toEqual([{ mrId: row.id, headSha: 'sha-conflict' }]);
+    expect(marked).toEqual([
+      { mrId: row.id, headSha: 'sha-conflict', action: 'resolve-conflicts' },
+    ]);
   });
 
   it('wins over a stale branch — nothing can be fixed until the conflict is', async () => {
@@ -295,7 +298,9 @@ describe('watchMergeRequests: pipeline notes', () => {
         body: "!1's pipeline failed: https://gitlab.example.com/acme/web/-/pipelines/999",
       },
     ]);
-    expect(marked).toEqual([{ mrId: row.id, headSha: 'sha-pipeline-failed' }]);
+    expect(marked).toEqual([
+      { mrId: row.id, headSha: 'sha-pipeline-failed', action: 'note-pipeline-failed' },
+    ]);
   });
 
   it('notes a passed pipeline, distinctly', async () => {

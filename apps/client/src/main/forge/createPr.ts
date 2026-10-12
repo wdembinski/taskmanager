@@ -649,6 +649,7 @@ export function rowFor(created: CreatedRef, taskId: string, now: number): MergeR
     headSha: created.headSha ?? null,
     // Never acted on — the watcher has not even seen this row yet.
     lastActedSha: null,
+    lastActedAction: null,
     pipelineStatus: 'unknown',
     pipelineUrl: null,
     pipelineStages: [],

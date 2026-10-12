@@ -6284,6 +6284,7 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
     lastEventSeenAt: null,
     headSha: null,
     lastActedSha: null,
+    lastActedAction: null,
     updatedAt: 0,
     syncedAt: 0,
     ...over,
