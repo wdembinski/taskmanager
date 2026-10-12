@@ -5,8 +5,8 @@ specification the pipeline was built from.**
 
 Every push to `development` runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which performs every step
-below — gates, version, tag, draft, Windows, promote — and publishes the result. Linux is no
-longer part of a release; see §6. An ordinary release needs nobody to open this file.
+below — gates, version, tag, draft, Windows, Linux, promote — and publishes the result. An
+ordinary release needs nobody to open this file.
 [`docs/11-ci-cd-pipeline.md`](docs/11-ci-cd-pipeline.md) is that pipeline described end to
 end: what triggers what, the secrets it needs, and how to re-run one that failed halfway.
 
@@ -35,7 +35,9 @@ This file is the _procedure_; that one is the _reasons_. Read it if a step surpr
 ## The rules that outrank everything below
 
 1. **A failing gate ends the release.** Not "retry until green", not "skip the flaky one".
-   Report what failed and stop. A release is a promise that the tagged commit is good.
+   Report what failed and stop — a failed `check:abi`/`check:feed` on Windows (§5) or a
+   failed ELF/ABI check on Linux (§6) is exactly as disqualifying as a failing test. A
+   release is a promise that the tagged commit is good on every platform it claims to ship.
 2. **Never bypass `check:abi` or `check:feed`.** They exist because both of the failures
    they catch shipped to users and were invisible until someone tried to install or update.
 3. **Stop and ask** — using the `@@NEEDS_INPUT@@` contract — the moment you need a
@@ -43,10 +45,12 @@ This file is the _procedure_; that one is the _reasons_. Read it if a step surpr
    for an answer costs an hour; a half-published one costs a day.
 4. **Promote the draft LAST — but DO promote it.** Last, because electron-builder refuses to
    write to a published release and says _skipped_ while exiting 0, so anything still to
-   upload must go up first. And do it, because a release nobody can install is not a release:
-   four green drafts once piled up here unpublished, each waiting on a Linux build that was
-   never going to happen on its own — which is why Linux is no longer part of a release at all
-   (see §6). Rules 1 and 3 are the only things that may leave a release unpublished.
+   upload — Windows' installer and Linux's AppImage/`.deb`, with both their feeds (§5, §6) —
+   must go up first. And do it, because a release nobody can install is not a release: four
+   green drafts once piled up here unpublished, each waiting on a Linux build that was never
+   going to happen on a contributor's own machine. §6 now packages Linux on a runner instead,
+   so `promote` waits on it exactly as it waits on Windows, rather than cutting the platform
+   out. Rules 1 and 3 are the only things that may leave a release unpublished.
 5. **Never release from a branch.** Only the integration branch (`development`, or whatever
    the project's base branch is) is releasable. If the checkout is on something else, say so
    and stop.
@@ -65,7 +69,7 @@ is. Each one is now also mechanised:
 | 1 A failing gate ends it | `gates` is a `needs:` of everything. Nothing is tagged from a red tree, and no job retries one.                                                                                                            |
 | 2 Never bypass the gates | `windows` runs the real `package` script, which runs `ensure:abi` and `check:feed` inside itself. There is no flag here that skips them.                                                                   |
 | 3 Stop and ask           | A workflow cannot ask, so it must never reach a question. `scripts/next-version.mjs` decides the version by rule instead of by judgement, and the one credential is `GITHUB_TOKEN`, which is issued to it. |
-| 4 Promote last, and do   | `promote` needs only `windows` — the only platform this pipeline packages, now that Linux is gone (§6). It is the last job, so the Windows upload always precedes it.                                      |
+| 4 Promote last, and do   | `promote` needs both `windows` and `linux` (§6), now that a runner builds Linux again. It is the last job, so both platforms' uploads always precede it.                                                   |
 | 5 Never from a branch    | **Structural now.** The workflow's only push trigger is `branches: [development]`; the `version` job's first step fails the run if a `workflow_dispatch` was aimed at anything else.                       |
 | 6 Never launch the app   | No job starts the app. The smoke test runs the packaged binary under `ELECTRON_RUN_AS_NODE` — as plain Node, no window — the same way §5 does, and on a runner with nobody's copy open in the first place. |
 
@@ -239,43 +243,114 @@ addon. If a human wants the window looked at, say in your report that it is owed
 > (`--publish never`). Since a merge into `development` is now the thing that tags, an ABI
 > break is much better caught on the PR than after the tag exists.
 
-## 6. Linux releases are discontinued
+## 6. Package Linux
 
-There is no Linux job. `release.yml` packages and publishes Windows only — nothing here builds
-an AppImage or a `.deb`, and nothing uploads a `latest-linux.yml` feed. `promote` (§7) publishes
-as soon as Windows is on the draft; it is not waiting on Linux and never has anything to say is
-owed.
+Required for promote, exactly like Windows (rule 4) — not a hand-back, not a best-effort
+add-on. On Linux only (WSL is the usual path on a machine that is otherwise Windows; build
+from the WSL-native home, never from `/mnt/c` — see
+[`docs/07`](docs/07-packaging-and-release.md#building-for-linux)):
 
-This used to be a `linux` job that packaged on `ubuntu-latest` and uploaded into the same
-draft. It was removed rather than left to fail: a platform build that nobody maintains is worse
-than no platform build, and four green Windows-only drafts once sat unpublished for a version
-each, waiting on a Linux pass that was never coming (see rule 4 and "Things that have gone
-wrong before").
+```bash
+sudo apt-get update && sudo apt-get install -y fakeroot   # electron-builder shells out to it
+                                                           #   for the .deb target
+pnpm exec turbo run build --filter=./packages/*           # packages/*/dist — same reason as §5
+pnpm --filter claude-orchestrator package:linux:local      # --linux --publish never:
+                                                            #   AppImage + .deb + latest-linux.yml
+```
 
-If you need a Linux build for yourself, `pnpm --filter claude-orchestrator package:linux:local`
-still packages an AppImage/`.deb` **on Linux** (see
-[`docs/07`](docs/07-packaging-and-release.md#building-for-linux)) but uploads nothing — there
-is no supported way to attach it to a GitHub release, and no update feed for it either.
+Then check what you built is actually a Linux binary, and that its native addon was compiled
+for Electron's ABI rather than the host Node's — the same failure §5 guards against on
+Windows, v0.25.0's permanent "Loading…", on the other platform:
 
-> **CI does this** — nothing. See `release.yml`'s header comment.
+```bash
+file apps/client/dist/linux-unpacked/claude-orchestrator
+file apps/client/dist/linux-unpacked/claude-orchestrator | grep -q 'ELF 64-bit'
+
+ADDON=apps/client/dist/linux-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+readelf -Ws "$ADDON" | grep -q 'node_register_module_v130'   # v130 is Electron 33's module ABI
+```
+
+**Read it through `app.asar.unpacked`, not `app.asar`** — the opposite of §5's smoke test, and
+not a mistake: `readelf` reads the `.node` file, it does not `require()` it, and the unpacked
+copy is the only one that exists as a file on disk to point `readelf` at.
+
+Upload the AppImage, the `.deb` and `latest-linux.yml` into the draft §4 created:
+
+```bash
+gh release upload vX.Y.Z --clobber \
+  apps/client/dist/*.AppImage \
+  apps/client/dist/*.deb \
+  apps/client/dist/latest-linux.yml
+```
+
+Without `latest-linux.yml` beside the installers, no AppImage can ever see this release —
+§7 refuses to promote on a missing Linux feed exactly as it refuses on a missing Windows one.
+
+> **CI does this** — `release.yml`'s `linux` job, on an `ubuntu-latest` runner, against a
+> checkout of **the tag**, alongside `windows` rather than after it. `fakeroot` is installed
+> first because electron-builder shells out to it for the `.deb` target; without it the
+> AppImage still builds and the `.deb` target dies on its own. `promote` (§7) `needs:` this
+> job the same way it needs `windows` (rule 4).
+>
+> This used to be removed from the pipeline entirely rather than left to fail — not because
+> Linux stopped mattering, but because the only place that could build it was a contributor's
+> own machine, and four green Windows-only drafts once sat unpublished for a version each
+> waiting on that build (see "Things that have gone wrong before"). A runner can build it
+> instead, so it is a required step again, not a best-effort one.
 
 ## 7. Promote
 
-Not optional (rule 4). Once Windows is on the draft:
+Not optional (rule 4). Once Windows **and** Linux are both on the draft:
 
 ```bash
 gh release edit vX.Y.Z --draft=false
 ```
 
-Confirm first that `latest.yml` sits beside the installer. Without it, no installed app will
-ever see this release.
+Confirm first that `latest.yml` **and** `latest-linux.yml` each sit beside their installers.
+Without either one, no installed app on that platform will ever see this release.
 
 The only ways to finish without publishing are a failed gate (rule 1) or a decision you had
 to stop and ask about (rule 3). Both are reportable outcomes.
 
-> **CI does this** — `release.yml`'s `promote` job, which checks `latest.yml` is on the release
-> (matched as a whole line, `grep -qxF`) before it publishes. A published release with no feed
-> beside it is invisible to every installed app, so this fails rather than promotes.
+> **CI does this** — `release.yml`'s `promote` job, which checks `latest.yml` and
+> `latest-linux.yml` are both on the release (each matched as a whole line, `grep -qxF`)
+> before it publishes. A published release missing either feed is invisible to every
+> installed app on that platform, so this fails rather than promotes.
+
+**Then prune.** Every Windows and Linux job uploads its installer and feed into the draft,
+and nothing removes an _earlier_ release's copies — about 130 releases' worth had piled up
+before anything did. Once the release above is published, not before:
+
+```bash
+node scripts/prune-release-assets.mjs --keep vX.Y.Z
+```
+
+This deletes every asset on every release **other** than the one just published, drafts
+included. Do the same for the `windows-vX.Y.Z` / `linux-vX.Y.Z` backup artifacts the Windows
+and Linux jobs kept as a fallback (§5, §6) — delete every one of those two name patterns
+except the pair matching this tag, through the Actions artifacts API.
+
+Both steps run **after** `--draft=false`, never before: deleting another release's assets
+while this one is still a draft risks touching the wrong release. And neither may fail the
+run — the release is already published by the time they run, so a red step here would
+describe a release that in fact succeeded, sending whoever reads it looking for a broken
+release instead of a pile of unpruned assets.
+
+**The trade-off, paid knowingly.** Once an older release's assets are gone, nobody can
+download that version's installer again — there is no supported downgrade path, by hand or
+otherwise. And electron-updater can no longer serve a **differential** update into that
+version: a client several releases behind now downloads the full current installer instead
+of a delta against its own blockmap, because the blockmap it would diff against has been
+deleted along with everything else that release uploaded. Nothing here keeps N-1 (or any
+other version) around to avoid that — every release but the newest is pruned, on the view
+that ~130 releases' worth of dead installers costs more than the occasional larger download
+costs the few clients that update rarely.
+
+> **CI does this** — the same `promote` job, in two steps after _Publish_: one runs
+> [`scripts/prune-release-assets.mjs`](scripts/prune-release-assets.mjs) against every
+> release but the one just published; the other deletes the matching `windows-v*`/`linux-v*`
+> backup artifacts. Both are wrapped in `|| echo ::warning::…` so a pruning failure never
+> undoes a release that already succeeded — see "Things that have gone wrong before".
 
 ## 8. Report
 
@@ -304,10 +379,18 @@ Each of these cost a release. They are here so they cost nothing again.
 - **Promoting before every artifact is uploaded leaves gaps nothing can fill afterwards.**
   electron-builder cannot write to a published release and reports it as `skipped` with exit
   code 0. This is what four unpublished Windows-only drafts, each waiting on a Linux build
-  that never came, cost before Linux was removed from the pipeline entirely (§6).
+  that never came, cost back when Linux could only be packaged on a contributor's own
+  machine — which is why `promote` now `needs:` the `linux` job (§6) exactly as it needs
+  `windows`, rather than cutting the platform out.
 - **Never upload assets with `gh` if you can avoid it.** It rewrites spaces in filenames to
   dots, and `latest.yml` names the file electron-builder wrote — a mismatch is a release
   nobody can update to.
+- **Nothing pruned an earlier release's assets, and about 130 releases' worth piled up.**
+  Every Windows and Linux job uploads its installer and feed into the draft; nothing ever
+  removed the ones from releases before it. §7's prune step is the fix, and it is
+  deliberately not a gate: it runs after the release is already published, and treating a
+  pruning failure as a release failure would send whoever reads it looking for a broken
+  release instead of a pile of unpruned assets.
 - **A "boot smoke test" took down the app the user was working in** (2026-08-02). An agent
   ran `timeout 12 electron.exe .` to prove the app still started. The exact mechanism was
   never pinned down, and that is the point: `apps/client/src/main/index.ts` takes no
