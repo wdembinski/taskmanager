@@ -2062,6 +2062,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     },
   });
 
+  // The conflict ladder's own terminals stamp the episode as acted on once they settle,
+  // rather than `prWatcher.ts` stamping it at dispatch — see `Scheduler.setMarkMrActed`.
+  scheduler.setMarkMrActed((mrId, sha, action) => store.markMergeRequestActed(mrId, sha, action));
+
   // -------------------------------------------------------------------------
   // Cloud personal access token — the same four-channel shape JIRA/GitLab/GitHub use above,
   // which is the whole point of this ticket: the cloud stopped being a special case. The

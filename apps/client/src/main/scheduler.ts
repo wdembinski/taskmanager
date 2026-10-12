@@ -36,7 +36,13 @@ import type {
 } from '@shared/model';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
-import { forgeName, mrAbbrev, mrRef, type MergeRequest } from '@shared/mergeRequest';
+import {
+  forgeName,
+  mrAbbrev,
+  mrRef,
+  type MergeRequest,
+  type PrWatchAction,
+} from '@shared/mergeRequest';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import type {
   SchedulerState,
@@ -1273,6 +1279,13 @@ export class Scheduler {
    */
   private forgeGit: ForgeGit | null = null;
   /**
+   * Stamp a PR/MR's conflict episode as acted on — see {@link setMarkMrActed}. Null until
+   * `ipc.ts` wires it, which is also how the unit tests run without one: a build with nothing
+   * wired simply never records that the ladder settled, so the next sync's `prWatchAction`
+   * would try the same episode again.
+   */
+  private markMrActed: ((mrId: string, sha: string, action: PrWatchAction) => void) | null = null;
+  /**
    * The account-wide usage-limit gate (Phase 5). When active, ALL scheduling is
    * held; when its timer fires, every parked task resumes by its saved session id.
    */
@@ -1473,6 +1486,19 @@ export class Scheduler {
    */
   setForgeGit(forgeGit: ForgeGit): void {
     this.forgeGit = forgeGit;
+  }
+
+  /**
+   * Wire the "remember this MR's head commit was acted on" call (`store.markMergeRequestActed`)
+   * for the conflict ladder's own terminals. `watchMergeRequests` stamps `forge-rebase` and the
+   * pipeline notes itself, at dispatch — but `resolve-conflicts` is fire-and-forget, so nothing
+   * about the episode is true to stamp until the ladder actually reaches one of its own ends
+   * (a push, a park, a refusal, an error). Optional, and the absence is not silent: unwired, the
+   * ladder still drives the rebase, it just never records that it did, so the next sync would
+   * try the same episode again.
+   */
+  setMarkMrActed(markMrActed: (mrId: string, sha: string, action: PrWatchAction) => void): void {
+    this.markMrActed = markMrActed;
   }
 
   /**
@@ -2484,6 +2510,7 @@ export class Scheduler {
           `live worktree to rebase it in — left alone. Resolve it on ${forgeName(mr.provider)} ` +
           `or by hand in a clone.`,
       );
+      if (mr.headSha) this.markMrActed?.(mr.id, mr.headSha, 'resolve-conflicts');
       return;
     }
 
@@ -2521,6 +2548,7 @@ export class Scheduler {
           `does not — somebody pushed to it since this app last looked. Left alone rather ` +
           `than risk overwriting that push; pull it into the worktree and resolve by hand.`,
       );
+      if (mr.headSha) this.markMrActed?.(mr.id, mr.headSha, 'resolve-conflicts');
       return;
     }
 
@@ -2601,6 +2629,7 @@ export class Scheduler {
         base: ctx.base,
         worktree: ctx.worktree,
       });
+      this.markMrActed?.(forge.mrId, forge.leaseSha, 'resolve-conflicts');
       return;
     }
     this.noteRun(
@@ -2609,6 +2638,7 @@ export class Scheduler {
       ctx.runId,
       `Rebased "${ctx.branch}" onto \`${ctx.base}\` and pushed it back to the forge.${resolved}`,
     );
+    this.markMrActed?.(forge.mrId, forge.leaseSha, 'resolve-conflicts');
   }
 
   /**
@@ -5332,6 +5362,7 @@ export class Scheduler {
           `Could not integrate branch "${ctx.branch}": ${result.message} (the worktree at ` +
             `${ctx.worktree} was kept for inspection).`,
         );
+        if (ctx.forge) this.markMrActed?.(ctx.forge.mrId, ctx.forge.leaseSha, 'resolve-conflicts');
         break;
     }
   }
@@ -5575,6 +5606,7 @@ export class Scheduler {
     this.store.saveAttention(item, pending);
     this.updateTask(ctx.taskId, { status: 'waiting-input' }, ctx.runId);
     this.emitAttention(item);
+    if (ctx.forge) this.markMrActed?.(ctx.forge.mrId, ctx.forge.leaseSha, 'resolve-conflicts');
   }
 
   /**

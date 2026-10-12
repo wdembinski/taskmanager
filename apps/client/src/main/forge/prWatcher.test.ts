@@ -246,7 +246,7 @@ describe('watchMergeRequests: forge-rebase', () => {
 });
 
 describe('watchMergeRequests: resolve-conflicts', () => {
-  it('queues the conflict ladder, with no note of its own — the ladder notes itself', async () => {
+  it('queues the conflict ladder, with no note and no stamp of its own — the ladder settles both itself', async () => {
     const { deps, notes, resolveForgeConflictCalls, marked } = rig();
     const row = mr({
       detailedMergeStatus: 'conflict',
@@ -260,9 +260,9 @@ describe('watchMergeRequests: resolve-conflicts', () => {
 
     expect(resolveForgeConflictCalls).toEqual([{ taskId: 'task-1', mr: row }]);
     expect(notes).toEqual([]);
-    expect(marked).toEqual([
-      { mrId: row.id, headSha: 'sha-conflict', action: 'resolve-conflicts' },
-    ]);
+    // Dispatch alone leaves the row unstamped — `Scheduler`'s own terminals stamp it once the
+    // fire-and-forget ladder this queues actually settles.
+    expect(marked).toEqual([]);
   });
 
   it('wins over a stale branch — nothing can be fixed until the conflict is', async () => {
