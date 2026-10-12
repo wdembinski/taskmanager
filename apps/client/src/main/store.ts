@@ -87,6 +87,7 @@ import {
   DEFAULT_SETTINGS,
   resolveSyncInterval,
 } from '@shared/settings';
+import { ACTIVITY_BACKFILL_KEY, backfillActivityLog } from './activityBackfill';
 import { mergeActivity } from './activityMerge';
 import { type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
 import {
@@ -3141,6 +3142,28 @@ export function createStore(dbPath: string): Store {
     db.transaction(() => {
       const queued = backfillAutomationCloudOutbox(db, Date.now());
       upsertState.run(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY, JSON.stringify(queued));
+    })();
+  }
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // One-shot: derive thirty days of activity-log history from the tables that predate it.
+  //
+  // `activity_log` (F2.4) only gains a row when a live recorder calls `appendActivity`
+  // (F2.6/F2.8), so every run and column move from before those builds shipped is invisible
+  // to the Activity dashboard even though `task_events`/`task_activity` already hold the
+  // facts. See `activityBackfill.ts` for how each kind is reconstructed and why the
+  // `untilMs` ceiling — not just this guard — is what keeps a status-moved row from being
+  // derived twice.
+  //
+  // Placed after the table and every ALTER that could touch task_events/task_activity/
+  // activity_log, for the same reason the cloud-outbox backfills above are last: it should
+  // see the final shape of those tables, not one a migration further up still intends to
+  // change.
+  if (!selectState.get(ACTIVITY_BACKFILL_KEY)) {
+    db.transaction(() => {
+      const counts = backfillActivityLog(db, Date.now());
+      upsertState.run(ACTIVITY_BACKFILL_KEY, JSON.stringify(counts));
     })();
   }
   // ---------------------------------------------------------------------------
