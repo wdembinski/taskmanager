@@ -1578,6 +1578,7 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
         // board and dragging an arrow to it — three moves for one intent.
         chainCandidates={parentCandidates}
         jiraEnabled={jiraEnabled}
+        agentProjects={agentProjects}
         onClose={() => setAddOpen(false)}
         onCreated={() => void refresh()}
         // A link that would not draw is reported HERE: the card exists by then, and the

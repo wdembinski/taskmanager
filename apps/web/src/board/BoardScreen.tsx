@@ -827,6 +827,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
         // The same cards, asked a different question — see `parentCandidates`.
         chainCandidates={parentCandidates}
         jiraEnabled={settings.jira.enabled}
+        agentProjects={agentProjects}
         // A browser has no OS file picker and no path for a dropped `File`, so the whole
         // files section is one thing this host cannot do rather than a control to grey out.
         filesEnabled={false}
