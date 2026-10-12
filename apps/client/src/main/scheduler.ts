@@ -35,7 +35,11 @@ import type {
   TaskStatus,
 } from '@shared/model';
 import type { ActivityOrigin, ActivityOutcome } from '@shared/activity';
-import { type ActivityRecorder, NULL_ACTIVITY_RECORDER } from './activityRecorder';
+import {
+  type ActivityRecorder,
+  NULL_ACTIVITY_RECORDER,
+  releasedVersionFrom,
+} from './activityRecorder';
 import { logMain } from './log';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
@@ -843,6 +847,14 @@ interface Run {
    * card's work or park it as a failed task. It files what happened and stops.
    */
   releaseSeed?: boolean;
+  /**
+   * What a release run's own reply said it released (F2.7) — read out of `event.resultText`
+   * by {@link releasedVersionFrom} at `case 'result'`, since the engine has no version of
+   * its own to report: `RELEASE.md` decides what gets tagged, and only the agent's reply
+   * says what that turned out to be. Stashed here so `settle`'s `releaseSeed` branch, which
+   * runs after the event has gone, can still read it.
+   */
+  releasedVersion?: string;
   /**
    * This run is a Rung 2 conflict fix (`startTask`'s `fixingConflict`), queued by
    * {@link Scheduler.resolveForgeConflict} for a rebase paused in a worktree. `settle` reads
@@ -1761,11 +1773,11 @@ export class Scheduler {
     // dropped. Pressing Start against an expired credential would only reproduce the
     // failure that raised the gate in the first place.
     if (this.limitGate.active) {
-      this.parkForLimit(target);
+      this.parkForLimit(target, opts.origin ?? 'human');
       return { refused: 'limit' };
     }
     if (this.authGate.active) {
-      this.parkForSignIn(target);
+      this.parkForSignIn(target, opts.origin ?? 'human');
       return { refused: 'signed-out' };
     }
     return {
@@ -3478,6 +3490,174 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Record a gate park in the activity log (F2.7) — a task held behind the usage-limit or
+   * sign-in gate instead of starting. `runId` is the run it would have become, or `null`
+   * when nothing was ever reserved (the two `parkFor*` callers, where the refused start
+   * never got as far as a run). See the same double try/catch note on
+   * {@link Scheduler.recordRunStarted}.
+   */
+  private recordParked(params: {
+    projectId: string;
+    taskId: string;
+    runId: string | null;
+    title: string;
+    origin: ActivityOrigin;
+    reason: 'limit' | 'sign-in';
+  }): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: params.projectId,
+        taskId: params.taskId,
+        runId: params.runId,
+        kind: 'parked',
+        outcome: null,
+        origin: params.origin,
+        title: params.title,
+        costUsd: null,
+        detail: { reason: params.reason },
+      });
+    } catch (err) {
+      logMain('activity: could not record parked', err);
+    }
+  }
+
+  /**
+   * Record a gate resume in the activity log (F2.7) — always `origin: 'resume'`, since this
+   * is the gate itself handing the task back, never the task's original origin. `runId` is
+   * the run the resume actually started, or `null` when the task was handed back to its own
+   * CHAIN instead (`chainInFlight`): the card itself left the gate with no run of its own,
+   * and the chain's next step records its own `run-started` with origin `chain`.
+   */
+  private recordResumed(params: {
+    projectId: string;
+    taskId: string;
+    title: string;
+    runId: string | null;
+    reason: 'limit' | 'sign-in';
+  }): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: params.projectId,
+        taskId: params.taskId,
+        runId: params.runId,
+        kind: 'resumed',
+        outcome: null,
+        origin: 'resume',
+        title: params.title,
+        costUsd: null,
+        detail: { reason: params.reason },
+      });
+    } catch (err) {
+      logMain('activity: could not record resumed', err);
+    }
+  }
+
+  /**
+   * Record a landed merge in the activity log (F2.7) — `applyIntegrationResult`'s `'merged'`
+   * case, the single funnel for every integrate path (`integrateWorktree`,
+   * `resolveForgeConflict`, `finishConflict`). `origin` is `null`: the merge is the engine's
+   * own act, not something a run did. See the same double try/catch note on
+   * {@link Scheduler.recordRunStarted}.
+   */
+  private recordMergeLanded(project: Project, ctx: IntegrationCtx): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        kind: 'merge-landed',
+        outcome: null,
+        origin: null,
+        title: this.store.getTask(ctx.taskId)?.title ?? '',
+        costUsd: null,
+        detail: { branch: ctx.branch },
+      });
+    } catch (err) {
+      logMain('activity: could not record merge-landed', err);
+    }
+  }
+
+  /**
+   * Record a failed integration in the activity log (F2.7) — `applyIntegrationResult`'s
+   * `'dirty-base'`, `'blocked-untracked'` and `'error'` cases (`'rebased'`/`'nothing-to-merge'`
+   * land nothing, so they record nothing). `reason` is the status itself for the first two,
+   * and `result.message` for `'error'` — the only one of the three with a message of its own.
+   */
+  private recordMergeFailed(project: Project, ctx: IntegrationCtx, reason: string): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        kind: 'merge-failed',
+        outcome: null,
+        origin: null,
+        title: this.store.getTask(ctx.taskId)?.title ?? '',
+        costUsd: null,
+        detail: { branch: ctx.branch, reason },
+      });
+    } catch (err) {
+      logMain('activity: could not record merge-failed', err);
+    }
+  }
+
+  /**
+   * Record a merge conflict in the activity log (F2.7) — `escalateConflict`, called once per
+   * CONFLICTED MERGE rather than once per AI fix attempt: the caller gates this on
+   * `spent === 0`, before either climbing the Rung 2 ladder or raising the item for a human.
+   */
+  private recordMergeConflict(project: Project, ctx: IntegrationCtx): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        kind: 'merge-conflict',
+        outcome: null,
+        origin: null,
+        title: this.store.getTask(ctx.taskId)?.title ?? '',
+        costUsd: null,
+        detail: { branch: ctx.branch },
+      });
+    } catch (err) {
+      logMain('activity: could not record merge-conflict', err);
+    }
+  }
+
+  /**
+   * Record a published release in the activity log (F2.7) — `settle`'s `releaseSeed`
+   * branch, on `status === 'done'` only; a failed release run is noted on the timeline
+   * already (see the branch above) and records nothing here. `origin` is always
+   * `'auto-release'`, never the run's own: a release run is always started that way (see
+   * `startReleaseRun`). `detail.version` comes from {@link Run.releasedVersion} — `null`
+   * when the agent's reply named none, which is a true reading of "released, version
+   * unknown" rather than a reason to guess one.
+   */
+  private recordReleasePublished(run: Run): void {
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        kind: 'release-published',
+        outcome: null,
+        origin: 'auto-release',
+        title: this.store.getTask(run.taskId)?.title ?? '',
+        costUsd: null,
+        detail: run.releasedVersion ? { version: run.releasedVersion } : null,
+      });
+    } catch (err) {
+      logMain('activity: could not record release-published', err);
+    }
+  }
+
   /** Spawn the session for a reserved run in the prepared working directory. */
   private launch(
     project: Project,
@@ -4134,6 +4314,13 @@ export class Scheduler {
           const reason =
             empty ??
             (event.terminalReason || event.stopReason || 'the session ended without success');
+          // The engine has no version of its own for a release — `RELEASE.md` decides what
+          // gets tagged, and only the agent's own closing reply says what that turned out to
+          // be. Stashed on the run (F2.7) so `settle`'s `releaseSeed` branch, which runs
+          // right below and only ever sees `'done' | 'failed'`, can still read it.
+          if (run.releaseSeed) {
+            run.releasedVersion = releasedVersionFrom(event.resultText) ?? undefined;
+          }
           this.settle(run, empty || !event.success ? 'failed' : 'done', reason);
           this.recordRunFinished(
             run,
@@ -4306,6 +4493,10 @@ export class Scheduler {
     // writes timeline notes, or a queue draining into the wall buries each card's history
     // under one note per attempt.
     const first = !this.limitGate.active;
+    // Snapshotted before `engage` adds these tasks to the gate's own set (F2.7) — a queue
+    // draining into a standing wall re-enters here on every attempt, and only a task the
+    // gate did NOT already hold gets a `parked` row.
+    const alreadyParked = new Set(this.limitGate.state?.parkedTaskIds ?? []);
     this.limitGate.engage(
       signal,
       active.map((r) => r.taskId),
@@ -4334,6 +4525,16 @@ export class Scheduler {
           'Stopped because the account hit its Claude usage limit. Everything is held until ' +
             'the window resets, and this picks up by itself then — nothing to press.',
         );
+      }
+      if (!alreadyParked.has(run.taskId)) {
+        this.recordParked({
+          projectId: run.projectId,
+          taskId: run.taskId,
+          runId: run.runId,
+          title: this.store.getTask(run.taskId)?.title ?? '',
+          origin: run.origin,
+          reason: 'limit',
+        });
       }
       // End the process now; we'll spawn a fresh `--resume` for it at reset time.
       this.sessions.stop(run.runId);
@@ -4489,6 +4690,15 @@ export class Scheduler {
         // The steps ARE this card's work; give the field back and let the chain run.
         this.updateTask(task.id, { status: 'in-progress' }, null);
         chains.add(task.id);
+        // The card itself left the gate here, with no run of its own — its chain's next
+        // step records its own `run-started` with origin `chain` once it actually starts.
+        this.recordResumed({
+          projectId: task.projectId,
+          taskId: task.id,
+          title: task.title,
+          runId: null,
+          reason: 'limit',
+        });
         continue;
       }
       // Something live already owns it (a human pressed Run as the gate lifted); that run
@@ -4504,7 +4714,14 @@ export class Scheduler {
       // …as the run it WAS: a release run comes back releasing, a chat reply comes back
       // carrying what the human typed, and everything else gets `{}` — a bare start, which
       // is what every parked run used to get. Resumes by task.sessionId when there is one.
-      this.startTask(project, task, { ...rebuild, origin: 'resume' });
+      const runId = this.startTask(project, task, { ...rebuild, origin: 'resume' });
+      this.recordResumed({
+        projectId: task.projectId,
+        taskId: task.id,
+        title: task.title,
+        runId,
+        reason: 'limit',
+      });
     }
     // A step parked by `advanceSubtasks` is resumed by its own entry above; this covers the
     // card whose chain simply had nothing running to park. A chain stopped at a failed or
@@ -4558,11 +4775,30 @@ export class Scheduler {
     // Only the FIRST failure gets the timeline entries. The queue drains into this wall
     // within seconds, and one note per card per attempt would bury the run's real history.
     const first = !this.authGate.active;
+    // Snapshotted before `engage`, exactly as `engageLimit` does — only a task the gate did
+    // NOT already hold gets a `parked` row (F2.7).
+    const alreadyParked = new Set(this.authGate.state?.parkedTaskIds ?? []);
     this.authGate.engage(reason, [failing.taskId, ...casualties.map((r) => r.taskId)]);
     // The same as the limit's, and including `failing` for the same reason the gate's own
     // parked set does: a run whose `exited` has already removed it from `runs` is still a
     // run this gate is holding, and it is the one that proved the credential is dead.
     this.recordParkedRuns([failing, ...casualties]);
+    // `failing` deduplicated against `casualties` the same way `engageLimit`'s `active` is:
+    // if its own `exited` has already removed it from `runs` it is not among them, and the
+    // run that PROVED the credential is dead still needs its `parked` row.
+    const parkedRuns = this.runs.has(failing.runId) ? casualties : [failing, ...casualties];
+    for (const run of parkedRuns) {
+      if (!alreadyParked.has(run.taskId)) {
+        this.recordParked({
+          projectId: run.projectId,
+          taskId: run.taskId,
+          runId: run.runId,
+          title: this.store.getTask(run.taskId)?.title ?? '',
+          origin: run.origin,
+          reason: 'sign-in',
+        });
+      }
+    }
     for (const run of casualties) {
       run.settled = true; // its imminent exit is expected — not a failure of its own
       // A question or a permission dies with its process; a parked failure or conflict
@@ -4604,6 +4840,15 @@ export class Scheduler {
       if (!task || closed.has(task.status)) continue;
       if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
         chains.add(task.id);
+        // The card itself left the gate here, with no run of its own — its chain's next
+        // step records its own `run-started` with origin `chain` once it actually starts.
+        this.recordResumed({
+          projectId: task.projectId,
+          taskId: task.id,
+          title: task.title,
+          runId: null,
+          reason: 'sign-in',
+        });
         continue;
       }
       // Something live already owns it — a human pressed Run as the gate lifted.
@@ -4612,7 +4857,14 @@ export class Scheduler {
       if (!project) continue;
       // …as the run it was (a release, a chat reply, or plain work — see `resumeOpts`).
       // Resumes by task.sessionId when there is one.
-      this.startTask(project, task, { ...rebuild, origin: 'resume' });
+      const runId = this.startTask(project, task, { ...rebuild, origin: 'resume' });
+      this.recordResumed({
+        projectId: task.projectId,
+        taskId: task.id,
+        title: task.title,
+        runId,
+        reason: 'sign-in',
+      });
     }
     for (const parentId of chains) {
       if (parkedStep(this.store.getSubtasks(parentId))) continue;
@@ -4683,9 +4935,52 @@ export class Scheduler {
     // filled in by the specialised raisers (`raiseTaskFailed`, `raiseMergeConflict`) and by
     // `detail.context` above, which know what their answer path will need.
     this.store.saveAttention(item, detail.context ?? null);
+    this.recordAttentionRaised(run, item);
     this.updateTask(run.taskId, { status: 'waiting-input' }, run.runId);
     this.emitAttention(item);
     return item;
+  }
+
+  /**
+   * Record that this item was raised (F2.7) — but only the two kinds whose raising IS the
+   * event worth a timeline row. A `plan-approval` is the plan handed up for approval; an
+   * `agent-question` is the CLI's own `AskUserQuestion`, held before it runs. Every other
+   * kind (`question`, `permission`, `task-failed`, `merge-conflict`, `proposal`) is surfaced
+   * some other way already (a comment, a merge-conflict row of its own) and records nothing
+   * here.
+   *
+   * `runId`/`origin` come from the RUN, not the item: an item outlives its run for the two
+   * kinds in {@link OUTLIVES_ITS_RUN}, but what is being recorded is the moment the run
+   * raised it, not whatever the item later becomes.
+   *
+   * The documented adopt-or-raise race in `decidePermission` can call this twice for one
+   * question (the gated path and the event-stream fallback both raising before either sees
+   * the other's item) — accepted: each row is a real raise, not a duplicate of the other.
+   */
+  private recordAttentionRaised(run: Run, item: AttentionItem): void {
+    const kind =
+      item.kind === 'plan-approval'
+        ? 'plan-presented'
+        : item.kind === 'agent-question'
+          ? 'question-raised'
+          : null;
+    if (!kind) return;
+    try {
+      this.activity.record({
+        at: Date.now(),
+        projectId: run.projectId,
+        taskId: run.taskId,
+        runId: run.runId,
+        kind,
+        outcome: null,
+        origin: run.origin,
+        title: item.taskTitle,
+        costUsd: null,
+        detail: null,
+      });
+    } catch (err) {
+      logMain('activity: could not record attention raised', err);
+    }
   }
 
   /**
@@ -4996,6 +5291,8 @@ export class Scheduler {
           `The release did not finish (${reason ?? 'the run failed'}). The work is merged — ` +
             `read the transcript above, then release by hand or send the agent another message.`,
         );
+      } else {
+        this.recordReleasePublished(run);
       }
       this.updateTask(run.taskId, { status: 'in-progress' }, null);
       return;
@@ -5357,6 +5654,7 @@ export class Scheduler {
       case 'merged': {
         this.attempts.delete(ctx.taskId);
         this.conflictFixAttempts.delete(ctx.taskId);
+        this.recordMergeLanded(project, ctx);
         const note =
           result.preserved && result.preserved.files.length > 0
             ? `Merged branch "${ctx.branch}" into ${ctx.base}. Note: ${result.preserved.files.length} ` +
@@ -5488,6 +5786,7 @@ export class Scheduler {
         this.escalateConflict(project, ctx);
         break;
       case 'dirty-base':
+        this.recordMergeFailed(project, ctx, result.status);
         // Integration failures are NOT auto-retried (the fix is human-side): park with
         // a "Retry integration" option they can use after committing/stashing base.
         this.parkIntegrationFailure(
@@ -5502,6 +5801,7 @@ export class Scheduler {
         );
         break;
       case 'blocked-untracked':
+        this.recordMergeFailed(project, ctx, result.status);
         // Untracked base-tree files collide with this branch and couldn't be preserved
         // automatically, so we refused to overwrite them. Park for a human.
         this.parkIntegrationFailure(
@@ -5514,6 +5814,7 @@ export class Scheduler {
         );
         break;
       case 'error':
+        this.recordMergeFailed(project, ctx, result.message);
         this.parkIntegrationFailure(
           project,
           ctx,
@@ -5676,6 +5977,12 @@ export class Scheduler {
    */
   private escalateConflict(project: Project, ctx: IntegrationCtx): void {
     const spent = this.conflictFixAttempts.get(ctx.taskId) ?? 0;
+    // One row per CONFLICTED MERGE, not one per AI fix attempt: `spent === 0` is this
+    // conflict's first appearance, whether it goes on to climb the Rung 2 ladder below or
+    // straight to a human. A later attempt's own conflict re-enters here with `spent` > 0
+    // and records nothing — the eventual `finishAfterConflict` landing writes the
+    // `merge-landed` row instead.
+    if (spent === 0) this.recordMergeConflict(project, ctx);
     if (this.worktrees && spent < MAX_CONFLICT_FIX_ATTEMPTS) {
       this.conflictFixAttempts.set(ctx.taskId, spent + 1);
       void this.dispatchConflictFix(project, ctx, spent + 1);
@@ -6189,13 +6496,13 @@ export class Scheduler {
     const next = steps.find((t) => t.status === 'pending');
     if (!next) return;
     if (this.limitGate.active) {
-      this.parkForLimit(next);
+      this.parkForLimit(next, 'chain');
       return;
     }
     // Same rule, other gate: nothing else re-enters a chain, so a step the sign-in gate
     // stops has to be parked IN the gate or the card sits at 2/4 for good.
     if (this.authGate.active) {
-      this.parkForSignIn(next);
+      this.parkForSignIn(next, 'chain');
       return;
     }
     const project = this.runProjectFor(next);
@@ -6217,7 +6524,7 @@ export class Scheduler {
    * If no gate is up (a race: it lifted between the check and here) nothing is parked and
    * the task is left `pending` for the caller's next pass.
    */
-  private parkForLimit(task: Task): void {
+  private parkForLimit(task: Task, origin: ActivityOrigin = 'human'): void {
     // Nothing was running, so there is no recipe to keep and an older one would be a lie:
     // what this park holds is an ordinary work run that has not started yet, whatever the
     // task's last parked run happened to be (see {@link ParkedRun}). Cleared ABOVE the gate's
@@ -6226,6 +6533,7 @@ export class Scheduler {
     // otherwise resume as the chat run the human has since moved on from. The recipe is a
     // statement about the run being held, and this park holds a different one either way.
     this.forgetParkedRuns([task.id]);
+    // `park()` is the dedupe (F2.7): a card already in the gate's set gets no second row.
     if (this.limitGate.park([task.id]).length === 0) return;
     this.updateTask(task.id, { status: 'blocked-by-limit' }, null);
     this.noteRun(
@@ -6235,6 +6543,14 @@ export class Scheduler {
       'A usage limit was in force when this came up, so it is waiting for the reset. ' +
         'It starts by itself when the limit clears — nothing to do.',
     );
+    this.recordParked({
+      projectId: task.projectId,
+      taskId: task.id,
+      runId: null,
+      title: task.title,
+      origin,
+      reason: 'limit',
+    });
   }
 
   /**
@@ -6246,7 +6562,7 @@ export class Scheduler {
    * matches on that. The note is what makes it honest, and it is the only reason a human
    * looking at the card tomorrow can tell "waiting for you to sign in" from "idle".
    */
-  private parkForSignIn(task: Task): void {
+  private parkForSignIn(task: Task, origin: ActivityOrigin = 'human'): void {
     this.forgetParkedRuns([task.id]); // no live run, so no recipe — as in `parkForLimit`,
     if (this.authGate.park([task.id]).length === 0) return; // stale whether or not it re-parks
     this.noteRun(
@@ -6256,6 +6572,14 @@ export class Scheduler {
       'Claude was signed out when this came up, so it is waiting. It starts by itself once ' +
         'you sign in again — nothing else to press.',
     );
+    this.recordParked({
+      projectId: task.projectId,
+      taskId: task.id,
+      runId: null,
+      title: task.title,
+      origin,
+      reason: 'sign-in',
+    });
   }
 
   /**

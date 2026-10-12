@@ -7,6 +7,19 @@
 import type { ActivityOrigin, ActivityOutcome, ActivityRow } from '@shared/activity';
 import { logMain } from './log';
 
+/** The first semver-shaped token in a release run's reply, or `null` if it named none. */
+const VERSION_PATTERN = /v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?/;
+
+/**
+ * Pulls the version a release run says it published out of its own closing words
+ * (`releasePrompt.ts` asks it to say "the version, the tag, where it was published") — the
+ * engine has no version of its own to report, since `RELEASE.md` decides what gets tagged.
+ * Pure, so the pattern is testable without a CLI.
+ */
+export function releasedVersionFrom(text: string): string | null {
+  return text.match(VERSION_PATTERN)?.[0] ?? null;
+}
+
 /** The run-identifying fields every row needs, `title` being a card-title SNAPSHOT. */
 interface RunRef {
   projectId: string;
