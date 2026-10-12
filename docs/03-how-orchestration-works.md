@@ -426,6 +426,18 @@ nothing is left paused in the worktree for an agent or a *Resolved* button to pi
 check is undone (`git rebase --abort`) rather than parked the moment it can't finish cleanly,
 because there is no ladder here to hand a paused rebase up to.
 
+**Rebasing onto a fresher base can also mean there is nothing left to push.** If the branch's
+own work has already landed in base — merged on the forge, or by hand, while the worktree sat
+idle — the rebase leaves it with no commits of its own, and the button refuses the same way
+an empty branch always did: there is nothing to open a pull request for.
+
+**The push itself is leased whenever the rebase actually ran.** A branch that already has an
+open pull request has already been pushed once; rebasing it again gives its commits new SHAs,
+so an ordinary push would be rejected by the forge as non-fast-forward the moment it sees the
+branch already has history it doesn't recognise. `git push --force-with-lease` is what lets it
+through anyway, leased against the branch's own tip on the remote, fetched moments before —
+never against a stale local record of what used to be there.
+
 ### Releasing after the merge
 
 A merge is not always the end of the job. If a repo knows how to release itself, the

@@ -102,7 +102,7 @@ const LOCKFILE_REGEN_TIMEOUT_MS = 5 * 60_000;
 const MAX_MECHANICAL_ROUNDS = 20;
 
 /**
- * Where {@link WorktreeManager.syncWithRemoteBase} fetches the remote's current copy of a
+ * Where {@link WorktreeManager.syncOntoRemoteBase} fetches the remote's current copy of a
  * base branch to. A ref of its own rather than `FETCH_HEAD`: that pseudo-ref can be read by
  * `rev-parse` and `merge` but is not ADVERTISED like a real ref, so the `git fetch . src:dst`
  * a ref-only fast-forward relies on fails on it outright. Scratch space — force-updated on
@@ -392,7 +392,7 @@ export type IntegrationResult =
 
 /**
  * The outcome of checking a branch against `base` AS IT STANDS ON THE REMOTE right now — see
- * {@link WorktreeManager.syncWithRemoteBase}.
+ * {@link WorktreeManager.syncOntoRemoteBase}.
  */
 export type RemoteSyncResult =
   /** Nothing fetched that `base` didn't already have — including "couldn't ask", which must
@@ -903,7 +903,7 @@ export class WorktreeManager {
    * ref in `project.path`, and a card merging while another opens a pull request must not
    * race it.
    */
-  async syncWithRemoteBase(
+  async syncOntoRemoteBase(
     project: Project,
     base: string,
     worktree: string,
@@ -924,10 +924,16 @@ export class WorktreeManager {
       const ahead = await commitsAhead(project.path, base, REMOTE_BASE_REF, host);
       if (ahead <= 0) return { status: 'up-to-date' };
 
-      const advanceFailure = await this.advanceBaseRef(project, base, REMOTE_BASE_REF, host);
+      const advanceFailure = await this.updateLocalBase(project, base, REMOTE_BASE_REF, host);
       if (advanceFailure) return { status: 'error', message: advanceFailure };
 
-      const { rebased, autoResolved } = await this.runRebaseLadder(worktree, base, host);
+      // `autostash` — unlike `integrate`, nothing here has committed the worktree's own
+      // uncommitted edits first, and this runs whenever a human presses **Create PR**, not only
+      // once an agent's work is tidily committed. Refusing outright on a dirty worktree would
+      // turn "base moved" into a worse failure than the one this check exists to catch early.
+      const { rebased, autoResolved } = await this.runRebaseLadder(worktree, base, host, {
+        autostash: true,
+      });
       if (rebased.code !== 0) {
         if (await hasConflicts(worktree, host)) {
           const files = await conflictedFiles(worktree, host);
@@ -956,25 +962,29 @@ export class WorktreeManager {
    * until the rebase finishes or a real conflict is left for the rungs above.
    *
    * Shared by {@link integrate}, {@link rebaseForPullRequest}, the pre-run `syncBranch` and
-   * {@link syncWithRemoteBase} — all four start a fresh rebase this way and differ only in
+   * {@link syncOntoRemoteBase} — all four start a fresh rebase this way and differ only in
    * what happens once it is clean (fast-forward base, nothing, or report it) and what a
    * leftover conflict becomes.
    * Returns the rebase's own final `GitResult` (0 = clean) rather than an `IntegrationResult`:
    * what a non-zero code MEANS — `conflict` vs. `error` — depends on state only the caller
    * can still see after this returns (whether `abortRebase` is safe to run), so that decision
    * is left to it.
+   *
+   * `opts.autostash` is passed straight through to the first {@link rebaseOnto} call — see its
+   * own comment for why only the pre-PR remote check asks for it.
    */
   private async runRebaseLadder(
     worktree: string,
     baseRef: string,
     host: ExecHost,
+    opts: { autostash?: boolean } = {},
   ): Promise<{ rebased: GitResult; autoResolved: string[] }> {
     const attrs = withUnionAttributes();
     // The attributes file is written on the app's filesystem, so git must be told the name
     // its OWN machine knows it by.
     const attrsPath = host.toNative(attrs.file);
     try {
-      let rebased = await rebaseOnto(worktree, baseRef, attrsPath, host);
+      let rebased = await rebaseOnto(worktree, baseRef, attrsPath, host, opts.autostash);
 
       // Looped, because a rebase stops once per conflicting COMMIT: resolving the first one
       // and handing the second to an agent would spend the session this rung exists to save.
@@ -1148,7 +1158,7 @@ export class WorktreeManager {
   }
 
   /**
-   * Advance the project's own `base` ref to `source` — a commit {@link syncWithRemoteBase} just
+   * Advance the project's own `base` ref to `source` — a commit {@link syncOntoRemoteBase} just
    * fetched from the remote — without disturbing any work in progress elsewhere.
    *
    * Mirrors {@link fastForward}'s own split, for exactly the same reason: a base that is
@@ -1158,7 +1168,7 @@ export class WorktreeManager {
    *
    * Returns null on success, or a sentence naming why the ref could not move.
    */
-  private async advanceBaseRef(
+  private async updateLocalBase(
     project: Project,
     base: string,
     source: string,

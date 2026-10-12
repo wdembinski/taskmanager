@@ -18,11 +18,17 @@
  *   2. Read `origin`, and work out which forge it belongs to (`remoteUrl.ts`).
  *   3. Check the remote: fetch `origin`'s current copy of `base` and, if it has moved since
  *      this worktree last saw it, rebase the branch onto its new tip before anything is
- *      pushed ({@link WorktreeManager.syncWithRemoteBase}, reusing the same mechanical
+ *      pushed ({@link WorktreeManager.syncOntoRemoteBase}, reusing the same mechanical
  *      conflict rungs `integrate` does). Opening a pull request against a base the branch has
  *      already fallen behind is exactly how a conflict shows up on the forge that nothing
- *      here ever saw coming — this is what catches it first.
- *   4. Push the branch, failing fast rather than prompting (`git.pushBranch`).
+ *      here ever saw coming — this is what catches it first. If that rebase turns out to
+ *      have absorbed the branch's own work (someone merged it already, on the forge or by
+ *      hand), there is nothing left to open a pull request for — refused the same way an
+ *      empty branch always was, just discovered a step later.
+ *   4. Push the branch, failing fast rather than prompting (`git.pushBranch`) — leased
+ *      (`--force-with-lease`) whenever step 3 actually rebased: the branch's commits now have
+ *      different SHAs than whatever was pushed under this name before, and an ordinary push
+ *      would be rejected as non-fast-forward the moment it already exists on the far side.
  *   5. POST the create, treating "one already exists" as success — and when it was, or
  *      already was before the POST, PATCH/PUT its description to match the branch's current
  *      commits ({@link refreshDescription}), since the push just pushed.
@@ -50,7 +56,14 @@ import {
   wrapHanging,
   wrapPlainText,
 } from '@shared/commitMessage';
-import { branchCommitMessages, commitsAhead, hasCommits, pushBranch, remoteUrl } from '../git';
+import {
+  branchCommitMessages,
+  commitsAhead,
+  hasCommits,
+  pushBranch,
+  remoteBranchSha,
+  remoteUrl,
+} from '../git';
 import { hostFor, type ExecHost } from '../exec';
 import { GitHubClient } from '../github/githubClient';
 import { pullRequestId } from '../github/githubPrSync';
@@ -78,11 +91,11 @@ export interface CreatePrDeps {
   ): Promise<{ cwd: string; branch: string; base: string } | null>;
   /**
    * Make sure `branch` is rebased onto `base` AS IT STANDS ON THE REMOTE right now, before
-   * anything is pushed — `WorktreeManager.syncWithRemoteBase`, reusing the exact conflict
+   * anything is pushed — `WorktreeManager.syncOntoRemoteBase`, reusing the exact conflict
    * rungs the branch's eventual merge would use. `opts.url`, when given, is the same
    * ephemeral tokenized URL the push uses a moment later, for a private remote.
    */
-  syncWithRemoteBase(
+  syncOntoRemoteBase(
     project: Project,
     base: string,
     worktree: string,
@@ -206,7 +219,7 @@ export async function openPullRequest(
   // same mechanical conflict rungs `integrate` uses to land a merge. Skipping this is exactly
   // how a pull request ends up opened against a base the branch has already fallen behind,
   // showing a conflict on the forge that nothing here ever saw coming.
-  const sync = await deps.syncWithRemoteBase(project, live.base, live.cwd, { url: target.url });
+  const sync = await deps.syncOntoRemoteBase(project, live.base, live.cwd, { url: target.url });
   if (sync.status === 'conflict') {
     throw new Error(
       `"${live.base}" has moved on ${target.host} since "${live.branch}" was built, and ` +
@@ -228,11 +241,42 @@ export async function openPullRequest(
         `conflict(s) that were resolved automatically, with no agent (${sync.autoResolved.join(', ')}).`
       : '';
 
+  // Re-asked AFTER the sync, which may have just rebased the branch onto a base that already
+  // contained every one of its commits — someone merged this exact work on the forge, or by
+  // hand, while the worktree sat idle. The EARLIER check above only ever saw this worktree's
+  // own, possibly stale, copy of base; this is the first point the fresh one can be trusted.
+  if (sync.status === 'synced') {
+    const stillAhead = await commitsAhead(live.cwd, live.base, live.branch, host);
+    if (stillAhead === 0) {
+      const open = reportOpen();
+      if (open) return open;
+      throw new Error(
+        `"${live.branch}" has no commits that ${live.base} does not already have, now that ` +
+          `${target.host}'s current state has been pulled in — its work is already there. ` +
+          `There is nothing to open a pull request for.`,
+      );
+    }
+  }
+
   // The material `prBody` summarises. Read AFTER the remote check, which may have rebased the
   // branch onto a fresher base — same messages, new commits. `[]` on a read failure, not on a
   // genuinely empty branch — `ahead` already ruled that out above — so `prBody` reads an empty
   // array as "fall back to the card's own description" rather than "say nothing".
   const commits = await branchCommitMessages(live.cwd, live.base, live.branch, host);
+
+  // Leased whenever the sync above actually rebased the branch: its commits now have SHAs
+  // that nothing pushed under this name before would recognise, so an ordinary push is
+  // rejected as non-fast-forward the moment the branch already exists on the far side. The
+  // lease is fetched fresh, moments before the push, rather than reused from `sync` — which
+  // never looked at the BRANCH's own remote ref, only `base`'s.
+  const lease =
+    sync.status === 'synced'
+      ? await remoteBranchSha(live.cwd, 'origin', live.branch, {
+          url: target.url,
+          secrets: [target.token],
+          host,
+        })
+      : undefined;
 
   // The push. `target.url` is a tokenized URL only when the remote is https — an ssh remote
   // authenticates with a key and there is nothing to inject — and it is passed as ARGV, never
@@ -242,6 +286,9 @@ export async function openPullRequest(
     url: target.url,
     secrets: [target.token],
     host,
+    // `null` (no such branch on the remote yet) leases against its absence — see
+    // `PushOptions.forceWithLease`.
+    ...(lease !== undefined ? { forceWithLease: { expected: lease ?? '' } } : {}),
   });
   if (pushed.code !== 0) {
     // Redacted by `pushBranch` before it got here: git quotes the URL it was given back in

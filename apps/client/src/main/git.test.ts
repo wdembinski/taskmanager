@@ -30,6 +30,7 @@ import {
   rebasingBranch,
   rebaseOnto,
   redactSecrets,
+  remoteBranchSha,
   remoteUrl,
   removeWorktree,
   upstreamOf,
@@ -97,6 +98,30 @@ describe('git helpers', () => {
     // Cleanup succeeds.
     expect((await removeWorktree(repo, wt)).code).toBe(0);
     expect((await deleteBranch(repo, 'orch/t1')).code).toBe(0);
+  });
+
+  it('autostashes uncommitted work around a clean rebase, then restores it', async () => {
+    const wt = join(repo, '..', `wta-${Date.now()}`);
+    await addWorktree(repo, wt, 'orch/t1a', base);
+    writeFileSync(join(wt, 'b.txt'), 'from-branch\n');
+    await commitAll(wt, 'add b');
+    await commitFile(repo, 'c.txt', 'from-base\n', 'add c');
+
+    // Dirty on a TRACKED file the rebase never touches — without --autostash this refuses
+    // outright ("cannot rebase: you have unstaged changes").
+    writeFileSync(join(wt, 'b.txt'), 'from-branch, edited uncommitted\n');
+    expect((await rebaseOnto(wt, base)).code).not.toBe(0);
+    expect(await hasConflicts(wt)).toBe(false); // refused before it ever started, not a conflict
+
+    const res = await rebaseOnto(wt, base, undefined, undefined, true);
+
+    expect(res.code).toBe(0);
+    // `.trim()`: a global `core.autocrlf` on the test machine is free to normalize line
+    // endings on checkout/stash-pop, and that is not what this test is about.
+    expect(readFileSync(join(wt, 'b.txt'), 'utf8').trim()).toBe('from-branch, edited uncommitted');
+    expect(await isClean(wt)).toBe(false); // the autostashed edit is back, still uncommitted
+
+    await removeWorktree(repo, wt);
   });
 
   it('surfaces a conflicting rebase (non-zero + hasConflicts) and can abort', async () => {
@@ -581,6 +606,50 @@ describe('git helpers — fetching a ref and pushing with a lease', () => {
     expect(res.code).not.toBe(0);
     expect(res.stdout).not.toContain(token);
     expect(res.stderr).not.toContain(token);
+  });
+
+  it("reads a branch's current tip on the remote, and null when it has none", async () => {
+    const branch = 'feat/has-a-remote-tip';
+    await git(repo, ['checkout', '-b', branch]);
+    await commitFile(repo, 'e.txt', 'work\n', 'work');
+    await git(repo, ['push', 'origin', branch]);
+    const sha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    expect(await remoteBranchSha(repo, 'origin', branch)).toBe(sha);
+    expect(await remoteBranchSha(repo, 'origin', 'no-such-branch')).toBeNull();
+  });
+
+  describe('pushBranch — leased against absence', () => {
+    it('an empty lease succeeds for a branch the remote has never seen', async () => {
+      const branch = 'feat/lease-new';
+      await git(repo, ['checkout', '-b', branch]);
+      await commitFile(repo, 'f.txt', 'work\n', 'work');
+
+      const res = await pushBranch(repo, 'origin', branch, { forceWithLease: { expected: '' } });
+
+      expect(res.code).toBe(0);
+      expect((await git(bare, ['rev-parse', `refs/heads/${branch}`])).code).toBe(0);
+    });
+
+    it('an empty lease refuses when someone else already pushed that branch', async () => {
+      const branch = 'feat/lease-raced';
+      // Someone else — a second clone — gets there first.
+      const other = mkdtempSync(join(tmpdir(), 'orch-other-'));
+      await git(other, ['clone', bare, '.']);
+      await git(other, ['config', 'user.email', 'test@example.com']);
+      await git(other, ['config', 'user.name', 'Test']);
+      await git(other, ['config', 'commit.gpgsign', 'false']);
+      await commitFile(other, 'race.txt', 'first\n', 'got there first');
+      await git(other, ['push', 'origin', `HEAD:${branch}`]);
+      rmSync(other, { recursive: true, force: true });
+
+      await git(repo, ['checkout', '-b', branch]);
+      await commitFile(repo, 'f.txt', 'work\n', 'work');
+
+      const res = await pushBranch(repo, 'origin', branch, { forceWithLease: { expected: '' } });
+
+      expect(res.code).not.toBe(0);
+    });
   });
 });
 

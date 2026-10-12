@@ -663,9 +663,9 @@ describe('WorktreeManager.integrate — a base branch that is not checked out', 
  * someone else pushes to the project's base branch while a card's worktree sits idle waiting
  * for a human to press **Create PR**. Simulated with a bare "origin" and a throwaway clone
  * that pushes to it directly, so `repo`'s own `refs/heads/<base>` is genuinely stale until
- * `syncWithRemoteBase` fetches it.
+ * `syncOntoRemoteBase` fetches it.
  */
-describe('WorktreeManager.syncWithRemoteBase', () => {
+describe('WorktreeManager.syncOntoRemoteBase', () => {
   /** A bare "origin" for `repo`, seeded with base's current state. */
   async function addBareOrigin(): Promise<string> {
     const bare = join(root, 'origin.git');
@@ -701,7 +701,7 @@ describe('WorktreeManager.syncWithRemoteBase', () => {
     const wtm = new WorktreeManager(root);
     const wt = await branchAdding('orch/rs0', 'feature.txt', 'feature\n');
 
-    const res = await wtm.syncWithRemoteBase(project(), base, wt);
+    const res = await wtm.syncOntoRemoteBase(project(), base, wt);
 
     expect(res.status).toBe('up-to-date');
     await git(repo, ['worktree', 'remove', '--force', wt]);
@@ -718,7 +718,7 @@ describe('WorktreeManager.syncWithRemoteBase', () => {
       'pushed directly to origin',
     );
 
-    const res = await wtm.syncWithRemoteBase(project(), base, wt);
+    const res = await wtm.syncOntoRemoteBase(project(), base, wt);
 
     expect(res.status).toBe('synced');
     // Local base was fast-forwarded to exactly what the remote had.
@@ -740,13 +740,81 @@ describe('WorktreeManager.syncWithRemoteBase', () => {
     await git(wt, ['commit', '--no-verify', '-am', 'branch edits seed']);
     await pushToOriginBase(bare, 'seed.txt', 'REMOTE-EDIT\n', 'remote edits seed');
 
-    const res = await wtm.syncWithRemoteBase(project(), base, wt);
+    const res = await wtm.syncOntoRemoteBase(project(), base, wt);
 
     expect(res.status).toBe('conflict');
     expect(res.status === 'conflict' && res.files).toContain('seed.txt');
     // Undone, not parked: the branch is exactly where it started, with no rebase in progress.
     expect(await currentBranch(wt)).toBe('orch/rs2');
     expect(await hasConflicts(wt)).toBe(false);
+
+    await git(repo, ['worktree', 'remove', '--force', wt]);
+  });
+
+  it(
+    'advances local base to the remote tip even when base itself is not checked out anywhere ' +
+      '(shared-directory / non-worktree projects, where the branch IS the checkout)',
+    async () => {
+      // `updateLocalBase`'s ref-move half, not its merge half: `base` is a ref nothing has
+      // checked out, because the checkout — `repo` itself — sits on the task's own branch, the
+      // shape `useWorktrees: false` always has. `FETCH_HEAD` is a local pseudo-ref, readable by
+      // `rev-parse`/`merge` but not one `git fetch` can treat as a source ref on another
+      // "remote" (even `.` itself) — passing the literal string through to that ref-move used
+      // to fail outright with "couldn't find remote ref FETCH_HEAD" on every call this test
+      // shape takes, while the OTHER describe block's tests (base checked out → `merge
+      // --ff-only FETCH_HEAD`) stayed green and never caught it.
+      const wtm = new WorktreeManager(root);
+      const bare = await addBareOrigin();
+      await git(repo, ['checkout', '-b', 'orch/rs1b']);
+      writeFileSync(join(repo, 'feature.txt'), 'feature\n');
+      await git(repo, ['add', '-A']);
+      await git(repo, ['commit', '--no-verify', '-m', 'branch work']);
+      const remoteHead = await pushToOriginBase(
+        bare,
+        'remote-only.txt',
+        'from-elsewhere\n',
+        'pushed directly to origin',
+      );
+
+      const res = await wtm.syncOntoRemoteBase(project(), base, repo);
+
+      expect(res.status).toBe('synced');
+      expect((await git(repo, ['rev-parse', base])).stdout.trim()).toBe(remoteHead);
+      expect((await git(repo, ['cat-file', '-e', 'HEAD:remote-only.txt'])).code).toBe(0);
+      expect((await git(repo, ['cat-file', '-e', 'HEAD:feature.txt'])).code).toBe(0);
+      expect(await currentBranch(repo)).toBe('orch/rs1b');
+    },
+  );
+
+  it('autostashes uncommitted work in the worktree around the rebase, instead of refusing', async () => {
+    // The one way this differs, on purpose, from `integrate`'s use of the same rebase ladder:
+    // `integrate` always commits the worktree first, so it never needed `--autostash`, but a
+    // human can press Create PR while an agent's edits still sit there uncommitted — and
+    // refusing outright on a dirty worktree would turn "base moved" into a worse failure than
+    // the one this whole check exists to catch early.
+    const wtm = new WorktreeManager(root);
+    const bare = await addBareOrigin();
+    const wt = await branchAdding('orch/rs3', 'feature.txt', 'feature\n');
+    await pushToOriginBase(
+      bare,
+      'remote-only.txt',
+      'from-elsewhere\n',
+      'pushed directly to origin',
+    );
+
+    // Dirty on a TRACKED file the rebase never touches — would refuse outright without
+    // `--autostash`.
+    writeFileSync(join(wt, 'feature.txt'), 'feature, edited uncommitted\n');
+
+    const res = await wtm.syncOntoRemoteBase(project(), base, wt);
+
+    expect(res.status).toBe('synced');
+    expect((await git(wt, ['cat-file', '-e', 'HEAD:remote-only.txt'])).code).toBe(0);
+    // The autostashed edit is back, still uncommitted.
+    expect(readFileSync(join(wt, 'feature.txt'), 'utf8').trim()).toBe(
+      'feature, edited uncommitted',
+    );
+    expect((await git(wt, ['diff', '--quiet'])).code).not.toBe(0);
 
     await git(repo, ['worktree', 'remove', '--force', wt]);
   });
