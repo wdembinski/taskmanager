@@ -36,17 +36,8 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Caption1, makeStyles } from '@fluentui/react-components';
-import {
-  COLUMN_META,
-  focusCards,
-  groupSubtasks,
-  hiddenColumnsSummary,
-  partitionShelved,
-  sortCards,
-  visibleColumns,
-  type BoardCard,
-} from '@tm/ui/board/boardColumns';
-import { columnForTask, statusForColumn } from '@tm/shared/board';
+import { COLUMN_META, hiddenColumnsSummary, visibleColumns } from '@tm/ui/board/boardColumns';
+import { statusForColumn } from '@tm/shared/board';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
@@ -76,7 +67,12 @@ import {
 } from '@tm/shared/model';
 import type { BoardScope } from '@tm/shared/ipc';
 import { BoardToolbar } from './BoardToolbar';
-import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
+import {
+  bucketBoardCards,
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+} from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -300,27 +296,13 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
       ...task,
       status: displayStatus(state, task),
     }));
-    const byColumn = new Map<BoardColumn, BoardCard[]>();
-    for (const meta of COLUMN_META) byColumn.set(meta.column, []);
-    const { onBoard, shelved } = partitionShelved(
-      focusCards(groupSubtasks(displayTasks, mrsByTask), focusIds),
+    return bucketBoardCards(
+      displayTasks,
+      mrsByTask,
+      focusIds,
       shelvedIds,
+      extras.attention.taskIds,
     );
-    for (const card of onBoard) byColumn.get(columnForTask(card.task))?.push(card);
-    // The desktop's ordering, so the same board reads the same way in both places: cards
-    // that want you first, then priority, then `order`. The inbox's ids go in too, now that
-    // this app has them — the ordering and the orange ring are one predicate, and passing it
-    // to the card but not to the sort would have the two disagree.
-    for (const meta of COLUMN_META) {
-      byColumn.set(
-        meta.column,
-        sortCards(byColumn.get(meta.column) ?? [], extras.attention.taskIds),
-      );
-    }
-    return {
-      cardsByColumn: byColumn,
-      shelvedCards: sortCards(shelved, extras.attention.taskIds),
-    };
   }, [boardTasks, state, mrsByTask, focusIds, extras.attention.taskIds, shelvedIds]);
 
   const hiddenDone = useMemo(
