@@ -33,7 +33,9 @@ interface Manifest {
 }
 
 function readManifest(): Manifest {
-  return JSON.parse(readFileSync(join(webRoot, 'public', 'manifest.webmanifest'), 'utf8')) as Manifest;
+  return JSON.parse(
+    readFileSync(join(webRoot, 'public', 'manifest.webmanifest'), 'utf8'),
+  ) as Manifest;
 }
 
 /** Reads width/height straight out of a PNG's IHDR chunk — always the first 24 bytes. */
@@ -89,9 +91,9 @@ describe('index.html', () => {
 
 describe('staticwebapp.config.json', () => {
   it('serves .webmanifest with its own MIME type, not a generic octet-stream', () => {
-    const config = JSON.parse(
-      readFileSync(join(webRoot, 'staticwebapp.config.json'), 'utf8'),
-    ) as { mimeTypes?: Record<string, string> };
+    const config = JSON.parse(readFileSync(join(webRoot, 'staticwebapp.config.json'), 'utf8')) as {
+      mimeTypes?: Record<string, string>;
+    };
     expect(config.mimeTypes?.['.webmanifest']).toBe('application/manifest+json');
   });
 });
