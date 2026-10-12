@@ -334,6 +334,37 @@ does mean the base moves when you switch branches. Pinning one you don't keep ch
 out also makes integration immune to your own uncommitted work: that merge only moves
 the branch pointer, so it never has to refuse in order to protect your files.
 
+#### Staying current with base
+
+A task does not start on whatever the base branch happened to be sitting on
+*locally* — preparation pulls first, automatically, with no setting to turn it off:
+
+- **The base branch advances to its upstream**, if it has one (`git push`'s own
+  `remote`/`branch` tracking — never a hardcoded `origin`). Checked out and clean, it
+  fast-forwards in place; checked out somewhere else, it is a pure ref move that never
+  touches a file. A base with local commits upstream has never seen is left alone
+  (fast-forwarding would discard them), and so is one with no upstream at all — a
+  purely local repo is a normal, supported state, not a failure.
+- **A live worktree's branch is rebased onto the refreshed base**, if it has fallen
+  behind, through the identical mechanical ladder a merge runs (union-merge for
+  additive config churn, then a scripted lockfile/version-bump rebuild) — so the same
+  kinds of drift that would otherwise surface as a merge conflict later are cleared
+  before the agent even starts. A **fresh** worktree needs none of this: it is cut
+  from the base this step just advanced.
+- **A dirty worktree, a chat reply, and a card `stacked` on another one's branch all
+  skip the rebase.** An agent's own half-done work from a prior run is not this step's
+  to touch; a chat reply must not insert a rebase ahead of what you are about to say
+  mid-conversation; and a stacked card's branch is behind its *predecessor's* branch,
+  never base, so "behind base" was never the question for it.
+- **A conflict the mechanical ladder can't clear leaves the rebase paused**, exactly
+  as a merge conflict does, except the agent is told to finish it ITSELF — resolve,
+  `git add`, `git rebase --continue` — before starting the task, since this happens
+  before the run even begins and there is no later orchestrator step to hand it to.
+
+Every step of this fails soft: an unreachable remote, a diverged base, or a rebase
+that can't finish cleanly all leave things exactly as they were, with a note on the
+card's timeline explaining why, and the run proceeds regardless.
+
 > **A delegated run never writes to JIRA.** Assigning, starting or finishing one
 > never transitions a ticket or posts a comment. You can write to JIRA yourself —
 > drag a card between columns, post a comment, create a card as a real issue — but
@@ -549,6 +580,10 @@ the plan, so the steps are full-auto.
 
 - **One shared worktree per ticket.** Every step of a card runs on the parent's
   `orch/<parentId>` branch in the same worktree, so step 3 sees what step 1 built.
+  Preparation still checks it against base before each step — see
+  [Staying current with base](#staying-current-with-base) — except it never rebases a
+  branch `stacked` on a predecessor's, since that branch's base is the predecessor,
+  not the project's.
 - **Integration happens once.** A finished step with a pending sibling marks itself
   done and starts the next one; only the **last** step merges the branch back into the
   base and removes the worktree.

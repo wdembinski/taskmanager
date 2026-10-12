@@ -849,6 +849,326 @@ describe('WorktreeManager.prepare — a worktree stranded mid-rebase', () => {
   });
 });
 
+/**
+ * `refreshBase` — advancing the project's local base onto whatever it tracks upstream,
+ * before anything is cut from or rebased onto it. Uses a real bare repo as `origin`, exactly
+ * like `git.test.ts:344-409`, with a second clone standing in for "someone else pushed".
+ */
+describe('WorktreeManager.prepare — syncing the base branch with its upstream', () => {
+  // Pinned explicitly: a couple of these tests check the main checkout OUT from under
+  // `base` on purpose (the "not checked out" case), and an unpinned project would then read
+  // THAT branch as base instead, per `prepare`'s own "whatever is checked out" fallback.
+  function worktreeProject(): Project {
+    return {
+      id: 'p1',
+      path: repo,
+      useWorktrees: true,
+      baseBranch: base,
+      target: LOCAL_TARGET,
+    } as unknown as Project;
+  }
+
+  let bareDir = '';
+
+  /** Push a commit to `branch` on `bareDir` from a SECOND clone — "someone else moved it". */
+  async function pushFromSecondClone(
+    branch: string,
+    file: string,
+    content: string,
+    msg: string,
+  ): Promise<void> {
+    const clone = mkdtempSync(join(tmpdir(), 'orch-wtm-clone-'));
+    try {
+      await git(clone, ['clone', bareDir, '.']);
+      // A clone starts with no identity of its own — unlike `repo`, which gets one via
+      // `initRepo`. Without this, the commit below fails silently wherever no global git
+      // identity is configured (every CI runner), and the push right after it still
+      // exits 0 ("Everything up-to-date") with nothing actually pushed.
+      await git(clone, ['config', 'user.email', 'test@example.com']);
+      await git(clone, ['config', 'user.name', 'Test']);
+      await git(clone, ['checkout', branch]);
+      writeFileSync(join(clone, file), content);
+      await git(clone, ['add', '-A']);
+      // Checked explicitly: a failed commit here leaves nothing new to push, and `push`
+      // still exits 0 ("Everything up-to-date") — the bug above hid behind exactly that.
+      expect((await git(clone, ['commit', '--no-verify', '-m', msg])).code).toBe(0);
+      expect((await git(clone, ['push', 'origin', branch])).code).toBe(0);
+    } finally {
+      rmSync(clone, { recursive: true, force: true });
+    }
+  }
+
+  beforeEach(async () => {
+    bareDir = mkdtempSync(join(tmpdir(), 'orch-wtm-bare-'));
+    await git(bareDir, ['init', '--bare']);
+    await git(repo, ['remote', 'add', 'origin', bareDir]);
+    expect((await git(repo, ['push', '-u', 'origin', base])).code).toBe(0);
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(bareDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+
+  it('fast-forwards the checked-out, clean base onto a new upstream commit', async () => {
+    await pushFromSecondClone(base, 'remote.txt', 'from upstream\n', 'remote work');
+
+    const wtm = new WorktreeManager(join(root, 'wtroot-sync1'));
+    const prep = await wtm.prepare(worktreeProject(), { id: 'sync1' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    // The local base checkout itself now has the remote's commit…
+    expect(existsSync(join(repo, 'remote.txt'))).toBe(true);
+    // …and the fresh worktree was cut from the freshly-advanced base.
+    if (prep.mode !== 'worktree') return;
+    expect(existsSync(join(prep.cwd, 'remote.txt'))).toBe(true);
+  });
+
+  it('advances base as a pure ref move when something else is checked out', async () => {
+    await git(repo, ['checkout', '-b', 'scratch']);
+    await pushFromSecondClone(base, 'remote.txt', 'from upstream\n', 'remote work');
+
+    const wtm = new WorktreeManager(join(root, 'wtroot-sync2'));
+    const prep = await wtm.prepare(worktreeProject(), { id: 'sync2' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    expect((await git(repo, ['cat-file', '-e', `${base}:remote.txt`])).code).toBe(0);
+    // The checkout (on `scratch`) was never touched — a pure ref move.
+    expect(existsSync(join(repo, 'remote.txt'))).toBe(false);
+  });
+
+  it('leaves a diverged base alone, with a note', async () => {
+    writeFileSync(join(repo, 'local-only.txt'), 'local\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'local-only commit']);
+    await pushFromSecondClone(base, 'remote.txt', 'from upstream\n', 'remote work');
+
+    const wtm = new WorktreeManager(join(root, 'wtroot-sync3'));
+    const prep = await wtm.prepare(worktreeProject(), { id: 'sync3' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.note).toMatch(/diverged/i);
+    expect(existsSync(join(repo, 'remote.txt'))).toBe(false);
+  });
+
+  it('leaves a dirty checked-out base alone, with a note', async () => {
+    await pushFromSecondClone(base, 'remote.txt', 'from upstream\n', 'remote work');
+    writeFileSync(join(repo, 'seed.txt'), 'uncommitted edit\n');
+
+    const wtm = new WorktreeManager(join(root, 'wtroot-sync4'));
+    const prep = await wtm.prepare(worktreeProject(), { id: 'sync4' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.note).toMatch(/uncommitted/i);
+    expect(existsSync(join(repo, 'remote.txt'))).toBe(false);
+  });
+
+  it('does nothing and says nothing when there is no upstream at all', async () => {
+    await git(repo, ['remote', 'remove', 'origin']);
+
+    const wtm = new WorktreeManager(join(root, 'wtroot-sync5'));
+    const prep = await wtm.prepare(worktreeProject(), { id: 'sync5' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.note).toBeUndefined();
+  });
+
+  it('notes an unreachable remote but still runs the task against the local base', async () => {
+    await git(repo, ['remote', 'set-url', 'origin', join(bareDir, 'does-not-exist')]);
+
+    const wtm = new WorktreeManager(join(root, 'wtroot-sync6'));
+    const prep = await wtm.prepare(worktreeProject(), { id: 'sync6' } as unknown as Task);
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.note).toMatch(/fetch/i);
+  });
+});
+
+/**
+ * `syncBranch` — rebasing a LIVE worktree's branch onto base before the task starts, so the
+ * agent begins on fresh code instead of discovering the drift (and the merge conflict) itself.
+ */
+describe('WorktreeManager.prepare — syncing a live worktree’s branch with base', () => {
+  function worktreeProject(): Project {
+    return { id: 'p1', path: repo, useWorktrees: true, target: LOCAL_TARGET } as unknown as Project;
+  }
+
+  async function commitOnBase(file: string, content: string, msg: string) {
+    writeFileSync(join(repo, file), content);
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', msg]);
+  }
+
+  it('rebases a live branch that has fallen behind base, silently when nothing needed resolving', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-live1'));
+    const first = await wtm.prepare(worktreeProject(), { id: 'live1' } as unknown as Task);
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+
+    await commitOnBase('base-advance.txt', 'base moved on\n', 'base advances');
+
+    const prep = await wtm.prepare(worktreeProject(), { id: 'live1' } as unknown as Task);
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(existsSync(join(prep.cwd, 'base-advance.txt'))).toBe(true);
+    // An ordinary clean rebase is the point of this feature, not a surprise — no note either.
+    expect(prep.note).toBeUndefined();
+    expect(prep.agentNote).toBeUndefined();
+  });
+
+  it('auto-resolves a mechanical conflict while syncing, and notes what it did', async () => {
+    const manifest = (version: string): string =>
+      `{\n  "name": "fixture",\n  "version": "${version}",\n  "private": true\n}\n`;
+    const wtm = new WorktreeManager(join(root, 'wtroot-live2'));
+    await commitOnBase('package.json', manifest('1.0.0'), 'seed manifest');
+
+    const first = await wtm.prepare(worktreeProject(), { id: 'live2' } as unknown as Task);
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    writeFileSync(join(first.cwd, 'package.json'), manifest('1.0.1'));
+    await git(first.cwd, ['commit', '--no-verify', '-am', 'branch edits manifest']);
+
+    // A release ran on base while this branch was out — its number is the newer one, and
+    // `resolveVersionOnlyConflict` can resolve that without an agent.
+    await commitOnBase('package.json', manifest('1.1.0'), 'release 1.1.0');
+
+    const prep = await wtm.prepare(worktreeProject(), { id: 'live2' } as unknown as Task);
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.agentNote).toBeUndefined();
+    expect(prep.note).toMatch(/rebased/i);
+    expect(prep.note).toContain('auto-resolved');
+    const manifestText = readFileSync(join(prep.cwd, 'package.json'), 'utf8');
+    expect(manifestText).toContain('"version": "1.1.0"');
+    expect(manifestText).not.toContain('<<<<<<<');
+  });
+
+  it('leaves a real conflict paused, with an agent note naming the file', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-live3'));
+    await commitOnBase('src.txt', 'original\n', 'seed src');
+    const first = await wtm.prepare(worktreeProject(), { id: 'live3' } as unknown as Task);
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    writeFileSync(join(first.cwd, 'src.txt'), 'BRANCH-EDIT\n');
+    await git(first.cwd, ['commit', '--no-verify', '-am', 'branch edits src']);
+    await commitOnBase('src.txt', 'BASE-EDIT\n', 'base edits src');
+
+    const prep = await wtm.prepare(worktreeProject(), { id: 'live3' } as unknown as Task);
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.agentNote).toBeTruthy();
+    expect(prep.agentNote).toContain('src.txt');
+    expect(prep.agentNote).toContain('rebase --continue');
+    // Paused for the agent, not aborted — the markers are still there to resolve.
+    expect(await hasConflicts(first.cwd)).toBe(true);
+    expect(readFileSync(join(first.cwd, 'src.txt'), 'utf8')).toContain('<<<<<<<');
+  });
+
+  it('skips a dirty worktree — an agent’s own half-done work is not this step’s to touch', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-live4'));
+    const first = await wtm.prepare(worktreeProject(), { id: 'live4' } as unknown as Task);
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    // An uncommitted edit to a TRACKED file — `isClean` deliberately ignores untracked ones,
+    // so a half-done edit has to touch something the branch already has to count as dirty.
+    writeFileSync(join(first.cwd, 'seed.txt'), 'half-done work\n');
+    await commitOnBase('base-advance.txt', 'base moved on\n', 'base advances');
+
+    const prep = await wtm.prepare(worktreeProject(), { id: 'live4' } as unknown as Task);
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.note).toBeUndefined();
+    expect(prep.agentNote).toBeUndefined();
+    expect(existsSync(join(first.cwd, 'base-advance.txt'))).toBe(false);
+    expect(readFileSync(join(first.cwd, 'seed.txt'), 'utf8')).toBe('half-done work\n');
+  });
+
+  it('skips the rebase while resolving a conflict IS the run (resumingRebase)', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-live5'));
+    await commitOnBase('src.txt', 'original\n', 'seed src');
+    const first = await wtm.prepare(worktreeProject(), { id: 'live5' } as unknown as Task);
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    writeFileSync(join(first.cwd, 'src.txt'), 'BRANCH-EDIT\n');
+    await git(first.cwd, ['commit', '--no-verify', '-am', 'branch edits src']);
+    await commitOnBase('src.txt', 'BASE-EDIT\n', 'base edits src');
+    // Strand it mid-rebase, exactly as the conflict ladder would leave it.
+    expect((await rebaseOnto(first.cwd, base)).code).not.toBe(0);
+
+    const prep = await wtm.prepare(
+      worktreeProject(),
+      { id: 'live5' } as unknown as Task,
+      'live5',
+      undefined,
+      undefined,
+      { resumingRebase: true },
+    );
+
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    // The pause this run exists to resolve is untouched, and nothing was synced over it.
+    expect(await hasConflicts(first.cwd)).toBe(true);
+    expect(prep.agentNote).toBeUndefined();
+  });
+
+  it('skips the rebase for a branch stacked on a predecessor’s (startPoint given)', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-live6'));
+    await git(repo, ['checkout', '-b', 'orch/pred']);
+    writeFileSync(join(repo, 'from-pred.txt'), 'pred\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'predecessor card']);
+    await git(repo, ['checkout', base]);
+
+    const first = await wtm.prepare(
+      worktreeProject(),
+      { id: 'live6' } as unknown as Task,
+      'live6',
+      'orch/live6',
+      'orch/pred',
+    );
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    await commitOnBase('base-advance.txt', 'base moved on\n', 'base advances');
+
+    // Same startPoint given again, as the scheduler does on every call for a stacked card.
+    const prep = await wtm.prepare(
+      worktreeProject(),
+      { id: 'live6' } as unknown as Task,
+      'live6',
+      'orch/live6',
+      'orch/pred',
+    );
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.note).toBeUndefined();
+    expect(prep.agentNote).toBeUndefined();
+    // Not rebased onto base — "behind base" was never the question for this branch.
+    expect(existsSync(join(prep.cwd, 'base-advance.txt'))).toBe(false);
+  });
+
+  it('skips the rebase when the caller asks to (opts.skipSync — a chat reply)', async () => {
+    const wtm = new WorktreeManager(join(root, 'wtroot-live7'));
+    const first = await wtm.prepare(worktreeProject(), { id: 'live7' } as unknown as Task);
+    if (first.mode !== 'worktree') throw new Error('no worktree');
+    await commitOnBase('base-advance.txt', 'base moved on\n', 'base advances');
+
+    const prep = await wtm.prepare(
+      worktreeProject(),
+      { id: 'live7' } as unknown as Task,
+      'live7',
+      undefined,
+      undefined,
+      { skipSync: true },
+    );
+    expect(prep.mode).toBe('worktree');
+    if (prep.mode !== 'worktree') return;
+    expect(prep.note).toBeUndefined();
+    expect(prep.agentNote).toBeUndefined();
+    expect(existsSync(join(prep.cwd, 'base-advance.txt'))).toBe(false);
+  });
+});
+
 describe('WorktreeManager.prepare — worktree-enabled repo that cannot isolate', () => {
   it('reports "failed" (never falls back to the base tree) when a worktree cannot be created', async () => {
     const task = { id: 't1' } as unknown as Task;

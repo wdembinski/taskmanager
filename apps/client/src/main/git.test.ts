@@ -32,6 +32,7 @@ import {
   redactSecrets,
   remoteUrl,
   removeWorktree,
+  upstreamOf,
 } from './git';
 
 let repo = '';
@@ -407,6 +408,89 @@ describe('git helpers — reading a remote and pushing to it', () => {
     });
 
     expect(res.code).not.toBe(0);
+  });
+
+  describe('upstreamOf, fetchRef, isAncestor', () => {
+    it('answers null for a branch with no upstream configured', async () => {
+      await git(repo, ['checkout', '-b', 'feat/no-upstream']);
+      expect(await upstreamOf(repo, 'feat/no-upstream')).toBeNull();
+      // The base branch itself was never pushed either.
+      expect(await upstreamOf(repo, base)).toBeNull();
+    });
+
+    it('reads the remote and ref apart, for a branch name that itself has a slash', async () => {
+      const branch = 'feat/has/slashes';
+      await git(repo, ['checkout', '-b', branch]);
+      await commitFile(repo, 'e.txt', 'work\n', 'work');
+      expect((await pushBranch(repo, 'origin', branch)).code).toBe(0);
+
+      expect(await upstreamOf(repo, branch)).toEqual({ remote: 'origin', ref: branch });
+    });
+
+    it('fetches a commit pushed from a second clone into the remote-tracking ref', async () => {
+      await git(repo, ['checkout', '-b', 'feat/fetch-me']);
+      expect((await pushBranch(repo, 'origin', 'feat/fetch-me')).code).toBe(0);
+
+      // A second clone pushes a commit `repo` has never seen.
+      const clone = mkdtempSync(join(tmpdir(), 'orch-clone-'));
+      try {
+        await git(clone, ['clone', bare, '.']);
+        // A clone starts with no identity of its own — unlike `repo`, which gets one in
+        // `beforeEach`. Without this, `commitFile`'s commit fails silently wherever no
+        // global git identity is configured (every CI runner), and the push right after
+        // it still exits 0 ("Everything up-to-date") with nothing actually pushed.
+        await git(clone, ['config', 'user.email', 'test@example.com']);
+        await git(clone, ['config', 'user.name', 'Test']);
+        await git(clone, ['checkout', 'feat/fetch-me']);
+        await commitFile(clone, 'f.txt', 'from-second-clone\n', 'from second clone');
+        expect((await git(clone, ['push', 'origin', 'feat/fetch-me'])).code).toBe(0);
+
+        const upstream = await upstreamOf(repo, 'feat/fetch-me');
+        expect(upstream).toEqual({ remote: 'origin', ref: 'feat/fetch-me' });
+        const fetched = await fetchRef(
+          repo,
+          upstream!.remote,
+          upstream!.ref,
+          `refs/remotes/${upstream!.remote}/${upstream!.ref}`,
+        );
+        expect(fetched.code).toBe(0);
+        expect(
+          (await git(repo, ['cat-file', '-e', 'refs/remotes/origin/feat/fetch-me:f.txt'])).code,
+        ).toBe(0);
+        // The local branch itself is untouched — fetch only moves the remote-tracking ref.
+        expect((await git(repo, ['cat-file', '-e', 'feat/fetch-me:f.txt'])).code).not.toBe(0);
+      } finally {
+        rmSync(clone, { recursive: true, force: true });
+      }
+    });
+
+    it('fails rather than hangs when fetching from an unreachable remote', async () => {
+      const res = await fetchRef(
+        repo,
+        join(bare, 'does-not-exist'),
+        base,
+        `refs/remotes/origin/${base}`,
+      );
+      expect(res.code).not.toBe(0);
+    });
+
+    it('is true for a strict or equal ancestor, false once history has diverged', async () => {
+      await commitFile(repo, 'g.txt', 'ancestor\n', 'ancestor commit');
+      const ancestor = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+      await commitFile(repo, 'h.txt', 'descendant\n', 'descendant commit');
+      const descendant = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+      expect(await isAncestor(repo, ancestor, descendant)).toBe(true);
+      expect(await isAncestor(repo, descendant, descendant)).toBe(true); // identical counts too
+      expect(await isAncestor(repo, descendant, ancestor)).toBe(false);
+
+      // Diverge: a branch off the ancestor that base never gets.
+      await git(repo, ['checkout', ancestor]);
+      await git(repo, ['checkout', '-b', 'feat/diverged']);
+      await commitFile(repo, 'i.txt', 'diverged\n', 'diverged commit');
+      expect(await isAncestor(repo, 'feat/diverged', descendant)).toBe(false);
+      expect(await isAncestor(repo, descendant, 'feat/diverged')).toBe(false);
+    });
   });
 });
 

@@ -61,6 +61,12 @@ export interface AgentTaskPromptOptions {
   /** (AI-assisted retry) why the previous attempt failed. */
   failureNote?: string;
   /**
+   * (Pre-run sync) a paused rebase `WorktreeManager.syncBranch` could not finish on its own.
+   * Rendered FIRST, ahead of everything else — it names a chore the agent must clear before
+   * the ticket below, not context about the ticket itself.
+   */
+  agentNote?: string;
+  /**
    * The project's standing instructions — setup knowledge that belongs to the
    * orchestrator rather than the codebase (where a build tree lives, an environment
    * to source first, a wrapper a command must run through).
@@ -221,7 +227,7 @@ export function buildAgentTaskPrompt(
   task: Task,
   options: AgentTaskPromptOptions = {},
 ): string {
-  const { branch, failureNote, worktreePath, projectPath } = options;
+  const { branch, failureNote, agentNote, worktreePath, projectPath } = options;
   // Bounded by recency: an uncapped ticket thread is the one part of this brief that can
   // grow to tens of thousands of tokens, re-paid on every launch. Blank entries are dropped
   // BEFORE bounding — they are nothing, not omitted history.
@@ -241,6 +247,8 @@ export function buildAgentTaskPrompt(
   const instructions = clean(options.instructions);
 
   return [
+    // A pre-run sync's paused-rebase chore, ahead of even the opening sentence.
+    ...(agentNote ? [agentNote, ''] : []),
     `You are working in the repository for the project "${projectName}".`,
     '',
     // Standing setup knowledge, before anything task-specific: it often decides HOW
@@ -432,6 +440,8 @@ export interface AgentSubtaskPromptOptions {
   branch?: string;
   /** (AI-assisted retry) why the previous attempt at this step failed. */
   failureNote?: string;
+  /** (Pre-run sync) a paused rebase `WorktreeManager.syncBranch` could not finish on its own. */
+  agentNote?: string;
   /** The project's standing setup instructions (see {@link AgentTaskPromptOptions}). */
   instructions?: string;
   /** (Worktree mode) the absolute working directory this step runs in. */
@@ -464,7 +474,8 @@ export function buildAgentSubtaskPrompt(
   subtask: Task,
   options: AgentSubtaskPromptOptions,
 ): string {
-  const { stepNumber, stepCount, branch, failureNote, worktreePath, projectPath } = options;
+  const { stepNumber, stepCount, branch, failureNote, agentNote, worktreePath, projectPath } =
+    options;
   const stepTitles = (options.stepTitles ?? []).map(clean).filter(Boolean);
   const notes = boundHistory((options.notes ?? []).map(clean).filter(Boolean), {
     maxChars: NOTES_CHAR_BUDGET,
@@ -475,6 +486,8 @@ export function buildAgentSubtaskPrompt(
   const instructions = clean(options.instructions);
 
   return [
+    // A pre-run sync's paused-rebase chore, ahead of even the opening sentence.
+    ...(agentNote ? [agentNote, ''] : []),
     `You are working in the repository for the project "${projectName}".`,
     '',
     ...(instructions ? [`Project setup notes you must follow:`, instructions, ''] : []),

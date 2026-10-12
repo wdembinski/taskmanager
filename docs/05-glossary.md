@@ -421,6 +421,11 @@ work with nothing to do with it. A base branch you do NOT keep checked out is in
 by moving the branch pointer instead (`git fetch . <branch>:<base>`), which touches no
 file and so can never be blocked by one.
 
+Before a task starts, preparation also brings it up to date with its own upstream (if it
+has one) and rebases a live task branch that has fallen behind it — see
+[Staying current with base](03-how-orchestration-works.md#staying-current-with-base). A
+real conflict either way leaves things paused rather than failing the run.
+
 ### Auto-release
 
 "When this card's branch merges, release it too." Set as a preference on the agent

@@ -2176,6 +2176,8 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     const prepared: Array<{ taskId: string; owner: string }> = [];
     /** Whether each `prepare` was told this run is resolving a rebase the app paused. */
     const resuming: boolean[] = [];
+    /** Whether each `prepare` was told to hold the branch rebase off (a chat reply). */
+    const skipSyncs: boolean[] = [];
     const integrated: Array<{ branch: string; base: string }> = [];
     /** Every paused rebase the scheduler went back and finished (Rung 2's redemption). */
     const finished: Array<{ branch: string; base: string }> = [];
@@ -2186,10 +2188,11 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
         owner: string = task.id,
         _branch?: string,
         _startPoint?: string,
-        prepOpts?: { resumingRebase?: boolean },
+        prepOpts?: { resumingRebase?: boolean; skipSync?: boolean },
       ) => {
         prepared.push({ taskId: task.id, owner });
         resuming.push(prepOpts?.resumingRebase === true);
+        skipSyncs.push(prepOpts?.skipSync === true);
         return Promise.resolve({
           mode: 'worktree',
           cwd: `C:/wt/${owner}`,
@@ -2259,6 +2262,7 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       emitAttention,
       prepared,
       resuming,
+      skipSyncs,
       integrated,
       finished,
       added,
@@ -2316,6 +2320,18 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
 
     const finished = rows.filter((r) => r.kind === 'run-finished');
     expect(finished.find((r) => r.taskId === 's2')?.origin).toBe('chain');
+  });
+
+  /**
+   * A plan step is never a chat reply, so the pre-run sync must not be held off for it the
+   * way it is for one — see `Scheduler.prepareAndLaunch — the pre-run sync’s scheduler-side
+   * wiring` for the chat-reply case this contrasts with.
+   */
+  it('does not hold the branch rebase off for a plan step', async () => {
+    const { scheduler, skipSyncs } = setup();
+    scheduler.runTask('s2');
+    await flush();
+    expect(skipSyncs).toEqual([false]);
   });
 
   /**
@@ -4269,6 +4285,149 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
       reason: 'unknown-task',
     });
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The scheduler's half of the pre-run base sync (step 2 of "a task does not start with
+ * pulling"): `prepareAndLaunch` tells `WorktreeManager.prepare` to hold the branch rebase off
+ * a chat reply, and `launch` puts any `agentNote` the sync came back with at the HEAD of the
+ * prompt — fresh brief or resumed session alike.
+ */
+describe('Scheduler.prepareAndLaunch — the pre-run sync’s scheduler-side wiring', () => {
+  function setup(prep: { agentNote?: string } = {}) {
+    const project = {
+      id: 'p1',
+      path: 'C:/repo',
+      planPath: 'C:/repo/plan.md',
+      name: 'P',
+      concurrency: 1,
+      useWorktrees: true,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as unknown as Project;
+    const card = {
+      id: 't1',
+      projectId: 'p1',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'pending',
+      sessionId: null as string | null,
+      order: 0,
+      source: 'board',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: null,
+      parentTaskId: null,
+    } as unknown as Task;
+    const store = {
+      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getTasks: () => [card],
+      getProject: (id: string) => (id === 'p1' ? project : undefined),
+      getSubtasks: () => [],
+      updateTask: (_id: string, patch: Partial<Task>) => {
+        Object.assign(card, patch);
+        return card;
+      },
+      listProjects: () => [project],
+      listTaskLinks: () => [],
+      appendTaskEvent: vi.fn(),
+      addComment: vi.fn(),
+      addChatMessage: vi.fn(),
+      getTaskActivity: () => [],
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const calls: Array<{ opts: { resumingRebase?: boolean; skipSync?: boolean } }> = [];
+    const worktrees = {
+      prepare: vi.fn(
+        (
+          _p: Project,
+          _task: Task,
+          _owner?: string,
+          _branch?: string,
+          _startPoint?: string,
+          opts?: { resumingRebase?: boolean; skipSync?: boolean },
+        ) => {
+          calls.push({ opts: opts ?? {} });
+          return Promise.resolve({
+            mode: 'worktree',
+            cwd: 'C:/wt/t1',
+            branch: 'orch/t1',
+            base: 'main',
+            ...prep,
+          });
+        },
+      ),
+      integrate: vi.fn(),
+      cleanup: vi.fn(),
+    } as unknown as WorktreeManager;
+    const start = vi.fn((_req: unknown, o: { runId?: string }) => ({ runId: o?.runId ?? 'r-new' }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees,
+    );
+    return { scheduler, card, calls, start };
+  }
+
+  /** Let the fire-and-forgotten `prepareAndLaunch` chain settle before asserting. */
+  const flush = async (): Promise<void> => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  const promptOf = (start: ReturnType<typeof vi.fn>): string =>
+    (start.mock.calls[0]?.[0] as { prompt: string }).prompt;
+
+  it('passes skipSync for a chat reply, not for an ordinary Start', async () => {
+    const { scheduler, card, calls } = setup();
+
+    scheduler.startTaskNow('t1');
+    await flush();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts.skipSync).toBe(false);
+
+    // Simulate that first run having finished (nobody is listening) so the next chat
+    // message resumes the card rather than sending into a still-live session.
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.clear();
+    (scheduler as unknown as { inFlight: Set<string> }).inFlight.clear();
+    card.sessionId = 'sess-1';
+    scheduler.chatWithAgent('t1', 'keep going');
+    await flush();
+    expect(calls).toHaveLength(2);
+    expect(calls[1].opts.skipSync).toBe(true);
+  });
+
+  it('puts an agent note at the head of a FRESH brief', async () => {
+    const { scheduler, start } = setup({ agentNote: 'Finish the paused rebase first.' });
+
+    scheduler.startTaskNow('t1');
+    await flush();
+
+    expect(promptOf(start).startsWith('Finish the paused rebase first.')).toBe(true);
+  });
+
+  it('prepends an agent note to a RESUMED session’s prompt', async () => {
+    const { scheduler, card, start } = setup({ agentNote: 'Finish the paused rebase first.' });
+    card.sessionId = 'sess-1';
+
+    scheduler.startTaskNow('t1');
+    await flush();
+
+    const prompt = promptOf(start);
+    expect(prompt.startsWith('Finish the paused rebase first.')).toBe(true);
+    // A resumed session gets the short nudge after the note, not the full brief again.
+    expect(prompt).toContain('Continue the task where you left off');
   });
 });
 
