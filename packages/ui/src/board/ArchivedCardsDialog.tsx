@@ -42,6 +42,7 @@ import {
 } from '@fluentui/react-components';
 import { ARCHIVE_RETENTION_DAYS } from '@tm/shared/board';
 import type { Task, TaskArchiveReason } from '@tm/shared/model';
+import { trackerName } from '../tracker';
 
 /**
  * The CARDS among the archived rows — what the list shows and what the count counts.
@@ -107,7 +108,7 @@ export function removedAgo(archivedAt: number | null | undefined, now: number): 
  * confident wrong sentence this list exists to avoid.
  */
 export function removedLine(task: Task, now: number): string {
-  const tracker = task.externalSource === 'github' ? 'GitHub' : 'JIRA';
+  const tracker = trackerName(task) ?? 'JIRA';
   return `Removed ${removedAgo(task.archivedAt, now)} · ${archiveReasonText(task.archivedReason, tracker)}`;
 }
 

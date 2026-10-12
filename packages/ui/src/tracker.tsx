@@ -20,7 +20,7 @@ import { JiraMark } from './JiraMark';
 import { TRACKER_NAME } from './chat/turns';
 
 /** A card's tracker, narrowed off `externalSource` — null for a card that is nobody's ticket. */
-export type Tracker = 'jira' | 'github';
+export type Tracker = 'jira' | 'github' | 'linear';
 
 /**
  * Which tracker this card belongs to, or null.
@@ -30,7 +30,9 @@ export type Tracker = 'jira' | 'github';
  * as "no tracker" and lose its mark, not draw the wrong one.
  */
 export function trackerOf(task: Pick<Task, 'externalSource'>): Tracker | null {
-  return task.externalSource === 'github' || task.externalSource === 'jira'
+  return task.externalSource === 'github' ||
+    task.externalSource === 'jira' ||
+    task.externalSource === 'linear'
     ? task.externalSource
     : null;
 }
