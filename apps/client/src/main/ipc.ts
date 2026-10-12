@@ -228,6 +228,7 @@ import { AutomationClock } from './automationClock';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
+import { createActivityRecorder } from './activityRecorder';
 import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
@@ -554,6 +555,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     (state) => send('limit:changed', state),
     worktrees,
     (sample) => send('usage:sample', sample),
+  );
+  // The cross-board activity log (F2.6): every run start/outcome the scheduler decides.
+  scheduler.setActivityRecorder(
+    createActivityRecorder({ append: (row) => store.appendActivity(row) }),
   );
 
   // F1.9: fires a tracker/schedule occurrence into an actual card and run. Named
