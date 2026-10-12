@@ -620,6 +620,8 @@ export interface FeatureSettings {
   afterMergePipeline: boolean;
   /** The provider rebase button on an MR. */
   mrRebaseButton: boolean;
+  /** The merge button on a card's ready MR. */
+  mrMergeButton: boolean;
   /** Move agent progress logs out of the chat pane. */
   quietAgentProgress: boolean;
   /** Assign tracker tickets to their own board. */
@@ -673,6 +675,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   shelf: true,
   afterMergePipeline: true,
   mrRebaseButton: true,
+  mrMergeButton: true,
   quietAgentProgress: true,
   ticketsToOwnBoard: true,
   prAutoResolve: false,

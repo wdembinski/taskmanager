@@ -195,7 +195,7 @@ type SettingsSection =
   | 'agentProfiles';
 
 /**
- * The seven feature switches, in the order the Features tab lists them — keyed by the
+ * The eight feature switches, in the order the Features tab lists them — keyed by the
  * `FeatureSettings` field so the switch and its label can never drift apart.
  */
 const FEATURE_SWITCHES: ReadonlyArray<{
@@ -222,6 +222,11 @@ const FEATURE_SWITCHES: ReadonlyArray<{
     key: 'mrRebaseButton',
     label: 'MR rebase button',
     hint: 'A button on a card’s MR to ask the provider to rebase it onto its target branch.',
+  },
+  {
+    key: 'mrMergeButton',
+    label: 'MR merge button',
+    hint: 'A button on a card’s ready MR to merge it on the provider.',
   },
   {
     key: 'quietAgentProgress',

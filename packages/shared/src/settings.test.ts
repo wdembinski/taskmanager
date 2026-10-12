@@ -244,6 +244,7 @@ describe('DEFAULT_SETTINGS.features', () => {
       shelf: true,
       afterMergePipeline: true,
       mrRebaseButton: true,
+      mrMergeButton: true,
       quietAgentProgress: true,
       ticketsToOwnBoard: true,
       prAutoResolve: false,

@@ -179,6 +179,7 @@ import {
 import {
   forgeName,
   mrIsSettled,
+  mrReadyToMerge,
   type ForgeProvider,
   type MergeRequest,
 } from '@shared/mergeRequest';
@@ -2777,6 +2778,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const [owner, repo] = mr.projectPath.split('/');
     if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
     await buildGitHubClient().updateBranch(owner, repo, mr.number);
+    return syncGitHubPullRequests();
+  });
+
+  /**
+   * Merge it — GitLab's own merge endpoint, or GitHub's.
+   *
+   * Refuses up front for an MR that is no longer tracked or that `mrReadyToMerge` does not
+   * call ready — the UI's own read of readiness can be stale by the time the click lands, so
+   * this re-checks against the store's latest copy rather than trusting the renderer's. The
+   * forge re-checks again regardless (a 405/406/409/422 surfaces as a `GitHubError`/
+   * `GitLabError`), since even a freshly re-checked MR can be overtaken between this check and
+   * the request landing.
+   */
+  handle('mr:merge', async (mrId) => {
+    const mr = store.listMergeRequests().find((m) => m.id === mrId);
+    if (!mr) throw new Error('That merge request is no longer tracked.');
+    if (!mrReadyToMerge(mr)) {
+      logMain(`mr:merge refused — ${mr.id} is not ready to merge`);
+      throw new Error('That merge request is not ready to merge.');
+    }
+    if (mr.provider === 'gitlab') {
+      await buildGitLabClient().mergeMergeRequest(mr.repoId, mr.number, mr.headSha ?? undefined);
+      return syncGitLab();
+    }
+    const [owner, repo] = mr.projectPath.split('/');
+    if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
+    await buildGitHubClient().mergePullRequest(owner, repo, mr.number, mr.headSha ?? undefined);
     return syncGitHubPullRequests();
   });
   // -------------------------------------------------------------------------

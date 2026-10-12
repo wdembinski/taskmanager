@@ -1048,6 +1048,12 @@ export interface IpcApi {
    */
   'mr:rebase': (mrId: string) => Promise<MergeRequest[]>;
   /**
+   * Merge it — GitLab's own merge endpoint, or GitHub's. Only meaningful while
+   * `mrReadyToMerge` says yes; the server re-checks that itself regardless, since the UI's
+   * own read of readiness is advisory and may be stale by the time the click lands.
+   */
+  'mr:merge': (mrId: string) => Promise<MergeRequest[]>;
+  /**
    * The connected instance's priority names, most urgent first — what the detail
    * pane's priority dropdown offers for a JIRA card, since only names this instance
    * has can be written back. Cached per base URL. Empty when JIRA is off or the call

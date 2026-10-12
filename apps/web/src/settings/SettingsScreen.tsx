@@ -149,7 +149,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 ) as Record<BoardColumn, string>;
 
 /**
- * The six feature switches, in the order the Features tab lists them — keyed by the
+ * The seven feature switches, in the order the Features tab lists them — keyed by the
  * `FeatureSettings` field so the switch and its label can never drift apart. Mirrors the
  * desktop's own `FEATURE_SWITCHES` in `apps/client/src/renderer/src/Settings.tsx`.
  */
@@ -177,6 +177,11 @@ const FEATURE_SWITCHES: ReadonlyArray<{
     key: 'mrRebaseButton',
     label: 'MR rebase button',
     hint: 'A button on a card’s MR to ask the provider to rebase it onto its target branch.',
+  },
+  {
+    key: 'mrMergeButton',
+    label: 'MR merge button',
+    hint: 'A button on a card’s ready MR to merge it on the provider.',
   },
   {
     key: 'quietAgentProgress',
