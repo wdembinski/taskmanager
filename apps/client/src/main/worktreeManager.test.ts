@@ -865,7 +865,7 @@ describe('WorktreeManager.syncOntoRemoteBase', () => {
 
   it('reports up-to-date, not an error, when local base has diverged but origin never moved past the fork', async () => {
     const wtm = new WorktreeManager(root);
-    const bare = await addBareOrigin();
+    await addBareOrigin();
 
     writeFileSync(join(repo, 'local-only.txt'), 'local-only\n');
     await git(repo, ['add', '-A']);

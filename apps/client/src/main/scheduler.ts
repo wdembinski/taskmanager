@@ -297,6 +297,15 @@ export const FAILURE_ACTION = {
   retryFresh: 'Retry fresh (discard branch)',
   aiFix: 'AI fix & retry',
   retryIntegration: 'Retry integration',
+  /**
+   * Re-run `openPullRequestFor` — never `integrateWorktree` — for a card whose "open a PR
+   * when finished" failed. `retryIntegration` used to be the ONLY retry on offer for this
+   * failure too (it was parked with `kind: 'integration'`), which is how two whole features
+   * ended up merged straight onto local `development` instead of landing on the pull request
+   * the card actually asked for: the only button that looked like "finish this" finished it
+   * the wrong way. See `docs/plan/README.md`'s "each new task fails to create a PR" entry.
+   */
+  retryPullRequest: 'Retry the pull request',
   cleanup: 'Clean up & abandon',
   markDone: 'Mark done',
   /**
@@ -311,7 +320,7 @@ export const FAILURE_ACTION = {
   leaveBranch: 'Leave the branch (stop asking)',
 } as const;
 
-/** Actions offered for a failed agent RUN vs. a failed branch INTEGRATION. */
+/** Actions offered for a failed agent RUN vs. a failed branch INTEGRATION vs. a failed PR open. */
 const RUN_FAILURE_OPTIONS = [
   FAILURE_ACTION.retry,
   FAILURE_ACTION.retryFresh,
@@ -325,10 +334,18 @@ const INTEGRATION_FAILURE_OPTIONS = [
   FAILURE_ACTION.cleanup,
   FAILURE_ACTION.markDone,
 ];
+const PULL_REQUEST_FAILURE_OPTIONS = [
+  FAILURE_ACTION.retryPullRequest,
+  FAILURE_ACTION.leaveBranch,
+  FAILURE_ACTION.cleanup,
+  FAILURE_ACTION.markDone,
+];
 
 /** The interactive resolution actions offered for a parked failure, by kind. Pure. */
-export function failureActionsFor(kind: 'run' | 'integration'): string[] {
-  return kind === 'integration' ? [...INTEGRATION_FAILURE_OPTIONS] : [...RUN_FAILURE_OPTIONS];
+export function failureActionsFor(kind: 'run' | 'integration' | 'pull-request'): string[] {
+  if (kind === 'integration') return [...INTEGRATION_FAILURE_OPTIONS];
+  if (kind === 'pull-request') return [...PULL_REQUEST_FAILURE_OPTIONS];
+  return [...RUN_FAILURE_OPTIONS];
 }
 
 /** Render a file list for a human-facing note: the first few paths, then "and N more". Pure. */
@@ -998,11 +1015,13 @@ type LandingContext = PendingIntegration;
 
 /**
  * A parked failed task awaiting the human's chosen resolution (Phase A). `kind`
- * distinguishes a failed agent RUN (retry the agent) from a failed branch
- * INTEGRATION (re-attempt the merge). Worktree fields are present in worktree mode.
+ * distinguishes a failed agent RUN (retry the agent), a failed branch INTEGRATION
+ * (re-attempt the merge), and a failed PULL REQUEST open (re-attempt opening the PR —
+ * never a merge, which is a different outcome from the one the card asked for). Worktree
+ * fields are present in worktree mode.
  */
 interface PendingFailure {
-  kind: 'run' | 'integration';
+  kind: 'run' | 'integration' | 'pull-request';
   projectId: string;
   taskId: string;
   runId: string;
@@ -5751,7 +5770,8 @@ export class Scheduler {
   /**
    * Park a failed task in the inbox with interactive resolution options (Phase A).
    * Run failures offer retry / retry-fresh / AI-fix / cleanup / mark-done; integration
-   * failures offer retry-integration / cleanup / mark-done.
+   * failures offer retry-integration / cleanup / mark-done; a failed pull-request open
+   * offers retry-the-pull-request / cleanup / mark-done.
    */
   private raiseTaskFailed(f: PendingFailure): void {
     const task = this.store.getTask(f.taskId);
@@ -5818,6 +5838,31 @@ export class Scheduler {
             base: f.base,
             worktree: f.worktree,
           });
+        }
+        break;
+      case FAILURE_ACTION.retryPullRequest:
+        if (f.branch && f.base && f.worktree) {
+          // The same status split `landWork` gives a freshly settled card — optimistic,
+          // because `openPullRequestFor` only ever parks a NEW failure on its own catch; it
+          // never flips status back on success itself. A step must reach `done` or the
+          // chain machinery breaks, and a card must not — only the human moves a card.
+          this.updateTask(
+            f.taskId,
+            { status: task.parentTaskId ? 'done' : 'in-progress' },
+            f.runId,
+          );
+          const owner = task.parentTaskId ? this.store.getTask(task.parentTaskId) : task;
+          void this.openPullRequestFor(
+            project,
+            {
+              taskId: f.taskId,
+              runId: f.runId,
+              branch: f.branch,
+              base: f.base,
+              worktree: f.worktree,
+            },
+            owner?.id ?? f.taskId,
+          );
         }
         break;
       case FAILURE_ACTION.cleanup:
@@ -6462,7 +6507,7 @@ export class Scheduler {
       if (this.disposed) return;
       const why = err instanceof Error ? err.message : String(err);
       this.raiseTaskFailed({
-        kind: 'integration',
+        kind: 'pull-request',
         projectId: project.id,
         taskId: ctx.taskId,
         runId: ctx.runId,
