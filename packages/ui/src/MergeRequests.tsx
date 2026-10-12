@@ -20,7 +20,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import { ArrowSyncRegular, RenameRegular } from '@fluentui/react-icons';
+import { ArrowSyncRegular, MergeRegular, RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
 import {
   forgeName,
@@ -42,6 +42,7 @@ import {
   type MergeRequest,
   type PipelineStatus,
 } from '@tm/shared/mergeRequest';
+import { ConfirmMergeDialog } from './ConfirmMergeDialog';
 import { FLUO, PIPELINE_COLOR } from './theme';
 
 const useStyles = makeStyles({
@@ -158,6 +159,19 @@ export interface MergeRequestsProps {
    * off restores the old behaviour of a static "needs a rebase" badge nobody can act on here.
    */
   mrRebaseButton?: boolean;
+  /**
+   * Merge it — only ever called for a row `mrReadyToMerge` says yes to, after the confirmation
+   * dialog below has asked, and only via the button {@link mrMergeButton} draws. Returns the
+   * refreshed merge requests so a rejection (the MR moved under you) can be read instead of
+   * swallowed, unlike {@link onRebase}'s fire-and-forget shape.
+   */
+  onMerge: (mrId: string) => Promise<MergeRequest[]>;
+  /**
+   * `settings.features.mrMergeButton` — whether a row with nothing left to do swaps its "ready
+   * to merge" badge for a clickable merge button (behind a confirmation). Defaults to on,
+   * matching the feature's own default; off restores the old behaviour of a static badge.
+   */
+  mrMergeButton?: boolean;
 }
 
 export function MergeRequests({
@@ -166,14 +180,18 @@ export function MergeRequests({
   onMarkEventsSeen,
   onRename,
   onRebase,
+  onMerge,
   afterMergePipeline = true,
   mrRebaseButton = true,
+  mrMergeButton = true,
 }: MergeRequestsProps): React.JSX.Element | null {
   const styles = useStyles();
   // Which row is being renamed, and the text so far. One at a time: two open editors would
   // both be claiming to be the name of something.
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  // The MR a merge confirmation is open for, or null for none — see the dialog render below.
+  const [mergingMr, setMergingMr] = useState<MergeRequest | null>(null);
 
   /**
    * Save and close. A blank name clears the override rather than storing an empty string —
@@ -206,6 +224,9 @@ export function MergeRequests({
         // Only when the forge can actually act on it — a rebase button on a settled MR
         // would offer to fix something that is no longer there to fix.
         const canRebase = mrRebaseButton && !settled && mrNeedsRebase(mr);
+        // Nothing left to do but merge it — see `TaskCard.tsx`'s own `canMerge`, which this
+        // mirrors so the two surfaces never disagree about when the button is offered.
+        const canMerge = mrMergeButton && mrReadyToMerge(mr);
         // The button already says "needs a rebase" as clearly as the chip did, so it is
         // dropped from the additive list once the button is showing — otherwise the row
         // would say the same thing twice.
@@ -323,15 +344,30 @@ export function MergeRequests({
               )}
               {/* The one piece of good news worth a badge: nothing is left to do but merge
                   it. Fluo green rather than a Fluent tint so it reads as the row's verdict
-                  and not as another field. */}
-              {mrReadyToMerge(mr) && (
-                <Badge
-                  appearance="outline"
+                  and not as another field. Swapped for the merge button itself when the
+                  setting allows it — the badge still shows with the setting off, or for a
+                  settled MR this would otherwise be true of forever. */}
+              {canMerge ? (
+                <Button
                   size="small"
+                  appearance="outline"
+                  icon={<MergeRegular />}
                   style={{ color: FLUO.green, borderColor: FLUO.green }}
+                  onClick={() => setMergingMr(mr)}
+                  title={`Merge this ${mrNoun(mr.provider)}`}
                 >
-                  ready to merge
-                </Badge>
+                  Merge
+                </Button>
+              ) : (
+                mrReadyToMerge(mr) && (
+                  <Badge
+                    appearance="outline"
+                    size="small"
+                    style={{ color: FLUO.green, borderColor: FLUO.green }}
+                  >
+                    ready to merge
+                  </Badge>
+                )
               )}
               {/* …and its opposite, which the pane could not say at all until now: the
                   reasons GitLab is refusing the merge. Only the ones nothing else on the row
@@ -406,6 +442,16 @@ export function MergeRequests({
           </div>
         );
       })}
+      {/* One dialog for the whole list, keyed by the MR so a different row's confirmation
+          starts clean — the pane only ever has one merge in flight at a time either way. */}
+      {mergingMr && (
+        <ConfirmMergeDialog
+          key={mergingMr.id}
+          mr={mergingMr}
+          onConfirm={() => onMerge(mergingMr.id)}
+          onClose={() => setMergingMr(null)}
+        />
+      )}
     </div>
   );
 }

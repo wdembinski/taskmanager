@@ -1407,6 +1407,7 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
               onToggleShelved={settings?.features.shelf ? toggleShelved : undefined}
               afterMergePipeline={settings?.features.afterMergePipeline}
               mrRebaseButton={settings?.features.mrRebaseButton}
+              mrMergeButton={settings?.features.mrMergeButton}
               onSelectTask={selectTask}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
@@ -1493,6 +1494,7 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
             onDropOnShelf={dropOnShelf}
             afterMergePipeline={settings?.features.afterMergePipeline}
             mrRebaseButton={settings?.features.mrRebaseButton}
+            mrMergeButton={settings?.features.mrMergeButton}
           />
         )}
       </div>
@@ -1511,6 +1513,7 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             afterMergePipeline={settings?.features.afterMergePipeline}
             mrRebaseButton={settings?.features.mrRebaseButton}
+            mrMergeButton={settings?.features.mrMergeButton}
             quietAgentProgress={settings?.features.quietAgentProgress}
             // The shown task's own files — a step's slice when a step is shown, since a
             // step is a task row and carries its own.

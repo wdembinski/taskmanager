@@ -33,6 +33,7 @@
  *   - A row that wants you takes a TINT and the ticket badge takes the tracker's signal, so
  *     the card's one orange ring keeps its meaning and the reason stays legible.
  */
+import { useState } from 'react';
 import {
   Badge,
   Button,
@@ -63,6 +64,7 @@ import {
   FlashRegular,
   LinkRegular,
   MergeFilled,
+  MergeRegular,
   MoreHorizontalRegular,
   PlayCircleRegular,
   NoteRegular,
@@ -120,6 +122,7 @@ import {
   mrLabel,
   mrNeedsRebase,
   mrNoun,
+  mrReadyToMerge,
   mrRef,
   mrVerdict,
   showPipeline,
@@ -127,6 +130,7 @@ import {
   type MergeRequest,
   type MrVerdict,
 } from '@tm/shared/mergeRequest';
+import { ConfirmMergeDialog } from '../ConfirmMergeDialog';
 import { useTransport } from '../transport';
 
 /**
@@ -1097,6 +1101,12 @@ export interface TaskCardProps {
    * default; off restores the old behaviour of a static glyph nobody can act on from the card.
    */
   mrRebaseButton?: boolean;
+  /**
+   * `settings.features.mrMergeButton` — whether an MR row with nothing left to do swaps its
+   * "ready to merge" glyph for a clickable merge button (behind a confirmation). Defaults to
+   * on, matching the feature's own default; off restores the old behaviour of a static glyph.
+   */
+  mrMergeButton?: boolean;
   draggable: boolean;
   onSelect: () => void;
   /** Open a step in the detail pane (the row never drags or moves the card). */
@@ -1146,6 +1156,7 @@ export function TaskCard({
   onToggleShelved,
   afterMergePipeline = true,
   mrRebaseButton = true,
+  mrMergeButton = true,
   draggable,
   onSelect,
   onSelectSubtask,
@@ -1155,6 +1166,9 @@ export function TaskCard({
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
+  // The MR a merge confirmation is open for, or null for none. One at a time, and keyed by
+  // the MR itself rather than just its id — see the dialog render below.
+  const [mergingMr, setMergingMr] = useState<MergeRequest | null>(null);
   const sprintShown = showSprint;
   /**
    * Whether this card is a MIRROR of something in a tracker — which is what the footer badge
@@ -1940,6 +1954,9 @@ export function TaskCard({
             // Only when the forge can actually act on it — see `MergeRequests.tsx`'s own
             // `canRebase`, which this mirrors so the two surfaces never disagree.
             const canRebase = mrRebaseButton && mrNeedsRebase(mr);
+            // Nothing left to do but merge it — see `MergeRequests.tsx`'s own `canMerge`,
+            // which this mirrors for the same reason `canRebase` does.
+            const canMerge = mrMergeButton && mrReadyToMerge(mr);
             return (
               <a
                 key={mr.id}
@@ -2020,8 +2037,26 @@ export function TaskCard({
                 {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
                 {/* The row's verdict — see `verdictIcon`. Swapped for a rebase button when
                     the forge is refusing the merge only because the branch has diverged: the
-                    one blocker this app can actually fix rather than merely report. */}
-                {canRebase ? (
+                    one blocker this app can actually fix rather than merely report. A ready
+                    row gets the merge button instead — the one state where nothing is left
+                    to fix, only to confirm. */}
+                {canMerge ? (
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    className={styles.approval}
+                    icon={<MergeRegular style={{ color: FLUO.green }} />}
+                    title={`Merge this ${mrNoun(mr.provider)}`}
+                    aria-label={`Merge this ${mrNoun(mr.provider)}`}
+                    onClick={(e) => {
+                      // Same reason as the rebase button below: act, don't navigate, and
+                      // don't also select the card underneath it.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setMergingMr(mr);
+                    }}
+                  />
+                ) : canRebase ? (
                   <Button
                     size="small"
                     appearance="transparent"
@@ -2046,6 +2081,17 @@ export function TaskCard({
             );
           })}
         </div>
+      )}
+      {/* Outside the row entirely — a merge dialog is not part of the link the row IS, and
+          one per card (keyed by the MR so a different row's confirmation starts clean) is
+          plenty: a card only ever has one merge in flight. */}
+      {mergingMr && (
+        <ConfirmMergeDialog
+          key={mergingMr.id}
+          mr={mergingMr}
+          onConfirm={() => transport.invoke('mr:merge', mergingMr.id)}
+          onClose={() => setMergingMr(null)}
+        />
       )}
     </div>
   );

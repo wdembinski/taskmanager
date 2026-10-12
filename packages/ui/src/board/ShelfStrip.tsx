@@ -57,6 +57,8 @@ export interface ShelfStripProps {
   afterMergePipeline?: boolean;
   /** `settings.features.mrRebaseButton` — passed straight through to each `TaskCard`. */
   mrRebaseButton?: boolean;
+  /** `settings.features.mrMergeButton` — passed straight through to each `TaskCard`. */
+  mrMergeButton?: boolean;
 }
 
 export function ShelfStrip(props: ShelfStripProps): JSX.Element {
@@ -129,6 +131,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
                   onToggleShelved={() => props.onToggleShelved(task.id)}
                   afterMergePipeline={props.afterMergePipeline}
                   mrRebaseButton={props.mrRebaseButton}
+                  mrMergeButton={props.mrMergeButton}
                   onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
                   onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
                   draggable
