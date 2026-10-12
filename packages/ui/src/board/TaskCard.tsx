@@ -97,6 +97,7 @@ import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { automationOriginTitle, type AutomationOrigin } from './automationOrigin';
 import { cardBadgeStatus, splitEarlierSteps, subtaskProgress } from './boardColumns';
+import type { ChainPosition } from './chainPosition';
 import {
   CHAIN_LINK_MIME,
   TASK_ID_ATTR,
@@ -731,6 +732,12 @@ const useStyles = makeStyles({
     border: `1px solid ${tokens.colorNeutralStroke1}`,
   },
   chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
+  /**
+   * "Step n of m" (F3.5) — the compact board's stand-in for the wide board's arrows, which
+   * there is no column beside this one to draw them into. Same neutral treatment as the
+   * chain chip beside it: a standing fact about the card, not something in motion.
+   */
+  chainPositionCaption: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   grow: { flex: 1, minWidth: 0 },
   ticketLink: { textDecoration: 'none' },
   /** The ticket badge: the tracker's own mark, then the key. */
@@ -1057,6 +1064,12 @@ export interface TaskCardProps {
    */
   chainBlocked?: ChainDecline | null;
   /**
+   * Where this card sits in its chain — "step n of m" (F3.5), the compact board's own
+   * caption in place of the wide board's arrows (`KanbanColumn`'s `chainPositionOf`). Absent
+   * for every card nobody has chained, and on every wide caller.
+   */
+  chainPosition?: ChainPosition;
+  /**
    * Stop the agent working this card — absent on a board that does not offer it, which is
    * also what hides the button.
    *
@@ -1148,6 +1161,7 @@ export function TaskCard({
   mergeHeld = [],
   chainReady = false,
   chainBlocked = null,
+  chainPosition,
   onLinkTo,
   onLinkArm,
   onStop,
@@ -1660,11 +1674,20 @@ export function TaskCard({
           showsPriority ||
           showsPoints ||
           showsAssignee ||
-          chainChip !== null) && (
+          chainChip !== null ||
+          chainPosition != null) && (
           <div className={styles.footer}>
             {/* First in the row, ahead of the ticket badge: it is the reason this card is
                 not moving, and that outranks where it came from. */}
             {chainChip}
+            {chainPosition && (
+              <Caption1
+                className={styles.chainPositionCaption}
+                title={`Step ${chainPosition.n} of ${chainPosition.m} in its chain`}
+              >
+                step {chainPosition.n} of {chainPosition.m}
+              </Caption1>
+            )}
             {/* A native ticket's own key (Phase 24) — monospace, and never a link: unlike
                 the tracker badge below, there is nowhere to go, this app IS the tracker. */}
             {showsTicketKey && <span className={styles.ticketKeyBadge}>{task.ticketKey}</span>}
