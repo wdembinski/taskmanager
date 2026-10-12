@@ -13,8 +13,8 @@
  *   component's only navigation state — `tabForRoute`/`routeForTab` (`compactRoute.ts`)
  *   translate between the active route and which tab reads as selected in `BottomTabBar`.
  * - **Screens are placeholders where a later step owns the real one**:
- *   - `inbox` → the existing `<Attention />` as-is; F3.3 replaces it with a compact-specific
- *     view.
+ *   - `inbox` → `<CompactInbox />` (F3.3): its own urgency-sorted list and tap-to-open detail,
+ *     not the wide `<Attention />` list.
  *   - `board` and `card` routes both render today's `BoardScreen` (gated by `boardIsReady`,
  *     `<SyncCurtain>` otherwise) exactly as the wide layout does — F3.5/F3.6 replace this
  *     with the tap-to-move compact board and the sectioned card detail (`CardSection`). A
@@ -44,7 +44,7 @@ import {
 import type { ClientPresence } from '@tm/protocol/wire';
 import { BottomTabBar, type BottomTabBarItem } from '@tm/ui/shell/BottomTabBar';
 import { CompactShell } from '@tm/ui/shell/CompactShell';
-import { Attention } from '@tm/ui/Attention';
+import { CompactInbox } from '@tm/ui/CompactInbox';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { routeForTab, tabForRoute, type CompactTab } from '@tm/ui/layout/compactRoute';
 import { BoardScreen } from '../board/BoardScreen';
@@ -143,7 +143,7 @@ export function CompactApp({
         />
       }
     >
-      {route.kind === 'inbox' && <Attention />}
+      {route.kind === 'inbox' && <CompactInbox />}
 
       {(route.kind === 'board' || route.kind === 'card') &&
         (boardIsReady(board.syncProgress) ? (
