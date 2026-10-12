@@ -29,8 +29,8 @@ export interface GitResult {
  * its own host and the identical argv runs inside the distro instead.
  *
  * `env` is added to this process' environment for the one command, and is only ever passed
- * by {@link pushBranch} — see {@link NO_PROMPT_ENV} for the single thing it is for. Omitted
- * everywhere else, so no other git call's environment changes at all.
+ * by {@link pushBranch} and {@link fetchRef} — see {@link NO_PROMPT_ENV} for the single thing
+ * it is for. Omitted everywhere else, so no other git call's environment changes at all.
  */
 export async function git(
   cwd: string,

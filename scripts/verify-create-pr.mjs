@@ -60,6 +60,12 @@
  *  10. A database written **before** `openedForTaskId` existed upgrades into it and is writable
  *     afterwards. Every installed copy is that database, and this is the only harness in the
  *     repo that can open one at all (see `the-store-has-no-tests`).
+ *  11. **The remote is checked before the push.** A second repo/bare-origin pair, so advancing
+ *     the remote's copy of `base` here cannot alter anything the checks above already proved.
+ *     Someone pushes straight to the bare origin — the shape `base` moving on the remote
+ *     without this process ever fetching it — and `openPullRequest` is driven through the
+ *     REAL `WorktreeManager.syncWithRemoteBase`, not a stub: the branch lands on the far side
+ *     already rebased onto that push, carrying both its own commit and the remote's.
  *
  * ## Prove it can fail
  *
@@ -88,6 +94,11 @@
  * `store.ts`: the fresh database above is unaffected — every check up to 9 still passes — and
  * re-opening the older one dies on `no such column`, which is what an installed copy would do
  * on the first press of the button.
+ *
+ * For check 11, delete the call to `deps.syncWithRemoteBase` in `createPr.ts` (or revert it to
+ * stop before the push): the branch still pushes and the pull request still opens, so this is
+ * exactly the kind of regression nothing else in this file would catch — only check 11 looks at
+ * whether the far side actually got the remote's own commit along with the branch's.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -147,6 +158,12 @@ if (!process.versions.electron) {
   // The board index check 9 builds through, the exact expression `ipc.ts` calls it with —
   // also pure, also no Electron.
   bundle(join(root, 'apps/client/src/main/forge/boardIndex.ts'), join(scratch, 'boardIndex.cjs'));
+  // Check 11's `syncWithRemoteBase` — also pure: `./exec` and `./git` are both system
+  // binaries and `node:*`, same as `createPr.ts` itself.
+  bundle(
+    join(root, 'apps/client/src/main/worktreeManager.ts'),
+    join(scratch, 'worktreeManager.cjs'),
+  );
 
   const electron = join(
     clientModules,
@@ -176,6 +193,7 @@ const { openPullRequest } = require(join(work, 'createPr.cjs'));
 const { createStore } = require(join(work, 'store.cjs'));
 const { reconcilePullRequests } = require(join(work, 'prSync.cjs'));
 const { buildBoardIndex } = require(join(work, 'boardIndex.cjs'));
+const { WorktreeManager } = require(join(work, 'worktreeManager.cjs'));
 
 let failures = 0;
 const check = (label, ok, detail) => {
@@ -280,6 +298,11 @@ globalThis.fetch = async (url, init) => {
   };
 };
 
+// The REAL `syncWithRemoteBase` for every scenario below, not a stub — check 11 is what this
+// buys: without it, a regression that drops the remote check (or breaks it) would push and
+// open a pull request successfully in every check above and go unnoticed by all of them.
+const wtm = new WorktreeManager(work);
+
 const notes = [];
 const deps = {
   getTask: (id) => store.getTask(id),
@@ -290,6 +313,8 @@ const deps = {
   // Standing in for `WorktreeManager.inspect`, the one dependency this scenario has no use
   // for: it exists to READ a branch/base pair off disk, and here they are already known.
   inspect: async () => ({ cwd: repo, branch: BRANCH, base }),
+  syncWithRemoteBase: (project, base, worktree, opts) =>
+    wtm.syncWithRemoteBase(project, base, worktree, opts),
   tokenFor: () => TOKEN,
   note: (_projectId, _taskId, body) => notes.push(body),
   now: () => 1_760_000_000_000,
@@ -615,6 +640,108 @@ check(
   'the sync leaves the board card linked instead of orphaning it',
   afterBoardSync?.taskId === boardCard.id,
   `taskId is ${String(afterBoardSync?.taskId)}, card is ${boardCard.id}`,
+);
+
+// ── 11: the branch is rebased onto base AS THE REMOTE HAS IT, before it is pushed ────
+// A repo and bare origin of its OWN, so advancing this origin's copy of base cannot alter
+// anything the checks above already proved — those never push base itself to `bare`, but
+// there is no reason to tempt that.
+const resyncRepo = join(work, 'resync-repo');
+const resyncOrigin = join(work, 'resync-origin.git');
+git(work, 'init', resyncRepo);
+git(resyncRepo, 'config', 'user.email', 'verify@example.com');
+git(resyncRepo, 'config', 'user.name', 'Verify');
+git(resyncRepo, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(resyncRepo, 'README.md'), '# resync\n');
+git(resyncRepo, 'add', '-A');
+git(resyncRepo, 'commit', '--no-verify', '-m', 'initial');
+const resyncBase = git(resyncRepo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+git(work, 'init', '--bare', resyncOrigin);
+// Seed the bare origin with that same initial commit — directly by path, no app code
+// involved yet — so the branch built below and the remote's own push share an ancestor.
+git(resyncRepo, 'push', resyncOrigin, resyncBase);
+
+// The card's own branch and work, built on top of that shared ancestor.
+const RESYNC_BRANCH = 'feat/resync-me';
+git(resyncRepo, 'checkout', '-b', RESYNC_BRANCH);
+writeFileSync(join(resyncRepo, 'mine.ts'), 'export const mine = true;\n');
+git(resyncRepo, 'add', '-A');
+git(resyncRepo, 'commit', '--no-verify', '-m', 'add my own file');
+
+// Someone else pushes straight to the bare origin while this branch sits untouched — base
+// moving on the remote without this process ever fetching it.
+const resyncClone = join(work, 'resync-clone');
+git(work, 'clone', resyncOrigin, resyncClone);
+git(resyncClone, 'config', 'user.email', 'verify@example.com');
+git(resyncClone, 'config', 'user.name', 'Verify');
+git(resyncClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(resyncClone, 'from-elsewhere.txt'), 'pushed directly\n');
+git(resyncClone, 'add', '-A');
+git(resyncClone, 'commit', '--no-verify', '-m', 'pushed directly to origin');
+git(resyncClone, 'push', 'origin', `HEAD:${resyncBase}`);
+const resyncRemoteHead = git(resyncClone, 'rev-parse', 'HEAD').stdout.trim();
+
+// Point this repo's own "origin" at a fake https URL and redirect it to the bare repo — the
+// same trick the main scenario's `REMOTE`/`bare` pair uses, so the app's tokenized fetch and
+// push both land here instead of at the real github.com.
+git(resyncRepo, 'remote', 'add', 'origin', 'https://github.com/acme/resync.git');
+writeFileSync(
+  gitConfig,
+  readFileSync(gitConfig, 'utf8') +
+    `[url "file://${resyncOrigin.replace(/\\/g, '/')}"]\n` +
+    `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/resync.git\n`,
+  'utf8',
+);
+
+const resyncProject = store.addProject({
+  path: resyncRepo,
+  name: 'Resync',
+  kind: 'agent',
+  baseBranch: resyncBase,
+});
+const resyncCard = store.createTask('personal', { title: 'Do my own thing' });
+store.updateTask(resyncCard.id, {
+  agentProjectId: resyncProject.id,
+  agentBranch: RESYNC_BRANCH,
+});
+
+const resyncOpened = await openPullRequest(
+  {
+    ...deps,
+    inspect: async () => ({ cwd: resyncRepo, branch: RESYNC_BRANCH, base: resyncBase }),
+  },
+  resyncCard.id,
+);
+check(
+  'a pull request opens even though base moved on the remote underneath it',
+  resyncOpened.existed === false,
+  JSON.stringify(resyncOpened),
+);
+
+// The branch landed on the far side already rebased onto the remote's new tip: it carries
+// BOTH the commit pushed "by someone else" and its own.
+const resyncLanded = git(resyncOrigin, 'rev-parse', `refs/heads/${RESYNC_BRANCH}`);
+check(
+  'the pushed branch lands in the bare origin',
+  resyncLanded.code === 0,
+  resyncLanded.stderr.trim() || resyncLanded.stdout.trim(),
+);
+const resyncHead = resyncLanded.stdout.trim();
+check(
+  'carrying the commit that was pushed directly to the remote',
+  git(resyncOrigin, 'cat-file', '-e', `${resyncHead}:from-elsewhere.txt`).code === 0,
+);
+check(
+  'and its own work, rebased on top of it',
+  git(resyncOrigin, 'cat-file', '-e', `${resyncHead}:mine.ts`).code === 0,
+);
+
+// The local base ref was fast-forwarded to match what the remote had — `resyncRepo` is
+// checked out on `RESYNC_BRANCH`, not `resyncBase`, so this exercises the bare ref-move half
+// of `advanceBaseRef` (the merge half is `worktreeManager.test.ts`'s own job).
+check(
+  'the local base ref was fast-forwarded to match what the remote had',
+  git(resyncRepo, 'rev-parse', resyncBase).stdout.trim() === resyncRemoteHead,
 );
 
 store.close();

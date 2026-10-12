@@ -1976,6 +1976,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     },
     inspect: (project, ownerTaskId, branchName) =>
       worktrees.inspect(project, ownerTaskId, branchName),
+    syncWithRemoteBase: (project, base, worktree, opts) =>
+      worktrees.syncWithRemoteBase(project, base, worktree, opts),
     tokenFor: forgeToken,
     note: (projectId, taskId, body) => {
       store.addComment(projectId, taskId, body);
