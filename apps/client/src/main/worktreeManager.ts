@@ -49,6 +49,7 @@ import {
   isRepo,
   listBranches,
   listUntracked,
+  mergeBase,
   mergeFfOnly,
   preserveUntracked,
   pruneWorktrees,
@@ -399,9 +400,15 @@ export type RemoteSyncResult =
    * read the same as "nothing to do" rather than as a problem; the push a moment later is
    * what names a remote that is actually broken. */
   | { status: 'up-to-date' }
-  /** `base` moved, the branch was rebased onto its new tip, and the local `base` ref now
-   * matches the remote too. `autoResolved` names any file Rung 1.5 fixed without an agent. */
-  | { status: 'synced'; autoResolved?: string[] }
+  /**
+   * `base` moved, and the branch was rebased onto its fresh remote tip — `remoteBase` names
+   * it, as a ref the caller can compare the branch against afterward. The LOCAL `base` ref is
+   * NOT guaranteed to match the remote any more: advancing it is only ever attempted
+   * best-effort, and a `base` that has itself diverged from origin (a squash merge, a local
+   * merge) can never be fast-forwarded to match it again — see `syncOntoRemoteBase`'s own
+   * comment. `autoResolved` names any file Rung 1.5 fixed without an agent.
+   */
+  | { status: 'synced'; remoteBase: string; autoResolved?: string[] }
   /** The rebase onto the fresher base hit a conflict no mechanical rung could resolve. The
    * rebase is already undone (`git rebase --abort`) by the time this is returned — unlike a
    * merge-time conflict, there is no ladder here to hand a paused rebase up to, so leaving one
@@ -902,6 +909,18 @@ export class WorktreeManager {
    * Enqueued on the same per-project chain as {@link integrate}: both can advance the base
    * ref in `project.path`, and a card merging while another opens a pull request must not
    * race it.
+   *
+   * The branch is rebased `--onto` the fresh remote tip FROM its own fork point off `base` —
+   * never onto `base`'s current tip directly. That distinction is the whole fix for a repo
+   * where local `base` has itself diverged from origin: GitHub's squash merges rewrite every
+   * PR into one commit on `origin/<base>`, and this app's own local merges advance `base`
+   * straight past that, so a local `base` that has done either can NEVER be fast-forwarded to
+   * match origin again — asking for that first (as this used to) turned the fetch into a
+   * guaranteed failure before the branch's own rebase ever ran, parking every card's PR behind
+   * it. Advancing `base` locally stays a nice-to-have, attempted best-effort below, but it is
+   * no longer load-bearing: the fork point is computed fresh off whatever `base` resolves to
+   * right now, so the branch's own commits are isolated and replayed correctly whichever way,
+   * and however far, `base` has drifted from origin.
    */
   async syncOntoRemoteBase(
     project: Project,
@@ -924,16 +943,30 @@ export class WorktreeManager {
       const ahead = await commitsAhead(project.path, base, REMOTE_BASE_REF, host);
       if (ahead <= 0) return { status: 'up-to-date' };
 
-      const advanceFailure = await this.updateLocalBase(project, base, REMOTE_BASE_REF, host);
-      if (advanceFailure) return { status: 'error', message: advanceFailure };
+      // Best-effort only, now — see this method's own comment for why a failure here must
+      // never abort the sync: `base` is routinely NOT fast-forwardable to origin any more,
+      // and the branch's own rebase below does not depend on this having succeeded.
+      await this.updateLocalBase(project, base, REMOTE_BASE_REF, host);
+
+      // The branch's OWN fork point off `base`, computed fresh — not `base`'s current tip,
+      // which may carry commits of its own that origin has never seen and that this branch
+      // must never pick up. Whatever `base` resolves to, the common ancestor with the
+      // branch's tip is exactly where the branch's own work begins.
+      const forkPoint = await mergeBase(worktree, 'HEAD', base, host);
 
       // `autostash` — unlike `integrate`, nothing here has committed the worktree's own
       // uncommitted edits first, and this runs whenever a human presses **Create PR**, not only
       // once an agent's work is tidily committed. Refusing outright on a dirty worktree would
       // turn "base moved" into a worse failure than the one this check exists to catch early.
-      const { rebased, autoResolved } = await this.runRebaseLadder(worktree, base, host, {
-        autostash: true,
-      });
+      const { rebased, autoResolved } = await this.runRebaseLadder(
+        worktree,
+        REMOTE_BASE_REF,
+        host,
+        {
+          autostash: true,
+          upstream: forkPoint || undefined,
+        },
+      );
       if (rebased.code !== 0) {
         if (await hasConflicts(worktree, host)) {
           const files = await conflictedFiles(worktree, host);
@@ -950,8 +983,12 @@ export class WorktreeManager {
         };
       }
       return autoResolved.length > 0
-        ? { status: 'synced', autoResolved: [...new Set(autoResolved)] }
-        : { status: 'synced' };
+        ? {
+            status: 'synced',
+            remoteBase: REMOTE_BASE_REF,
+            autoResolved: [...new Set(autoResolved)],
+          }
+        : { status: 'synced', remoteBase: REMOTE_BASE_REF };
     });
   }
 
@@ -971,20 +1008,29 @@ export class WorktreeManager {
    * is left to it.
    *
    * `opts.autostash` is passed straight through to the first {@link rebaseOnto} call — see its
-   * own comment for why only the pre-PR remote check asks for it.
+   * own comment for why only the pre-PR remote check asks for it. `opts.upstream` is passed
+   * through the same way, turning that first call into a `rebase --onto baseRef upstream` —
+   * see {@link rebaseOnto}'s own comment for why only {@link syncOntoRemoteBase} needs it.
    */
   private async runRebaseLadder(
     worktree: string,
     baseRef: string,
     host: ExecHost,
-    opts: { autostash?: boolean } = {},
+    opts: { autostash?: boolean; upstream?: string } = {},
   ): Promise<{ rebased: GitResult; autoResolved: string[] }> {
     const attrs = withUnionAttributes();
     // The attributes file is written on the app's filesystem, so git must be told the name
     // its OWN machine knows it by.
     const attrsPath = host.toNative(attrs.file);
     try {
-      let rebased = await rebaseOnto(worktree, baseRef, attrsPath, host, opts.autostash);
+      let rebased = await rebaseOnto(
+        worktree,
+        baseRef,
+        attrsPath,
+        host,
+        opts.autostash,
+        opts.upstream,
+      );
 
       // Looped, because a rebase stops once per conflicting COMMIT: resolving the first one
       // and handing the second to an agent would spend the session this rung exists to save.

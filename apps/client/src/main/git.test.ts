@@ -25,6 +25,7 @@ import {
   isClean,
   isRepo,
   listBranches,
+  mergeBase,
   mergeFfOnly,
   pushBranch,
   rebasingBranch,
@@ -120,6 +121,35 @@ describe('git helpers', () => {
     // endings on checkout/stash-pop, and that is not what this test is about.
     expect(readFileSync(join(wt, 'b.txt'), 'utf8').trim()).toBe('from-branch, edited uncommitted');
     expect(await isClean(wt)).toBe(false); // the autostashed edit is back, still uncommitted
+
+    await removeWorktree(repo, wt);
+  });
+
+  it("with an upstream, rebases --onto a target unrelated to the branch's own base, replaying only its own commits", async () => {
+    // `syncOntoRemoteBase`'s own shape: the branch's base has a commit of its own (`local`)
+    // that the branch inherits as an ancestor, and the fresh target it must land on (`onto`)
+    // comes from a different lineage entirely — the shared root, never having seen `local`.
+    // `upstream: local` must exclude `local`'s own file from the replay — only the branch's
+    // commit made after it travels.
+    const root = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+    await commitFile(repo, 'local.txt', 'local-only\n', 'local-only commit');
+    const upstream = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+    const wt = join(repo, '..', `wto-${Date.now()}`);
+    await addWorktree(repo, wt, 'orch/onto1', base);
+    writeFileSync(join(wt, 'mine.txt'), 'card work\n');
+    await commitAll(wt, 'add mine');
+
+    await git(repo, ['checkout', root]);
+    await git(repo, ['checkout', '-b', 'onto-target']);
+    await commitFile(repo, 'remote.txt', 'remote-only\n', 'remote-only commit');
+
+    const res = await rebaseOnto(wt, 'onto-target', undefined, undefined, false, upstream);
+
+    expect(res.code).toBe(0);
+    expect((await git(wt, ['cat-file', '-e', 'HEAD:remote.txt'])).code).toBe(0);
+    expect((await git(wt, ['cat-file', '-e', 'HEAD:mine.txt'])).code).toBe(0);
+    expect((await git(wt, ['cat-file', '-e', 'HEAD:local.txt'])).code).not.toBe(0);
 
     await removeWorktree(repo, wt);
   });
@@ -515,6 +545,25 @@ describe('git helpers — reading a remote and pushing to it', () => {
       await commitFile(repo, 'i.txt', 'diverged\n', 'diverged commit');
       expect(await isAncestor(repo, 'feat/diverged', descendant)).toBe(false);
       expect(await isAncestor(repo, descendant, 'feat/diverged')).toBe(false);
+    });
+
+    it('finds the common ancestor of two diverged branches, and reports none across unrelated histories', async () => {
+      const fork = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+      await git(repo, ['checkout', '-b', 'feat/left']);
+      await commitFile(repo, 'left.txt', 'left\n', 'left commit');
+      const left = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+      await git(repo, ['checkout', fork]);
+      await git(repo, ['checkout', '-b', 'feat/right']);
+      await commitFile(repo, 'right.txt', 'right\n', 'right commit');
+
+      expect(await mergeBase(repo, 'feat/left', 'feat/right')).toBe(fork);
+      expect(await mergeBase(repo, left, left)).toBe(left); // identical refs
+
+      // An orphan branch shares no history at all.
+      await git(repo, ['checkout', '--orphan', 'feat/orphan']);
+      await git(repo, ['rm', '-rf', '--cached', '.']);
+      await commitFile(repo, 'orphan.txt', 'orphan\n', 'orphan commit');
+      expect(await mergeBase(repo, 'feat/orphan', 'feat/left')).toBe('');
     });
   });
 });

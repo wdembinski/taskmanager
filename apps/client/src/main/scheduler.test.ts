@@ -1450,6 +1450,21 @@ describe('failure decision helpers (pure)', () => {
     expect(actions).not.toContain(FAILURE_ACTION.aiFix);
     expect(actions).not.toContain(FAILURE_ACTION.retryFresh);
   });
+
+  it('offers a pull-request-specific retry for a failed "open a PR when finished", never retry-integration', () => {
+    const actions = failureActionsFor('pull-request');
+    expect(actions).toEqual([
+      FAILURE_ACTION.retryPullRequest,
+      FAILURE_ACTION.leaveBranch,
+      FAILURE_ACTION.cleanup,
+      FAILURE_ACTION.markDone,
+    ]);
+    // The bug this kind exists to fix: a failed PR open must never offer the button that
+    // merges locally instead of opening the pull request the card actually asked for.
+    expect(actions).not.toContain(FAILURE_ACTION.retryIntegration);
+    expect(actions).not.toContain(FAILURE_ACTION.aiFix);
+    expect(actions).not.toContain(FAILURE_ACTION.retryFresh);
+  });
 });
 
 describe('Scheduler run-failure handling', () => {
@@ -6291,12 +6306,13 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
       changedFiles: vi.fn(async () => []),
     };
     const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const emitAttention = vi.fn();
     const scheduler = new Scheduler(
       store,
       sessions,
       vi.fn(),
       vi.fn(),
-      vi.fn(),
+      emitAttention,
       vi.fn(),
       vi.fn(),
       worktrees as unknown as WorktreeManager,
@@ -6325,7 +6341,7 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
       await new Promise((r) => setImmediate(r));
     };
 
-    return { scheduler, card, steps, notes, worktrees, open, store, finish, flush };
+    return { scheduler, card, steps, notes, worktrees, open, store, finish, flush, emitAttention };
   }
 
   it('does nothing at all when nobody asked for a pull request', async () => {
@@ -6427,6 +6443,45 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
     const saved = (store.saveAttention as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(String((saved?.[0] as { prompt: string })?.prompt)).toMatch(/No GitHub token is saved/);
   });
+
+  it(
+    'a parked PR failure offers "Retry the pull request", never "Retry integration" — and ' +
+      'retrying it calls the opener again, not integrateWorktree',
+    async () => {
+      let attempt = 0;
+      const { finish, flush, worktrees, scheduler, open, emitAttention, notes } = setup({
+        projectAutoCreatePr: true,
+        open: async () => {
+          attempt++;
+          if (attempt === 1) throw new Error('No GitHub token is saved.');
+          return { url: 'https://github.com/o/r/pull/12', ref: '#12' };
+        },
+      });
+
+      finish();
+      await flush();
+      expect(open).toHaveBeenCalledTimes(1);
+
+      const item = emitAttention.mock.calls[0][0] as { id: string; options: string[] };
+      expect(item.options).toEqual([
+        FAILURE_ACTION.retryPullRequest,
+        FAILURE_ACTION.leaveBranch,
+        FAILURE_ACTION.cleanup,
+        FAILURE_ACTION.markDone,
+      ]);
+
+      scheduler.answerAttention(item.id, {
+        decision: 'reply',
+        text: FAILURE_ACTION.retryPullRequest,
+      });
+      await flush();
+
+      // The retry re-opened the pull request — not a local merge.
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(worktrees.integrate).not.toHaveBeenCalled();
+      expect(notes.some((n) => n.includes('#12') && n.includes('was opened for it'))).toBe(true);
+    },
+  );
 
   it('says the branch was PUSHED, not opened, when the request was already there', async () => {
     // The second settle of a card that goes on working. `openPullRequest` pushes into the

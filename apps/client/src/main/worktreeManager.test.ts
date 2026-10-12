@@ -818,6 +818,72 @@ describe('WorktreeManager.syncOntoRemoteBase', () => {
 
     await git(repo, ['worktree', 'remove', '--force', wt]);
   });
+
+  it(
+    "rebases onto the branch's own fork point when local base has drifted from origin and " +
+      'origin has moved too — local base untouched, the branch carries the remote tip and ' +
+      'only its own commit, never the local-only one',
+    async () => {
+      // The live bug this fixes: `development` had gained a commit of its own (a local merge,
+      // say) that `origin/development` never saw, while `origin/development` ALSO gained
+      // commits of its own (a squash-merged PR). The old code tried to fast-forward local
+      // `base` to match origin first and refused outright the moment that failed — it never
+      // even reached the branch's own rebase. `base`'s own extra commit must never travel
+      // into the branch either: only the card's own work belongs in its pull request.
+      const wtm = new WorktreeManager(root);
+      const bare = await addBareOrigin();
+
+      writeFileSync(join(repo, 'local-only.txt'), 'local-only\n');
+      await git(repo, ['add', '-A']);
+      await git(repo, ['commit', '--no-verify', '-m', "local base's own commit, never pushed"]);
+      const localBase = (await git(repo, ['rev-parse', base])).stdout.trim();
+
+      const wt = await branchAdding('orch/rs4', 'feature.txt', 'feature\n');
+      const remoteHead = await pushToOriginBase(
+        bare,
+        'remote-only.txt',
+        'from-elsewhere\n',
+        'pushed directly to origin',
+      );
+
+      const res = await wtm.syncOntoRemoteBase(project(), base, wt);
+
+      expect(res.status).toBe('synced');
+      // Local base could never be fast-forwarded to the remote (it has its own commit origin
+      // lacks) — best-effort, and left exactly where it was.
+      expect((await git(repo, ['rev-parse', base])).stdout.trim()).toBe(localBase);
+      // The branch now carries the remote's new file and its own, never the local-only one.
+      expect((await git(wt, ['cat-file', '-e', 'HEAD:remote-only.txt'])).code).toBe(0);
+      expect((await git(wt, ['cat-file', '-e', 'HEAD:feature.txt'])).code).toBe(0);
+      expect((await git(wt, ['cat-file', '-e', 'HEAD:local-only.txt'])).code).not.toBe(0);
+      expect(await currentBranch(wt)).toBe('orch/rs4');
+      expect(remoteHead).toBeTruthy();
+
+      await git(repo, ['worktree', 'remove', '--force', wt]);
+    },
+  );
+
+  it('reports up-to-date, not an error, when local base has diverged but origin never moved past the fork', async () => {
+    const wtm = new WorktreeManager(root);
+    await addBareOrigin();
+
+    writeFileSync(join(repo, 'local-only.txt'), 'local-only\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', "local base's own commit, never pushed"]);
+    const localBase = (await git(repo, ['rev-parse', base])).stdout.trim();
+
+    const wt = await branchAdding('orch/rs5', 'feature.txt', 'feature\n');
+
+    // Nobody pushed anything further to `bare` — origin is still exactly the fork point,
+    // strictly behind local base, not ahead of it.
+    const res = await wtm.syncOntoRemoteBase(project(), base, wt);
+
+    expect(res.status).toBe('up-to-date');
+    expect((await git(repo, ['rev-parse', base])).stdout.trim()).toBe(localBase);
+    expect(await currentBranch(wt)).toBe('orch/rs5');
+
+    await git(repo, ['worktree', 'remove', '--force', wt]);
+  });
 });
 
 describe('WorktreeManager.prepare — a project that names its base branch', () => {
