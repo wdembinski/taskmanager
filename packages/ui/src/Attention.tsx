@@ -32,7 +32,7 @@ import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
 import { PaneLoading } from './PaneLoading';
 import { useTransport } from './transport';
-import { useInitialLoad } from './useInitialLoad';
+import { useInitialLoad, type InitialLoad } from './useInitialLoad';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto', minHeight: 0 },
@@ -331,8 +331,21 @@ export function InboxItem({
   );
 }
 
-export function Attention(): JSX.Element {
-  const styles = useStyles();
+export interface AttentionItems {
+  /** Null while the seed load is in flight (or failed) — see `initial.error`. */
+  items: AttentionItem[] | null;
+  /** The seed load's own status; wire `error`/`retry` into a `PaneLoading`. */
+  initial: InitialLoad;
+  answer: (id: string, a: AttentionAnswer) => Promise<void>;
+  dismiss: (id: string) => Promise<void>;
+}
+
+/**
+ * Seeds the inbox, follows its two live events, and applies the optimistic removal both
+ * `answer` and `dismiss` want — moved out of `Attention` verbatim so `NeedsYouRail` can
+ * drive the same list without a second, divergent subscription.
+ */
+export function useAttentionItems(): AttentionItems {
   const transport = useTransport();
   const [items, setItems] = useState<AttentionItem[] | null>(null);
 
@@ -370,6 +383,13 @@ export function Attention(): JSX.Element {
     // Throws (and leaves the item in place) if the channel refuses it — see InboxItem.
     setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
   };
+
+  return { items, initial, answer, dismiss };
+}
+
+export function Attention(): JSX.Element {
+  const styles = useStyles();
+  const { items, initial, answer, dismiss } = useAttentionItems();
 
   if (items === null) {
     return (
