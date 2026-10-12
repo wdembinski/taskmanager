@@ -6482,6 +6482,43 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
     expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
   });
 
+  // `chainLandedAt` hijacked the Rung 2 run: a card whose chain had just landed carried the
+  // one-shot review marker, the conflict fix inherited it as `reviewSeed`, and that sent the
+  // fix through the shared project directory (where there is no paused rebase to resolve)
+  // instead of the worktree, and let `settle`'s review-seed branch consume the run and the
+  // marker before the redemption below it ever ran — stranding the rebase and burning the
+  // review that was supposed to follow it.
+  it('a conflict fix on a chain-landed card still runs in the worktree, redeems on settle, and leaves the review for later', async () => {
+    const { scheduler, card, start, fire, finishCalls, pushCalls } = setup({
+      rebaseResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'refs/remotes/origin/main',
+      },
+    });
+    (card as unknown as { chainLandedAt: number | null }).chainLandedAt = 1700000000000;
+
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    // Not `project.path` ("C:/repo") — the fix must land in the worktree holding the
+    // paused rebase, not the shared directory a review seed would have used.
+    expect((start.mock.calls[0][0] as { cwd: string }).cwd).toBe('C:/wt/t1');
+    // The marker must not be consumed by a run that is not the review.
+    expect(card.chainLandedAt).toBe(1700000000000);
+
+    const fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
+    fire(fixRunId, okResult);
+    await flush();
+
+    expect(finishCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
+    expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
+    // Still there for whichever run actually reviews the card next.
+    expect(card.chainLandedAt).toBe(1700000000000);
+  });
+
   it('two failed fixes raise merge-conflict', async () => {
     const { scheduler, start, fire, emitAttention } = setup({
       rebaseResult: {

@@ -795,6 +795,15 @@ interface Run {
    */
   releaseSeed?: boolean;
   /**
+   * This run is a Rung 2 conflict fix (`startTask`'s `fixingConflict`), queued by
+   * {@link Scheduler.resolveForgeConflict} for a rebase paused in a worktree. `settle` reads
+   * it, not `reviewSeed`, to find the redemption that must run: `chainLandedAt` hijacked the
+   * Rung 2 run once — a card whose chain had just landed carried `chainLandedAt`, the
+   * conflict fix inherited it as a (wrong) `reviewSeed`, and `settle`'s review-seed branch
+   * returned before ever reaching the conflict redemption below it, stranding the rebase.
+   */
+  conflictFix?: boolean;
+  /**
    * Whether this run ever put a plan in front of the human (Phase 18).
    *
    * The check that needs it: a `plan`-mode run exists to produce a plan, so one that ends
@@ -3151,8 +3160,14 @@ export class Scheduler {
     // must be flagged exactly as a caller-requested `reviewSeed` would be. Consumed here,
     // not left for the caller, so it fires exactly once regardless of which path resumes
     // the card first.
-    const reviewSeed = opts.reviewSeed ?? Boolean(task.chainLandedAt);
-    if (task.chainLandedAt) this.updateTask(task.id, { chainLandedAt: null }, null);
+    //
+    // A Rung 2 conflict fix is excluded even when `chainLandedAt` is sitting on the card:
+    // `chainLandedAt` hijacked the Rung 2 run once — the fix inherited `reviewSeed`, which
+    // sent it through the shared project directory instead of its worktree and made
+    // `settle` treat it as a review conversation instead of a rebase to finish. The marker
+    // must wait for the run that is actually the review.
+    const reviewSeed = !fixingConflict && (opts.reviewSeed ?? Boolean(task.chainLandedAt));
+    if (reviewSeed && task.chainLandedAt) this.updateTask(task.id, { chainLandedAt: null }, null);
     // "Stopped" is a fact about RIGHT NOW (`Task.stoppedAt`), so it is cleared by work
     // starting — whichever route started it. Resume clears it before it even gets here, but a
     // plain Start, a chat reply and the limit gate's own resume all un-stop the card just as
@@ -3177,6 +3192,7 @@ export class Scheduler {
       resumeNudge: opts.resumeNudge,
       reviewSeed,
       releaseSeed: opts.releaseSeed,
+      conflictFix: fixingConflict,
       permissionMode,
       // Planning costs what the project says planning costs. The two flags together are
       // what "this run is planning" means — a turn that was ASKED for a plan and is held
@@ -4742,6 +4758,37 @@ export class Scheduler {
    * failed worktree run keeps its worktree and branch for inspection/retry.
    */
   private settle(run: Run, status: 'done' | 'failed', reason?: string): void {
+    // A Rung 2 conflict fix, redeemed the moment its run ends — BEFORE the review-seed and
+    // release-seed branches below, deliberately, and whether it succeeded or failed.
+    //
+    // Checked first because `chainLandedAt` hijacked the Rung 2 run once: a card whose chain
+    // had just landed carried `chainLandedAt`, the conflict fix inherited it as `reviewSeed`
+    // (fixed in `startTask` now, but gated here too, on `run.conflictFix`, in case anything
+    // else ever sets `reviewSeed` on a conflict-fix run), and the `reviewSeed` branch used to
+    // sit above this one — it returned before ever reaching the redemption, leaving the
+    // rebase paused in the worktree with nobody left to finish it.
+    //
+    // What it owns is not the run's state, it is the repository's: a rebase paused in a
+    // worktree, with this orchestrator named as the only thing that will continue it. Gated
+    // on `done` (and on the run still carrying branch/base/worktree) it was redeemed only by
+    // the happy path, so a fix that hit a usage limit, a dead sign-in, or an inbox item left
+    // the rebase paused with nobody left to finish it — a detached `HEAD` that then refuses
+    // every button on the card, which is the failure that costs an evening to understand
+    // because nothing about it is on the card.
+    //
+    // Failing over to `finishAfterConflict` is safe because it re-READS the tree rather than
+    // believing the run: markers still in place come back as `conflict` and climb the ladder
+    // to the next attempt (or to a human), which is exactly where an unresolved fix belongs.
+    // The stored context is used, not the run's, because it names the integration being
+    // resumed — a run's own branch/base can be missing on precisely the paths that stranded it.
+    const conflictFix = run.conflictFix ? this.pendingConflictFix.get(run.taskId) : undefined;
+    if (conflictFix) {
+      this.pendingConflictFix.delete(run.taskId);
+      this.attempts.delete(run.taskId);
+      void this.finishConflict(conflictFix);
+      return;
+    }
+
     // A review seed (Phase 17) is a one-turn briefing on a card whose work is already
     // merged. It owns no branch, so there is nothing to integrate; and its outcome must
     // not move the card, which is exactly where the human left it. Checked first, before
@@ -4778,30 +4825,6 @@ export class Scheduler {
         );
       }
       this.updateTask(run.taskId, { status: 'in-progress' }, null);
-      return;
-    }
-
-    // A Rung 2 conflict fix, redeemed the moment its run ends — BEFORE the chain and step
-    // bookkeeping below, and deliberately whether it succeeded or failed.
-    //
-    // What it owns is not the run's state, it is the repository's: a rebase paused in a
-    // worktree, with this orchestrator named as the only thing that will continue it. Gated
-    // on `done` (and on the run still carrying branch/base/worktree) it was redeemed only by
-    // the happy path, so a fix that hit a usage limit, a dead sign-in, or an inbox item left
-    // the rebase paused with nobody left to finish it — a detached `HEAD` that then refuses
-    // every button on the card, which is the failure that costs an evening to understand
-    // because nothing about it is on the card.
-    //
-    // Failing over to `finishAfterConflict` is safe because it re-READS the tree rather than
-    // believing the run: markers still in place come back as `conflict` and climb the ladder
-    // to the next attempt (or to a human), which is exactly where an unresolved fix belongs.
-    // The stored context is used, not the run's, because it names the integration being
-    // resumed — a run's own branch/base can be missing on precisely the paths that stranded it.
-    const conflictFix = this.pendingConflictFix.get(run.taskId);
-    if (conflictFix) {
-      this.pendingConflictFix.delete(run.taskId);
-      this.attempts.delete(run.taskId);
-      void this.finishConflict(conflictFix);
       return;
     }
 
