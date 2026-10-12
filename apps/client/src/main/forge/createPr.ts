@@ -24,7 +24,11 @@
  *      here ever saw coming — this is what catches it first. If that rebase turns out to
  *      have absorbed the branch's own work (someone merged it already, on the forge or by
  *      hand), there is nothing left to open a pull request for — refused the same way an
- *      empty branch always was, just discovered a step later.
+ *      empty branch always was, just discovered a step later. The rebase lands the branch on
+ *      the remote's own fresh copy of `base` (`sync.remoteBase`), not necessarily on `base`
+ *      itself — a local `base` that has diverged from origin (a squash merge, a local merge)
+ *      can no longer be fast-forwarded to match it, so everything read AFTER the sync (the
+ *      re-check below, and the pull request's own body) reads against `remoteBase` instead.
  *   4. Push the branch, failing fast rather than prompting (`git.pushBranch`) — leased
  *      (`--force-with-lease`) whenever step 3 actually rebased: the branch's commits now have
  *      different SHAs than whatever was pushed under this name before, and an ordinary push
@@ -102,7 +106,7 @@ export interface CreatePrDeps {
     opts: { url?: string },
   ): Promise<
     | { status: 'up-to-date' }
-    | { status: 'synced'; autoResolved?: string[] }
+    | { status: 'synced'; remoteBase: string; autoResolved?: string[] }
     | { status: 'conflict'; files: string[] }
     | { status: 'error'; message: string }
   >;
@@ -241,12 +245,19 @@ export async function openPullRequest(
         `conflict(s) that were resolved automatically, with no agent (${sync.autoResolved.join(', ')}).`
       : '';
 
+  // What the branch is actually compared against from here on: the remote's own fresh copy
+  // of `base` when the sync just rebased onto it, never `live.base` itself in that case — a
+  // local `base` that has diverged from origin can no longer be fast-forwarded to match it
+  // (see `syncOntoRemoteBase`'s own comment), so `live.base` would describe the branch against
+  // a ref it was never actually rebased onto.
+  const compareBase = sync.status === 'synced' ? sync.remoteBase : live.base;
+
   // Re-asked AFTER the sync, which may have just rebased the branch onto a base that already
   // contained every one of its commits — someone merged this exact work on the forge, or by
   // hand, while the worktree sat idle. The EARLIER check above only ever saw this worktree's
   // own, possibly stale, copy of base; this is the first point the fresh one can be trusted.
   if (sync.status === 'synced') {
-    const stillAhead = await commitsAhead(live.cwd, live.base, live.branch, host);
+    const stillAhead = await commitsAhead(live.cwd, compareBase, live.branch, host);
     if (stillAhead === 0) {
       const open = reportOpen();
       if (open) return open;
@@ -262,7 +273,7 @@ export async function openPullRequest(
   // branch onto a fresher base — same messages, new commits. `[]` on a read failure, not on a
   // genuinely empty branch — `ahead` already ruled that out above — so `prBody` reads an empty
   // array as "fall back to the card's own description" rather than "say nothing".
-  const commits = await branchCommitMessages(live.cwd, live.base, live.branch, host);
+  const commits = await branchCommitMessages(live.cwd, compareBase, live.branch, host);
 
   // Leased whenever the sync above actually rebased the branch: its commits now have SHAs
   // that nothing pushed under this name before would recognise, so an ordinary push is

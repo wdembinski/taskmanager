@@ -80,6 +80,13 @@
  *     branch edit the same line differently; the rebase the remote check does conflicts, and
  *     neither mechanical rung can resolve it. The branch is left exactly as it was — checked
  *     out, no rebase paused, no conflict markers — and nothing reaches the bare origin.
+ *  15. **A LOCAL base that has already diverged from origin still opens a clean PR.** The real
+ *     bug: `base` itself carries a commit origin never saw (a local merge) while origin ALSO
+ *     moved past the fork point. The old remote check tried to fast-forward local base to
+ *     origin FIRST and refused outright the moment that failed, before the branch's own
+ *     rebase ever ran. The branch still lands, rebased onto origin's fresh tip, carrying only
+ *     its own commit — never the one local base picked up on its own — and the pull request's
+ *     body names only that one commit too.
  *
  * ## Prove it can fail
  *
@@ -130,6 +137,11 @@
  * go red: the worktree is left mid-rebase, `HEAD` detached onto a commit rather than the
  * branch, and the conflict markers from `resolveMechanically`'s failed attempt still sitting in
  * `shared.txt`.
+ *
+ * For check 15, put the fast-forward-first behavior back in `syncOntoRemoteBase` (fail outright
+ * when the best-effort `updateLocalBase` call errors, instead of swallowing it): the whole
+ * scenario goes red with "could not rebase ... fatal: Not possible to fast-forward" — this is
+ * the exact live bug, reproduced.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -981,6 +993,115 @@ check(
 check(
   'and its work tree is clean, no conflict markers left behind',
   git(conflictRepo, 'diff', '--quiet').code === 0,
+);
+
+// ── 15: a LOCAL base that has already diverged from origin still opens a clean PR ───
+// The live bug this step fixes: `base` itself carries a commit origin never saw (a local
+// merge, say) while origin ALSO moved — the shape `docs/plan/README.md`'s "each new task
+// fails to create a PR" entry proved against the real repo (16 ahead, 13 behind). The old
+// `syncOntoRemoteBase` tried to fast-forward local base to origin FIRST and refused outright
+// the moment that failed, never reaching the branch's own rebase at all.
+const divergedRepo = join(work, 'diverged-repo');
+const divergedOrigin = join(work, 'diverged-origin.git');
+git(work, 'init', divergedRepo);
+git(divergedRepo, 'config', 'user.email', 'verify@example.com');
+git(divergedRepo, 'config', 'user.name', 'Verify');
+git(divergedRepo, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(divergedRepo, 'README.md'), '# diverged\n');
+git(divergedRepo, 'add', '-A');
+git(divergedRepo, 'commit', '--no-verify', '-m', 'initial');
+const divergedBase = git(divergedRepo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+git(work, 'init', '--bare', divergedOrigin);
+git(divergedRepo, 'push', divergedOrigin, divergedBase);
+
+// Local base gains a commit of its own that is never pushed — the local-merge half of the
+// real bug.
+writeFileSync(join(divergedRepo, 'local-only.txt'), 'local-only\n');
+git(divergedRepo, 'add', '-A');
+git(divergedRepo, 'commit', '--no-verify', '-m', "local base's own commit, never pushed");
+const divergedLocalBase = git(divergedRepo, 'rev-parse', divergedBase).stdout.trim();
+
+// The card's own branch, cut from that same local base.
+const DIVERGED_BRANCH = 'feat/diverged-base';
+git(divergedRepo, 'checkout', '-b', DIVERGED_BRANCH);
+writeFileSync(join(divergedRepo, 'mine.ts'), 'export const mine = true;\n');
+git(divergedRepo, 'add', '-A');
+git(divergedRepo, 'commit', '--no-verify', '-m', 'add my own file');
+
+// Origin moves too, straight past the fork point, through a clone that never sees the
+// branch or the local-only commit.
+const divergedClone = join(work, 'diverged-clone');
+git(work, 'clone', divergedOrigin, divergedClone);
+git(divergedClone, 'config', 'user.email', 'verify@example.com');
+git(divergedClone, 'config', 'user.name', 'Verify');
+git(divergedClone, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(divergedClone, 'from-elsewhere.txt'), 'pushed directly\n');
+git(divergedClone, 'add', '-A');
+git(divergedClone, 'commit', '--no-verify', '-m', 'pushed directly to origin');
+git(divergedClone, 'push', 'origin', `HEAD:${divergedBase}`);
+rmSync(divergedClone, { recursive: true, force: true });
+
+git(divergedRepo, 'remote', 'add', 'origin', 'https://github.com/acme/diverged.git');
+writeFileSync(
+  gitConfig,
+  readFileSync(gitConfig, 'utf8') +
+    `[url "file://${divergedOrigin.replace(/\\/g, '/')}"]\n` +
+    `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/diverged.git\n`,
+  'utf8',
+);
+const divergedProject = store.addProject({
+  path: divergedRepo,
+  name: 'Diverged',
+  kind: 'agent',
+  baseBranch: divergedBase,
+});
+const divergedCard = store.createTask('personal', { title: 'Work on a base that has diverged' });
+store.updateTask(divergedCard.id, {
+  agentProjectId: divergedProject.id,
+  agentBranch: DIVERGED_BRANCH,
+});
+
+const postsBeforeDiverged = calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length;
+const divergedOpened = await openPullRequest(
+  {
+    ...deps,
+    inspect: async () => ({ cwd: divergedRepo, branch: DIVERGED_BRANCH, base: divergedBase }),
+  },
+  divergedCard.id,
+);
+check(
+  'a pull request opens even though LOCAL base has already diverged from origin',
+  divergedOpened.existed === false,
+  JSON.stringify(divergedOpened),
+);
+check(
+  'exactly one POST, not a refusal',
+  calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length === postsBeforeDiverged + 1,
+);
+
+const divergedPost = calls.findLast((c) => (c.init.method ?? 'GET') === 'POST');
+const divergedSent = JSON.parse(String(divergedPost?.init.body ?? '{}'));
+check(
+  "its body lists only the card's own commit",
+  String(divergedSent.body).includes('add my own file') &&
+    !String(divergedSent.body).includes("local base's own commit"),
+  String(divergedSent.body),
+);
+
+const divergedLanded = git(divergedOrigin, 'rev-parse', `refs/heads/${DIVERGED_BRANCH}`);
+check(
+  'the branch landed carrying the remote commit and its own, never the local-only one',
+  divergedLanded.code === 0 &&
+    git(divergedOrigin, 'cat-file', '-e', `${divergedLanded.stdout.trim()}:from-elsewhere.txt`)
+      .code === 0 &&
+    git(divergedOrigin, 'cat-file', '-e', `${divergedLanded.stdout.trim()}:mine.ts`).code === 0 &&
+    git(divergedOrigin, 'cat-file', '-e', `${divergedLanded.stdout.trim()}:local-only.txt`).code !==
+      0,
+  divergedLanded.stderr.trim() || divergedLanded.stdout.trim(),
+);
+check(
+  'local base was left exactly where it was — it can never be fast-forwarded to origin again',
+  git(divergedRepo, 'rev-parse', divergedBase).stdout.trim() === divergedLocalBase,
 );
 
 store.close();
