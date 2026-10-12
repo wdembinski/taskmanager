@@ -84,10 +84,13 @@ export type AnyFanoutPolicy = FanoutPolicy<never>;
  * unreproducible for exactly this reason — a poll cannot find a toast again, but a push can
  * carry one.
  *
- * **The two drops** are dropped for opposite reasons. `window:maximizedChanged` is about a
- * window a browser tab does not have. `project:tasksChanged` carries a project's whole task
- * list — rows that already reach the browser through the mirror, on their own schedule, so
- * forwarding them ships the same data twice and the second copy is the one that can be stale.
+ * **The three drops** are dropped for three different reasons. `window:maximizedChanged` is
+ * about a window a browser tab does not have. `project:tasksChanged` carries a project's
+ * whole task list — rows that already reach the browser through the mirror, on their own
+ * schedule, so forwarding them ships the same data twice and the second copy is the one that
+ * can be stale. `activity:appended` (F2.9) is one log row — history, not live state — and the
+ * Activity screen re-reads the page it is already showing via `activity:list` on the board's
+ * own poll cadence instead of trying to patch one row into it.
  */
 export const EVENT_FANOUT = {
   'session:event': { kind: 'stream' },
@@ -132,6 +135,11 @@ export const EVENT_FANOUT = {
   'project:tasksChanged': {
     kind: 'drop',
     reason: 'those rows already reach the browser through the mirror',
+  },
+  'activity:appended': {
+    kind: 'drop',
+    reason:
+      'a log row is history the Activity screen re-reads from activity:list on the board cadence',
   },
 } satisfies { [K in keyof IpcEvents]: FanoutPolicy<IpcEvents[K]> };
 

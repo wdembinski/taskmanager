@@ -235,6 +235,13 @@ import { createStore, type Store } from './store';
 import { Updater } from './updater';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
+import { bucketUsageDaily, DAY_MS, normalizeDailyOptions } from '@shared/usage';
+import {
+  ACTIVITY_PERIOD_MS,
+  buildActivityOverview,
+  isActivityPeriod,
+  normalizeActivityQuery,
+} from '@shared/activity';
 
 /**
  * Type-safe wrapper around ipcMain.handle. `K` is constrained to a real channel
@@ -1639,6 +1646,37 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       limit: store.getSettings().sessionTokenBudget,
     }),
   );
+
+  // The Performance screen's trend chart. Reads one extra day of slack before `days`
+  // ago — `bucketUsageDaily` itself drops anything that lands outside the window once
+  // `tzOffsetMinutes` is applied — rather than trying to compute the exact earliest
+  // instant a shifted local day could start from.
+  handle('usage:daily', async (opts) => {
+    const { days, tzOffsetMinutes } = normalizeDailyOptions(opts);
+    const now = Date.now();
+    const rows = store.getDailyUsageInputs(now - (days + 1) * DAY_MS);
+    return bucketUsageDaily(rows, { days, tzOffsetMinutes, now });
+  });
+
+  // The activity dashboard (F2.9). `activity:list` only normalizes the request — a bad
+  // cursor throws a user-facing error here rather than the store's generic one — and hands
+  // it straight to the store. `activity:overview` validates `period` itself: a relayed
+  // caller is untrusted in a way a local one is not, so an unknown value throws instead of
+  // silently picking a window.
+  handle('activity:list', async (query) => store.listActivity(normalizeActivityQuery(query)));
+  handle('activity:overview', async (period) => {
+    if (!isActivityPeriod(period)) {
+      throw new Error(`Not a known activity period: ${period}`);
+    }
+    const now = Date.now();
+    return buildActivityOverview({
+      now,
+      period,
+      activeRuns: scheduler.activeRuns(),
+      attention: scheduler.listAttention(),
+      outcomes: store.countOutcomes(now - ACTIVITY_PERIOD_MS[period]),
+    });
+  });
 
   handle('settings:get', async () => store.getSettings());
   handle('settings:save', async (settings) => {

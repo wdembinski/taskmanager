@@ -263,6 +263,42 @@ export interface DailyUsagePoint {
   cacheReadTokens: number;
 }
 
+/**
+ * An `usage:daily` request's own two knobs, before `now` is injected by the handler —
+ * `UsageDailyOptions` is what crosses the wire, `DailyBucketOptions` is what `bucketUsageDaily`
+ * actually takes.
+ */
+export interface UsageDailyOptions {
+  days: number;
+  tzOffsetMinutes: number;
+}
+
+/** The longest trend range `usage:daily` will serve — matches the activity log's own retention. */
+export const USAGE_DAILY_MAX_DAYS = 90;
+
+/** Minutes in 14 hours — the widest UTC offset any real timezone uses, either direction. */
+const MAX_TZ_OFFSET_MINUTES = 14 * 60;
+
+/**
+ * Clamps an `usage:daily` request to something `bucketUsageDaily` can run: `days` is floored
+ * and clamped to `[1, USAGE_DAILY_MAX_DAYS]`, `tzOffsetMinutes` is clamped to `±14h`. Throws —
+ * rather than silently substituting a default — when either arrives non-finite, since a
+ * relayed `NaN` or `Infinity` means the caller sent something malformed, not merely out of
+ * range.
+ */
+export function normalizeDailyOptions(opts: UsageDailyOptions): UsageDailyOptions {
+  if (!Number.isFinite(opts.days) || !Number.isFinite(opts.tzOffsetMinutes)) {
+    throw new Error('usage:daily requires finite days and tzOffsetMinutes');
+  }
+  return {
+    days: Math.min(USAGE_DAILY_MAX_DAYS, Math.max(1, Math.floor(opts.days))),
+    tzOffsetMinutes: Math.min(
+      MAX_TZ_OFFSET_MINUTES,
+      Math.max(-MAX_TZ_OFFSET_MINUTES, opts.tzOffsetMinutes),
+    ),
+  };
+}
+
 /** Inputs to {@link bucketUsageDaily}. */
 export interface DailyBucketOptions {
   /** Series length, oldest first, ending with today. `<= 0` or non-integer (floored) yields `[]`. */

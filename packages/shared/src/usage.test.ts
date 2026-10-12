@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bucketUsageDaily, DAY_MS } from './usage';
+import { bucketUsageDaily, DAY_MS, normalizeDailyOptions, USAGE_DAILY_MAX_DAYS } from './usage';
 import type { DailyUsageInput } from './usage';
 
 const iso = (s: string): number => new Date(s).getTime();
@@ -140,6 +140,40 @@ describe('bucketUsageDaily — cost null vs zero', () => {
     expect(points[2].date).toBe('2026-01-10');
     expect(points[2].costUsd).toBe(0);
     expect(points[2].costUsd).not.toBeNull();
+  });
+});
+
+describe('normalizeDailyOptions', () => {
+  it('floors a fractional days and clamps it to [1, USAGE_DAILY_MAX_DAYS]', () => {
+    expect(normalizeDailyOptions({ days: 5.9, tzOffsetMinutes: 0 }).days).toBe(5);
+    expect(normalizeDailyOptions({ days: 0, tzOffsetMinutes: 0 }).days).toBe(1);
+    expect(normalizeDailyOptions({ days: -3, tzOffsetMinutes: 0 }).days).toBe(1);
+    expect(normalizeDailyOptions({ days: 1_000, tzOffsetMinutes: 0 }).days).toBe(
+      USAGE_DAILY_MAX_DAYS,
+    );
+  });
+
+  it('clamps tzOffsetMinutes to ±14h', () => {
+    expect(normalizeDailyOptions({ days: 1, tzOffsetMinutes: 10_000 }).tzOffsetMinutes).toBe(
+      14 * 60,
+    );
+    expect(normalizeDailyOptions({ days: 1, tzOffsetMinutes: -10_000 }).tzOffsetMinutes).toBe(
+      -14 * 60,
+    );
+  });
+
+  it('leaves in-range values untouched', () => {
+    expect(normalizeDailyOptions({ days: 30, tzOffsetMinutes: 120 })).toEqual({
+      days: 30,
+      tzOffsetMinutes: 120,
+    });
+  });
+
+  it('throws on non-finite input rather than silently defaulting', () => {
+    expect(() => normalizeDailyOptions({ days: Number.NaN, tzOffsetMinutes: 0 })).toThrow();
+    expect(() =>
+      normalizeDailyOptions({ days: 1, tzOffsetMinutes: Number.POSITIVE_INFINITY }),
+    ).toThrow();
   });
 });
 

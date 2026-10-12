@@ -73,7 +73,7 @@ import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
 import type { RunRefusal } from '@shared/scheduler';
 import type { SessionEvent } from '@shared/session';
-import type { UsageSample } from '@shared/usage';
+import type { DailyUsageInput, UsageSample } from '@shared/usage';
 import {
   type AppSettings,
   DEFAULT_BOARD_DISPLAY,
@@ -563,6 +563,13 @@ export interface Store {
   appendTokenUsage(sample: UsageSample & { costUsd?: number | null }): void;
   /** Every usage sample with `createdAt >= sinceMs`, oldest first (for the rollup/series). */
   getUsageSamples(sinceMs: number): UsageSample[];
+  /**
+   * Every `token_usage` row with `createdAt >= sinceMs`, oldest first, for the daily trend
+   * chart (`bucketUsageDaily`). Deliberately NOT filtered by `totalTokens > 0` the way
+   * `getUsageSamples` is: a cost-only row (zero tokens, a priced `costUsd`) must still reach
+   * the chart's cost line, which `getUsageSamples` would silently drop.
+   */
+  getDailyUsageInputs(sinceMs: number): DailyUsageInput[];
   /**
    * Total tokens recorded in `[fromMs, toMs)` — one SUM, not the rows.
    *
@@ -2474,6 +2481,12 @@ export function createStore(dbPath: string): Store {
     `SELECT source, projectId, taskId, runId, inputTokens, outputTokens,
             cacheCreationTokens, cacheReadTokens, totalTokens, createdAt
      FROM token_usage WHERE createdAt >= ? AND totalTokens > 0 ORDER BY createdAt`,
+  );
+  // No `totalTokens > 0` filter — see getDailyUsageInputs's own docstring for why a
+  // cost-only row must still come through. Served by idx_token_usage_time.
+  const selectDailyUsageSince = db.prepare(
+    `SELECT createdAt, inputTokens, outputTokens, cacheReadTokens, costUsd
+     FROM token_usage WHERE createdAt >= ? ORDER BY createdAt`,
   );
   const selectUsageCostSince = db.prepare(
     `SELECT COALESCE(SUM(costUsd), 0) AS cost FROM token_usage WHERE createdAt >= ?`,
@@ -4548,6 +4561,10 @@ export function createStore(dbPath: string): Store {
 
     getUsageSamples(sinceMs) {
       return selectUsageSince.all(sinceMs) as UsageSample[];
+    },
+
+    getDailyUsageInputs(sinceMs) {
+      return selectDailyUsageSince.all(sinceMs) as DailyUsageInput[];
     },
 
     getWindowCost(sinceMs) {
