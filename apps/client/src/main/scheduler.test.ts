@@ -1451,18 +1451,20 @@ describe('failure decision helpers (pure)', () => {
     expect(actions).not.toContain(FAILURE_ACTION.retryFresh);
   });
 
-  it('offers a pull-request-specific retry for a failed "open a PR when finished", never retry-integration', () => {
+  it('offers a pull-request-specific retry for a failed "open a PR when finished", plus an AI fix, never retry-integration', () => {
     const actions = failureActionsFor('pull-request');
     expect(actions).toEqual([
       FAILURE_ACTION.retryPullRequest,
+      FAILURE_ACTION.aiFix,
       FAILURE_ACTION.leaveBranch,
       FAILURE_ACTION.cleanup,
       FAILURE_ACTION.markDone,
     ]);
     // The bug this kind exists to fix: a failed PR open must never offer the button that
-    // merges locally instead of opening the pull request the card actually asked for.
+    // merges locally instead of opening the pull request the card actually asked for — not
+    // even as a fallback, since that is exactly what reintroduced the divergence this kind
+    // was created to close.
     expect(actions).not.toContain(FAILURE_ACTION.retryIntegration);
-    expect(actions).not.toContain(FAILURE_ACTION.aiFix);
     expect(actions).not.toContain(FAILURE_ACTION.retryFresh);
   });
 });
@@ -6961,6 +6963,7 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
       const item = emitAttention.mock.calls[0][0] as { id: string; options: string[] };
       expect(item.options).toEqual([
         FAILURE_ACTION.retryPullRequest,
+        FAILURE_ACTION.aiFix,
         FAILURE_ACTION.leaveBranch,
         FAILURE_ACTION.cleanup,
         FAILURE_ACTION.markDone,
@@ -6976,6 +6979,40 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
       expect(open).toHaveBeenCalledTimes(2);
       expect(worktrees.integrate).not.toHaveBeenCalled();
       expect(notes.some((n) => n.includes('#12') && n.includes('was opened for it'))).toBe(true);
+    },
+  );
+
+  it(
+    'a parked PR failure\'s "AI fix & retry" requeues the agent with the sync conflict as ' +
+      'context, instead of reopening the PR directly or merging locally',
+    async () => {
+      const { finish, flush, worktrees, scheduler, open, emitAttention } = setup({
+        projectAutoCreatePr: true,
+        open: async () => {
+          throw new Error(
+            '"development" has moved on github.com since "feat/export" was built, and ' +
+              'rebasing onto its current state conflicts on packages/shared/src/ipcRelay.test.ts.',
+          );
+        },
+      });
+
+      finish();
+      await flush();
+      expect(open).toHaveBeenCalledTimes(1);
+
+      const item = emitAttention.mock.calls[0][0] as { id: string; options: string[] };
+      expect(item.options).toContain(FAILURE_ACTION.aiFix);
+
+      scheduler.answerAttention(item.id, { decision: 'reply', text: FAILURE_ACTION.aiFix });
+      await flush();
+
+      // Handed to the agent as fix context on the next run, not re-opened and not merged.
+      const fixNotes = (scheduler as unknown as { fixNotes: Map<string, string> }).fixNotes;
+      expect(fixNotes.get('t1')).toMatch(/conflicts on packages\/shared\/src\/ipcRelay\.test\.ts/);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(worktrees.integrate).not.toHaveBeenCalled();
+      // requeue() re-attempts the task's own work, which goes through prepare again.
+      expect(worktrees.prepare).toHaveBeenCalled();
     },
   );
 
