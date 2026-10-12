@@ -87,6 +87,73 @@ describe('GitLabClient', () => {
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('PUT');
   });
 
+  it('merges with a PUT to /merge_requests/:iid/merge, sending the sha when given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12, 'deadbeef');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://gitlab.com/api/v4/projects/42/merge_requests/12/merge');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ sha: 'deadbeef' });
+  });
+
+  it('merges with no body at all when no sha is given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.body).toBeUndefined();
+  });
+
+  it('surfaces a refused merge as a GitLabError carrying GitLab’s own message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ message: 'Method Not Allowed' }, 405)),
+    );
+    await expect(client().mergeMergeRequest(42, 12)).rejects.toMatchObject({
+      status: 405,
+    });
+    await expect(client().mergeMergeRequest(42, 12)).rejects.toBeInstanceOf(GitLabError);
+  });
+
+  it('sends merge_commit_message when a message is given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12, undefined, { message: 'Add SSO\n\nCloses #3' });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ merge_commit_message: 'Add SSO\n\nCloses #3' });
+  });
+
+  it('sends squash plus squash_commit_message when squashing with a message', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12, 'deadbeef', { message: 'Add SSO', squash: true });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      sha: 'deadbeef',
+      squash: true,
+      squash_commit_message: 'Add SSO',
+    });
+  });
+
+  it('sends squash with no squash_commit_message when the message is blank', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12, undefined, { squash: true, message: '  ' });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ squash: true });
+  });
+
   it('updates only the description — the refresh-on-push never touches the title', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, description: 'new' }));
     vi.stubGlobal('fetch', fetchMock);
@@ -207,5 +274,88 @@ describe('GitLabClient.createMergeRequest', () => {
       client().createMergeRequest('g/p', { source_branch: 'x', target_branch: 'y', title: 't' }),
     ).rejects.toBeInstanceOf(GitLabError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GitLabClient.getMergeProposal', () => {
+  it('POSTs to /api/graphql, not /api/v4, with PRIVATE-TOKEN auth', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: {
+          project: {
+            mergeMethod: 'MERGE',
+            mergeRequest: {
+              defaultMergeCommitMessage: 'Add SSO\n\nCloses #3',
+              defaultSquashCommitMessage: null,
+              squashOnMerge: false,
+            },
+          },
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const proposal = await client().getMergeProposal('g/s/p', 12);
+
+    expect(proposal).toEqual({ method: 'merge', message: 'Add SSO\n\nCloses #3' });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://gitlab.com/api/graphql');
+    expect(init.method).toBe('POST');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['PRIVATE-TOKEN']).toBe('glpat-x');
+    const sent = JSON.parse(String(init.body));
+    expect(sent.variables).toEqual({ fullPath: 'g/s/p', iid: '12' });
+    expect(sent.query).toContain('defaultMergeCommitMessage');
+  });
+
+  it('reports squash when the project squashes on merge', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: {
+            project: {
+              mergeMethod: 'MERGE',
+              mergeRequest: {
+                defaultMergeCommitMessage: 'merge msg',
+                defaultSquashCommitMessage: 'squash msg',
+                squashOnMerge: true,
+              },
+            },
+          },
+        }),
+      ),
+    );
+
+    expect(await client().getMergeProposal('g/p', 12)).toEqual({
+      method: 'squash',
+      message: 'squash msg',
+    });
+  });
+
+  it('reports ff with no message for a fast-forward-only project', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: {
+            project: {
+              mergeMethod: 'FF',
+              mergeRequest: { defaultMergeCommitMessage: 'merge msg', squashOnMerge: false },
+            },
+          },
+        }),
+      ),
+    );
+
+    expect(await client().getMergeProposal('g/p', 12)).toEqual({ method: 'ff', message: null });
+  });
+
+  it('throws a GitLabError when GraphQL answers 200 with an errors array', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ errors: [{ message: 'not found' }] })),
+    );
+    await expect(client().getMergeProposal('g/p', 12)).rejects.toBeInstanceOf(GitLabError);
   });
 });

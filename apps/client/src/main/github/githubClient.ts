@@ -174,8 +174,28 @@ export interface GitHubPullRequest {
    */
   mergeable?: boolean | null;
   /** The source branch and, crucially, the head SHA the check runs hang off. */
-  head?: { ref?: string; sha?: string; repo?: { id?: number; full_name?: string } | null } | null;
-  base?: { ref?: string; repo?: { id?: number; full_name?: string } | null } | null;
+  head?: { ref?: string; sha?: string; repo?: GitHubRepoRef | null } | null;
+  base?: { ref?: string; repo?: GitHubRepoRef | null } | null;
+}
+
+/**
+ * The repository object GitHub embeds in `head`/`base`, which is the FULL repository
+ * representation and not just an id — including the three merge-method toggles
+ * {@link GitHubClient.mergePullRequest} reads to decide `merge_method`.
+ */
+export interface GitHubRepoRef {
+  id?: number;
+  full_name?: string;
+  allow_merge_commit?: boolean | null;
+  allow_squash_merge?: boolean | null;
+  allow_rebase_merge?: boolean | null;
+}
+
+/** `PUT /repos/{owner}/{repo}/pulls/{number}/merge` — what GitHub hands back, not a PR. */
+export interface GitHubMergeResult {
+  sha?: string;
+  merged?: boolean;
+  message?: string;
 }
 
 /**
@@ -313,6 +333,25 @@ export function toPullRequestState(pr: {
 }
 
 /**
+ * Which `merge_method` to send, given a repository's three merge-method toggles.
+ *
+ * A plain merge commit first, then squash, then rebase — each skipped only when the
+ * repository explicitly disabled it (`false`; a toggle GitHub omitted, which old Enterprise
+ * Server versions do, is read as allowed). If somehow all three are off GitHub would refuse
+ * the merge outright, so `merge` is sent anyway and let the 405 explain why.
+ */
+export function pickMergeMethod(repo: {
+  allow_merge_commit?: boolean | null;
+  allow_squash_merge?: boolean | null;
+  allow_rebase_merge?: boolean | null;
+}): 'merge' | 'squash' | 'rebase' {
+  if (repo.allow_merge_commit !== false) return 'merge';
+  if (repo.allow_squash_merge !== false) return 'squash';
+  if (repo.allow_rebase_merge !== false) return 'rebase';
+  return 'merge';
+}
+
+/**
  * Where REST calls go, given what the user typed.
  *
  * github.com is the special case, not the general one: its API is a different HOST, so a
@@ -325,6 +364,28 @@ export function apiRoot(baseUrl: string): string {
   if (/^https?:\/\/api\.github\.com$/i.test(trimmed)) return trimmed;
   if (/\/api\/v3$/i.test(trimmed)) return trimmed;
   return `${trimmed}/api/v3`;
+}
+
+/**
+ * Where GraphQL calls go, given what the user typed — the counterpart of {@link apiRoot}.
+ *
+ * github.com's GraphQL endpoint hangs off its API host directly (`api.github.com/graphql`),
+ * while an Enterprise Server exposes it at `/api/graphql` on the INSTANCE root, not under
+ * `/api/v3` the way REST is — so the `/api/v3` suffix `apiRoot` would have added is stripped
+ * first rather than reused.
+ */
+export function graphqlRoot(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  if (/^https?:\/\/api\.github\.com$/i.test(trimmed)) return `${trimmed}/graphql`;
+  return `${trimmed.replace(/\/api\/v3$/i, '')}/api/graphql`;
+}
+
+/** The commit title (first line) and body (the rest) `git commit` would split a message into. */
+function splitCommitMessage(message: string): { title: string; body: string } {
+  const lines = message.split('\n');
+  const title = (lines[0] ?? '').trim();
+  const body = lines.slice(1).join('\n').replace(/^\n+/, '').trimEnd();
+  return { title, body };
 }
 
 /**
@@ -431,6 +492,42 @@ export class GitHubClient {
     }
     if (res.status === 204) return undefined as T;
     return (await res.json().catch(() => undefined)) as T;
+  }
+
+  /**
+   * One GraphQL call — the only route to the merge commit message GitHub itself would
+   * propose, which the REST API has no field for.
+   *
+   * Mirrors {@link write}'s error handling rather than {@link raw}'s, because a POST to
+   * `/graphql` is indistinguishable from a mutation at the transport level even though every
+   * query this client sends is a read. GraphQL's own failure mode is folded in on top: a
+   * malformed query or an object GitHub refuses to resolve (a PR the token cannot see) comes
+   * back as HTTP 200 with an `errors` array instead of a 4xx, and leaving that unchecked
+   * would hand the caller a `data` full of nulls that looks like a proposal with no message
+   * rather than a call that never answered the question.
+   */
+  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const res = await fetch(graphqlRoot(this.config.baseUrl), {
+      method: 'POST',
+      headers: { ...this.headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new GitHubError(
+        `GitHub ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+        res.status,
+      );
+    }
+    const body = (await res.json().catch(() => undefined)) as
+      { data?: T; errors?: Array<{ message?: string }> } | undefined;
+    if (body?.errors?.length) {
+      throw new GitHubError(
+        `GitHub GraphQL error: ${body.errors.map((e) => e.message).join('; ')}`,
+        res.status,
+      );
+    }
+    return body?.data as T;
   }
 
   /**
@@ -676,6 +773,91 @@ export class GitHubClient {
    */
   async updateBranch(owner: string, repo: string, number: number): Promise<void> {
     await this.write<unknown>(`${repoPath(owner, repo)}/pulls/${number}/update-branch`, 'PUT');
+  }
+
+  /**
+   * Merge it — `PUT /repos/{owner}/{repo}/pulls/{number}/merge`.
+   *
+   * `merge_method` is never left for GitHub to default: the repository's own
+   * `allow_merge_commit`/`allow_squash_merge`/`allow_rebase_merge` toggles are read off a
+   * fresh {@link getPullRequest} (`base.repo` carries the full repository, not just its id —
+   * see {@link GitHubRepoRef}) and resolved with {@link pickMergeMethod}, so a repository that
+   * disabled plain merge commits gets squash instead of a refusal.
+   *
+   * `sha`, when given, is GitHub's own guard against merging a branch that moved out from
+   * under the human after they looked at it — a mismatch answers with a 409. That refusal,
+   * same as "not mergeable" (405) or a merge GitHub itself blocks (406/422), goes through the
+   * same {@link write} every other mutation does, so it surfaces as a {@link GitHubError}
+   * carrying GitHub's own message.
+   *
+   * `message`, when given and not blank, becomes `commit_title` (its first line) and
+   * `commit_message` (the rest) — never sent for `rebase`, which replays the branch's own
+   * commits and has no commit message of its own to set.
+   */
+  async mergePullRequest(
+    owner: string,
+    repo: string,
+    number: number,
+    sha?: string,
+    message?: string,
+  ): Promise<GitHubMergeResult> {
+    const pr = await this.getPullRequest(owner, repo, number);
+    const merge_method = pickMergeMethod(pr.base?.repo ?? {});
+    const split =
+      merge_method !== 'rebase' && message && message.trim() ? splitCommitMessage(message) : null;
+    return this.write<GitHubMergeResult>(`${repoPath(owner, repo)}/pulls/${number}/merge`, 'PUT', {
+      ...(sha ? { sha } : {}),
+      merge_method,
+      ...(split
+        ? { commit_title: split.title, ...(split.body ? { commit_message: split.body } : {}) }
+        : {}),
+    });
+  }
+
+  /**
+   * The commit message GitHub itself would propose for merging this pull request, and the
+   * method it would use — read with GraphQL's `viewerMergeHeadlineText`/`viewerMergeBodyText`,
+   * which the REST API has no equivalent for, because every forge renders its own default
+   * commit-message templates and re-implementing them here would drift the moment either
+   * side changes its template syntax.
+   *
+   * `method` is {@link pickMergeMethod} read off the SAME `base.repo` toggles
+   * {@link mergePullRequest} itself reads, so the proposal and the merge can never disagree
+   * about which method applies. `rebase` creates no merge commit, so GitHub has no headline
+   * or body to propose for it and the GraphQL call is skipped entirely.
+   */
+  async getMergeProposal(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ method: 'merge' | 'squash' | 'rebase'; message: string | null }> {
+    const pr = await this.getPullRequest(owner, repo, number);
+    const method = pickMergeMethod(pr.base?.repo ?? {});
+    if (method === 'rebase') return { method, message: null };
+    const mergeType = method === 'squash' ? 'SQUASH' : 'MERGE';
+    const data = await this.graphql<{
+      repository?: {
+        pullRequest?: {
+          viewerMergeHeadlineText?: string | null;
+          viewerMergeBodyText?: string | null;
+        } | null;
+      } | null;
+    }>(
+      `query($owner: String!, $repo: String!, $number: Int!, $mergeType: PullRequestMergeMethod!) {
+        repository(owner: $owner, name: $repo) {
+          pullRequest(number: $number) {
+            viewerMergeHeadlineText(mergeType: $mergeType)
+            viewerMergeBodyText(mergeType: $mergeType)
+          }
+        }
+      }`,
+      { owner, repo, number, mergeType },
+    );
+    const headline = data.repository?.pullRequest?.viewerMergeHeadlineText ?? null;
+    const body = data.repository?.pullRequest?.viewerMergeBodyText ?? null;
+    if (!headline) return { method, message: null };
+    const message = body && body.trim() ? `${headline}\n\n${body}` : headline;
+    return { method, message };
   }
 
   /**

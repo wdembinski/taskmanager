@@ -219,6 +219,8 @@ export interface TaskDetailProps {
   afterMergePipeline?: boolean;
   /** `settings.features.mrRebaseButton` — passed straight through to `MergeRequests`. */
   mrRebaseButton?: boolean;
+  /** `settings.features.mrMergeButton` — passed straight through to `MergeRequests`. */
+  mrMergeButton?: boolean;
   /**
    * `settings.features.quietAgentProgress` — when true, the conversation drops the agent's
    * tool-use/thinking chatter instead of folding it into a "worked with N tools" row, and
@@ -322,6 +324,7 @@ export function TaskDetail({
   mergeRequests = [],
   afterMergePipeline = true,
   mrRebaseButton = true,
+  mrMergeButton = true,
   quietAgentProgress = true,
   attachments = [],
   parentAttachments = [],
@@ -1129,8 +1132,11 @@ export function TaskDetail({
               onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
               onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
               onRebase={(id) => void transport.invoke('mr:rebase', id)}
+              onMerge={(id, message) => transport.invoke('mr:merge', id, { message })}
+              onLoadMergeProposal={(id) => transport.invoke('mr:mergeProposal', id)}
               afterMergePipeline={afterMergePipeline}
               mrRebaseButton={mrRebaseButton}
+              mrMergeButton={mrMergeButton}
             />
           </>
         )}

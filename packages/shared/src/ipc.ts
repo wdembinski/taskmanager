@@ -280,6 +280,26 @@ export interface BoardScope {
 }
 
 /**
+ * The commit message a forge itself would propose for merging one MR/PR, and the method
+ * that proposal was rendered for — GitHub's `getMergeProposal` / GitLab's `getMergeProposal`
+ * verbatim, unioned into one shape since the merge dialog asks the same two questions of
+ * either forge.
+ *
+ * `method` is read off the SAME toggles the merge call itself resolves (GitHub's
+ * `pickMergeMethod`, GitLab's `mergeMethod`/`squashOnMerge`), so the proposal and the merge
+ * can never disagree about which one applies. `rebase` (GitHub) and `ff` (GitLab) create no
+ * merge commit, so neither forge has a message to propose for them and `message` is null.
+ *
+ * `message` is also null when the proposal could not be read at all — an older instance, a
+ * token without the scope GraphQL needs — so the dialog can fall back to an empty, editable
+ * field rather than inventing a message. See `ConfirmMergeDialog`'s `loadProposal`.
+ */
+export interface MergeProposal {
+  method: 'merge' | 'squash' | 'rebase' | 'ff';
+  message: string | null;
+}
+
+/**
  * INVOKE channels: request → response.
  *
  * Each key is a channel name; the function type documents its arguments and the
@@ -1047,6 +1067,24 @@ export interface IpcApi {
    * the immediate re-sync could see, not necessarily the finished rebase.
    */
   'mr:rebase': (mrId: string) => Promise<MergeRequest[]>;
+  /**
+   * Merge it — GitLab's own merge endpoint, or GitHub's. Only meaningful while
+   * `mrReadyToMerge` says yes; the server re-checks that itself regardless, since the UI's
+   * own read of readiness is advisory and may be stale by the time the click lands.
+   *
+   * `message`, when given and not blank, becomes the merge commit's message — the dialog's
+   * edited copy of what `mr:mergeProposal` read. A missing or blank message sends none, which
+   * is exactly today's call: the forge applies its own default, same as before this existed.
+   */
+  'mr:merge': (mrId: string, options?: { message?: string }) => Promise<MergeRequest[]>;
+  /**
+   * The commit message the forge itself would propose for merging this MR/PR, for the merge
+   * dialog to prefill and let a human edit before pressing merge. See {@link MergeProposal}.
+   *
+   * Read-only and side-effect-free — unlike `mr:merge` it never re-checks `mrReadyToMerge`,
+   * since showing a proposal is not the same claim as being ready to act on it.
+   */
+  'mr:mergeProposal': (mrId: string) => Promise<MergeProposal>;
   /**
    * The connected instance's priority names, most urgent first — what the detail
    * pane's priority dropdown offers for a JIRA card, since only names this instance

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { GitHubClient, GitHubError, apiRoot, nextPageUrl } from './githubClient';
+import {
+  GitHubClient,
+  GitHubError,
+  apiRoot,
+  graphqlRoot,
+  nextPageUrl,
+  pickMergeMethod,
+} from './githubClient';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return {
@@ -450,6 +457,22 @@ describe('apiRoot', () => {
   });
 });
 
+describe('graphqlRoot', () => {
+  it('hangs github.com’s GraphQL endpoint off its own API host', () => {
+    expect(graphqlRoot('https://api.github.com')).toBe('https://api.github.com/graphql');
+    expect(graphqlRoot('https://api.github.com/')).toBe('https://api.github.com/graphql');
+  });
+
+  it('puts an Enterprise instance’s GraphQL endpoint at /api/graphql, not under /api/v3', () => {
+    expect(graphqlRoot('https://github.acme.internal')).toBe(
+      'https://github.acme.internal/api/graphql',
+    );
+    expect(graphqlRoot('https://github.acme.internal/api/v3')).toBe(
+      'https://github.acme.internal/api/graphql',
+    );
+  });
+});
+
 describe('nextPageUrl', () => {
   it('finds rel="next" wherever it sits in the list', () => {
     const link =
@@ -553,5 +576,278 @@ describe('GitHubClient.createPullRequest', () => {
     await expect(
       client().createPullRequest('o', 'r', { head: 'x', base: 'main', title: 't' }),
     ).rejects.toMatchObject({ status: 422 });
+  });
+});
+
+describe('pickMergeMethod', () => {
+  it('prefers a plain merge commit when nothing says otherwise', () => {
+    expect(pickMergeMethod({})).toBe('merge');
+    expect(pickMergeMethod({ allow_merge_commit: true })).toBe('merge');
+  });
+
+  it('falls back to squash when merge commits are disabled', () => {
+    expect(pickMergeMethod({ allow_merge_commit: false, allow_squash_merge: true })).toBe('squash');
+  });
+
+  it('falls back to rebase when both merge and squash are disabled', () => {
+    expect(
+      pickMergeMethod({
+        allow_merge_commit: false,
+        allow_squash_merge: false,
+        allow_rebase_merge: true,
+      }),
+    ).toBe('rebase');
+  });
+
+  it('falls back to merge, and lets GitHub refuse, when all three are off', () => {
+    expect(
+      pickMergeMethod({
+        allow_merge_commit: false,
+        allow_squash_merge: false,
+        allow_rebase_merge: false,
+      }),
+    ).toBe('merge');
+  });
+});
+
+describe('GitHubClient.mergePullRequest', () => {
+  it('PUTs to /pulls/:number/merge with the sha and the repo’s preferred method', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          base: { ref: 'main', repo: { id: 1, allow_merge_commit: true } },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ sha: 'deadbeef', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().mergePullRequest('o', 'r', 7, 'deadbeef');
+
+    expect(result.merged).toBe(true);
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://api.github.com/repos/o/r/pulls/7');
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/o/r/pulls/7/merge');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ sha: 'deadbeef', merge_method: 'merge' });
+  });
+
+  it('falls back to squash when the repo disabled plain merge commits', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          base: {
+            ref: 'main',
+            repo: { id: 1, allow_merge_commit: false, allow_squash_merge: true },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ sha: 'deadbeef', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergePullRequest('o', 'r', 7);
+
+    const init = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ merge_method: 'squash' });
+  });
+
+  it('surfaces a refused merge as a GitHubError carrying GitHub’s own message', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ number: 7, state: 'open', base: { repo: { id: 1 } } }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'Pull Request is not mergeable' }, 405));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(client().mergePullRequest('o', 'r', 7)).rejects.toMatchObject({ status: 405 });
+  });
+
+  it('splits a given message into commit_title and commit_message', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          base: { ref: 'main', repo: { id: 1, allow_merge_commit: true } },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ sha: 'deadbeef', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergePullRequest('o', 'r', 7, undefined, 'Add SSO\n\nCloses #3');
+
+    const init = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      merge_method: 'merge',
+      commit_title: 'Add SSO',
+      commit_message: 'Closes #3',
+    });
+  });
+
+  it('sends no commit_title/commit_message when the message is blank', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          base: { repo: { id: 1, allow_merge_commit: true } },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ sha: 'deadbeef', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergePullRequest('o', 'r', 7, undefined, '   ');
+
+    const init = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ merge_method: 'merge' });
+  });
+
+  it('never sends a message for rebase, even when one is given', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          base: {
+            repo: {
+              id: 1,
+              allow_merge_commit: false,
+              allow_squash_merge: false,
+              allow_rebase_merge: true,
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ sha: 'deadbeef', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergePullRequest('o', 'r', 7, undefined, 'Add SSO');
+
+    const init = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ merge_method: 'rebase' });
+  });
+});
+
+describe('GitHubClient.getMergeProposal', () => {
+  it('asks GraphQL for the viewer-merge text, using the repo’s own preferred method', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          base: { ref: 'main', repo: { id: 1, allow_merge_commit: true } },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            repository: {
+              pullRequest: {
+                viewerMergeHeadlineText: 'Add SSO (#7)',
+                viewerMergeBodyText: 'Closes #3',
+              },
+            },
+          },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const proposal = await client().getMergeProposal('o', 'r', 7);
+
+    expect(proposal).toEqual({ method: 'merge', message: 'Add SSO (#7)\n\nCloses #3' });
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/graphql');
+    expect(init.method).toBe('POST');
+    const sent = JSON.parse(String(init.body));
+    expect(sent.variables).toEqual({ owner: 'o', repo: 'r', number: 7, mergeType: 'MERGE' });
+    expect(sent.query).toContain('viewerMergeHeadlineText');
+  });
+
+  it('uses SQUASH as the mergeType when the repo prefers squash', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          base: { repo: { id: 1, allow_merge_commit: false, allow_squash_merge: true } },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: {
+            repository: {
+              pullRequest: { viewerMergeHeadlineText: 'Add SSO', viewerMergeBodyText: null },
+            },
+          },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const proposal = await client().getMergeProposal('o', 'r', 7);
+
+    expect(proposal).toEqual({ method: 'squash', message: 'Add SSO' });
+    const sent = JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body));
+    expect(sent.variables.mergeType).toBe('SQUASH');
+  });
+
+  it('never calls GraphQL for rebase — there is no merge commit to propose a message for', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({
+        number: 7,
+        state: 'open',
+        base: {
+          repo: {
+            id: 1,
+            allow_merge_commit: false,
+            allow_squash_merge: false,
+            allow_rebase_merge: true,
+          },
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const proposal = await client().getMergeProposal('o', 'r', 7);
+
+    expect(proposal).toEqual({ method: 'rebase', message: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws a GitHubError when GraphQL answers 200 with an errors array', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ number: 7, state: 'open', base: { repo: { id: 1 } } }))
+      .mockResolvedValueOnce(
+        jsonResponse({ errors: [{ message: 'Could not resolve to a PullRequest' }] }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(client().getMergeProposal('o', 'r', 7)).rejects.toBeInstanceOf(GitHubError);
+  });
+
+  it('reports no message when the viewer-merge headline comes back null', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ number: 7, state: 'open', base: { repo: { id: 1 } } }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: { repository: { pullRequest: { viewerMergeHeadlineText: null } } },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await client().getMergeProposal('o', 'r', 7)).toEqual({
+      method: 'merge',
+      message: null,
+    });
   });
 });

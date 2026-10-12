@@ -179,6 +179,7 @@ import {
 import {
   forgeName,
   mrIsSettled,
+  mrReadyToMerge,
   type ForgeProvider,
   type MergeRequest,
 } from '@shared/mergeRequest';
@@ -2778,6 +2779,59 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
     await buildGitHubClient().updateBranch(owner, repo, mr.number);
     return syncGitHubPullRequests();
+  });
+
+  /**
+   * Merge it — GitLab's own merge endpoint, or GitHub's.
+   *
+   * Refuses up front for an MR that is no longer tracked or that `mrReadyToMerge` does not
+   * call ready — the UI's own read of readiness can be stale by the time the click lands, so
+   * this re-checks against the store's latest copy rather than trusting the renderer's. The
+   * forge re-checks again regardless (a 405/406/409/422 surfaces as a `GitHubError`/
+   * `GitLabError`), since even a freshly re-checked MR can be overtaken between this check and
+   * the request landing.
+   */
+  handle('mr:merge', async (mrId, options) => {
+    const mr = store.listMergeRequests().find((m) => m.id === mrId);
+    if (!mr) throw new Error('That merge request is no longer tracked.');
+    if (!mrReadyToMerge(mr)) {
+      logMain(`mr:merge refused — ${mr.id} is not ready to merge`);
+      throw new Error('That merge request is not ready to merge.');
+    }
+    const message = options?.message;
+    if (mr.provider === 'gitlab') {
+      await buildGitLabClient().mergeMergeRequest(mr.repoId, mr.number, mr.headSha ?? undefined, {
+        message,
+      });
+      return syncGitLab();
+    }
+    const [owner, repo] = mr.projectPath.split('/');
+    if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
+    await buildGitHubClient().mergePullRequest(
+      owner,
+      repo,
+      mr.number,
+      mr.headSha ?? undefined,
+      message,
+    );
+    return syncGitHubPullRequests();
+  });
+
+  /**
+   * The commit message the forge itself would propose for merging this MR/PR — what the
+   * merge dialog prefills before a human edits it. Looked up the same way `mr:merge` is: an
+   * untracked MR refuses with the same plain sentence, but unlike that channel this one never
+   * re-checks `mrReadyToMerge` — showing a proposal is not a claim that merging is ready.
+   */
+  handle('mr:mergeProposal', async (mrId) => {
+    const mr = store.listMergeRequests().find((m) => m.id === mrId);
+    if (!mr) throw new Error('That merge request is no longer tracked.');
+    if (mr.provider === 'gitlab') {
+      return buildGitLabClient().getMergeProposal(mr.projectPath, mr.number);
+    }
+    const [owner, repo] = mr.projectPath.split('/');
+    if (!owner || !repo) throw new Error(`Malformed GitHub repository path: ${mr.projectPath}`);
+    return buildGitHubClient().getMergeProposal(owner, repo, mr.number);
   });
   // -------------------------------------------------------------------------
 

@@ -196,6 +196,45 @@ export class GitLabClient {
   }
 
   /**
+   * One GraphQL call, at `/api/graphql` rather than `/api/v4` — the only route to the merge
+   * commit message GitLab itself would propose, which the REST API has no field for.
+   *
+   * A deliberate mirror of `GitHubClient.graphql`: errors are checked at TWO levels, because
+   * a POST to `/graphql` answers with a non-2xx only for transport-level failures (auth,
+   * rate limiting). A query GitLab could not resolve — a merge request the token cannot see,
+   * a field an older instance does not have — comes back as HTTP 200 with an `errors` array
+   * instead, and reading only the status would hand the caller a `data` full of nulls that
+   * looks like "no message proposed" rather than a call that never answered.
+   */
+  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const res = await fetch(`${this.config.baseUrl.replace(/\/+$/, '')}/api/graphql`, {
+      method: 'POST',
+      headers: {
+        'PRIVATE-TOKEN': sanitizeToken(this.config.token),
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new GitLabError(
+        `GitLab ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+        res.status,
+      );
+    }
+    const body = (await res.json().catch(() => undefined)) as
+      { data?: T; errors?: Array<{ message?: string }> } | undefined;
+    if (body?.errors?.length) {
+      throw new GitLabError(
+        `GitLab GraphQL error: ${body.errors.map((e) => e.message).join('; ')}`,
+        res.status,
+      );
+    }
+    return body?.data as T;
+  }
+
+  /**
    * One WRITE — the only calls in this client that change anything on the instance.
    *
    * A deliberate mirror of `GitHubClient.write`, down to the reasoning: it is a separate
@@ -322,6 +361,91 @@ export class GitLabClient {
    */
   async rebaseMergeRequest(projectId: number, iid: number): Promise<void> {
     await this.write<unknown>(`/projects/${projectId}/merge_requests/${iid}/rebase`, 'PUT');
+  }
+
+  /**
+   * Merge it — `PUT /projects/{id}/merge_requests/{iid}/merge`.
+   *
+   * `sha`, when given, is GitLab's own guard against merging a branch that moved out from
+   * under the human after they looked at it: GitLab answers with a 409 if the source
+   * branch's current head does not match. Refusals go through the same {@link write}
+   * every other mutation does, so "not mergeable" (405), blocked (406), a moved SHA (409),
+   * or a validation failure (422) all surface as a {@link GitLabError} carrying GitLab's own
+   * message rather than a generic one of ours.
+   *
+   * `options.message`, when given and not blank, becomes `merge_commit_message` — or, when
+   * `options.squash` is set, `squash` plus `squash_commit_message` instead, since a squashed
+   * merge request writes a DIFFERENT commit than its merge commit and GitLab keeps the two
+   * messages as separate fields.
+   */
+  mergeMergeRequest(
+    projectId: number,
+    iid: number,
+    sha?: string,
+    options?: { message?: string; squash?: boolean },
+  ): Promise<GitLabMergeRequest> {
+    const body: Record<string, unknown> = {};
+    if (sha) body.sha = sha;
+    const message = options?.message && options.message.trim() ? options.message : undefined;
+    if (options?.squash) {
+      body.squash = true;
+      if (message) body.squash_commit_message = message;
+    } else if (message) {
+      body.merge_commit_message = message;
+    }
+    return this.write<GitLabMergeRequest>(
+      `/projects/${projectId}/merge_requests/${iid}/merge`,
+      'PUT',
+      Object.keys(body).length ? body : undefined,
+    );
+  }
+
+  /**
+   * The commit message GitLab itself would propose for merging this merge request, and the
+   * method it would use — read with GraphQL's `defaultMergeCommitMessage` /
+   * `defaultSquashCommitMessage`, which the REST API has no equivalent for, because GitLab
+   * renders these from a configurable TEMPLATE (`merge_commit_template`,
+   * `squash_commit_template`) and re-implementing that templating here would drift the
+   * moment a project changes its own.
+   *
+   * `squashOnMerge` decides merge vs. squash, the same choice `mergeMergeRequest`'s
+   * `options.squash` makes, so the proposal and the merge read the same project setting.
+   * A project configured for fast-forward-only merges (`mergeMethod: "FF"`) creates no merge
+   * commit at all, so there is no message to propose and the field stays null.
+   */
+  async getMergeProposal(
+    projectPath: string,
+    iid: number,
+  ): Promise<{ method: 'merge' | 'squash' | 'ff'; message: string | null }> {
+    const data = await this.graphql<{
+      project?: {
+        mergeMethod?: string | null;
+        mergeRequest?: {
+          defaultMergeCommitMessage?: string | null;
+          defaultSquashCommitMessage?: string | null;
+          squashOnMerge?: boolean | null;
+        } | null;
+      } | null;
+    }>(
+      `query($fullPath: ID!, $iid: String!) {
+        project(fullPath: $fullPath) {
+          mergeMethod
+          mergeRequest(iid: $iid) {
+            defaultMergeCommitMessage
+            defaultSquashCommitMessage
+            squashOnMerge
+          }
+        }
+      }`,
+      { fullPath: projectPath, iid: String(iid) },
+    );
+    const project = data.project;
+    if (project?.mergeMethod === 'FF') return { method: 'ff', message: null };
+    const mr = project?.mergeRequest;
+    if (mr?.squashOnMerge) {
+      return { method: 'squash', message: mr.defaultSquashCommitMessage ?? null };
+    }
+    return { method: 'merge', message: mr?.defaultMergeCommitMessage ?? null };
   }
 
   /**
