@@ -274,6 +274,12 @@ function attributesConfig(attributesFile?: string): string[] {
  * this — it commits everything first — but the pre-PR remote check runs on a worktree that
  * may still have an agent's uncommitted edits sitting in it, and failing there with a generic
  * git error is a worse outcome than stashing work that is about to be rebased anyway.
+ *
+ * `upstream`, when given, turns this into `rebase --onto <baseRef> <upstream>`: only the
+ * commits HEAD has that `upstream` does not are replayed, onto `baseRef`, rather than every
+ * commit `baseRef` itself doesn't have. `syncOntoRemoteBase` is the one caller that needs
+ * this — the branch's OWN fork point, never `baseRef`'s current tip, is what must stay fixed
+ * however far a local base has drifted from the remote either side.
  */
 export async function rebaseOnto(
   worktreePath: string,
@@ -281,10 +287,16 @@ export async function rebaseOnto(
   attributesFile?: string,
   host?: ExecHost,
   autostash?: boolean,
+  upstream?: string,
 ): Promise<GitResult> {
   return git(
     worktreePath,
-    [...attributesConfig(attributesFile), 'rebase', ...(autostash ? ['--autostash'] : []), baseRef],
+    [
+      ...attributesConfig(attributesFile),
+      'rebase',
+      ...(autostash ? ['--autostash'] : []),
+      ...(upstream ? ['--onto', baseRef, upstream] : [baseRef]),
+    ],
     host,
   );
 }
@@ -774,6 +786,22 @@ export async function isAncestor(
 ): Promise<boolean> {
   const res = await git(dir, ['merge-base', '--is-ancestor', a, b], host);
   return res.code === 0;
+}
+
+/**
+ * The best common ancestor of `a` and `b` — `git merge-base`. `''` when they share no
+ * history (or the call fails), which every caller here must read as "don't know" rather
+ * than as a ref name; this is a SHA, never a ref itself, so it is safe to pass on as a
+ * revision (e.g. `rebaseOnto`'s `upstream`) once checked for emptiness.
+ */
+export async function mergeBase(
+  dir: string,
+  a: string,
+  b: string,
+  host?: ExecHost,
+): Promise<string> {
+  const res = await git(dir, ['merge-base', a, b], host);
+  return res.code === 0 ? res.stdout.trim() : '';
 }
 
 /**
