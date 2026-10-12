@@ -6379,6 +6379,74 @@ walks every file it touched against this record.
 
 ---
 
+## Fix — each new task fails to create a PR
+
+**Goal.** Record, read-only against the live app, exactly why "open a PR when finished" has
+settled with no PR on every card since roughly 12:46 today (F2.7, F2.10, F2.11, F2.12, F3.3,
+F3.9), and why the inbox's own suggested fix makes it worse — so the next step rebases a
+card's branch onto the remote base it just fetched, not the local one, instead of re-deriving
+a diagnosis already proven here.
+
+### What is proven, read-only
+
+`orchestrator.db`'s `attention_items` holds one `task-failed` row per affected card, all with
+the identical shape (queried read-only via `ELECTRON_RUN_AS_NODE=1 electron.exe -e`, never
+opening the app):
+
+    The work is finished on "<branch>", but the pull request could not be opened:
+    Could not rebase "<branch>" onto the latest development from github.com:
+    fatal: Not possible to fast-forward, aborting. Nothing was merged and the
+    branch is untouched.
+
+Tracing that sentence to its source: `forge/createPr.ts:222` calls
+`WorktreeManager.syncOntoRemoteBase` (`worktreeManager.ts:906`, added by "Before creating a pr,
+check remote" #103, commit `0496ec7`) before pushing. That method fetches `origin`'s current
+`development` into a scratch ref (`REMOTE_BASE_REF`), then calls `updateLocalBase`
+(`worktreeManager.ts:1171-1191`), which — because the project's main checkout
+(`C:\Repositories\task-manager`) has `development` checked out — runs `mergeFfOnly(project.path,
+REMOTE_BASE_REF, host)` (`:1184`) against it. A `sync.status === 'error'` from that call is
+turned straight into the thrown `Error` quoted above (`createPr.ts:230-234`), and the catch
+around `openPullRequest` in `scheduler.ts:6461-6476` turns the throw into exactly this
+`task-failed` item.
+
+`git rev-list --left-right --count development...origin/development` in the main checkout
+reads **16 ahead / 13 behind**, confirmed live. `mergeFfOnly` can never succeed while `development`
+is not an ancestor of `origin/development` — and it never will be here: PRs on this repo are
+squash-merged on GitHub (one commit on `origin/development` per PR), so the pre-squash commits
+a feature was actually built from never match anything on the remote, and anything merged
+*locally* (via the app's own Merge button, which advances this same checked-out `development`)
+only widens the gap further. `git log development ^origin/development` names the 16: two whole
+features — "Support merging from the app" (`a17dee2`…`eee7d9d`) and "Enable creation Linux
+package" (`b477dbf`…`8e88bd4`) — landed on local `development` instead of a PR, which is not
+incidental to this bug; it is downstream of it (next section).
+
+### The self-reinforcing half
+
+`openPullRequestFor`'s catch raises the failure with `kind: 'integration'`
+(`scheduler.ts:6465`), and `failureActionsFor('integration')` (`:330-332`) returns
+`INTEGRATION_FAILURE_OPTIONS` (`:322-327`), whose first entry is `FAILURE_ACTION.retryIntegration`
+— **"Retry integration."** Choosing it (`applyFailureChoice`, `:5811-5822`) calls
+`integrateWorktree` (`:5287-5302`), which notes "Merging branch … into development…" and merges
+**locally** — the opposite of the PR the card actually asked for. There is no path from this
+parked failure back to `openPullRequestFor`; "Retry integration" is the only action offered
+that does anything but abandon or re-run the agent. That is how the two features named above
+ended up merged straight onto local `development`: a human (or agent) hit the only button that
+looked like "finish this," which finished it the wrong way, each time widening the exact
+divergence that caused the original failure. Both had to be cherry-picked onto
+`origin/development` by hand afterward, as a one-off repair rather than anything this bug fixes
+on its own.
+
+### Net
+
+The wall is not the rebase, and not the two commits that landed on the wrong branch — both are
+symptoms. The cause is `updateLocalBase` fast-forwarding a ref that structurally cannot ever be
+fast-forwarded again once GitHub's squash merge and this repo's local-merge habit have both
+touched it. Nothing here touches code; the next step changes what a pre-PR rebase targets —
+the remote base it just fetched (`REMOTE_BASE_REF`), not `development` itself — so opening a PR
+stops depending on a ref that can never catch up.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
