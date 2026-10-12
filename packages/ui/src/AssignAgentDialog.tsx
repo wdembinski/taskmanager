@@ -58,6 +58,12 @@ import {
   type BranchType,
 } from '@tm/shared/branchName';
 import { seedAssignProject } from '@tm/shared/agentProjects';
+import {
+  modeForPickedProject,
+  NO_AGENT_PROJECTS_MESSAGE,
+  PERMISSION_MODES,
+  seedPermissionMode,
+} from './agentPickers';
 import { useTransport } from './transport';
 
 const useStyles = makeStyles({
@@ -109,8 +115,6 @@ const useStyles = makeStyles({
   hint: { color: tokens.colorNeutralForeground3 },
   ticket: { color: tokens.colorNeutralForeground2 },
 });
-
-const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
 export interface AssignAgentDialogProps {
   open: boolean;
@@ -177,7 +181,7 @@ export function AssignAgentDialog({
     // this line is what stops it writing them again.
     setModel(card.agentModel ?? null);
     setPlanningModel(card.agentPlanningModel ?? null);
-    setMode(card.agentMode ?? resolved?.defaultPermissionMode ?? 'acceptEdits');
+    setMode(seedPermissionMode(card, resolved));
     setBranchTouched(false);
     const type = inferBranchType({
       title: card.title,
@@ -231,8 +235,7 @@ export function AssignAgentDialog({
    */
   function pickProject(id: string): void {
     setProjectId(id);
-    const picked = agentProjects.find((p) => p.id === id);
-    if (picked) setMode(picked.defaultPermissionMode);
+    setMode((current) => modeForPickedProject(agentProjects, id, current));
   }
 
   async function assign(start: boolean): Promise<void> {
@@ -302,10 +305,7 @@ export function AssignAgentDialog({
 
               {agentProjects.length === 0 ? (
                 <MessageBar intent="warning">
-                  <MessageBarBody>
-                    No agent projects yet. Add one in the desktop app, under Projects (a repository
-                    folder, plus the JIRA epics it owns), and then assign this card.
-                  </MessageBarBody>
+                  <MessageBarBody>{NO_AGENT_PROJECTS_MESSAGE}</MessageBarBody>
                 </MessageBar>
               ) : (
                 <>
@@ -368,7 +368,7 @@ export function AssignAgentDialog({
                         selectedOptions={[mode]}
                         onOptionSelect={(_e, d) => setMode(d.optionValue as PermissionMode)}
                       >
-                        {MODES.map((m) => (
+                        {PERMISSION_MODES.map((m) => (
                           <Option key={m} value={m} text={PERMISSION_MODE_LABELS[m]}>
                             {PERMISSION_MODE_LABELS[m]}
                           </Option>
