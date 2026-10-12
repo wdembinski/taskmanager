@@ -435,6 +435,12 @@ describe('git helpers — reading a remote and pushing to it', () => {
       const clone = mkdtempSync(join(tmpdir(), 'orch-clone-'));
       try {
         await git(clone, ['clone', bare, '.']);
+        // A clone starts with no identity of its own — unlike `repo`, which gets one in
+        // `beforeEach`. Without this, `commitFile`'s commit fails silently wherever no
+        // global git identity is configured (every CI runner), and the push right after
+        // it still exits 0 ("Everything up-to-date") with nothing actually pushed.
+        await git(clone, ['config', 'user.email', 'test@example.com']);
+        await git(clone, ['config', 'user.name', 'Test']);
         await git(clone, ['checkout', 'feat/fetch-me']);
         await commitFile(clone, 'f.txt', 'from-second-clone\n', 'from second clone');
         expect((await git(clone, ['push', 'origin', 'feat/fetch-me'])).code).toBe(0);

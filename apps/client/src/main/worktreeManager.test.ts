@@ -880,10 +880,18 @@ describe('WorktreeManager.prepare — syncing the base branch with its upstream'
     const clone = mkdtempSync(join(tmpdir(), 'orch-wtm-clone-'));
     try {
       await git(clone, ['clone', bareDir, '.']);
+      // A clone starts with no identity of its own — unlike `repo`, which gets one via
+      // `initRepo`. Without this, the commit below fails silently wherever no global git
+      // identity is configured (every CI runner), and the push right after it still
+      // exits 0 ("Everything up-to-date") with nothing actually pushed.
+      await git(clone, ['config', 'user.email', 'test@example.com']);
+      await git(clone, ['config', 'user.name', 'Test']);
       await git(clone, ['checkout', branch]);
       writeFileSync(join(clone, file), content);
       await git(clone, ['add', '-A']);
-      await git(clone, ['commit', '--no-verify', '-m', msg]);
+      // Checked explicitly: a failed commit here leaves nothing new to push, and `push`
+      // still exits 0 ("Everything up-to-date") — the bug above hid behind exactly that.
+      expect((await git(clone, ['commit', '--no-verify', '-m', msg])).code).toBe(0);
       expect((await git(clone, ['push', 'origin', branch])).code).toBe(0);
     } finally {
       rmSync(clone, { recursive: true, force: true });
