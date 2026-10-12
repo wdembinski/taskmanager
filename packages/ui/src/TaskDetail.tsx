@@ -1132,7 +1132,8 @@ export function TaskDetail({
               onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
               onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
               onRebase={(id) => void transport.invoke('mr:rebase', id)}
-              onMerge={(id) => transport.invoke('mr:merge', id)}
+              onMerge={(id, message) => transport.invoke('mr:merge', id, { message })}
+              onLoadMergeProposal={(id) => transport.invoke('mr:mergeProposal', id)}
               afterMergePipeline={afterMergePipeline}
               mrRebaseButton={mrRebaseButton}
               mrMergeButton={mrMergeButton}

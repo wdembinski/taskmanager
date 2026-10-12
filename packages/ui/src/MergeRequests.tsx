@@ -22,6 +22,7 @@ import {
 } from '@fluentui/react-components';
 import { ArrowSyncRegular, MergeRegular, RenameRegular } from '@fluentui/react-icons';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
+import type { MergeProposal } from '@tm/shared/ipc';
 import {
   forgeName,
   mergeBlockerLabel,
@@ -161,11 +162,14 @@ export interface MergeRequestsProps {
   mrRebaseButton?: boolean;
   /**
    * Merge it — only ever called for a row `mrReadyToMerge` says yes to, after the confirmation
-   * dialog below has asked, and only via the button {@link mrMergeButton} draws. Returns the
-   * refreshed merge requests so a rejection (the MR moved under you) can be read instead of
-   * swallowed, unlike {@link onRebase}'s fire-and-forget shape.
+   * dialog below has asked, and only via the button {@link mrMergeButton} draws. `message` is
+   * whatever the dialog's editable field held, blank or not. Returns the refreshed merge
+   * requests so a rejection (the MR moved under you) can be read instead of swallowed, unlike
+   * {@link onRebase}'s fire-and-forget shape.
    */
-  onMerge: (mrId: string) => Promise<MergeRequest[]>;
+  onMerge: (mrId: string, message?: string) => Promise<MergeRequest[]>;
+  /** Read the commit message the forge would propose — see `ConfirmMergeDialog`'s `loadProposal`. */
+  onLoadMergeProposal: (mrId: string) => Promise<MergeProposal>;
   /**
    * `settings.features.mrMergeButton` — whether a row with nothing left to do swaps its "ready
    * to merge" badge for a clickable merge button (behind a confirmation). Defaults to on,
@@ -181,6 +185,7 @@ export function MergeRequests({
   onRename,
   onRebase,
   onMerge,
+  onLoadMergeProposal,
   afterMergePipeline = true,
   mrRebaseButton = true,
   mrMergeButton = true,
@@ -448,7 +453,8 @@ export function MergeRequests({
         <ConfirmMergeDialog
           key={mergingMr.id}
           mr={mergingMr}
-          onConfirm={() => onMerge(mergingMr.id)}
+          loadProposal={() => onLoadMergeProposal(mergingMr.id)}
+          onConfirm={(message) => onMerge(mergingMr.id, message)}
           onClose={() => setMergingMr(null)}
         />
       )}

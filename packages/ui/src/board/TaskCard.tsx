@@ -2089,7 +2089,8 @@ export function TaskCard({
         <ConfirmMergeDialog
           key={mergingMr.id}
           mr={mergingMr}
-          onConfirm={() => transport.invoke('mr:merge', mergingMr.id)}
+          loadProposal={() => transport.invoke('mr:mergeProposal', mergingMr.id)}
+          onConfirm={(message) => transport.invoke('mr:merge', mergingMr.id, { message })}
           onClose={() => setMergingMr(null)}
         />
       )}
