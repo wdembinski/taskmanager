@@ -731,6 +731,17 @@ export interface AppSettings {
   /** Max tasks a single project runs at once (scheduler concurrency; 1 = sequential). */
   concurrency: number;
   /**
+   * Max tasks running at once ACROSS every project (scheduler-wide; 0 = unlimited).
+   *
+   * `concurrency` caps one project; this caps the whole scheduler, since every running
+   * session shares one account's usage limit no matter which project it belongs to. An
+   * automatic start (the chain successor, a resumed/unparked task, `pump` itself) checked
+   * against the cap queues instead of starting — the task stays `pending` and `pump` picks
+   * it up once a slot frees. A human clicking Run/Start, replying in chat, or pressing
+   * Release now always proceeds regardless: an explicit click beats a throttle.
+   */
+  maxParallelSessions: number;
+  /**
    * **How often every integration is refreshed, in minutes.** 0 = off; the manual Sync
    * button always works.
    *
@@ -913,6 +924,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultPlanningModel: null,
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
+  // 0 = unlimited: a fresh install imposes no scheduler-wide cap until a human sets one.
+  maxParallelSessions: 0,
   // Two minutes: the faster of the pair this replaced, so no integration polls less often
   // than it did before the two timers became one. Pipelines are the reason — a red one you
   // learn about ten minutes late has already cost you the context to fix it.
@@ -1024,6 +1037,7 @@ export const GLOBAL_SETTINGS_KEYS = [
   'defaultPlanningModel',
   'defaultPermissionMode',
   'concurrency',
+  'maxParallelSessions',
   'syncIntervalMinutes',
   'limitJitterMs',
   'sessionTokenBudget',

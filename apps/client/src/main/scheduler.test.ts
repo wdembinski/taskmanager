@@ -1305,6 +1305,105 @@ describe('Scheduler.start resumes stopped tasks', () => {
   });
 });
 
+describe('Scheduler — the global parallel-session cap (maxParallelSessions)', () => {
+  const makeTask = (id: string, projectId: string, order: number): Task =>
+    ({
+      id,
+      projectId,
+      phase: '',
+      title: id,
+      status: 'pending',
+      sessionId: null,
+      order,
+      source: 'plan',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+    }) as Task;
+
+  /** Two projects, each with concurrency 2 and two pending tasks of their own. */
+  function setup(maxParallelSessions: number) {
+    const p1 = { id: 'p1', path: 'C:/w1', planPath: 'C:/w1/plan.md', concurrency: 2 } as Project;
+    const p2 = { id: 'p2', path: 'C:/w2', planPath: 'C:/w2/plan.md', concurrency: 2 } as Project;
+    const tasks: Task[] = [
+      makeTask('p1-a', 'p1', 0),
+      makeTask('p1-b', 'p1', 1),
+      makeTask('p2-a', 'p2', 0),
+      makeTask('p2-b', 'p2', 1),
+    ];
+    const store = {
+      getTasks: (projectId: string) => tasks.filter((t) => t.projectId === projectId),
+      getProject: (id: string) => (id === 'p1' ? p1 : id === 'p2' ? p2 : undefined),
+      getTask: (id: string) => tasks.find((t) => t.id === id),
+      getSubtasks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const found = tasks.find((x) => x.id === id);
+        if (found) Object.assign(found, patch);
+        return found;
+      },
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 2, maxParallelSessions }),
+      appendTaskEvent: vi.fn(),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'ignored' }));
+    const stop = vi.fn();
+    const sessions = { start, stop } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    return { scheduler, tasks, start, stop };
+  }
+
+  it('starts only up to the cap, across every project combined', () => {
+    const { scheduler, start } = setup(2);
+    scheduler.start('p1'); // fills both of p1's own concurrency slots — 2 runs, at the cap
+    scheduler.start('p2'); // held entirely: the cap is already spent, not p2's own queue
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start.mock.calls.every((c) => (c[0] as { cwd: string }).cwd === 'C:/w1')).toBe(true);
+  });
+
+  it('does not mark a capped project idle — it still has work waiting on the cap', () => {
+    const { scheduler } = setup(2);
+    scheduler.start('p1');
+    scheduler.start('p2');
+    expect(scheduler.schedulerStates()).toEqual(
+      expect.arrayContaining([{ projectId: 'p2', state: 'running' }]),
+    );
+  });
+
+  it('settling a run in one project starts another project’s queued card', () => {
+    const { scheduler, start } = setup(2);
+    scheduler.start('p1');
+    scheduler.start('p2'); // held at the cap — p2-a is queued behind p1's two runs
+    expect(start).toHaveBeenCalledTimes(2);
+
+    // Settle one of p1's runs exactly as a real process would: Stop marks it settled,
+    // then its `exited` event does the bookkeeping and frees the slot.
+    const runs = (scheduler as unknown as { runs: Map<string, { runId: string }> }).runs;
+    const p1aRun = [...runs.values()].find(
+      (r) => (r as unknown as { taskId: string }).taskId === 'p1-a',
+    )!;
+    scheduler.stopTask('p1-a');
+    (scheduler as unknown as { onRunEvent(runId: string, event: unknown): void }).onRunEvent(
+      p1aRun.runId,
+      { kind: 'exited', code: 0 },
+    );
+
+    // The freed slot went to p2's queued card, not back into p1 (which has nothing left
+    // to start — p1-b is already running).
+    expect(start).toHaveBeenCalledTimes(3);
+    expect((start.mock.calls[2][0] as { cwd: string }).cwd).toBe('C:/w2');
+  });
+
+  it('lets a manual start proceed even when the cap is already spent', () => {
+    const { scheduler, start } = setup(2);
+    scheduler.start('p1'); // spends the whole cap on p1 alone
+    expect(start).toHaveBeenCalledTimes(2);
+
+    const outcome = scheduler.startTaskNow('p2-a');
+    expect(outcome).not.toHaveProperty('refused');
+    expect(start).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('Scheduler.startAuxiliarySession (the AI "Align plan" run)', () => {
   it('registers the run so stop(projectId) terminates it', () => {
     // `getProject` is consulted so the run executes on the project's configured

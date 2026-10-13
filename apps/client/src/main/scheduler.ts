@@ -3226,6 +3226,10 @@ export class Scheduler {
     // Concurrency is a live, PER-PROJECT setting: read it fresh so edits take effect.
     const concurrency = Math.max(1, project.concurrency);
     while (this.runningCount(projectId) < concurrency) {
+      // The global cap is account-wide: every project shares it, so hitting it here
+      // stops THIS project's loop without touching its queue — there is still a next
+      // pending task, which is exactly what keeps the idle check below from firing.
+      if (this.atGlobalCap()) break;
       const next = selectNextPending(this.store.getTasks(projectId), this.inFlight);
       if (!next) break;
       this.startTask(project, next);
@@ -3414,7 +3418,7 @@ export class Scheduler {
     if (run.settled || !this.runs.has(run.runId)) {
       this.runs.delete(run.runId);
       this.inFlight.delete(run.taskId);
-      this.pump(run.projectId);
+      this.pumpAllActive();
       return;
     }
     if (prep.mode === 'failed') {
@@ -3430,7 +3434,7 @@ export class Scheduler {
         runId: run.runId,
         reason: prep.reason,
       });
-      this.pump(run.projectId);
+      this.pumpAllActive();
       return;
     }
     // Preparation had to write to the human's base repo to make the run possible (an unborn
@@ -4391,7 +4395,7 @@ export class Scheduler {
         // `heldLandings` is keyed by the PARENT — so this is a no-op for one.)
         const exitedTask = this.store.getTask(run.taskId);
         if (exitedTask && !exitedTask.parentTaskId) this.landHeld(run.taskId);
-        this.pump(run.projectId); // a slot freed up — advance the queue
+        this.pumpAllActive(); // a slot freed up — advance every queue, not just this one
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
         // `pump` won't touch an inactive project, so relaunch it directly.
         // `!this.workIsHeld`: this branch reaches `startTask` directly, and `startTask` has
@@ -4407,7 +4411,11 @@ export class Scheduler {
           // they left the card (see `cardStatusGuard`) — so requiring `pending` here is
           // what would silently drop the retry for every card not sitting in TO DO.
           if (project && task && !this.inFlight.has(task.id)) {
-            this.startTask(project, task, { origin: run.origin });
+            // The global cap holds this one too — leave it `pending` (already is) and mark
+            // the project active so `pump` starts it the moment a slot elsewhere frees up,
+            // instead of launching straight into a session the cap would just as soon hold.
+            if (this.atGlobalCap()) this.activeProjects.add(project.id);
+            else this.startTask(project, task, { origin: run.origin });
           }
         }
         break;
@@ -4734,6 +4742,22 @@ export class Scheduler {
         this.releaseStrandedPark(task);
         continue;
       }
+      // The limit lifted, but the global cap may not have: leave the task plain `pending`
+      // (dropping the resume `rebuild`, exactly as the chain hand-over above already does)
+      // and mark the project active so `pump` starts it once a slot elsewhere frees up.
+      if (this.atGlobalCap()) {
+        if (task.status === 'blocked-by-limit')
+          this.updateTask(task.id, { status: 'pending' }, null);
+        this.activeProjects.add(project.id);
+        this.recordResumed({
+          projectId: task.projectId,
+          taskId: task.id,
+          title: task.title,
+          runId: null,
+          reason: 'limit',
+        });
+        continue;
+      }
       // …as the run it WAS: a release run comes back releasing, a chat reply comes back
       // carrying what the human typed, and everything else gets `{}` — a bare start, which
       // is what every parked run used to get. Resumes by task.sessionId when there is one.
@@ -4878,6 +4902,20 @@ export class Scheduler {
       if (this.hasLiveRunFor([task])) continue;
       const project = this.runProjectFor(task);
       if (!project) continue;
+      // The sign-in gate lifted, but the global cap may not have: the task is already
+      // `pending`, so just mark the project active and let `pump` start it once a slot
+      // elsewhere frees up — see the identical branch in `resumeParked`.
+      if (this.atGlobalCap()) {
+        this.activeProjects.add(project.id);
+        this.recordResumed({
+          projectId: task.projectId,
+          taskId: task.id,
+          title: task.title,
+          runId: null,
+          reason: 'sign-in',
+        });
+        continue;
+      }
       // …as the run it was (a release, a chat reply, or plain work — see `resumeOpts`).
       // Resumes by task.sessionId when there is one.
       const runId = this.startTask(project, task, { ...rebuild, origin: 'resume' });
@@ -6274,10 +6312,17 @@ export class Scheduler {
     this.updateTask(taskId, { status: 'pending' }, null);
     if (this.activeProjects.has(project.id)) {
       this.pump(project.id);
-    } else {
-      const task = this.store.getTask(taskId);
-      if (task) this.startTask(project, task);
+      return;
     }
+    // The global cap holds an ad-hoc (queue-inactive) requeue the same way: mark the
+    // project active rather than launching straight past the cap, so `pump` starts it
+    // once a slot elsewhere frees up.
+    if (this.atGlobalCap()) {
+      this.activeProjects.add(project.id);
+      return;
+    }
+    const task = this.store.getTask(taskId);
+    if (task) this.startTask(project, task);
   }
 
   // ---- Plan-driven subtasks (Phase 11) ------------------------------------
@@ -6551,6 +6596,14 @@ export class Scheduler {
     }
     const project = this.runProjectFor(next);
     if (!project) return;
+    // The global cap is account-wide: hold this step the same way a gate would, except the
+    // step stays plain `pending` — not parked — because unlike a usage limit this isn't an
+    // account wall, just every project's queue sharing one scheduler-wide slot count. Marking
+    // the project active is what lets `pump` pick the step up the moment a slot frees.
+    if (this.atGlobalCap()) {
+      this.activeProjects.add(project.id);
+      return;
+    }
     this.startTask(project, next, { origin: 'chain' });
   }
 
@@ -7297,6 +7350,26 @@ export class Scheduler {
     let n = 0;
     for (const run of this.runs.values()) if (run.projectId === projectId) n++;
     return n;
+  }
+
+  /** Sessions running right now, across every project — what `maxParallelSessions` caps. */
+  private globalRunningCount(): number {
+    return this.runs.size;
+  }
+
+  /**
+   * Whether the scheduler-wide session cap is holding. 0 means unlimited — the whole
+   * point of a global cap is that every running session shares one account's usage
+   * limit, so it is read fresh on every check rather than cached.
+   */
+  private atGlobalCap(): boolean {
+    const max = this.store.getSettings().maxParallelSessions;
+    return max > 0 && this.globalRunningCount() >= max;
+  }
+
+  /** Nudge every active project's queue — a slot freed in one project can start another's. */
+  private pumpAllActive(): void {
+    for (const projectId of this.activeProjects) this.pump(projectId);
   }
 
   private setState(projectId: string, state: SchedulerState): void {

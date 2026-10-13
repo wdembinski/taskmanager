@@ -424,6 +424,20 @@ export function SettingsScreen({
             </Field>
 
             <Field
+              label="Max sessions at once (all projects)"
+              hint="Caps how many agent sessions run at the same time across every project — they all share one account's usage limit. 0 = unlimited."
+            >
+              <Input
+                type="number"
+                min={0}
+                value={String(settings.maxParallelSessions)}
+                onChange={(_e, d) =>
+                  patch({ maxParallelSessions: Math.max(0, Number(d.value) || 0) })
+                }
+              />
+            </Field>
+
+            <Field
               label="Sync every (minutes)"
               hint="How often the desktop app refreshes JIRA and GitLab. 0 turns background sync off."
             >
