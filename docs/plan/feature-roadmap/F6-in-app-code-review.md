@@ -210,6 +210,95 @@ Comments are **drafts until sent**. They are data on the card, stored on the des
 - **Comment retention after the card is done:** recommended: keep them (sent ones are history),
   and delete them with the card.
 
+## F6.4 — decisions taken (step 1 of 3)
+
+Three build steps are approved for F6.4. Step 1 is not code — it is the decisions step 2's
+`excerptFor`/`markOutdated` and a later card's `formatReviewMessage` build on, settled here
+so a headless session does not re-derive them with no one to ask.
+
+### `ReviewComment` gains a computed `outdated` flag
+
+`ReviewComment` (`packages/shared/src/review.ts:96-110`) gains `outdated?: boolean`. It is
+optional and computed, never authored: F6.7's store row can leave the column out entirely,
+and F6.8 recomputes it on every `review:list` answer instead of trusting a stored value that
+could go stale the moment the agent edits a file.
+
+### One shared anchor→excerpt rule: `excerptFor`
+
+`excerptFor(file: DiffFile, anchor: ReviewAnchor): string | null`, where `ReviewAnchor` is
+`Pick<ReviewComment, 'side' | 'line' | 'start'>` — the three fields that locate an anchor,
+with no dependency on a comment already having an `id`. That lets F6.12 call it while
+building a fresh draft, before a `ReviewComment` exists at all, so creating an excerpt and
+later checking one never disagree.
+
+The file's lines are flattened once, in display order: `file.hunks` concatenated in order,
+each hunk's `lines` (`DiffLine[]`, `review.ts:54-69`) kept in its existing order. A row
+matches a side only through that side's own field — `oldLine` for `'old'`, `newLine` for
+`'new'` (`review.ts:57-58`) — never the other one, so a context line that happens to carry
+the same number on both sides is not an accidental double match. The start row is
+`anchor.start ?? { side: anchor.side, line: anchor.line }`; the end row is
+`{ side: anchor.side, line: anchor.line }` always (a comment's own `side`/`line` is always
+the end of its range, never the start). `excerptFor` returns `null` when either row is
+missing from the flattened list, or when the start row's index comes after the end row's —
+comparing positions in display order, not the raw line numbers, since a range that crosses
+sides (old start, new end) has no single numbering to compare instead. Otherwise the result
+is the inclusive slice from start index to end index, each row's `text` joined with `\n`.
+
+### `markOutdated` only touches matching, verifiable comments
+
+`markOutdated(comments: ReviewComment[], file: DiffFile): ReviewComment[]` is pure: it
+returns new objects for the comments it recomputes and the exact same object (by reference)
+for every comment it does not touch, so a caller that diffs by identity sees only real
+changes. It only looks at comments where `c.path === file.path`; everything else passes
+through unchanged. Among those, a `file.tooLarge` (`review.ts:76`) file has no `hunks` to
+check anchors against, so its comments pass through unchanged too, rather than being marked
+outdated for a reason that has nothing to do with the comment itself.
+
+For the rest, `outdated = excerptFor(file, c) === null || norm(excerpt) !== norm(c.excerpt)`,
+where `norm` replaces every `\r\n` with `\n` and trims trailing whitespace from each line —
+enough to stop a line-ending change or a trailing-space fix from reading as "outdated", not
+enough to ignore a real content change. A moved line (same text, new line number) is
+outdated: `excerptFor` follows the anchor's own `side`/`line`, and does not search the file
+for where the text went, so a moved comment reads as pointing at different text, which it
+now does relative to the number it was anchored to. Recovery is symmetric: a comment whose
+anchor matches again — the agent reverted the edit, say — gets `outdated: false` the same
+way. `diffId` is never touched either way; it records the revision the comment's `excerpt`
+was captured against, not the one it is currently being checked against.
+
+### `formatReviewMessage`'s header, ordering and location format are settled now, even though step 2 does not build it
+
+F6.4's acceptance covers both functions, but step 2 is scoped to `excerptFor` and
+`markOutdated` only; `formatReviewMessage` is built on top of them in a later card. Pinning
+its format now means that card is not guessing at a spec this ticket already answers.
+
+Comments sort with a stable sort by `path`, then by **the start line** —
+`c.start?.line ?? c.line` — as a raw number, regardless of which side it came from. The
+header reads `` Code review of <headSha> (diff <diffId>, against <baseRef>) — N comment(s). ``
+with `comment`/`comments` chosen by `N === 1`. An overall note is written under the header
+after a blank line, and left out entirely when it is empty or whitespace-only.
+
+Each comment is a numbered entry: a backtick-quoted location, the fenced excerpt, then the
+trimmed note. The location is built from the comment's own side(s) first, formatted, and the
+outdated suffix appended last, all inside the one pair of backticks:
+
+- single new-side: `` `path:12` ``, or `` `path:10-12` `` for a range entirely on the new side.
+- single old-side: `` `path:12 (old)` ``, or the range form with `-`. Uses `oldPath` in place
+  of `path` when it is present, and appends `, renamed to <path>` when `oldPath` differs from
+  `path` — on either the single or range form, since the file identity question is the same
+  one either way.
+- a range whose start and end sides differ: both ends get an explicit `(old)`/`(new)` marker
+  (neither is left implicit the way a single-sided comment's `new` is), e.g.
+  `` `path:10 (old)-12 (new)` ``. The rename suffix still applies when the old side's `oldPath`
+  differs from `path`.
+- outdated: append `` — outdated: the code changed since; the excerpt shows what it was`` to
+  the location string, before the closing backtick.
+
+The fence uses backticks one longer than the longest run already inside the excerpt, with a
+floor of 3 (the usual CommonMark-safe-fence rule); an empty excerpt (deleted anchor, binary
+file) gets no fence and no excerpt block at all, just the location and the note. An empty
+`comments` array with no note produces `''`, which is the signal F6.9's caller uses to refuse
+to send rather than deliver an empty message.
+
 ## Tasks
 
 ### F6 · Phase 1 — Diff contract and pure parsing
