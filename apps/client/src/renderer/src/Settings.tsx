@@ -103,6 +103,8 @@ import { PaneLoading } from '@ui/PaneLoading';
 import { PeopleSettings } from '@ui/projects/PeopleSettings';
 import { ModelField } from '@ui/ModelField';
 import { PlanningModelField } from '@ui/PlanningModelField';
+import { PromptTemplatesSection } from '@ui/PromptTemplatesSection';
+import type { PromptTemplate } from '@shared/promptTemplates';
 import { SubagentModelField } from '@ui/SubagentModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
@@ -193,7 +195,8 @@ type SettingsSection =
   | 'github'
   | 'cloud'
   | 'people'
-  | 'agentProfiles';
+  | 'agentProfiles'
+  | 'promptTemplates';
 
 /**
  * The eight feature switches, in the order the Features tab lists them — keyed by the
@@ -536,6 +539,19 @@ export function Settings(): JSX.Element {
     await loadJiraStatuses();
   }
 
+  /**
+   * Prompt templates get their own narrow save rather than going through the shared
+   * `save()`/`settings` state: that state may hold half-typed edits on another tab, and
+   * this section's `onSave` fires independently of whatever else is on screen. Reads the
+   * STORED settings fresh, so a save here can never clobber an edit made (and saved) on
+   * another tab in between.
+   */
+  async function savePromptTemplates(next: PromptTemplate[]): Promise<void> {
+    const fresh = await window.api.invoke('settings:get');
+    await window.api.invoke('settings:save', { ...fresh, promptTemplates: next });
+    setSettings((prev) => (prev ? { ...prev, promptTemplates: next } : prev));
+  }
+
   async function saveToken(): Promise<void> {
     // Persist the form first: the main process reads the STORED settings, so saving a
     // token against an unsaved URL/deployment used to silently pair it with stale config.
@@ -631,6 +647,7 @@ export function Settings(): JSX.Element {
         <Tab value="cloud">Cloud</Tab>
         <Tab value="people">People</Tab>
         <Tab value="agentProfiles">Agent profiles</Tab>
+        <Tab value="promptTemplates">Prompt templates</Tab>
       </TabList>
 
       {section === 'people' ? (
@@ -639,6 +656,14 @@ export function Settings(): JSX.Element {
         </div>
       ) : section === 'agentProfiles' ? (
         <AgentProfiles />
+      ) : section === 'promptTemplates' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Prompt templates</Subtitle2>
+          <PromptTemplatesSection
+            templates={settings.promptTemplates}
+            onSave={savePromptTemplates}
+          />
+        </div>
       ) : section === 'board' ? (
         <div className={styles.pane}>
           <Subtitle2>Board</Subtitle2>
