@@ -25,6 +25,7 @@ const cardPlan = (over: Partial<Extract<AddTaskPlan, { kind: 'card' }>> = {}) =>
     ticket: null,
     assign: null,
     startNow: false,
+    trigger: null,
     ...over,
   }) satisfies Extract<AddTaskPlan, { kind: 'card' }>;
 
@@ -40,6 +41,7 @@ const ticketPlan = (over: Partial<Extract<AddTaskPlan, { kind: 'ticket' }>> = {}
     },
     assign: null,
     startNow: false,
+    trigger: null,
     ...over,
   }) satisfies Extract<AddTaskPlan, { kind: 'ticket' }>;
 

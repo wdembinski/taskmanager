@@ -71,6 +71,7 @@ import {
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
+import type { Automation, AutomationAction, AutomationTrigger } from '@tm/shared/automation';
 import type { IssueType, Project, Task, TaskType } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
@@ -89,6 +90,7 @@ import {
 import { addTaskSteps, executeAddTaskSteps, outcomeMessage } from './addTaskSteps';
 import { isFileDrag } from './AttachmentStrip';
 import { clipboardFiles, pastedFilePaths } from './attachFiles';
+import { MANUAL_MODE_EXPLANATION } from './automations/automationEditorModel';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
 import { ModelField } from './ModelField';
 import { TicketTypeFields } from './projects/TicketTypeFields';
@@ -207,6 +209,14 @@ export interface AddTaskForm {
   assign: AddTaskAssign | null;
   /** Start that agent immediately once assigned. Ignored with {@link assign} `null`. */
   startNow: boolean;
+  /**
+   * An F1 automation to attach to the card as it is created, or `null` for none — see
+   * {@link attachedAutomation}. Requires {@link assign}: a trigger with no agent project can
+   * never fire, so `addTaskPlan` refuses one with `assign: null` rather than writing a
+   * trigger the engine would never run. Never meaningful for a step — a step runs inside
+   * its parent's own plan, not on a schedule of its own.
+   */
+  trigger: AutomationTrigger | null;
 }
 
 /**
@@ -238,6 +248,9 @@ export type AddTaskPlan =
    * `assign` and `startNow` carry the agent the form was filled in with, if any — see
    * {@link AddTaskAssign}. The write order stays the same either way: the card lands first,
    * and the assignment (then the start) are things done to the card that now exists.
+   *
+   * `trigger` carries the F1 automation the form was filled in with, if any — see
+   * {@link attachedAutomation}. Drawn onto the card once it exists, the same way `ticket` is.
    */
   | {
       kind: 'card';
@@ -257,6 +270,7 @@ export type AddTaskPlan =
       } | null;
       assign: AddTaskAssign | null;
       startNow: boolean;
+      trigger: AutomationTrigger | null;
     }
   /**
    * A native ticket on `board`'s own list (`ticket:create`) — chosen because `board` owns
@@ -287,6 +301,7 @@ export type AddTaskPlan =
       };
       assign: AddTaskAssign | null;
       startNow: boolean;
+      trigger: AutomationTrigger | null;
     };
 
 /**
@@ -313,6 +328,15 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
   if (!title) return { kind: 'incomplete', error: null };
 
   if (form.parentId) {
+    // A step runs inside its parent's own plan — there is no schedule of its own for a
+    // trigger to attach to.
+    if (form.trigger) {
+      return {
+        kind: 'incomplete',
+        error:
+          "A step runs inside its parent's plan — attach the schedule to the parent card instead.",
+      };
+    }
     return {
       kind: 'step',
       parentId: form.parentId,
@@ -334,6 +358,23 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
   }
   const startNow = form.startNow;
 
+  // A trigger with no agent project can never fire — refuse before the card is written,
+  // the same way `startNow` without `assign` already is above. `manual` is refused here
+  // directly too, rather than constructing a trigger `validateAutomation` would reject with
+  // a different message (see `attachedAutomation`).
+  const trigger = form.trigger;
+  if (trigger) {
+    if (!assign) {
+      return {
+        kind: 'incomplete',
+        error: 'Pick an agent project for the schedule to run in first.',
+      };
+    }
+    if (assign.mode === 'manual') {
+      return { kind: 'incomplete', error: MANUAL_MODE_EXPLANATION };
+    }
+  }
+
   // The one routing decision: what the destination OWNS, not what it is named. A keyless
   // non-Personal board is as much a `task:create` destination as Personal is — see
   // `BoardScope.ownsTickets`.
@@ -351,6 +392,7 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
       },
       assign,
       startNow,
+      trigger,
     };
   }
 
@@ -375,6 +417,50 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
       : null,
     assign,
     startNow,
+    trigger,
+  };
+}
+
+/**
+ * The automation `trigger` attaches to `card` — never saved by this function itself.
+ * `automation:save` (F1.11 decisions) mints `id`, stamps `revision`/`createdAt`/`updatedAt`/
+ * `enabledAt`/`nextRunAt`/`consecutiveFailures`, and takes ownership (`ownerClientId`); `now`
+ * is only here so this already returns a complete, individually valid `Automation` — the
+ * same shape {@link validateAutomation} sees — rather than one with holes a save fills in.
+ *
+ * `assign` is the plan's own, already-refused-if-missing assignment (see `addTaskPlan`), so
+ * `mode` defaults to `'acceptEdits'` the same way a fresh automation in the editor does
+ * (`newAutomationDraft`) rather than carrying a `null` the action has no room for.
+ */
+export function attachedAutomation(
+  trigger: AutomationTrigger,
+  card: Task,
+  assign: AddTaskAssign,
+  { now, timeZone }: { now: number; timeZone: string },
+): Automation {
+  const action: AutomationAction = {
+    taskId: card.id,
+    agentProjectId: assign.agentProjectId,
+    titleTemplate: card.title,
+    briefTemplate: '',
+    mode: assign.mode ?? 'acceptEdits',
+  };
+  if (assign.model) action.model = assign.model;
+
+  return {
+    id: '',
+    revision: 0,
+    name: `${card.title} — schedule`,
+    enabled: true,
+    ownerClientId: null,
+    timeZone,
+    trigger,
+    action,
+    enabledAt: now,
+    nextRunAt: null,
+    consecutiveFailures: 0,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -802,6 +888,9 @@ export function AddTaskDialog({
       // whatever agent is already on that card.
       assign: isStep ? null : { agentProjectId, model, mode },
       startNow,
+      // The attach-a-trigger section itself is a later task (F5.12 step 4) — nothing in
+      // this dialog can produce one yet.
+      trigger: null,
     });
     if (plan.kind === 'incomplete') {
       setError(plan.error);
