@@ -90,8 +90,80 @@ Two gaps between "I have work" and "an agent is doing it":
   - Acceptance: extracted helpers unit-tested (pre-fill from epic, default model null); AssignAgentDialog still uses the same helpers (no behaviour change — its existing tests pass). Gates green.
 - [ ] F5.3 Make Add and start create the card then assign and start it with one error surface @needs: F5.2 Add a Run it section with agent project model and mode pickers to AddTaskDialog
 
-  - Pure `addTaskSteps(plan)` → ordered writes (create / ticket link / attachments / assign); dialog executes them; a refusal after the card exists keeps the dialog result as "created, not started: <RUN_REFUSAL_MESSAGE>"; a park is success. ⌘/Ctrl+Enter submits.
-  - Acceptance: tests over `addTaskSteps` and a pure `outcomeMessage(result)` — limit park reads as success, `no-project` keeps the card and names the fix. Gates green.
+  - New pure module `packages/ui/src/addTaskSteps.ts`, built around `AddTaskDialog.tsx`'s own
+    `AddTaskPlan`/`AddTaskAssign` (type-only import — the dialog is 1340 lines and this module
+    must not become a second place that reads `form` to decide anything). `addTaskSteps(plan:
+    Exclude<AddTaskPlan, { kind: 'incomplete' }>, extras: { attachments: readonly string[];
+    runsAfterId: string | null }): AddTaskStep[]` turns a settled plan into the ORDERED writes
+    `save()` makes today, as data rather than a sequence of awaited calls: `AddTaskStep = {
+    kind: 'create-step'; parentId; step } | { kind: 'create-card'; board; card } | { kind:
+    'create-ticket'; board; ticket } | { kind: 'link-jira'; ticket } (card plan only) | { kind:
+    'attach'; paths: string[] } (only when `extras.attachments.length`) | { kind: 'chain-after';
+    fromTaskId } (card/ticket only, never a step) | { kind: 'assign'; assign: AddTaskAssign;
+    start: boolean } (card/ticket only, and always last — only emitted when `plan.assign` is
+    set)`. Order: create, JIRA link, attachments, chain, assign — attachments precede assign
+    because a started agent's first prompt quotes the brief's `@name`s, and the files must
+    already be on disk when that prompt is built, not racing it.
+  - `AddTaskRun` names what the (possible) assign step did — `'none'` (no agent picked, the
+    step was never built), `'assigned'` (Add without Start), `'started'`, `{ kind: 'parked';
+    refusal: ParkedRefusal }` (the limit gate — `task:assignAgent` does not throw for this, it
+    resolves with the task carrying `blocked-by-limit`), or `{ kind: 'not-started'; reason:
+    string; refusal: RunRefusal | null }` (the assign call threw). `AddTaskResult = { created:
+    'card' | 'ticket' | 'step'; problems: string[]; run: AddTaskRun }` is what the executor
+    below settles to.
+  - `refusalFromMessage(message)` is the reverse of `RUN_REFUSAL_MESSAGE` (`@tm/shared/
+    scheduler`) — an exact-string lookup over its six entries, `null` for anything else.
+    `runFromAssign(task, start)` reads the TASK `task:assignAgent` resolved with: `!start` →
+    `'assigned'`; `task.status === 'blocked-by-limit'` → `{ kind: 'parked', refusal: 'limit'
+    }`; otherwise `'started'`. `runFromAssignError(message)` reads the message a REJECTED
+    `task:assignAgent` call threw: `refusalFromMessage(message) === 'signed-out'` → `{ kind:
+    'parked', refusal: 'signed-out' }` (the other parked gate — a sign-out park writes no
+    status, so the catch has nothing useful on the task to read, only the message); anything
+    else → `{ kind: 'not-started', reason: message, refusal: refusalFromMessage(message) }` —
+    `reason` is the thrown message verbatim, which for a known refusal IS
+    `RUN_REFUSAL_MESSAGE[refusal]` (so `no-project`'s reason already names the fix: assign it to
+    an agent project) and for an unexpected error (network, say) is whatever that error said,
+    with `refusal: null`.
+  - `outcomeMessage(result)` is the one banner the dialog shows after Add, replacing today's
+    three separate `onNotice` calls (`chainAfter`/`ticketFor`/`attachTo`'s excuses) with a
+    single sentence: `started`/`assigned`/`none` with an empty `problems` → `null` (nothing to
+    say, close quietly, exactly as today). `parked` → `{ tone: 'success', text: 'Created and
+    queued — ' + RUN_REFUSAL_MESSAGE[refusal] }` — a limit or sign-out park is the engine doing
+    exactly what Start promises, not a failure. `not-started` → `{ tone: 'warning', text:
+    'Created, not started: ' + reason }`. Every `problems` entry — the same sentences
+    `ticketFor`/`attachTo`/`chainAfter` already write today ("The card was created, but its
+    JIRA ticket was not — <why>", "…but its files were not attached — <why>", "…but it could
+    not be chained — <why>") — is appended to that one text, space-joined, and its presence
+    alone forces `tone: 'warning'` even over a `parked` run.
+  - `executeAddTaskSteps(steps, invoke: TransportInvoke)` is the executor, pure over an
+    injected `invoke` (`Transport['invoke']`, aliased `TransportInvoke`) so "the card is never
+    rolled back" is a unit test instead of a click-through. The FIRST step is always one of
+    the three `create-*` kinds; its call (`task:addSubtask` / `task:create` / `ticket:create`)
+    is awaited OUTSIDE any try — a throw here propagates straight to the caller, because
+    nothing exists yet and the dialog's existing inline error (stays open, nothing to roll
+    back) is still exactly right. Its `Task.id` becomes `createdId`, threaded into every later
+    step (none of them carry an id of their own — it does not exist until this call returns,
+    which is exactly why the step objects above cannot carry one). Every step after that is
+    awaited inside its OWN try: `link-jira` calls `jira:createTask` (`{ ...ticket,
+    adoptTaskId: createdId }`), `attach` calls `attachment:add(createdId, paths)`,
+    `chain-after` calls `chain:link(fromTaskId, createdId)` and treats a `{ status: 'refused'
+    }` `LinkResult` the same as a throw, and `assign` calls `task:assignAgent(createdId, {
+    ...assign, start })` and feeds its outcome to `runFromAssign`/`runFromAssignError` instead
+    of `problems`. A caught throw from any non-assign step is pushed onto `problems` (worded
+    as above) and the loop carries on to the next step; a caught throw from `assign` sets
+    `run` via `runFromAssignError` instead. Nothing here ever calls `task:delete` — the row
+    that already exists is the one thing every branch of this function keeps.
+  - Acceptance: `addTaskSteps.test.ts` — step ordering for each `AddTaskPlan` kind (a step
+    drops the JIRA/chain/assign steps; a card with no ticket/attachments/chain/assign emits
+    exactly one step; attachments sit before chain and chain before assign); `refusalFromMessage`
+    round-trips every `RUN_REFUSAL_MESSAGE` entry and answers `null` for an arbitrary string;
+    `runFromAssign`/`runFromAssignError` cover all five named cases; `outcomeMessage` covers the
+    acceptance table in this bullet (limit park reads `tone: 'success'`; `no-project`'s reason
+    names the fix; a `problems`-only result is `tone: 'warning'` even with `run: 'started'`).
+    `executeAddTaskSteps` driven with a fake `invoke` that throws on the second and third step
+    in turn, asserting `problems` grows and no `task:delete`/removal call is ever made — the
+    "never rolled back" rule, proven rather than assumed. Gates `pnpm typecheck`, `pnpm test`,
+    `pnpm build` green.
 
 ### F5 · Phase 2 — Issue browser and hand-off
 
