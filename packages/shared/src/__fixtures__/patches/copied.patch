@@ -1,0 +1,13 @@
+diff --git a/copy-src.txt b/copy-dst.txt
+similarity index 62%
+copy from copy-src.txt
+copy to copy-dst.txt
+index 7ec2daa..926a1a3 100644
+--- a/copy-src.txt
++++ b/copy-dst.txt
+@@ -1,4 +1,4 @@
+ shared one
+ shared two
+ -- shared three
+-shared four
++++ shared four boosted

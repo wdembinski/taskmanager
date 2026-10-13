@@ -1,0 +1,16 @@
+diff --git a/rename-src.txt b/rename-dst.txt
+similarity index 74%
+rename from rename-src.txt
+rename to rename-dst.txt
+index b00a0f1..e5f0ed0 100644
+--- a/rename-src.txt
++++ b/rename-dst.txt
+@@ -2,7 +2,7 @@ one
+ two
+ three
+ four
+-five
++FIVE-edited
+ six
+ seven
+ eight

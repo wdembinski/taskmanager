@@ -1,0 +1,28 @@
+diff --git a/nl-added.txt b/nl-added.txt
+index bdc8e35..245ee4c 100644
+--- a/nl-added.txt
++++ b/nl-added.txt
+@@ -1,2 +1,2 @@
+ no-trailing-old
+-second line
+\ No newline at end of file
++second line
+diff --git a/nl-both.txt b/nl-both.txt
+index 0a3c958..e5e07b7 100644
+--- a/nl-both.txt
++++ b/nl-both.txt
+@@ -1,2 +1,2 @@
+ neither-old
+-second line
+\ No newline at end of file
++second line edited
+\ No newline at end of file
+diff --git a/nl-removed.txt b/nl-removed.txt
+index 7f718a3..544a5a8 100644
+--- a/nl-removed.txt
++++ b/nl-removed.txt
+@@ -1,2 +1,2 @@
+ trailing-old
+-second line
++second line edited
+\ No newline at end of file
