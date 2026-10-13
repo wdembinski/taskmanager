@@ -36,13 +36,14 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Caption1, makeStyles } from '@fluentui/react-components';
-import { COLUMN_META, hiddenColumnsSummary, visibleColumns } from '@tm/ui/board/boardColumns';
-import { statusForColumn } from '@tm/shared/board';
+import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
+import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ColumnSwitcher } from '@tm/ui/board/ColumnSwitcher';
 import { columnSwitcherItems } from '@tm/ui/board/compactColumns';
 import { chainPosition } from '@tm/ui/board/chainPosition';
+import { MoveToSheet } from '@tm/ui/board/MoveToSheet';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
@@ -107,7 +108,9 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 
 export interface BoardScreenProps {
   state: CloudBoardState;
-  onSetStatus: (taskId: string, status: ManualStatus) => void;
+  /** A card dropped into a column, or moved there from the compact board's "Move to"
+   *  sheet — sent as `task:move`, not `task:setStatus`. */
+  onMoveTask: (taskId: string, column: BoardColumn) => void;
   /**
    * A status change the DETAIL PANE has already sent for itself: record the same pending
    * overlay a drag gets, without putting a second identical command on the wire.
@@ -133,7 +136,7 @@ export interface BoardScreenProps {
 
 export function BoardScreen({
   state,
-  onSetStatus,
+  onMoveTask,
   onStatusNoted,
   compact,
 }: BoardScreenProps): JSX.Element {
@@ -143,6 +146,8 @@ export function BoardScreen({
   const extras = useBoardExtras();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  /** The card the compact board's "Move to" sheet (F3.6) is open for, or null when shut. */
+  const [moveSheetTaskId, setMoveSheetTaskId] = useState<string | null>(null);
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
   const [chainFocus, setChainFocus] = useState(false);
@@ -371,6 +376,16 @@ export function BoardScreen({
   }, [state, selectedTaskId]);
 
   /**
+   * The card the "Move to" sheet is open for — the same `displayStatus` overlay
+   * {@link selectedTask} carries, so the sheet's current-column checkmark agrees with
+   * where the card's own column already shows it sitting.
+   */
+  const moveSheetTask = useMemo(() => {
+    const task = moveSheetTaskId ? (state.tasks[moveSheetTaskId] ?? null) : null;
+    return task ? { ...task, status: displayStatus(state, task) } : null;
+  }, [state, moveSheetTaskId]);
+
+  /**
    * The chain the pane needs: the selected card's own steps, or — when a STEP is selected,
    * which `TaskSteps` makes reachable from the card above it — its siblings, which is what
    * lets the pane say "step 2 of 5". `MyTasks.tsx`'s `chain`, over the mirrored rows.
@@ -542,14 +557,20 @@ export function BoardScreen({
   const handleDropInColumn = useCallback(
     (taskId: string, dropColumn: BoardColumn) => {
       setDraggingId(null);
-      if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
-      onSetStatus(taskId, statusForColumn(dropColumn));
+      if (
+        !allowedDropColumns({ hiddenColumns, pending: pendingTaskIds.has(taskId) }).includes(
+          dropColumn,
+        )
+      ) {
+        return;
+      }
+      onMoveTask(taskId, dropColumn);
       foldOnAutoFoldColumn(taskId, dropColumn);
       // The drag that returns a shelved card to a column is the toggle's other click — see
       // `MyTasks.tsx`'s own `onDropInColumn`.
       if (shelvedIds.has(taskId)) toggleShelved(taskId);
     },
-    [pendingTaskIds, onSetStatus, foldOnAutoFoldColumn, shelvedIds, toggleShelved],
+    [hiddenColumns, pendingTaskIds, onMoveTask, foldOnAutoFoldColumn, shelvedIds, toggleShelved],
   );
 
   return (
@@ -675,6 +696,7 @@ export function BoardScreen({
               onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
               onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
               onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
+              onMoveTask={setMoveSheetTaskId}
               afterMergePipeline={settings.features.afterMergePipeline}
               mrRebaseButton={settings.features.mrRebaseButton}
               mrMergeButton={settings.features.mrMergeButton}
@@ -686,7 +708,7 @@ export function BoardScreen({
           )
         ) : (
           <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
-            {visibleColumns(hiddenColumns).map((column) => (
+            {allowedDropColumns({ hiddenColumns, pending: false }).map((column) => (
               <KanbanColumn
                 key={column}
                 column={column}
@@ -816,10 +838,27 @@ export function BoardScreen({
             onDragStartTask={setDraggingId}
             onDragEndTask={() => setDraggingId(null)}
             onToggleShelved={toggleShelved}
+            onMoveTask={compact ? setMoveSheetTaskId : undefined}
             onDropOnShelf={dropOnShelf}
             afterMergePipeline={settings.features.afterMergePipeline}
             mrRebaseButton={settings.features.mrRebaseButton}
             mrMergeButton={settings.features.mrMergeButton}
+          />
+        )}
+        {compact && (
+          <MoveToSheet
+            options={
+              moveSheetTask
+                ? moveSheetOptions(moveSheetTask, {
+                    hiddenColumns,
+                    pending: pendingTaskIds.has(moveSheetTask.id),
+                  })
+                : []
+            }
+            title={moveSheetTask?.title ?? ''}
+            open={moveSheetTask !== null}
+            onPick={(column) => moveSheetTask && handleDropInColumn(moveSheetTask.id, column)}
+            onClose={() => setMoveSheetTaskId(null)}
           />
         )}
       </div>

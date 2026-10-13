@@ -203,6 +203,13 @@ export interface KanbanColumnProps {
    * is off.
    */
   onToggleShelved?: (id: string) => void;
+  /**
+   * Open the compact board's "Move to" sheet for a card, from the card's own menu (F3.6).
+   * Passed through like `onToggleShelved`: the column decides nothing about the menu
+   * item's presence, and this is also what the wide board never passes, since it still
+   * has drag.
+   */
+  onMoveTask?: (id: string) => void;
   /** `settings.features.afterMergePipeline` — passed straight through to each `TaskCard`. */
   afterMergePipeline?: boolean;
   /** `settings.features.mrRebaseButton` — passed straight through to each `TaskCard`. */
@@ -305,6 +312,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
               onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
               onToggleShelved={props.onToggleShelved && (() => props.onToggleShelved?.(task.id))}
+              onMoveTo={props.onMoveTask && (() => props.onMoveTask?.(task.id))}
               afterMergePipeline={props.afterMergePipeline}
               mrRebaseButton={props.mrRebaseButton}
               mrMergeButton={props.mrMergeButton}
@@ -313,11 +321,13 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               chainReady={props.chainStateOf?.(task)?.ready}
               chainBlocked={props.chainStateOf?.(task)?.blocked}
               chainPosition={props.chainPositionOf?.(task)}
-              // Every card, unconditionally. A chain says what runs after what, never where
-              // a card belongs; and a run only BORROWS the card's status (`cardStatusGuard`),
-              // so not even a live agent or a live step takes a card out of the human's
-              // hands. There is no state in which a card refuses to be filed.
-              draggable
+              // A chain says what runs after what, never where a card belongs; and a run
+              // only BORROWS the card's status (`cardStatusGuard`), so not even a live agent
+              // or a live step takes a card out of the human's hands — there is no state in
+              // which a card refuses to be filed. Compact is the one exception: touch has no
+              // drag gesture at all, so the card is not draggable there and the "Move to"
+              // sheet (F3.6) is the only way to file it.
+              draggable={!compact}
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}
               onSelectSubtask={props.onSelectTask}

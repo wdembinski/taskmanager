@@ -8,7 +8,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CadenceDirective } from '@tm/protocol/cadence';
 import type { ClientPresence } from '@tm/protocol/wire';
-import type { ManualStatus, Project, Task } from '@tm/shared/model';
+import { statusForColumn } from '@tm/shared/board';
+import type { BoardColumn, ManualStatus, Project, Task } from '@tm/shared/model';
 import type { CloudAuth } from '../auth/cloudAuth';
 import type { WebConfig } from '../env';
 import { createPresenceFocusSignal, PresenceHeartbeat } from '../presence';
@@ -88,7 +89,9 @@ export interface CloudBoardApi {
   /** The `Transport` this session's `<TransportProvider>` wraps the tree in — see
    *  `packages/ui/src/transport.tsx`. */
   transport: HttpTransport;
-  setStatus: (taskId: string, status: ManualStatus) => Promise<void>;
+  /** A card moved to `column` — sent as `task:move`, with the same optimistic overlay
+   *  a status change gets. */
+  moveTask: (taskId: string, column: BoardColumn) => Promise<void>;
   /** Record a status change the detail pane already sent — see the implementation. */
   noteStatus: (taskId: string, status: ManualStatus) => void;
   // No `createTask` here any more: the shared add-task dialog calls `task:create` on the
@@ -225,14 +228,19 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     return () => clearInterval(id);
   }, []);
 
-  const setStatus = useCallback(
-    async (taskId: string, status: ManualStatus) => {
+  const moveTask = useCallback(
+    async (taskId: string, column: BoardColumn) => {
       const commandId = crypto.randomUUID();
       setState((s) =>
-        queuePendingStatusChange(s, { commandId, taskId, status, issuedAt: Date.now() }),
+        queuePendingStatusChange(s, {
+          commandId,
+          taskId,
+          status: statusForColumn(column),
+          issuedAt: Date.now(),
+        }),
       );
       try {
-        await transport.invoke('task:setStatus', taskId, status);
+        await transport.invoke('task:move', taskId, column);
       } catch (e) {
         setState((s) => clearPendingStatusChange(s, commandId));
         throw e;
@@ -242,7 +250,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
   );
 
   /**
-   * The same optimistic overlay {@link setStatus} queues, for a change that has ALREADY been
+   * The same optimistic overlay {@link moveTask} queues, for a change that has ALREADY been
    * sent by someone else — the shared `TaskDetail`, whose State dropdown calls
    * `task:setStatus` on the transport itself and then reports what came back. Sending a
    * second, identical command from here would be the only other way to get the card to move
@@ -279,7 +287,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
     targetClient,
     selectTargetClient,
     transport,
-    setStatus,
+    moveTask,
     noteStatus,
     upsertProject,
     upsertTask,
