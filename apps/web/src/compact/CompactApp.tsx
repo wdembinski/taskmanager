@@ -19,10 +19,20 @@
  *     `<SyncCurtain>` otherwise), with its `compact` prop set (F3.5) — one `ColumnSwitcher`
  *     tab's worth of cards instead of the wide layout's five side-by-side columns.
  *     `activeCompactColumn` resolves which column that is: a `board` route's own column, or
- *     a `card` route's card's column with that card selected on it. F3.7 still replaces the
- *     `card` route with the full-screen, sectioned card detail (`CardSection`) rather than
- *     this board-with-a-card-highlighted stand-in — until then a `card` route highlights the
- *     Board tab (`tabForRoute`) and shows the same board the bare route does.
+ *     a `card` route's card's column with that card selected on it (used for the column
+ *     this screen falls back to, both as `compact.onOpenCard`'s board-tab tile and as the
+ *     Back fallback below). A `card` route additionally sets `compact.card` (F3.7):
+ *     `BoardScreen` renders `CompactCardScreen` full-screen in place of the column — Chat,
+ *     Steps, Changes, Details as top tabs over `TaskDetail`'s own sections — rather than
+ *     this board-with-a-card-highlighted stand-in. A tab change on that screen calls
+ *     `navigate` with `{replace: true}` (the same open card, a new section — never a push,
+ *     so tapping through all four tabs does not grow history by four); Back calls
+ *     `goBackFromCard` with the board route for `activeColumn` as its fallback. The bottom
+ *     tab bar is omitted for a `card` route (`CompactShell`'s `tabBar` is optional for
+ *     exactly this) — the card screen draws its own Back + title bar in its place, and
+ *     `tabForRoute` still folds `card` onto `board` for the one case a tab bar IS showing
+ *     (there is none to highlight here, but `useHashRoute`'s route still answers the same
+ *     way if something else asks).
  *   - `search` → a Fluent `Input` plus result rows from `searchCards(Object.values(
  *     board.state.tasks), query)` (`CloudBoardState.tasks` is keyed by id, not an array);
  *     tapping a row navigates to `#/card/<id>/chat` (the `chat` section is the default
@@ -109,7 +119,7 @@ export function CompactApp({
 }: CompactAppProps): JSX.Element {
   const styles = useStyles();
   const client: ClientPresence | null = board.targetClient;
-  const [route, navigate] = useHashRoute();
+  const [route, navigate, goBackFromCard] = useHashRoute();
   const [query, setQuery] = useState('');
 
   // The column a `card` route's own card sits on — undefined when the route carries no
@@ -155,12 +165,16 @@ export function CompactApp({
   return (
     <CompactShell
       strip={<StatusStrip connection={connection} client={client} syncLabel={syncLabel} />}
+      // Omitted entirely for a full-screen card route — `CompactCardScreen` draws its own
+      // Back + title bar in its place, and there is no tab to highlight behind it anyway.
       tabBar={
-        <BottomTabBar
-          items={tabs}
-          selected={tabForRoute(route)}
-          onSelect={(id) => navigate(routeForTab(id as CompactTab))}
-        />
+        route.kind === 'card' ? undefined : (
+          <BottomTabBar
+            items={tabs}
+            selected={tabForRoute(route)}
+            onSelect={(id) => navigate(routeForTab(id as CompactTab))}
+          />
+        )
       }
     >
       {route.kind === 'inbox' && <CompactInbox />}
@@ -175,6 +189,23 @@ export function CompactApp({
               column: activeColumn,
               onColumnChange: (column) => navigate({ kind: 'board', column }),
               onOpenCard: (id) => navigate({ kind: 'card', id, section: 'chat' }),
+              card:
+                route.kind === 'card'
+                  ? {
+                      id: route.id,
+                      section: route.section,
+                      // The same open card, a new section — a push here would let four
+                      // taps across the tabs grow history by four, and Back would have to
+                      // walk back through each one instead of leaving the card.
+                      onSectionChange: (section) =>
+                        navigate({ kind: 'card', id: route.id, section }, { replace: true }),
+                      onBack: () =>
+                        goBackFromCard({
+                          kind: 'board',
+                          column: activeColumn ?? BOARD_COLUMNS[0],
+                        }),
+                    }
+                  : undefined,
             }}
           />
         ) : (

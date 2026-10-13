@@ -39,6 +39,24 @@
  *   (`inbox`/`search`/`settings`); `routeForTab('board')` is `{kind:'board', column:
  *   BOARD_COLUMNS[0]}` — tapping the Board tab always lands on the first column, never on
  *   whatever column a previous card route happened to carry.
+ * - **A card's Back button (F3.7) needs to know whether there is anywhere of THIS app's own
+ *   to go back to** — a card opened by tapping a board row has a board entry behind it in
+ *   history; a card opened by a deep link, a restored tab, or a page reload does not, and
+ *   `history.back()` there would leave the app entirely. `useHashRoute.ts`'s `navigate`
+ *   stamps every entry it pushes with `IN_APP_HISTORY_MARK` in `history.state`, and
+ *   `cardBackAction` reads that mark back: present → `{kind:'history'}` (call
+ *   `history.back()`); absent → `{kind:'replace'}` with a `fallback` route the caller
+ *   supplies (typically the board route for the card's own column, `activeCompactColumn`'s
+ *   own answer) — a REPLACE, never a push, so a Back tap never grows history by one more
+ *   than a push-based Back would have.
+ * - **`openCardId`/`wideSelectionRoute` are the rotation round trip (F3.7).** A card open on
+ *   the compact route survives a rotation to wide because `App.tsx` seeds the wide board's
+ *   `initialSelectedTaskId` from `openCardId(route)`, and writes back through
+ *   `wideSelectionRoute` on every wide-side selection change — keeping the SAME section if
+ *   the wide side's own selection still names the route's current card (the common case: the
+ *   rotation itself did not change what is selected), resetting to `chat` for any other id
+ *   (the wide board picked a different card), and the board route for `column` when nothing
+ *   is selected at all.
  */
 import { BOARD_COLUMNS, type BoardColumn } from '@tm/shared/model';
 
@@ -142,4 +160,47 @@ export function tabForRoute(route: CompactRoute): CompactTab {
 export function routeForTab(tab: CompactTab): CompactRoute {
   if (tab === 'board') return { kind: 'board', column: BOARD_COLUMNS[0] };
   return { kind: tab };
+}
+
+/** Written into `history.state` by every entry `useHashRoute.ts`'s `navigate` pushes or
+ *  replaces — see the module header. */
+export const IN_APP_HISTORY_MARK = 'tmCompactNav';
+
+/** What a card's Back button should do — see {@link cardBackAction}. */
+export type CardBackAction = { kind: 'history' } | { kind: 'replace'; route: CompactRoute };
+
+/**
+ * The pure decision behind a card's Back button (F3.7). `historyState` is whatever the call
+ * site read from `window.history.state`: marked with {@link IN_APP_HISTORY_MARK} when the
+ * current entry was pushed by this router's own `navigate` (so a real entry exists behind
+ * it to go back to), unmarked for anything else a tab can arrive on a card route with — a
+ * deep link, a restored tab, a plain reload. Never throws on a malformed or missing state;
+ * anything that is not the exact marked shape reads as unmarked.
+ */
+export function cardBackAction(historyState: unknown, fallback: CompactRoute): CardBackAction {
+  const marked =
+    typeof historyState === 'object' &&
+    historyState !== null &&
+    (historyState as Record<string, unknown>)[IN_APP_HISTORY_MARK] === true;
+  return marked ? { kind: 'history' } : { kind: 'replace', route: fallback };
+}
+
+/** The card id `route` is showing, or `null` for any other route kind. */
+export function openCardId(route: CompactRoute): string | null {
+  return route.kind === 'card' ? route.id : null;
+}
+
+/**
+ * The compact route the WIDE board's own selection should write on every change — see the
+ * module header's rotation-round-trip paragraph. `column` is only read when `selectedId` is
+ * `null`; it is never consulted to decide a card's section.
+ */
+export function wideSelectionRoute(
+  current: CompactRoute,
+  selectedId: string | null,
+  column: BoardColumn,
+): CompactRoute {
+  if (selectedId === null) return { kind: 'board', column };
+  if (current.kind === 'card' && current.id === selectedId) return current;
+  return { kind: 'card', id: selectedId, section: 'chat' };
 }

@@ -56,6 +56,7 @@ import { Composer, type ComposerBusy } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
 import { draftKey, useDraft } from './drafts';
+import type { CardSection } from './layout/compactRoute';
 import { MergeRequests } from './MergeRequests';
 import { PaneLoading } from './PaneLoading';
 import { TaskChain } from './TaskChain';
@@ -194,6 +195,14 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralStroke2,
     opacity: 0.6,
   },
+  /**
+   * The compact full-screen card screen's own single-section layout (F3.7): one scroll
+   * region filling the whole pane, rather than the wide pane's capped-50% band above a
+   * second, separately-scrolling conversation — there is no second section on screen to
+   * share the height with. Never used for the `chat` section, which keeps the wide pane's
+   * own scroller + foot band below (see the module header on `TaskDetailProps.section`).
+   */
+  sectionScroll: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px' },
 });
 
 export interface TaskDetailProps {
@@ -310,6 +319,17 @@ export interface TaskDetailProps {
   onStatusSet?: (taskId: string, status: ManualStatus) => void;
   /** Called after a step is added or edited, so the board can reload its cards. */
   onSubtasksChanged?: () => void;
+  /**
+   * Which single section to show (the compact full-screen card screen's own top tabs —
+   * `CompactCardScreen.tsx`, F3.7). Absent — every host but that one — renders every
+   * section at once, in the one wide layout this pane has always drawn: a capped band of
+   * identity/agent/details/steps/chain/merge-requests above a separately-scrolling
+   * conversation. `'chat'` keeps that same scroller-plus-composer shape but drops the band
+   * above it; the other three sections replace both with one full-height scroll holding
+   * just their own slice of the band's content (`sectionScroll`) — there is no second
+   * section on screen for either half to share height with on a phone.
+   */
+  section?: CardSection;
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
@@ -343,6 +363,7 @@ export function TaskDetail({
   onStatusChanged,
   onStatusSet,
   onSubtasksChanged,
+  section,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -935,6 +956,249 @@ export function TaskDetail({
     chat && chat.target.id !== task.id ? stepPosition(subtasks, chat.target.id) : null;
   const agentProject = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
 
+  /**
+   * The band's own content, split into the three slices the compact card screen's tabs
+   * show one at a time (`section`'s doc above) — in the SAME order the wide pane has
+   * always drawn them (`detailsContent` then `stepsContent` then `changesContent`), so
+   * rendering all three back to back when `section` is absent reproduces the wide pane
+   * exactly. `stepsContent`/`changesContent` are `null` for a step: its brief (inside
+   * `detailsContent`) already replaces the card's details, steps and chain, and a step
+   * carries no merge requests of its own either.
+   */
+  const detailsContent = (
+    <>
+      {/* The ticket's own identity heads the band: what this card IS, before what is
+          being done about it. The type glyph is the board card's, so one symbol
+          means one kind of work everywhere. */}
+      <div className={styles.head}>
+        {parentTask && (
+          <div className={styles.crumbRow}>
+            <Button
+              size="small"
+              appearance="transparent"
+              icon={<ChevronLeftRegular />}
+              onClick={() => onOpenTask?.(parentTask.id)}
+            >
+              {parentTask.title}
+            </Button>
+            {position !== null && (
+              <Caption1 className={styles.phase}>
+                Step {position} of {subtasks.length}
+              </Caption1>
+            )}
+          </div>
+        )}
+        <div className={styles.titleRow}>
+          <span className={styles.icon}>{typeIcon(task)}</span>
+          {editingTitle ? (
+            <>
+              <Input
+                className={styles.title}
+                value={titleDraft.value}
+                disabled={titleBusy}
+                autoFocus
+                onChange={(_e, d) => titleDraft.set(d.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void saveTitle();
+                  else if (e.key === 'Escape') cancelTitleEdit();
+                }}
+              />
+              <Button size="small" disabled={titleBusy} onClick={cancelTitleEdit}>
+                Cancel
+              </Button>
+              <Button
+                size="small"
+                appearance="primary"
+                icon={titleBusy ? <Spinner size="tiny" /> : undefined}
+                disabled={titleBusy || !titleDraft.value.trim()}
+                onClick={() => void saveTitle()}
+              >
+                {titleBusy ? 'Saving…' : 'Save'}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
+              <Button size="small" appearance="subtle" onClick={() => setEditingTitle(true)}>
+                Edit
+              </Button>
+              {/* The ticket badge, and the one place this pane names the tracker out loud.
+                    "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
+                    key itself is printed short (`#123`) with the whole `owner/repo#123` in the
+                    tooltip — the same bargain the card's footer badge strikes, so the two cannot
+                    read as two different tickets. */}
+              {task.externalKey &&
+                (task.externalUrl ? (
+                  <a
+                    className={styles.key}
+                    href={task.externalUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    title={`Open ${task.externalKey} in ${trackerName(task) ?? 'the tracker'}`}
+                  >
+                    <Badge
+                      appearance="outline"
+                      color="informative"
+                      icon={<TrackerMark task={task} size={12} />}
+                    >
+                      {shortTicketKey(task)}
+                    </Badge>
+                  </a>
+                ) : (
+                  <Badge
+                    appearance="outline"
+                    color="informative"
+                    icon={<TrackerMark task={task} size={12} />}
+                    title={task.externalKey}
+                  >
+                    {shortTicketKey(task)}
+                  </Badge>
+                ))}
+            </>
+          )}
+        </div>
+        {editingTitle && tracker && (
+          <Caption1 className={styles.titleHint}>
+            Edits the app&apos;s copy — the next {trackerName(task) ?? 'tracker'} sync replaces it
+            with the issue&apos;s own {isJira ? 'summary' : 'title'}.
+          </Caption1>
+        )}
+        <Caption1 className={styles.phase}>
+          {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
+            .filter(Boolean)
+            .join(' · ')}
+        </Caption1>
+      </div>
+
+      <TaskAgentPanel
+        task={task}
+        subtasks={subtasks}
+        agentProjects={agentProjects}
+        filingProjects={boards}
+        items={panelItems}
+        running={run.spinner}
+        liveRunTaskIds={liveRunTaskIds}
+        merging={merging}
+        waitingOn={chainWaitingOn}
+        mergeHeld={chainMergeHeld}
+        // The same list the `<MergeRequests>` section below renders — so the Create PR
+        // slot and the row it would duplicate can never disagree about whether one is open.
+        mergeRequests={mergeRequests}
+        onOpenTask={onOpenTask}
+        onTaskChanged={(updated) => {
+          onStatusChanged?.(updated);
+          void loadActivity();
+        }}
+      />
+      {/* A step's brief replaces the card's details + steps — it is the whole spec. */}
+      {isStep ? (
+        <StepBrief
+          task={task}
+          attachments={attachments}
+          parentAttachments={parentAttachments}
+          onChanged={(updated) => {
+            onStatusChanged?.(updated);
+            onSubtasksChanged?.();
+          }}
+        />
+      ) : (
+        <>
+          {/* Beside the state controls, because it is the other half of the same
+              sentence: closing a card hushes it automatically, and this is how you
+              hush one you are NOT closing — you have read the comment, you know the
+              pipeline is red, and you are getting to it. */}
+          {wantsAttention && (
+            <div className={styles.dismissRow}>
+              <Button
+                size="small"
+                appearance="subtle"
+                icon={busy === 'other' ? <Spinner size="tiny" /> : <AlertOffRegular />}
+                disabled={busy !== null}
+                title="Stop this card asking — clears its inbox items, unread comments and merge-request alerts"
+                onClick={() => void dismissAttention()}
+              >
+                {busy === 'other' ? 'Dismissing…' : 'Dismiss'}
+              </Button>
+            </div>
+          )}
+          <TaskDetailsCell
+            task={task}
+            boards={boards}
+            attachments={attachments}
+            priorityDisplay={priorityDisplay}
+            onTaskChanged={(updated) => onStatusChanged?.(updated)}
+            onStatusSet={(status) => onStatusSet?.(task.id, status)}
+            onEdited={() => void loadActivity()}
+          />
+        </>
+      )}
+    </>
+  );
+
+  const stepsContent = !isStep && (
+    <>
+      <TaskSteps
+        task={task}
+        subtasks={subtasks}
+        onOpen={(id) => onOpenTask?.(id)}
+        onChanged={() => onSubtasksChanged?.()}
+      />
+      {/* Beside Steps, and deliberately after it: a card's own steps are the work
+          inside it, and the chain is where that work sits among everything else.
+          Never on a STEP's pane — a step cannot be chained at either end. */}
+      <TaskChain
+        task={task}
+        links={chainLinks}
+        tasksById={chainTasksById}
+        onOpen={(id) => onOpenTask?.(id)}
+        onUnlink={(linkId) => onUnlinkChain?.(linkId)}
+      />
+    </>
+  );
+
+  const changesContent = !isStep && (
+    <MergeRequests
+      mergeRequests={mergeRequests}
+      onMarkRead={(id) => void transport.invoke('mr:markRead', id)}
+      onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
+      onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
+      onRebase={(id) => void transport.invoke('mr:rebase', id)}
+      onMerge={(id, message) => transport.invoke('mr:merge', id, { message })}
+      onLoadMergeProposal={(id) => transport.invoke('mr:mergeProposal', id)}
+      afterMergePipeline={afterMergePipeline}
+      mrRebaseButton={mrRebaseButton}
+      mrMergeButton={mrMergeButton}
+    />
+  );
+
+  // A single section (the compact card screen's own tab) replaces both the band and the
+  // conversation with one full-height scroll holding just that slice — there is no second
+  // section on screen to share the pane with. `chat` is the one exception: it keeps the
+  // wide pane's own scroller-plus-composer shape (below), just without the band above it.
+  if (section !== undefined && section !== 'chat') {
+    const content =
+      section === 'details' ? detailsContent : section === 'steps' ? stepsContent : changesContent;
+    return (
+      <div className={styles.root}>
+        {readOnlyNotice && (
+          <div className={styles.notice}>
+            <MessageBar intent="warning">
+              <MessageBarBody>{readOnlyNotice}</MessageBarBody>
+            </MessageBar>
+          </div>
+        )}
+        {error && (
+          <div className={styles.inset}>
+            <MessageBar intent="error">
+              <MessageBarBody>{error}</MessageBarBody>
+            </MessageBar>
+          </div>
+        )}
+        <div className={styles.sectionScroll}>{content}</div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.root}>
       {/* Only over a card: on the empty pane there is no control to qualify, and a warning
@@ -946,201 +1210,16 @@ export function TaskDetail({
           </MessageBar>
         </div>
       )}
-      <div className={styles.cell}>
-        {/* The ticket's own identity heads the band: what this card IS, before what is
-            being done about it. The type glyph is the board card's, so one symbol
-            means one kind of work everywhere. */}
-        <div className={styles.head}>
-          {parentTask && (
-            <div className={styles.crumbRow}>
-              <Button
-                size="small"
-                appearance="transparent"
-                icon={<ChevronLeftRegular />}
-                onClick={() => onOpenTask?.(parentTask.id)}
-              >
-                {parentTask.title}
-              </Button>
-              {position !== null && (
-                <Caption1 className={styles.phase}>
-                  Step {position} of {subtasks.length}
-                </Caption1>
-              )}
-            </div>
-          )}
-          <div className={styles.titleRow}>
-            <span className={styles.icon}>{typeIcon(task)}</span>
-            {editingTitle ? (
-              <>
-                <Input
-                  className={styles.title}
-                  value={titleDraft.value}
-                  disabled={titleBusy}
-                  autoFocus
-                  onChange={(_e, d) => titleDraft.set(d.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void saveTitle();
-                    else if (e.key === 'Escape') cancelTitleEdit();
-                  }}
-                />
-                <Button size="small" disabled={titleBusy} onClick={cancelTitleEdit}>
-                  Cancel
-                </Button>
-                <Button
-                  size="small"
-                  appearance="primary"
-                  icon={titleBusy ? <Spinner size="tiny" /> : undefined}
-                  disabled={titleBusy || !titleDraft.value.trim()}
-                  onClick={() => void saveTitle()}
-                >
-                  {titleBusy ? 'Saving…' : 'Save'}
-                </Button>
-              </>
-            ) : (
-              <>
-                <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
-                <Button size="small" appearance="subtle" onClick={() => setEditingTitle(true)}>
-                  Edit
-                </Button>
-                {/* The ticket badge, and the one place this pane names the tracker out loud.
-                    "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
-                    key itself is printed short (`#123`) with the whole `owner/repo#123` in the
-                    tooltip — the same bargain the card's footer badge strikes, so the two cannot
-                    read as two different tickets. */}
-                {task.externalKey &&
-                  (task.externalUrl ? (
-                    <a
-                      className={styles.key}
-                      href={task.externalUrl}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      title={`Open ${task.externalKey} in ${trackerName(task) ?? 'the tracker'}`}
-                    >
-                      <Badge
-                        appearance="outline"
-                        color="informative"
-                        icon={<TrackerMark task={task} size={12} />}
-                      >
-                        {shortTicketKey(task)}
-                      </Badge>
-                    </a>
-                  ) : (
-                    <Badge
-                      appearance="outline"
-                      color="informative"
-                      icon={<TrackerMark task={task} size={12} />}
-                      title={task.externalKey}
-                    >
-                      {shortTicketKey(task)}
-                    </Badge>
-                  ))}
-              </>
-            )}
-          </div>
-          {editingTitle && tracker && (
-            <Caption1 className={styles.titleHint}>
-              Edits the app&apos;s copy — the next {trackerName(task) ?? 'tracker'} sync replaces it
-              with the issue&apos;s own {isJira ? 'summary' : 'title'}.
-            </Caption1>
-          )}
-          <Caption1 className={styles.phase}>
-            {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
-              .filter(Boolean)
-              .join(' · ')}
-          </Caption1>
+      {/* The band: identity, agent controls, details/steps/chain/merge-requests — all of
+          `section`'s own content, back to back, exactly as before `section` existed. Never
+          drawn for the `chat` section: that tab is the conversation alone. */}
+      {section === undefined && (
+        <div className={styles.cell}>
+          {detailsContent}
+          {stepsContent}
+          {changesContent}
         </div>
-
-        <TaskAgentPanel
-          task={task}
-          subtasks={subtasks}
-          agentProjects={agentProjects}
-          filingProjects={boards}
-          items={panelItems}
-          running={run.spinner}
-          liveRunTaskIds={liveRunTaskIds}
-          merging={merging}
-          waitingOn={chainWaitingOn}
-          mergeHeld={chainMergeHeld}
-          // The same list the `<MergeRequests>` section below renders — so the Create PR
-          // slot and the row it would duplicate can never disagree about whether one is open.
-          mergeRequests={mergeRequests}
-          onOpenTask={onOpenTask}
-          onTaskChanged={(updated) => {
-            onStatusChanged?.(updated);
-            void loadActivity();
-          }}
-        />
-        {/* A step's brief replaces the card's details + steps — it is the whole spec. */}
-        {isStep ? (
-          <StepBrief
-            task={task}
-            attachments={attachments}
-            parentAttachments={parentAttachments}
-            onChanged={(updated) => {
-              onStatusChanged?.(updated);
-              onSubtasksChanged?.();
-            }}
-          />
-        ) : (
-          <>
-            {/* Beside the state controls, because it is the other half of the same
-                sentence: closing a card hushes it automatically, and this is how you
-                hush one you are NOT closing — you have read the comment, you know the
-                pipeline is red, and you are getting to it. */}
-            {wantsAttention && (
-              <div className={styles.dismissRow}>
-                <Button
-                  size="small"
-                  appearance="subtle"
-                  icon={busy === 'other' ? <Spinner size="tiny" /> : <AlertOffRegular />}
-                  disabled={busy !== null}
-                  title="Stop this card asking — clears its inbox items, unread comments and merge-request alerts"
-                  onClick={() => void dismissAttention()}
-                >
-                  {busy === 'other' ? 'Dismissing…' : 'Dismiss'}
-                </Button>
-              </div>
-            )}
-            <TaskDetailsCell
-              task={task}
-              boards={boards}
-              attachments={attachments}
-              priorityDisplay={priorityDisplay}
-              onTaskChanged={(updated) => onStatusChanged?.(updated)}
-              onStatusSet={(status) => onStatusSet?.(task.id, status)}
-              onEdited={() => void loadActivity()}
-            />
-            <TaskSteps
-              task={task}
-              subtasks={subtasks}
-              onOpen={(id) => onOpenTask?.(id)}
-              onChanged={() => onSubtasksChanged?.()}
-            />
-            {/* Beside Steps, and deliberately after it: a card's own steps are the work
-                inside it, and the chain is where that work sits among everything else.
-                Never on a STEP's pane — a step cannot be chained at either end. */}
-            <TaskChain
-              task={task}
-              links={chainLinks}
-              tasksById={chainTasksById}
-              onOpen={(id) => onOpenTask?.(id)}
-              onUnlink={(linkId) => onUnlinkChain?.(linkId)}
-            />
-            <MergeRequests
-              mergeRequests={mergeRequests}
-              onMarkRead={(id) => void transport.invoke('mr:markRead', id)}
-              onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
-              onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
-              onRebase={(id) => void transport.invoke('mr:rebase', id)}
-              onMerge={(id, message) => transport.invoke('mr:merge', id, { message })}
-              onLoadMergeProposal={(id) => transport.invoke('mr:mergeProposal', id)}
-              afterMergePipeline={afterMergePipeline}
-              mrRebaseButton={mrRebaseButton}
-              mrMergeButton={mrMergeButton}
-            />
-          </>
-        )}
-      </div>
+      )}
 
       {error && (
         <div className={styles.inset}>

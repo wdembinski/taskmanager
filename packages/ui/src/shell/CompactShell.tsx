@@ -19,9 +19,19 @@
  *   same `flex`-child-needs-`minHeight: 0`-to-scroll rule `AppShell`'s own `content`/`body`
  *   already follow — `strip` and `tabBar` stay a fixed single line each, pinned top and
  *   bottom.
+ * - **`tabBar` is optional (F3.7).** A full-screen card route (`CompactCardScreen`) has its
+ *   own Back + title bar in its place, which is its own screen's business, not something
+ *   this shell has to know the shape of — absent, the shell simply draws no third slot.
+ * - **Bottom padding from `useKeyboardInset()`.** The one slot an on-screen keyboard can
+ *   cover that nothing else already protects: `tabBar`, when present, already sits above a
+ *   resized viewport; `strip` is pinned at the top where a keyboard never reaches. Applied
+ *   to the shell as a whole rather than `tabBar` alone, so it still does its job on the one
+ *   screen that renders without a `tabBar` at all — a full-screen card's own composer,
+ *   pinned to `children`'s bottom edge with nothing else below it.
  */
 import { makeStyles } from '@fluentui/react-components';
 import type { ReactNode } from 'react';
+import { useKeyboardInset } from '../layout/viewport';
 
 const useStyles = makeStyles({
   shell: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
@@ -33,14 +43,16 @@ export interface CompactShellProps {
   strip: ReactNode;
   /** The current screen. The only slot that scrolls. */
   children: ReactNode;
-  /** The four-tab bottom bar. Pinned to the bottom. */
-  tabBar: ReactNode;
+  /** The four-tab bottom bar, pinned to the bottom — absent on a full-screen screen that
+   *  draws its own navigation in its place (`CompactCardScreen`'s Back + title bar). */
+  tabBar?: ReactNode;
 }
 
 export function CompactShell({ strip, children, tabBar }: CompactShellProps): JSX.Element {
   const styles = useStyles();
+  const keyboardInset = useKeyboardInset();
   return (
-    <div className={styles.shell}>
+    <div className={styles.shell} style={{ paddingBottom: keyboardInset }}>
       {strip}
       <div className={styles.body}>{children}</div>
       {tabBar}

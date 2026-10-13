@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   CARD_SECTIONS,
   DEFAULT_COMPACT_ROUTE,
+  IN_APP_HISTORY_MARK,
+  cardBackAction,
   formatCompactRoute,
+  openCardId,
   parseCompactRoute,
   routeForTab,
   tabForRoute,
+  wideSelectionRoute,
   type CompactRoute,
   type CompactTab,
 } from './compactRoute';
@@ -167,6 +171,97 @@ describe('routeForTab', () => {
     ];
     for (const [tab, expected] of cases) {
       expect(routeForTab(tab)).toEqual(expected);
+    }
+  });
+});
+
+describe('cardBackAction', () => {
+  // A deep link, a restored tab, or a plain reload all land on a card route with no mark
+  // of this router's own in `history.state` — there is nothing of this app's own behind the
+  // card, so Back must replace over it with the fallback (the card's own column — or, for
+  // a card this tab has no row for, `activeCompactColumn`'s first-column fallback) rather
+  // than leave the hardware/gesture back button to exit the tab entirely.
+  it("replaces with the fallback on an unmarked (deep-link) state — the card's own column", () => {
+    const fallback: CompactRoute = { kind: 'board', column: 'in-progress' };
+    expect(cardBackAction(null, fallback)).toEqual({ kind: 'replace', route: fallback });
+    expect(cardBackAction(undefined, fallback)).toEqual({ kind: 'replace', route: fallback });
+    expect(cardBackAction({}, fallback)).toEqual({ kind: 'replace', route: fallback });
+  });
+
+  it('replaces with the first column when the card itself is unknown', () => {
+    const fallback: CompactRoute = { kind: 'board', column: 'todo' };
+    expect(cardBackAction(null, fallback)).toEqual({ kind: 'replace', route: fallback });
+  });
+
+  it('goes through history on a marked (in-app navigation) state', () => {
+    const fallback: CompactRoute = { kind: 'board', column: 'todo' };
+    expect(cardBackAction({ [IN_APP_HISTORY_MARK]: true }, fallback)).toEqual({ kind: 'history' });
+  });
+
+  it('never throws on a malformed state', () => {
+    const fallback: CompactRoute = { kind: 'board', column: 'todo' };
+    expect(() => cardBackAction('nonsense', fallback)).not.toThrow();
+    expect(cardBackAction('nonsense', fallback)).toEqual({ kind: 'replace', route: fallback });
+    expect(cardBackAction({ [IN_APP_HISTORY_MARK]: 'yes' }, fallback)).toEqual({
+      kind: 'replace',
+      route: fallback,
+    });
+  });
+});
+
+describe('openCardId', () => {
+  it("reads a card route's own id", () => {
+    expect(openCardId({ kind: 'card', id: 'abc', section: 'chat' })).toBe('abc');
+  });
+
+  it('is null for every other route kind', () => {
+    expect(openCardId({ kind: 'inbox' })).toBeNull();
+    expect(openCardId({ kind: 'board', column: 'todo' })).toBeNull();
+    expect(openCardId({ kind: 'search' })).toBeNull();
+    expect(openCardId({ kind: 'settings' })).toBeNull();
+  });
+});
+
+describe('wideSelectionRoute', () => {
+  it('is the board route for column when nothing is selected', () => {
+    expect(wideSelectionRoute({ kind: 'inbox' }, null, 'in-review')).toEqual({
+      kind: 'board',
+      column: 'in-review',
+    });
+  });
+
+  it('keeps the current section when the selected id is unchanged', () => {
+    const current: CompactRoute = { kind: 'card', id: 'abc', section: 'steps' };
+    expect(wideSelectionRoute(current, 'abc', 'todo')).toEqual(current);
+  });
+
+  it('resets to chat for a different id', () => {
+    const current: CompactRoute = { kind: 'card', id: 'abc', section: 'steps' };
+    expect(wideSelectionRoute(current, 'xyz', 'todo')).toEqual({
+      kind: 'card',
+      id: 'xyz',
+      section: 'chat',
+    });
+  });
+
+  it('resets to chat for a different id even from a non-card current route', () => {
+    expect(wideSelectionRoute({ kind: 'board', column: 'todo' }, 'xyz', 'todo')).toEqual({
+      kind: 'card',
+      id: 'xyz',
+      section: 'chat',
+    });
+  });
+
+  // The rotation round trip (F3.7): a card opened compact survives into wide
+  // (`openCardId`), and the wide board's own selection written back through
+  // `wideSelectionRoute` round-trips to the SAME card and section rather than resetting —
+  // the whole point of carrying the section forward at all.
+  it('round-trips a compact card route through openCardId and back unchanged', () => {
+    for (const section of CARD_SECTIONS) {
+      const compactRoute: CompactRoute = { kind: 'card', id: 'abc', section };
+      const selectedId = openCardId(compactRoute);
+      const wideWroteBack = wideSelectionRoute(compactRoute, selectedId, 'todo');
+      expect(wideWroteBack).toEqual(compactRoute);
     }
   });
 });
