@@ -1,7 +1,7 @@
 /**
  * The activity rail: `NeedsYouRail` stacked above `DailyTrendChart`. The single export
- * F2.13 drops into `ActivityScreen`'s right column — the rail owns its own layout so
- * the screen doesn't have to know what's inside it.
+ * F2.13 drops into `ActivityScreen`'s right column, or below the feed at narrow widths —
+ * the rail owns its own layout so the screen doesn't have to know what's inside it.
  */
 import { makeStyles } from '@fluentui/react-components';
 import { DailyTrendChart } from './DailyTrendChart';
