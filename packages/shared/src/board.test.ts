@@ -7,6 +7,7 @@ import {
   columnForStatus,
   lookupStatusColumn,
   statusForColumn,
+  boardRows,
   chainInFlight,
   chainNeedsAttention,
   chatTarget,
@@ -15,6 +16,7 @@ import {
   isAgentAssigned,
   isBoardCard,
   isAgentRunning,
+  isVariantRow,
   needsAgentInput,
   cardRunLabel,
   canStopWork,
@@ -735,5 +737,34 @@ describe('isBoardCard', () => {
     expect(
       isBoardCard(task({ projectId: 'tickets-1', source: 'ticket', parentTaskId: 'c1' })),
     ).toBe(false);
+  });
+});
+
+describe('isVariantRow', () => {
+  it('is true only when variantOf names a leader', () => {
+    expect(isVariantRow(task({ variantOf: 'leader-1' }))).toBe(true);
+    expect(isVariantRow(task({ variantOf: null }))).toBe(false);
+    expect(isVariantRow(task({}))).toBe(false);
+  });
+});
+
+describe('boardRows', () => {
+  it('keeps the leader and plain cards, drops every row with variantOf', () => {
+    const rows = [
+      task({ id: 'leader', variantOf: null }),
+      task({ id: 'a', variantOf: 'leader', variantLabel: 'A' }),
+      task({ id: 'b', variantOf: 'leader', variantLabel: 'B' }),
+      task({ id: 'plain' }),
+    ];
+    expect(boardRows(rows).map((t) => t.id)).toEqual(['leader', 'plain']);
+  });
+
+  it('preserves order', () => {
+    const rows = [
+      task({ id: 'x' }),
+      task({ id: 'variant', variantOf: 'leader' }),
+      task({ id: 'y' }),
+    ];
+    expect(boardRows(rows).map((t) => t.id)).toEqual(['x', 'y']);
   });
 });

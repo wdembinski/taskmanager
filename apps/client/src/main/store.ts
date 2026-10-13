@@ -200,6 +200,13 @@ interface TaskRow {
   agentBranch: string | null;
   /** Which planning round produced this step; NULL pre-migration, read as round 1. */
   planRound: number | null;
+  /** The leader's id, for a variant row; NULL for an ordinary card. See `Task.variantOf`. */
+  variantOf: string | null;
+  /** 'A' | 'B' | 'C'; NULL for a non-variant row. See `Task.variantLabel`. */
+  variantLabel: string | null;
+  /** The leader's own field: the picked variant's id; NULL = no pick yet. See
+   *  `Task.pickedVariantId`. */
+  pickedVariantId: string | null;
   /** Per-card auto-release override as 0/1; NULL = follow the project. See `Task.autoRelease`. */
   autoRelease: number | null;
   /** Per-card open-a-PR override as 0/1; NULL = follow the project. See `Task.autoCreatePr`. */
@@ -401,6 +408,10 @@ export interface Store {
         | 'autoRelease'
         | 'autoCreatePr'
         | 'autoIntegrate'
+        // Variants (F10). `pickedVariantId` is the leader's own answer to "which one won" and
+        // changes any time a pick is made or redone. `variantOf`/`variantLabel` are deliberately
+        // NOT patchable — a row's identity, set once at creation, exactly like `parentTaskId`.
+        | 'pickedVariantId'
         // Native tickets. `ticketKey`/`ticketNumber` are deliberately NOT patchable — a key
         // is a permanent name, and the only thing allowed to rewrite one is a prefix rename
         // (`updateProject`), which re-keys every ticket of the project at once.
@@ -1363,6 +1374,13 @@ export function createStore(dbPath: string): Store {
       agentPlan              TEXT,
       agentBranch            TEXT,
       planRound              INTEGER,
+      -- Variants (F10): the leader's id and this row's label, set once at creation and never
+      -- patched, exactly like parentTaskId above; and the leader's own pick, NULL = no pick
+      -- yet. NULL on every existing row reads as "not a variant / no pick" — true of all
+      -- pre-F10 rows.
+      variantOf              TEXT,
+      variantLabel           TEXT,
+      pickedVariantId        TEXT,
       landedAt               INTEGER,
       chainLandedAt          INTEGER,
       workedAt               INTEGER,
@@ -2254,6 +2272,12 @@ export function createStore(dbPath: string): Store {
     // NULL on every pre-existing row = no skills attached, which is exactly true: nothing
     // could attach one before this column existed.
     ['skillRefs', 'TEXT'],
+    // Variants (F10): the leader's id, this row's label, and the leader's own pick. NULL on
+    // every pre-existing row reads as "not a variant / no pick" — true of all pre-F10 rows,
+    // since the feature did not exist to write anything else.
+    ['variantOf', 'TEXT'],
+    ['variantLabel', 'TEXT'],
+    ['pickedVariantId', 'TEXT'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -2540,7 +2564,8 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, pinnedImport, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
-        agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
+        agentPlan, agentBranch, planRound, variantOf, variantLabel, pickedVariantId,
+        landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId, originAutomationId,
         skillRefs)
@@ -2555,7 +2580,8 @@ export function createStore(dbPath: string): Store {
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel, @agentPlanningModel,
-        @agentPlan, @agentBranch, @planRound, @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoCreatePr, @autoIntegrate,
+        @agentPlan, @agentBranch, @planRound, @variantOf, @variantLabel, @pickedVariantId,
+        @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoCreatePr, @autoIntegrate,
         -- The twelve ticket columns are listed HERE as well as in the column list above,
         -- and that is the whole discipline: a column added to the table, the row type and
         -- the writer but not to this statement is silently dropped at creation. That is
@@ -3653,6 +3679,9 @@ export function createStore(dbPath: string): Store {
       agentPlan: task.agentPlan ?? null,
       agentBranch: task.agentBranch ?? null,
       planRound: task.planRound ?? null,
+      variantOf: task.variantOf ?? null,
+      variantLabel: task.variantLabel ?? null,
+      pickedVariantId: task.pickedVariantId ?? null,
       landedAt: task.landedAt ?? null,
       chainLandedAt: task.chainLandedAt ?? null,
       workedAt: task.workedAt ?? null,
@@ -3748,6 +3777,9 @@ export function createStore(dbPath: string): Store {
       // plan, so NULL is round 1 — not "no round", which would leave the panel unable to
       // group the very rows the grouping exists for.
       planRound: r.planRound ?? 1,
+      variantOf: r.variantOf ?? null,
+      variantLabel: (r.variantLabel as Task['variantLabel']) ?? null,
+      pickedVariantId: r.pickedVariantId ?? null,
       landedAt: r.landedAt ?? null,
       chainLandedAt: r.chainLandedAt ?? null,
       workedAt: r.workedAt ?? null,
@@ -4089,7 +4121,9 @@ export function createStore(dbPath: string): Store {
        projectTagId = @projectTagId, agentProjectId = @agentProjectId, agentMode = @agentMode,
        agentModel = @agentModel, agentPlanningModel = @agentPlanningModel,
        agentPlan = @agentPlan, agentBranch = @agentBranch,
-       planRound = @planRound, landedAt = @landedAt, chainLandedAt = @chainLandedAt,
+       planRound = @planRound, variantOf = @variantOf, variantLabel = @variantLabel,
+       pickedVariantId = @pickedVariantId,
+       landedAt = @landedAt, chainLandedAt = @chainLandedAt,
        workedAt = @workedAt, stoppedAt = @stoppedAt, autoRelease = @autoRelease,
        autoIntegrate = @autoIntegrate, ticketKey = @ticketKey, ticketNumber = @ticketNumber,
        issueType = @issueType, epicTaskId = @epicTaskId, milestoneId = @milestoneId,
@@ -4574,6 +4608,9 @@ export function createStore(dbPath: string): Store {
         'chainLandedAt',
         'workedAt',
         'stoppedAt',
+        // Variants (F10). `variantOf`/`variantLabel` are deliberately absent — a row's
+        // identity, set once at creation and never rewritten, exactly like `parentTaskId`.
+        'pickedVariantId',
         // Native tickets. `ticketKey`/`ticketNumber` are deliberately absent, for the same
         // kind of reason `parentTaskId` is: a key is a permanent name, and the only thing
         // allowed to rewrite one is a prefix rename, which re-keys the whole project at

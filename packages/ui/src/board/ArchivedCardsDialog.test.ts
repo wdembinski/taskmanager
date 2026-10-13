@@ -48,10 +48,20 @@ const card = (over: Partial<Task> = {}): Task =>
 
 describe('archiveReasonText', () => {
   it('gives each recorded reason its own sentence', () => {
-    const reasons: TaskArchiveReason[] = ['left-query', 'retention-expired', 'gone-from-jira'];
+    const reasons: TaskArchiveReason[] = [
+      'left-query',
+      'retention-expired',
+      'gone-from-jira',
+      'variant-discarded',
+    ];
     const said = reasons.map((r) => archiveReasonText(r));
     expect(new Set(said).size).toBe(reasons.length);
     expect(said.every((s) => s.endsWith('.'))).toBe(true);
+  });
+
+  // F10: the one reason that names no tracker at all — the question was asked of the human.
+  it('says a discarded variant without naming any tracker', () => {
+    expect(archiveReasonText('variant-discarded')).toMatch(/variant discarded/);
   });
 
   it('separates a ticket that stopped matching from one the tracker no longer has', () => {
@@ -145,6 +155,21 @@ describe('archivedCards', () => {
   it('keeps the order it was given — the store already sorted it newest-first', () => {
     const rows = [card({ id: 'a' }), card({ id: 'b' }), card({ id: 'c' })];
     expect(archivedCards(rows).map((t) => t.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  // F10: a discarded variant is the losing half of a pick made on the LEADER, not a card the
+  // human removed — it must not read as a removal of its own.
+  it('drops a discarded variant row', () => {
+    const rows = [
+      card({ id: 'leader' }),
+      card({
+        id: 'variant-a',
+        variantOf: 'leader',
+        variantLabel: 'A',
+        archivedReason: 'variant-discarded',
+      }),
+    ];
+    expect(archivedCards(rows).map((t) => t.id)).toEqual(['leader']);
   });
 });
 
