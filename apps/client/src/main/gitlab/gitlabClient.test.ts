@@ -60,6 +60,60 @@ describe('GitLabClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it('lists a project’s issues at the URL-encoded path, following x-next-page', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse([{ iid: 1 }], 200, { 'x-next-page': '2' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { issues, nextPage } = await client().listIssues('acme/web', {
+      state: 'opened',
+      labels: ['bug', 'urgent'],
+      search: 'crash',
+      page: 1,
+      perPage: 50,
+    });
+
+    expect(issues.map((i) => i.iid)).toEqual([1]);
+    expect(nextPage).toBe('2');
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/projects/acme%2Fweb/issues?');
+    expect(url).toContain('state=opened');
+    expect(url).toContain('labels=bug%2Curgent');
+    expect(url).toContain('search=crash');
+    expect(url).toContain('page=1');
+    expect(url).toContain('per_page=50');
+  });
+
+  it('lists issues assigned to the signed-in user across the instance when there is no project', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([], 200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().listIssues(null, { state: 'opened', page: 1, perPage: 50 });
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/api/v4/issues?scope=assigned_to_me&');
+  });
+
+  it('treats an empty x-next-page header the same as a missing one', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([], 200, { 'x-next-page': '' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { nextPage } = await client().listIssues(null, { state: 'opened', page: 1, perPage: 50 });
+    expect(nextPage).toBeNull();
+  });
+
+  it('lists a project’s labels at the URL-encoded path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{ name: 'bug' }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const labels = await client().listProjectLabels('acme/web');
+    expect(labels).toEqual([{ name: 'bug' }]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://gitlab.com/api/v4/projects/acme%2Fweb/labels?per_page=100',
+    );
+  });
+
   it('drops system notes — the tool talking to itself is not a comment', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse([

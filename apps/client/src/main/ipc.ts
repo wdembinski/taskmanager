@@ -67,6 +67,7 @@ import {
   type TicketLink,
 } from '@shared/model';
 import { isEpic, isNativeTicket } from '@shared/tickets';
+import type { IssueProviderId } from '@shared/issues';
 import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
@@ -114,6 +115,10 @@ import {
   type MoveResolution,
 } from './jira/jiraMove';
 import { CloudTokenProvider } from './cloudToken';
+import { createJiraIssueProvider } from './issues/jiraIssues';
+import { createGithubIssueProvider } from './issues/githubIssues';
+import { createGitlabIssueProvider } from './issues/gitlabIssues';
+import { listIssuePage, type IssueProvider } from './issues/issueProvider';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
 import { PAT_PREFIX, PAT_SECRET_LENGTH, PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
@@ -3358,12 +3363,42 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('automation:runNow', automationHandlers['automation:runNow']);
   handle('automation:runs', automationHandlers['automation:runs']);
 
-  // --- Issues (F5) — contract only so far; the providers land in F5.5. -------
-  handle('issues:list', async () => {
-    throw new Error('issues:list is not implemented yet (F5.5)');
+  // --- Issues (F5) — read-only browsing; import lands in F5.6. ---------------
+  /**
+   * Builds the tracker's provider lazily, per call — the same reason `buildJiraClient` and
+   * its GitHub/GitLab siblings above are never cached: credentials can change between two
+   * `issues:list` calls, and a stale client would silently keep using the old ones.
+   *
+   * The disabled check happens here rather than inside each builder, matching every other
+   * caller of `buildJiraClient`/`buildGitHubClient`/`buildGitLabClient`: a builder only ever
+   * answers "do I have a client", never "should I be asked at all".
+   */
+  function buildIssueProvider(provider: IssueProviderId): IssueProvider {
+    switch (provider) {
+      case 'jira': {
+        const { jira } = store.getSettings();
+        if (!jira.enabled) throw new Error('JIRA is switched off.');
+        return createJiraIssueProvider(buildJiraClient(), jira.baseUrl);
+      }
+      case 'github': {
+        const { github } = store.getSettings();
+        if (!github.enabled) throw new Error('GitHub is switched off.');
+        return createGithubIssueProvider(buildGitHubClient());
+      }
+      case 'gitlab': {
+        const { gitlab } = store.getSettings();
+        if (!gitlab.enabled) throw new Error('GitLab is switched off.');
+        return createGitlabIssueProvider(buildGitLabClient());
+      }
+    }
+  }
+
+  handle('issues:list', async (query) => {
+    const provider = buildIssueProvider(query.provider);
+    return listIssuePage(provider, query, store.getAllBoardTasks());
   });
   handle('issues:import', async () => {
-    throw new Error('issues:import is not implemented yet (F5.5)');
+    throw new Error('issues:import is not implemented yet (F5.6)');
   });
 
   // --- The chain of execution ------------------------------------------------

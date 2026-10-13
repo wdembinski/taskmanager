@@ -91,6 +91,38 @@ export interface GitLabNote {
   author?: { id?: number; username?: string; name?: string } | null;
 }
 
+/**
+ * One issue, as `GET /issues` and `GET /projects/:id/issues` both report it — the issue
+ * browser's (F5.5) GitLab shape. `labels` comes back as bare name strings, unlike the
+ * label *objects* {@link listProjectLabels} returns, because the issue list endpoint only
+ * grows that detail behind `with_labels_details`, which nothing here asks for.
+ */
+export interface GitLabIssue {
+  iid: number;
+  title: string;
+  web_url: string;
+  state: string;
+  labels: string[];
+  assignee?: { name?: string | null; username?: string | null } | null;
+  updated_at: string;
+  issue_type?: string | null;
+  references?: { full?: string } | null;
+}
+
+/** One label of a project's own label list — `GET /projects/:id/labels`. */
+export interface GitLabLabel {
+  name?: string | null;
+}
+
+/** What {@link GitLabClient.listIssues} is asked to narrow a page to. */
+export interface GitLabIssueQuery {
+  state: 'opened';
+  labels?: string[];
+  search?: string;
+  page: number;
+  perPage: number;
+}
+
 /** GitLab's reviewer states, when the instance is new enough to report them. */
 export interface GitLabReviewer {
   user?: { id?: number; username?: string };
@@ -300,6 +332,48 @@ export class GitLabClient {
       if (!Number.isFinite(page) || page <= 0) break;
     }
     return all;
+  }
+
+  /**
+   * One page of open issues — a project's own when `projectId` is given, or everything
+   * assigned to the signed-in user when it is null, the same `scope` the issue browser's
+   * other two providers default to when nothing narrows them further.
+   *
+   * Pages by `x-next-page`, the same header {@link listMyMergeRequests} follows, but reads
+   * it once rather than looping: the issue browser asks for one page at a time and carries
+   * the cursor itself. GitLab answers with the header present but EMPTY on the last page
+   * rather than omitting it, so a blank string is treated the same as a missing one.
+   */
+  async listIssues(
+    projectId: string | null,
+    query: GitLabIssueQuery,
+  ): Promise<{ issues: GitLabIssue[]; nextPage: string | null }> {
+    const params = new URLSearchParams();
+    params.set('state', query.state);
+    params.set('page', String(query.page));
+    params.set('per_page', String(query.perPage));
+    if (query.labels?.length) params.set('labels', query.labels.join(','));
+    if (query.search?.trim()) params.set('search', query.search.trim());
+    const path = projectId
+      ? `/projects/${encodeURIComponent(projectId)}/issues?${params}`
+      : `/issues?scope=assigned_to_me&${params}`;
+    const { body, res } = await this.raw(path);
+    const next = res.headers?.get('x-next-page');
+    return {
+      issues: Array.isArray(body) ? (body as GitLabIssue[]) : [],
+      nextPage: next && next.trim() ? next : null,
+    };
+  }
+
+  /**
+   * A project's own labels — the first 100 — for the issue browser's facet list. GitHub's
+   * `listRepoLabels` counterpart; GitLab's equivalent lives on the project rather than an
+   * instance-wide endpoint the way JIRA's `/label` does.
+   */
+  listProjectLabels(projectId: string): Promise<GitLabLabel[]> {
+    return this.request<GitLabLabel[]>(
+      `/projects/${encodeURIComponent(projectId)}/labels?per_page=100`,
+    );
   }
 
   /**

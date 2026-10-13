@@ -74,3 +74,14 @@ export function chunkKeys(keys: readonly string[], size = 50): string[][] {
   for (let i = 0; i < keys.length; i += step) chunks.push(keys.slice(i, i + step));
   return chunks;
 }
+
+/**
+ * A JQL string literal for `value` — double-quoted, with backslashes and embedded quotes
+ * escaped so neither can close the literal early and let the rest of `value` be read as
+ * its own clause. The issue browser's free-text search is the first caller: unlike a key,
+ * which {@link isIssueKey} can simply refuse, search text is meant to hold arbitrary words
+ * and has to be made safe rather than rejected.
+ */
+export function jqlString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
