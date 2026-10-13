@@ -333,12 +333,34 @@ the feed.
 
 ### F2 · Phase 5 — Web and verification
 
-- [ ] F2.14 Mount the Activity screen in the web app over the relay @needs: F2.13 Add the Activity tab to the desktop shell with an unread badge
+- [x] F2.14 Mount the Activity screen in the web app over the relay @needs: F2.13 Add the Activity tab to the desktop shell with an unread badge
 
   - New screen in `apps/web/src/App.tsx`; unreachable banner when no desktop; web last-seen stored
     as a desktop `(at, id)` in guarded localStorage.
   - Acceptance: shell-parity green; `verify-remote-ipc.mjs` (or a sibling) invokes `activity:list`
     through the relay and gets rows.
+  - Design decisions:
+    - The per-desktop key: `webLastSeen.ts`'s localStorage key is namespaced by `desktopId`
+      (`tm.activity.lastSeen.<id>`), not a single global key — a browser tab can be pointed at
+      more than one desktop Client (`ClientPicker`), and each has its own independent activity
+      log, so switching the target Client must read THAT desktop's own baseline rather than
+      bleeding one desktop's cursor into another's. `useWebLastSeen` re-reads on every
+      `targetClientId` change for the same reason.
+    - The codec: a cursor is stored as plain `JSON.stringify({ at, id })`, not `encodeCursor`'s
+      opaque base64url string — that encoding exists for a `cursor` crossing the wire into
+      `activity:list`'s keyset paging, a different concern from a value that only ever round-trips
+      through this tab's own localStorage. Reading guards with a shape check
+      (`Number.isFinite` on both fields) rather than trusting `JSON.parse`'s output, and every
+      `Storage` call is wrapped in try/catch — a corrupt value or a throwing store (private
+      browsing, a full quota) reads as `null`, the same baseline a first visit gets, rather than
+      crashing the tab.
+    - The gate (`activityGate.ts`, built in this same step as part of F2.13's design decisions
+      being carried into the web): `pollError` outranks `presence`, since a relay that cannot
+      get through has no evidence about a desktop either way; `presence === 'offline'` folds
+      into the same `unreachable` variant rather than a `stale`-style fourth state, because
+      there is nothing true a feed with no live source could still show; and `ready` requires a
+      `targetClientId`, not just `presence === 'online'`, since there is nothing to key a
+      per-desktop cursor against until a target Client is actually picked.
 - [ ] F2.15 Collapse the Activity screen to one column at narrow widths @needs: F2.14 Mount the Activity screen in the web app over the relay
 
   - Breakpoint layout in the shared screen; same order on both hosts.

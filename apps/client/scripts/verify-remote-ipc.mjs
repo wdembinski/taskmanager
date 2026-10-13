@@ -17,12 +17,15 @@
  * WHAT IS REAL AND WHAT IS FAKE
  * -----------------------------
  * Real: `Store` (a real `better-sqlite3` file, real triggers, the real ledger),
- * `RelayRegistry`, `applyCloudCommand`, `CommandQueue`, `HttpTransport`.
+ * `RelayRegistry`, `applyCloudCommand`, `CommandQueue`, `HttpTransport`, and (section 7)
+ * `normalizeActivityQuery` plus `store.listActivity`/`store.appendActivity` — the exact same
+ * `activity:list` body as `ipc.ts:1684`, not a stub, because F2.14's own claim is that the
+ * real keyset paging survives the relay's JSON round trip.
  *
  * Fake: the server (an in-memory command queue and result table implementing the same lease
  * rule as `apps/server/src/mirror/commandQueue.ts`), `fetch` (routed straight into it), and
- * the handlers the registry is filled with — a stub apiece, because the point is the RELAY,
- * not `ipc.ts`'s 115 handlers, which have their own tests and need Electron.
+ * the rest of the handlers the registry is filled with — a stub apiece, because the point is
+ * the RELAY, not `ipc.ts`'s 115 handlers, which have their own tests and need Electron.
  *
  * Not bundled with Vite the way `verify-attachments.mjs` is, because nothing here imports
  * `electron` — `ipcRegistry`, `commandQueue`, `cloudCommands` and `httpTransport` were all
@@ -140,6 +143,7 @@ import { CommandQueue } from '${join(app, 'src/main/commandQueue').replace(/\\/g
 import { applyCloudCommand } from '${join(app, 'src/main/cloudCommands').replace(/\\/g, '/')}';
 import { HttpTransport } from '${join(webSrc, 'board/httpTransport').replace(/\\/g, '/')}';
 import { PolledEventBus } from '${join(webSrc, 'board/polledEvents').replace(/\\/g, '/')}';
+import { normalizeActivityQuery } from '@tm/shared/activity';
 import {
   acknowledgeable,
   isDeliverable,
@@ -280,6 +284,9 @@ registry.register('task:move', async () => {
 });
 // Registered AND host-only — the classification decides, not the wiring.
 registry.register('attachment:pick', async () => ['C:/private/secrets.txt']);
+// The activity dashboard (F2.14) — the REAL body, not a stub (see this file's own header).
+registry.register('activity:list', async (query) =>
+  store.listActivity(normalizeActivityQuery(query)));
 
 const queue = new CommandQueue({
   run: (command) => applyCloudCommand(store, command, registry),
@@ -461,6 +468,52 @@ const transport = new HttpTransport({
     seen.includes(moved.id), seen.join(','));
   off();
   bus.dispose();
+}
+
+// --- 7. activity:list round-trips through the relay, keyset pages survive JSON ----------
+{
+  const rowA = store.appendActivity({
+    at: 5000, projectId: personalId, taskId: card.id, runId: 'run-a', kind: 'run-finished',
+    outcome: 'done', origin: 'human', title: 'First activity row', costUsd: 0.5, detail: null,
+  });
+  const rowB = store.appendActivity({
+    at: 5001, projectId: personalId, taskId: card.id, runId: 'run-b', kind: 'run-finished',
+    outcome: 'done', origin: 'human', title: 'Second activity row', costUsd: 0.75, detail: null,
+  });
+  const rowC = store.appendActivity({
+    at: 5002, projectId: personalId, taskId: card.id, runId: 'run-c', kind: 'run-finished',
+    outcome: 'failed', origin: 'chain', title: 'Third activity row', costUsd: null, detail: null,
+  });
+
+  const pendingAll = transport.invoke('activity:list', { sinceMs: 0, limit: 50 });
+  await settle();
+  const pageAll = await pendingAll;
+  check('activity:list returns all three seeded rows, newest first',
+    eq(pageAll.rows.map((r) => r.id), [rowC.id, rowB.id, rowA.id]),
+    JSON.stringify(pageAll.rows.map((r) => r.id)));
+  check('with the seeded titles and ids intact',
+    eq(pageAll.rows.map((r) => r.title),
+      ['Third activity row', 'Second activity row', 'First activity row']),
+    JSON.stringify(pageAll.rows.map((r) => r.title)));
+
+  // A limited first page hands back a nextCursor...
+  const pendingPage1 = transport.invoke('activity:list', { sinceMs: 0, limit: 2 });
+  await settle();
+  const page1 = await pendingPage1;
+  check('a limited page returns a nextCursor',
+    typeof page1.nextCursor === 'string' && page1.nextCursor.length > 0, JSON.stringify(page1));
+  check('and the two newest rows on it',
+    eq(page1.rows.map((r) => r.id), [rowC.id, rowB.id]), JSON.stringify(page1.rows.map((r) => r.id)));
+
+  // ...and that cursor, having crossed the relay as plain JSON, still resumes the keyset
+  // correctly on the second page.
+  const pendingPage2 = transport.invoke(
+    'activity:list', { sinceMs: 0, limit: 2, cursor: page1.nextCursor });
+  await settle();
+  const page2 = await pendingPage2;
+  check('the second page (by the JSON-round-tripped cursor) returns the last row',
+    page2.rows.length === 1 && page2.rows[0].id === rowA.id, JSON.stringify(page2.rows));
+  check('and the keyset is exhausted', page2.nextCursor === null, JSON.stringify(page2));
 }
 
 store.close();
