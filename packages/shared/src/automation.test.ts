@@ -147,6 +147,14 @@ describe('validateAutomation', () => {
         'A title template is required for a schedule automation.',
       );
     });
+
+    it('needs neither a title template nor a board when attached to a card', () => {
+      const t = scheduleAutomation();
+      t.action.titleTemplate = '   ';
+      t.action.boardProjectId = undefined;
+      t.action.taskId = 'task-1';
+      expect(validateAutomation(t)).toEqual([]);
+    });
   });
 
   describe('tracker trigger', () => {

@@ -59,6 +59,7 @@ export function trackerFirings(
     if (automation.trigger.kind !== 'tracker') continue;
     const { tracker } = automation.trigger;
     for (const event of events) {
+      if (automation.action.taskId && event.taskId !== automation.action.taskId) continue;
       if (!matchesTrackerTrigger(event, tracker, automation.enabledAt)) continue;
       const dedupeKey = `${automation.id}:${event.taskId}`;
       if (seen.has(dedupeKey)) continue;

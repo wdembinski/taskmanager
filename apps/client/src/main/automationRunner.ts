@@ -260,7 +260,10 @@ function fireOne(
     .find((r) => r.status === 'started' && r.taskId);
   const overlapping =
     (previousStarted?.taskId && deps.isTaskWorking(previousStarted.taskId)) ||
-    (firing.kind === 'tracker' && firing.taskId !== undefined && deps.isTaskWorking(firing.taskId));
+    (firing.kind === 'tracker' &&
+      firing.taskId !== undefined &&
+      deps.isTaskWorking(firing.taskId)) ||
+    (automation.action.taskId !== undefined && deps.isTaskWorking(automation.action.taskId));
   if (overlapping) {
     return settle({ status: 'skipped', note: 'previous run still working' });
   }
@@ -283,6 +286,24 @@ function fireOne(
       templateContext(automation, firing, ticket),
     );
     const delegated = delegateCard(deps, automation, settle, ticket.id, brief);
+    if (!isTask(delegated)) return delegated;
+    task = delegated;
+  } else if (automation.action.taskId) {
+    const attached = deps.store.getTask(automation.action.taskId);
+    if (!attached) {
+      const run = settle({
+        status: 'refused',
+        refusal: 'unknown-task',
+        note: RUN_REFUSAL_MESSAGE['unknown-task'],
+      });
+      applyStrike(deps, automation.id, 'increment', RUN_REFUSAL_MESSAGE['unknown-task']);
+      return run;
+    }
+    const brief = renderAutomationTemplate(
+      automation.action.briefTemplate,
+      templateContext(automation, firing, attached),
+    );
+    const delegated = delegateCard(deps, automation, settle, attached.id, brief);
     if (!isTask(delegated)) return delegated;
     task = delegated;
   } else {

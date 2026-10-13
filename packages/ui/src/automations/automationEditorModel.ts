@@ -217,6 +217,10 @@ export function automationFromDraft(draft: AutomationDraft, base: Automation | n
   if (draft.planningModel) action.planningModel = draft.planningModel;
   if (draft.autoCreatePr !== null) action.autoCreatePr = draft.autoCreatePr;
   if (draft.autoIntegrate !== null) action.autoIntegrate = draft.autoIntegrate;
+  // The editor has no field for this yet (it is set by the composer's trigger section, a
+  // later task) — carry it through from `base` so editing an attached automation here
+  // doesn't silently detach it.
+  if (base?.action.taskId) action.taskId = base.action.taskId;
 
   return {
     id: base?.id ?? '',

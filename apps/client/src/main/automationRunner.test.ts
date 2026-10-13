@@ -214,6 +214,57 @@ describe('AutomationRunner.fire — overlap', () => {
   });
 });
 
+describe('AutomationRunner.fire — attached card (action.taskId)', () => {
+  it('works the existing card and creates none', () => {
+    const automation = baseAutomation({ action: { ...baseAutomation().action, taskId: 'task-9' } });
+    const { deps, store } = createDeps(automation);
+    const attached = fakeTask({ id: 'task-9', title: 'Attached card' });
+    store.getTask.mockReturnValue(attached);
+
+    const result = new AutomationRunner(deps).fire(automation, baseFiring()) as AutomationRun;
+
+    expect(store.getTask).toHaveBeenCalledWith('task-9');
+    expect(store.createTask).not.toHaveBeenCalled();
+    expect(deps.delegate).toHaveBeenCalledWith('task-9', expect.anything());
+    expect(result.status).toBe('started');
+    expect(result.taskId).toBe('task-9');
+  });
+
+  it('refuses unknown-task with a strike when the attached card is missing', () => {
+    const automation = baseAutomation({
+      consecutiveFailures: 0,
+      action: { ...baseAutomation().action, taskId: 'task-gone' },
+    });
+    const { deps, store, getAutomation } = createDeps(automation);
+    store.getTask.mockReturnValue(undefined);
+
+    const result = new AutomationRunner(deps).fire(automation, baseFiring()) as AutomationRun;
+
+    expect(result.status).toBe('refused');
+    expect(result.refusal).toBe('unknown-task');
+    expect(store.createTask).not.toHaveBeenCalled();
+    expect(deps.delegate).not.toHaveBeenCalled();
+    expect(getAutomation().consecutiveFailures).toBe(1);
+  });
+
+  it('is skipped, not a strike, when the attached card is already being worked', () => {
+    const automation = baseAutomation({
+      consecutiveFailures: 0,
+      action: { ...baseAutomation().action, taskId: 'task-9' },
+    });
+    const { deps, store, getAutomation } = createDeps(automation);
+    deps.isTaskWorking = vi.fn((taskId: string) => taskId === 'task-9');
+
+    const result = new AutomationRunner(deps).fire(automation, baseFiring()) as AutomationRun;
+
+    expect(result.status).toBe('skipped');
+    expect(deps.delegate).not.toHaveBeenCalled();
+    expect(store.createTask).not.toHaveBeenCalled();
+    expect(store.saveAutomation).not.toHaveBeenCalled();
+    expect(getAutomation().consecutiveFailures).toBe(0);
+  });
+});
+
 describe('AutomationRunner.fire — Task.status', () => {
   it('is never part of the patch the runner asks the store to write', () => {
     const automation = baseAutomation();
