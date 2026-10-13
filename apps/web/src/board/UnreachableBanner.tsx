@@ -17,13 +17,26 @@ import { MessageBar, MessageBarBody, MessageBarTitle } from '@fluentui/react-com
  * or a bare `Failed to fetch`, which is what a browser calls a blocked origin or a dropped
  * network. Verbatim rather than translated: the four causes need four different fixes, and a
  * single friendly sentence covering all of them would name none.
+ *
+ * `title` and `detail` default to the two board-specific sentences above verbatim, so this
+ * banner's own callers render exactly as before. They exist so another reader of the same
+ * relay failure — the Activity tab's `WebActivityScreen`, which has no board underneath to
+ * point at — can say what IT cannot show instead, without a second, near-identical component.
  */
-export function UnreachableBanner({ message }: { message: string }): JSX.Element {
+export function UnreachableBanner({
+  message,
+  title = 'This tab cannot reach the cloud service.',
+  detail = 'the board below is whatever was last read, not what is there now.',
+}: {
+  message: string;
+  title?: string;
+  detail?: string;
+}): JSX.Element {
   return (
     <MessageBar intent="error" layout="singleline">
       <MessageBarBody>
-        <MessageBarTitle>This tab cannot reach the cloud service.</MessageBarTitle>
-        {message} — the board below is whatever was last read, not what is there now.
+        <MessageBarTitle>{title}</MessageBarTitle>
+        {message} — {detail}
       </MessageBarBody>
     </MessageBar>
   );

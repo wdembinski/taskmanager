@@ -23,6 +23,7 @@ import {
   FlashRegular,
   FolderRegular,
   PlayRegular,
+  PulseRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
@@ -41,6 +42,8 @@ import { TransportProvider } from '@tm/ui/transport';
 import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
 import { Fleet } from './agents/Fleet';
 import { AutomationsScreen } from './automations/AutomationsScreen';
+import { useWebLastSeen } from './activity/useWebLastSeen';
+import { WebActivityScreen } from './activity/WebActivityScreen';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
@@ -100,7 +103,7 @@ const DESKTOP_ONLY = 'desktop only';
  * plus Fleet, which the desktop does not have yet (this same plan's own step 6, ahead of the
  * desktop side of it).
  *
- * Seven of the eight are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Eight of the nine are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
  * app's and the host-free sections are shared. Projects renders `ProjectAdmin` — a project's
@@ -114,9 +117,13 @@ const DESKTOP_ONLY = 'desktop only';
  * owner-desktop banner (`AutomationsScreen`) — an automation fires on the one desktop that
  * created it, never on the cloud service, and this tab is the only host that needs telling
  * so. Fleet is a cross-project read of agent profiles and the assignment queue, over plain
- * REST (`agentsApi.ts`) rather than `useTransport()` — see its own docstring for why. Scratch
- * run stays off — it drives a live `session:start`, which is host-only by policy
- * (`@tm/shared/ipcRelay`).
+ * REST (`agentsApi.ts`) rather than `useTransport()` — see its own docstring for why. Activity
+ * renders the same `ActivityScreen` the desktop does (F2.13), fronted by `WebActivityScreen`
+ * (F2.14) — a web-only gate over `pollError`/`presence`/`targetClientId`, since this tab's one
+ * source is a live desktop and there is nothing stale to fall back to; its `lastSeen`/`onSeen`
+ * are backed by a per-desktop localStorage cursor (`useWebLastSeen`) rather than the desktop's
+ * own `app_state` key. Scratch run stays off — it drives a live `session:start`, which is
+ * host-only by policy (`@tm/shared/ipcRelay`).
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
@@ -125,6 +132,7 @@ const NAV: readonly NavRailItem[] = [
   { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
   { id: 'fleet', label: 'Fleet', icon: <BotRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
+  { id: 'activity', label: 'Activity', icon: <PulseRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
   { id: 'scratch', label: 'Scratch run', icon: <PlayRegular />, unavailable: DESKTOP_ONLY },
@@ -138,6 +146,7 @@ type Screen =
   | 'automations'
   | 'fleet'
   | 'performance'
+  | 'activity'
   | 'attention'
   | 'settings';
 
@@ -223,6 +232,10 @@ function SignedInBoard({
     lastPolledAt: board.lastPolledAt,
     now,
   });
+  // The Activity tab's per-desktop unread baseline (F2.14), localStorage-backed rather than
+  // the desktop's `app_state` key — see `useWebLastSeen`'s own docstring for why it re-reads
+  // whenever `board.targetClientId` changes.
+  const { lastSeen, onSeen } = useWebLastSeen(board.targetClientId);
   const [screen, setScreen] = useState<Screen>('mytasks');
   // How many tasks are waiting on a human — the same badge and status-bar highlight the
   // desktop shell shows (`apps/client/src/renderer/src/App.tsx`), read the same way over
@@ -424,6 +437,19 @@ function SignedInBoard({
         {screen === 'automations' && <AutomationsScreen clients={board.state.clients} now={now} />}
         {screen === 'fleet' && <Fleet state={board.state} apiDeps={apiDeps} />}
         {screen === 'performance' && <Performance />}
+        {screen === 'activity' && (
+          <WebActivityScreen
+            pollError={board.pollError}
+            presence={presence}
+            targetClientId={board.targetClientId}
+            lastSeen={lastSeen}
+            onSeen={onSeen}
+            onOpenTask={(taskId) => {
+              setScreen('mytasks');
+              navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+            }}
+          />
+        )}
         {screen === 'attention' && <Attention />}
         {/* The mirrored `projects` rows, which this hook already holds for the board — so the
             Settings screen's Projects tab still lists what is configured when no desktop is

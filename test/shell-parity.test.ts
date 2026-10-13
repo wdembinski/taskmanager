@@ -423,29 +423,40 @@ describe('the automations tab both hosts render from the shared view (F1.17)', (
   });
 });
 
-describe('the activity tab the desktop renders from the shared screen (F2.13)', () => {
+describe('the activity tab both hosts render from the shared screen (F2.13/F2.14)', () => {
   /**
    * `apps/client/src/renderer/src/App.tsx` imports `ActivityScreen` straight from
-   * `@tm/ui/activity/ActivityScreen` and lists `id: 'activity'` in its NAV — the same shape
-   * as the automations tab above. The web half is left for F2.14, which mounts the same
-   * screen on `apps/web/src/App.tsx`; nothing here asserts that yet.
+   * `@tm/ui/activity/ActivityScreen` and lists `id: 'activity'` in its NAV (F2.13). The web
+   * half (F2.14) is a wrapper, the same shape as the automations tab above: `WEB_APP` lists
+   * the NAV entry, but the `ActivityScreen` import itself lives one file over, in
+   * `apps/web/src/activity/WebActivityScreen.tsx` — the gate that decides whether there is a
+   * desktop to read it from.
    */
-  it("renders the desktop's activity tab from @tm/ui", () => {
-    const source = read(DESKTOP_APP);
-    expect(
-      importedFrom(source, 'activity/ActivityScreen'),
-      `${DESKTOP_APP} must import ActivityScreen from @tm/ui/activity/ActivityScreen (or its ` +
-        '@ui alias). F2.13 built one Activity screen so a later web mount (F2.14) gets the ' +
-        'same one; an import from anywhere else is a second implementation.',
-    ).toContain('ActivityScreen');
-  });
+  const WEB_ACTIVITY = 'apps/web/src/activity/WebActivityScreen.tsx';
 
-  it("lists an activity tab in the desktop's NAV", () => {
-    expect(
-      read(DESKTOP_APP),
-      `${DESKTOP_APP} must list { id: 'activity', … } in its NAV — a screen nothing links to ` +
-        'is a file, not a tab.',
-    ).toMatch(/id:\s*'activity'/);
+  for (const [label, path] of [
+    ['the browser client', WEB_ACTIVITY],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`renders ${label}'s activity tab from @tm/ui`, () => {
+      const source = read(path);
+      expect(
+        importedFrom(source, 'activity/ActivityScreen'),
+        `${path} must import ActivityScreen from @tm/ui/activity/ActivityScreen (or its @ui ` +
+          'alias). F2.13 built one Activity screen so both hosts render the same one; an ' +
+          'import from anywhere else is a second implementation.',
+      ).toContain('ActivityScreen');
+    });
+  }
+
+  it("lists an activity tab in both hosts' NAV", () => {
+    for (const path of [WEB_APP, DESKTOP_APP]) {
+      expect(
+        read(path),
+        `${path} must list { id: 'activity', … } in its NAV — a screen nothing links to is a ` +
+          'file, not a tab.',
+      ).toMatch(/id:\s*'activity'/);
+    }
   });
 
   it('leaves no local ActivityScreen behind in a host tree', () => {
