@@ -586,3 +586,177 @@ export function formatReviewMessage(
 
   return parts.join('\n\n');
 }
+
+export const WORD_DIFF_MAX_CHARS = 2_000; // per side; above it, skip tokenising entirely
+export const WORD_DIFF_MAX_TOKENS = 400; // per side, after trimming common prefix/suffix
+
+export type WordSegmentKind = 'same' | 'del' | 'add';
+
+export interface WordSegment {
+  kind: WordSegmentKind;
+  text: string;
+}
+
+/**
+ * A changed line's inner highlight, one side at a time: `old` carries `same`/`del`
+ * segments, `new` carries `same`/`add` segments — a unified view highlights the `-`
+ * line from `old` and the `+` line from `new`. `wholeLine` means tokenising was
+ * skipped or gave up (too long, too many tokens, or nothing meaningful in common);
+ * the line should render as a plain whole-line change, not word-highlighted.
+ */
+export interface WordDiff {
+  old: WordSegment[];
+  new: WordSegment[];
+  wholeLine: boolean;
+}
+
+/**
+ * Token-level diff between one old/new line pair, bounded so a single huge or
+ * minified line cannot blow up cost: `WORD_DIFF_MAX_CHARS` skips tokenising
+ * entirely, `WORD_DIFF_MAX_TOKENS` bounds the LCS after trimming the common
+ * prefix/suffix. Falls back to a whole-line `del`/`add` pair (`wholeLine: true`)
+ * past either cap, or when nothing meaningful survives in common.
+ */
+export function wordDiff(oldText: string, newText: string): WordDiff {
+  if (oldText === newText) {
+    return {
+      old: oldText.length ? [{ kind: 'same', text: oldText }] : [],
+      new: newText.length ? [{ kind: 'same', text: newText }] : [],
+      wholeLine: false,
+    };
+  }
+
+  if (oldText.length > WORD_DIFF_MAX_CHARS || newText.length > WORD_DIFF_MAX_CHARS) {
+    return wholeLineDiff(oldText, newText);
+  }
+
+  // A line that only moved across a CRLF/whitespace boundary never counts as a change.
+  if (stripWhitespace(oldText) === stripWhitespace(newText)) {
+    return {
+      old: [{ kind: 'same', text: oldText }],
+      new: [{ kind: 'same', text: newText }],
+      wholeLine: false,
+    };
+  }
+
+  const oldTokens = tokenize(oldText);
+  const newTokens = tokenize(newText);
+
+  if (oldTokens.length > WORD_DIFF_MAX_TOKENS || newTokens.length > WORD_DIFF_MAX_TOKENS) {
+    return wholeLineDiff(oldText, newText);
+  }
+
+  const maxOverlap = Math.min(oldTokens.length, newTokens.length);
+  let prefixLen = 0;
+  while (prefixLen < maxOverlap && oldTokens[prefixLen] === newTokens[prefixLen]) {
+    prefixLen++;
+  }
+  let suffixLen = 0;
+  while (
+    suffixLen < maxOverlap - prefixLen &&
+    oldTokens[oldTokens.length - 1 - suffixLen] === newTokens[newTokens.length - 1 - suffixLen]
+  ) {
+    suffixLen++;
+  }
+
+  const middleOld = oldTokens.slice(prefixLen, oldTokens.length - suffixLen);
+  const middleNew = newTokens.slice(prefixLen, newTokens.length - suffixLen);
+  const { oldOps, newOps, lcsLength } = lcsDiff(middleOld, middleNew);
+
+  // Nothing shared at the edges or in the middle — a token-level diff would
+  // just be a single del/add pair anyway, so skip straight to that shape.
+  if (prefixLen === 0 && suffixLen === 0 && lcsLength === 0) {
+    return wholeLineDiff(oldText, newText);
+  }
+
+  const prefixText = oldTokens.slice(0, prefixLen).join('');
+  const suffixText = suffixLen ? oldTokens.slice(oldTokens.length - suffixLen).join('') : '';
+
+  const old: WordSegment[] = [];
+  const updated: WordSegment[] = [];
+  pushSegment(old, 'same', prefixText);
+  for (const op of oldOps) pushSegment(old, op.kind, op.text);
+  pushSegment(old, 'same', suffixText);
+  pushSegment(updated, 'same', prefixText);
+  for (const op of newOps) pushSegment(updated, op.kind, op.text);
+  pushSegment(updated, 'same', suffixText);
+
+  return { old, new: updated, wholeLine: false };
+}
+
+function wholeLineDiff(oldText: string, newText: string): WordDiff {
+  return {
+    old: oldText.length ? [{ kind: 'del', text: oldText }] : [],
+    new: newText.length ? [{ kind: 'add', text: newText }] : [],
+    wholeLine: true,
+  };
+}
+
+function stripWhitespace(text: string): string {
+  return text.replace(/\s+/g, '');
+}
+
+// Words, whitespace runs and punctuation runs each move as one token, so a
+// rename or reorder highlights the identifier, not its surrounding spaces.
+function tokenize(text: string): string[] {
+  return text.match(/\w+|\s+|[^\w\s]+/g) ?? [];
+}
+
+function pushSegment(segments: WordSegment[], kind: WordSegmentKind, text: string): void {
+  if (!text) return;
+  const last = segments[segments.length - 1];
+  if (last && last.kind === kind) {
+    last.text += text;
+  } else {
+    segments.push({ kind, text });
+  }
+}
+
+/** Longest common subsequence over tokens, walked back into same/del and same/add runs. */
+function lcsDiff(
+  oldTokens: string[],
+  newTokens: string[],
+): {
+  oldOps: Array<{ kind: 'same' | 'del'; text: string }>;
+  newOps: Array<{ kind: 'same' | 'add'; text: string }>;
+  lcsLength: number;
+} {
+  const n = oldTokens.length;
+  const m = newTokens.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] =
+        oldTokens[i] === newTokens[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const oldOps: Array<{ kind: 'same' | 'del'; text: string }> = [];
+  const newOps: Array<{ kind: 'same' | 'add'; text: string }> = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (oldTokens[i] === newTokens[j]) {
+      oldOps.push({ kind: 'same', text: oldTokens[i] });
+      newOps.push({ kind: 'same', text: newTokens[j] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      oldOps.push({ kind: 'del', text: oldTokens[i] });
+      i++;
+    } else {
+      newOps.push({ kind: 'add', text: newTokens[j] });
+      j++;
+    }
+  }
+  while (i < n) {
+    oldOps.push({ kind: 'del', text: oldTokens[i] });
+    i++;
+  }
+  while (j < m) {
+    newOps.push({ kind: 'add', text: newTokens[j] });
+    j++;
+  }
+
+  return { oldOps, newOps, lcsLength: dp[0]?.[0] ?? 0 };
+}

@@ -2,7 +2,17 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { parsePatch, type DiffFileStatus, type DiffHunk } from './review';
+import {
+  parsePatch,
+  WORD_DIFF_MAX_CHARS,
+  WORD_DIFF_MAX_TOKENS,
+  wordDiff,
+  type DiffFileStatus,
+  type DiffHunk,
+  type WordDiff,
+  type WordSegment,
+  type WordSegmentKind,
+} from './review';
 
 /**
  * Fixtures under `__fixtures__/patches/` are real `git -c core.autocrlf=false diff --no-color
@@ -282,5 +292,142 @@ describe('copied — a hunk body is consumed by count, not by line prefix', () =
 describe("parsePatch('')", () => {
   it('returns no files', () => {
     expect(parsePatch('')).toEqual([]);
+  });
+});
+
+function joinText(segments: WordSegment[]): string {
+  return segments.map((segment) => segment.text).join('');
+}
+
+// Every case must satisfy this: a side's segments, concatenated, always
+// reconstruct that side's original text exactly — the diff can rearrange
+// where text sits between segments, never what text is there.
+function expectJoinInvariant(diff: WordDiff, oldText: string, newText: string): void {
+  expect(joinText(diff.old)).toBe(oldText);
+  expect(joinText(diff.new)).toBe(newText);
+}
+
+function textOfKind(segments: WordSegment[], kind: WordSegmentKind): string {
+  return segments
+    .filter((segment) => segment.kind === kind)
+    .map((segment) => segment.text)
+    .join('');
+}
+
+describe('wordDiff', () => {
+  it('marks only the changed word on a single-word edit', () => {
+    const oldText = 'const a = 1;';
+    const newText = 'const b = 1;';
+    const diff = wordDiff(oldText, newText);
+
+    expectJoinInvariant(diff, oldText, newText);
+    expect(diff.wholeLine).toBe(false);
+    // Only the one word moves — old never adds, new never deletes.
+    expect(textOfKind(diff.old, 'del')).toBe('a');
+    expect(textOfKind(diff.old, 'add')).toBe('');
+    expect(textOfKind(diff.new, 'add')).toBe('b');
+    expect(textOfKind(diff.new, 'del')).toBe('');
+  });
+
+  it('marks the moved tokens on a reorder, keeps the rest in common', () => {
+    const oldText = 'foo(a, b)';
+    const newText = 'foo(b, a)';
+    const diff = wordDiff(oldText, newText);
+
+    expectJoinInvariant(diff, oldText, newText);
+    expect(diff.wholeLine).toBe(false);
+    // The swap means a and b cannot both survive as a common subsequence —
+    // at least one side keeps a `same` run, and the moved token(s) show up
+    // as del/add rather than disappearing silently.
+    expect(diff.old.some((segment) => segment.kind === 'same')).toBe(true);
+    expect(diff.new.some((segment) => segment.kind === 'same')).toBe(true);
+    expect(diff.old.some((segment) => segment.kind === 'del')).toBe(true);
+    expect(diff.new.some((segment) => segment.kind === 'add')).toBe(true);
+    expect(textOfKind(diff.old, 'add')).toBe('');
+    expect(textOfKind(diff.new, 'del')).toBe('');
+  });
+
+  it('falls back to whole-line on a 20kB minified line and stays fast', () => {
+    const oldText = 'var x=1;'.repeat(2500); // 20,000 chars — over WORD_DIFF_MAX_CHARS
+    const changeIndex = Math.floor(oldText.length / 2);
+    const newText = oldText.slice(0, changeIndex) + '9' + oldText.slice(changeIndex + 1);
+    expect(oldText.length).toBeGreaterThan(WORD_DIFF_MAX_CHARS);
+
+    const start = performance.now();
+    const diff = wordDiff(oldText, newText);
+    const elapsed = performance.now() - start;
+
+    expect(diff.wholeLine).toBe(true);
+    expect(diff.old).toEqual([{ kind: 'del', text: oldText }]);
+    expect(diff.new).toEqual([{ kind: 'add', text: newText }]);
+    expectJoinInvariant(diff, oldText, newText);
+    expect(elapsed).toBeLessThan(5);
+  });
+
+  it('falls back to whole-line just over WORD_DIFF_MAX_TOKENS while under the char cap', () => {
+    const tokenCount = WORD_DIFF_MAX_TOKENS + 1;
+    const tokens = Array.from({ length: tokenCount }, () => 'a');
+    const oldText = tokens.join(' ');
+    expect(oldText.length).toBeLessThan(WORD_DIFF_MAX_CHARS);
+
+    const changedTokens = [...tokens];
+    changedTokens[Math.floor(tokenCount / 2)] = 'b';
+    const newText = changedTokens.join(' ');
+
+    const diff = wordDiff(oldText, newText);
+
+    expect(diff.wholeLine).toBe(true);
+    expect(diff.old).toEqual([{ kind: 'del', text: oldText }]);
+    expect(diff.new).toEqual([{ kind: 'add', text: newText }]);
+    expectJoinInvariant(diff, oldText, newText);
+  });
+
+  it('collapses identical lines to a single same segment per side', () => {
+    const text = 'identical line here';
+    const diff = wordDiff(text, text);
+
+    expect(diff.old).toEqual([{ kind: 'same', text }]);
+    expect(diff.new).toEqual([{ kind: 'same', text }]);
+    expect(diff.wholeLine).toBe(false);
+    expectJoinInvariant(diff, text, text);
+  });
+
+  it('returns empty segment lists for empty/empty', () => {
+    const diff = wordDiff('', '');
+
+    expect(diff.old).toEqual([]);
+    expect(diff.new).toEqual([]);
+    expectJoinInvariant(diff, '', '');
+  });
+
+  it('treats a trailing CRLF difference as identical, not a change', () => {
+    const oldText = 'x = 1\r';
+    const newText = 'x = 1';
+    const diff = wordDiff(oldText, newText);
+
+    expect(diff.old.every((segment) => segment.kind === 'same')).toBe(true);
+    expect(diff.new.every((segment) => segment.kind === 'same')).toBe(true);
+    expectJoinInvariant(diff, oldText, newText);
+  });
+
+  it('treats a whitespace-only change as identical, not a change', () => {
+    const oldText = 'a  b';
+    const newText = 'a\tb';
+    const diff = wordDiff(oldText, newText);
+
+    expect(diff.old.every((segment) => segment.kind === 'same')).toBe(true);
+    expect(diff.new.every((segment) => segment.kind === 'same')).toBe(true);
+    expectJoinInvariant(diff, oldText, newText);
+  });
+
+  it('falls back to whole-line on completely different lines', () => {
+    const oldText = 'abcdefgh';
+    const newText = '12345678';
+    const diff = wordDiff(oldText, newText);
+
+    expect(diff.wholeLine).toBe(true);
+    expect(diff.old).toEqual([{ kind: 'del', text: oldText }]);
+    expect(diff.new).toEqual([{ kind: 'add', text: newText }]);
+    expectJoinInvariant(diff, oldText, newText);
   });
 });
