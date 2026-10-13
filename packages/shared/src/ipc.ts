@@ -85,6 +85,7 @@ import type {
   UsageSummary,
 } from './usage';
 import type {
+  ActivityCursor,
   ActivityOverview,
   ActivityPage,
   ActivityPeriod,
@@ -902,6 +903,19 @@ export interface IpcApi {
    * outcome counts over the window.
    */
   'activity:overview': (period: ActivityPeriod) => Promise<ActivityOverview>;
+  /**
+   * The activity tab's unread baseline, persisted by the host (F2.13: desktop `app_state`;
+   * F2.14: the browser's own localStorage, never through this channel). Null on a first-ever
+   * visit — no baseline, the same reading the feed's own divider gives.
+   */
+  'activity:getLastSeen': () => Promise<ActivityCursor | null>;
+  /**
+   * Persists a newly-reported cursor and returns what actually got stored — `max(stored,
+   * cursor)` by `(at, id)` (`laterActivityCursor`), never the raw value the caller just
+   * reported. A caller that narrows the feed can report an older newest row than an earlier,
+   * wider view already saw; the forward-only rule is what keeps that from un-reading anything.
+   */
+  'activity:setLastSeen': (cursor: ActivityCursor) => Promise<ActivityCursor>;
 
   /** The current global app settings (Phase 6). */
   'settings:get': () => Promise<AppSettings>;

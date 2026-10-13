@@ -250,6 +250,8 @@ export const RELAY_POLICY: {
 
   'activity:list': 'relay',
   'activity:overview': 'relay',
+  'activity:getLastSeen': 'relay',
+  'activity:setLastSeen': 'relay',
 
   'settings:get': 'relay',
   'settings:save': 'relay',

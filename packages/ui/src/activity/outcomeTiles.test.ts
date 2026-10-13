@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import type { ActivityOverview, ActivityQuery } from '@tm/shared/activity';
-import { OUTCOME_TILES, activeTile, applyTile, tileCount } from './outcomeTiles';
+import { EMPTY_FEED_FILTER, type FeedFilter } from './activityFeedModel';
+import {
+  OUTCOME_TILES,
+  activeFeedTile,
+  activeTile,
+  applyTile,
+  applyTileToFeedFilter,
+  tileCount,
+} from './outcomeTiles';
 
 function query(overrides: Partial<ActivityQuery> = {}): ActivityQuery {
   return { sinceMs: 0, limit: 50, ...overrides };
+}
+
+function feedFilter(overrides: Partial<FeedFilter> = {}): FeedFilter {
+  return { ...EMPTY_FEED_FILTER, ...overrides };
 }
 
 function overview(overrides: Partial<ActivityOverview> = {}): ActivityOverview {
@@ -112,5 +124,84 @@ describe('tileCount', () => {
     const o = overview({ outcomes: { done: 5, failed: 4, stopped: 1, needsInput: 0 } });
     expect(tileCount(o, 'completed')).toBe(5);
     expect(tileCount(o, 'failed')).toBe(4);
+  });
+});
+
+describe('applyTileToFeedFilter', () => {
+  it('sets the running tile as the runs kind group', () => {
+    const next = applyTileToFeedFilter(feedFilter(), 'running');
+    expect(next.kindGroups).toEqual(['runs']);
+    expect(next.outcomes).toEqual([]);
+  });
+
+  it('sets the needsYou tile as the gates kind group', () => {
+    const next = applyTileToFeedFilter(feedFilter(), 'needsYou');
+    expect(next.kindGroups).toEqual(['gates']);
+    expect(next.outcomes).toEqual([]);
+  });
+
+  it('sets the completed tile as an outcomes filter of done only', () => {
+    const next = applyTileToFeedFilter(feedFilter(), 'completed');
+    expect(next.outcomes).toEqual(['done']);
+    expect(next.kindGroups).toEqual([]);
+  });
+
+  it('sets the failed tile as an outcomes filter that includes empty', () => {
+    const next = applyTileToFeedFilter(feedFilter(), 'failed');
+    expect(next.outcomes).toEqual(['failed', 'empty']);
+    expect(next.kindGroups).toEqual([]);
+  });
+
+  it('toggles the tile off on a second click', () => {
+    const once = applyTileToFeedFilter(feedFilter(), 'failed');
+    const twice = applyTileToFeedFilter(once, 'failed');
+    expect(twice.kindGroups).toEqual([]);
+    expect(twice.outcomes).toEqual([]);
+  });
+
+  it('switches cleanly between tiles, leaving no filter from the old one', () => {
+    const onNeedsYou = applyTileToFeedFilter(feedFilter(), 'needsYou');
+    const onRunning = applyTileToFeedFilter(onNeedsYou, 'running');
+    expect(onRunning.kindGroups).toEqual(['runs']);
+    expect(onRunning.outcomes).toEqual([]);
+  });
+
+  it('preserves projectIds and origins untouched', () => {
+    const next = applyTileToFeedFilter(
+      feedFilter({ projectIds: ['p1'], origins: ['human'] }),
+      'completed',
+    );
+    expect(next.projectIds).toEqual(['p1']);
+    expect(next.origins).toEqual(['human']);
+  });
+
+  it('reads back null for a hand-set mixed filter', () => {
+    const mixed = feedFilter({ kindGroups: ['runs'], outcomes: ['done'] });
+    expect(activeFeedTile(mixed)).toBeNull();
+    // applyTileToFeedFilter must not mistake the mixed filter for "the running tile is
+    // already active" and toggle it off instead of setting a different tile cleanly.
+    const next = applyTileToFeedFilter(mixed, 'failed');
+    expect(next.outcomes).toEqual(['failed', 'empty']);
+    expect(next.kindGroups).toEqual([]);
+  });
+});
+
+describe('activeFeedTile', () => {
+  it('is null on a filter with no tile selection', () => {
+    expect(activeFeedTile(feedFilter())).toBeNull();
+  });
+
+  it('recognizes each tile after applyTileToFeedFilter sets it', () => {
+    for (const tile of OUTCOME_TILES) {
+      expect(activeFeedTile(applyTileToFeedFilter(feedFilter(), tile))).toBe(tile);
+    }
+  });
+
+  it('is null for a foreign kind group set by hand', () => {
+    expect(activeFeedTile(feedFilter({ kindGroups: ['merges'] }))).toBeNull();
+  });
+
+  it('is null for a mixed filter that sets both a kind group and an outcome', () => {
+    expect(activeFeedTile(feedFilter({ kindGroups: ['runs'], outcomes: ['done'] }))).toBeNull();
   });
 });

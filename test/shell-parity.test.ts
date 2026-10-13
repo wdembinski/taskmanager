@@ -423,6 +423,42 @@ describe('the automations tab both hosts render from the shared view (F1.17)', (
   });
 });
 
+describe('the activity tab the desktop renders from the shared screen (F2.13)', () => {
+  /**
+   * `apps/client/src/renderer/src/App.tsx` imports `ActivityScreen` straight from
+   * `@tm/ui/activity/ActivityScreen` and lists `id: 'activity'` in its NAV — the same shape
+   * as the automations tab above. The web half is left for F2.14, which mounts the same
+   * screen on `apps/web/src/App.tsx`; nothing here asserts that yet.
+   */
+  it("renders the desktop's activity tab from @tm/ui", () => {
+    const source = read(DESKTOP_APP);
+    expect(
+      importedFrom(source, 'activity/ActivityScreen'),
+      `${DESKTOP_APP} must import ActivityScreen from @tm/ui/activity/ActivityScreen (or its ` +
+        '@ui alias). F2.13 built one Activity screen so a later web mount (F2.14) gets the ' +
+        'same one; an import from anywhere else is a second implementation.',
+    ).toContain('ActivityScreen');
+  });
+
+  it("lists an activity tab in the desktop's NAV", () => {
+    expect(
+      read(DESKTOP_APP),
+      `${DESKTOP_APP} must list { id: 'activity', … } in its NAV — a screen nothing links to ` +
+        'is a file, not a tab.',
+    ).toMatch(/id:\s*'activity'/);
+  });
+
+  it('leaves no local ActivityScreen behind in a host tree', () => {
+    const copies = HOST_TREES.flatMap((tree) => filesUnder(tree, /^ActivityScreen\.tsx?$/));
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements the activity screen that lives in packages/ui. ` +
+        'Delete it and import from @tm/ui — a host-local copy is a second implementation that ' +
+        'only diverges, and nothing else in this repo can see it happen.',
+    ).toEqual([]);
+  });
+});
+
 describe('the theme both hosts mount', () => {
   for (const [label, path] of [
     ['The browser entry point', WEB_MAIN],

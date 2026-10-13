@@ -57,6 +57,7 @@ import type {
   FiringKind,
 } from '@shared/automation';
 import {
+  type ActivityCursor,
   type ActivityDetail,
   type ActivityPage,
   type ActivityQuery,
@@ -1095,6 +1096,16 @@ export interface Store {
    * delete by age. Returns how many rows went.
    */
   pruneActivity(beforeMs: number): number;
+  /**
+   * The activity tab's persisted unread baseline (F2.13), or null when nothing has been
+   * stored yet — a first-ever visit, or a malformed stored value (never thrown, just read
+   * as if nothing were there). The forward-only `max` against a newly reported cursor is the
+   * IPC layer's job (`laterActivityCursor`), not this method's — it only knows how to read
+   * and write the row.
+   */
+  getActivityLastSeen(): ActivityCursor | null;
+  /** Persists `cursor` as the activity tab's unread baseline, overwriting whatever was there. */
+  setActivityLastSeen(cursor: ActivityCursor): void;
   /**
    * Run `fn` inside one `better-sqlite3` transaction, committing its return value or rolling
    * every write in it back on a throw.
@@ -2539,6 +2550,9 @@ export function createStore(dbPath: string): Store {
 
   /** Where the main window was, and whether it was maximized, when we last looked. */
   const WINDOW_STATE_KEY = 'window.state';
+
+  /** The single row key under which the Activity tab's unread baseline (F2.13) is persisted. */
+  const ACTIVITY_LAST_SEEN_KEY = 'activity.lastSeen';
 
   /** Guard for the one-shot `agentProjectId` → `projectTagId` back-fill below. */
   const PROJECT_TAG_SPLIT_KEY = 'migration.projectTagSplit';
@@ -5603,6 +5617,29 @@ export function createStore(dbPath: string): Store {
 
     pruneActivity(beforeMs) {
       return deleteActivityOlderThan.run(beforeMs).changes;
+    },
+
+    getActivityLastSeen() {
+      const row = selectState.get(ACTIVITY_LAST_SEEN_KEY) as { value: string } | undefined;
+      if (!row) return null;
+      try {
+        const parsed = JSON.parse(row.value) as { at?: unknown; id?: unknown };
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          Number.isFinite(parsed.at) &&
+          Number.isInteger(parsed.id)
+        ) {
+          return { at: parsed.at as number, id: parsed.id as number };
+        }
+        return null; // malformed — read as if nothing were stored
+      } catch {
+        return null;
+      }
+    },
+
+    setActivityLastSeen(cursor) {
+      upsertState.run(ACTIVITY_LAST_SEEN_KEY, JSON.stringify(cursor));
     },
 
     // Annotated rather than inferred: a generic method gets no usable contextual type from

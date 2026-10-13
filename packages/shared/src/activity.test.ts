@@ -14,6 +14,7 @@ import {
   isActivityOrigin,
   isActivityOutcome,
   isActivityPeriod,
+  laterActivityCursor,
   normalizeActivityQuery,
   summarizeOutcomes,
 } from './activity';
@@ -239,6 +240,34 @@ describe('ACTIVITY_PERIOD_MS', () => {
   it('orders the three windows from shortest to longest', () => {
     expect(ACTIVITY_PERIOD_MS['24h']).toBeLessThan(ACTIVITY_PERIOD_MS['7d']);
     expect(ACTIVITY_PERIOD_MS['7d']).toBeLessThan(ACTIVITY_PERIOD_MS['30d']);
+  });
+});
+
+describe('laterActivityCursor', () => {
+  it('returns the reported cursor outright when nothing is stored yet', () => {
+    const reported = { at: 100, id: 1 };
+    expect(laterActivityCursor(null, reported)).toEqual(reported);
+  });
+
+  it('keeps the stored cursor when reported is at an earlier `at`', () => {
+    const stored = { at: 200, id: 1 };
+    expect(laterActivityCursor(stored, { at: 100, id: 99 })).toEqual(stored);
+  });
+
+  it('adopts the reported cursor when it is at a later `at`', () => {
+    const reported = { at: 200, id: 1 };
+    expect(laterActivityCursor({ at: 100, id: 99 }, reported)).toEqual(reported);
+  });
+
+  it('breaks a tied `at` by the higher id', () => {
+    const reported = { at: 100, id: 5 };
+    expect(laterActivityCursor({ at: 100, id: 2 }, reported)).toEqual(reported);
+    expect(laterActivityCursor({ at: 100, id: 9 }, reported)).toEqual({ at: 100, id: 9 });
+  });
+
+  it('never regresses on an exactly equal cursor', () => {
+    const cursor = { at: 100, id: 5 };
+    expect(laterActivityCursor(cursor, { at: 100, id: 5 })).toEqual(cursor);
   });
 });
 
