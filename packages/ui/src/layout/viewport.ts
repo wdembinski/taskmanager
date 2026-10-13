@@ -56,3 +56,59 @@ function getServerSnapshot(): LayoutMode {
 export function useLayoutMode(): LayoutMode {
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
+
+/**
+ * The on-screen keyboard's own height in px, 0 while it is closed (F3.7) — `CompactShell`'s
+ * bottom padding, so a full-screen card's composer is never the part of the screen the
+ * keyboard covers. `apps/web/index.html`'s `interactive-widget=resizes-content` is what
+ * makes `window.visualViewport` shrink by the keyboard's height at all rather than leaving
+ * `100dvh` to silently cover it; this is the arithmetic over that shrink, not the trigger
+ * for it.
+ *
+ * `layoutHeightPx - visualHeightPx - offsetTopPx`, floored at 0 — never negative, since a
+ * closed keyboard's rounding can land either side of zero and a negative inset would pad
+ * the wrong way. `scale` guards the other false positive: a pinch-zoom shrinks
+ * `visualViewport.height` exactly the way an open keyboard does, with nothing else to tell
+ * the two apart, so any zoom away from 1 reads as "no keyboard" here rather than guessing.
+ */
+export function keyboardInset(
+  layoutHeightPx: number,
+  visualHeightPx: number,
+  offsetTopPx: number,
+  scale: number,
+): number {
+  if (scale !== 1) return 0;
+  return Math.max(0, layoutHeightPx - visualHeightPx - offsetTopPx);
+}
+
+function subscribeViewportInset(onChange: () => void): () => void {
+  const vv = typeof window === 'undefined' ? undefined : window.visualViewport;
+  if (!vv) return () => {};
+  vv.addEventListener('resize', onChange);
+  vv.addEventListener('scroll', onChange);
+  return () => {
+    vv.removeEventListener('resize', onChange);
+    vv.removeEventListener('scroll', onChange);
+  };
+}
+
+function getViewportInsetSnapshot(): number {
+  if (typeof window === 'undefined') return 0;
+  const vv = window.visualViewport;
+  if (!vv) return 0;
+  return keyboardInset(window.innerHeight, vv.height, vv.offsetTop, vv.scale);
+}
+
+function getViewportInsetServerSnapshot(): number {
+  return 0;
+}
+
+/** The current {@link keyboardInset}, live-updating as the keyboard opens/closes or the page
+ *  is pinch-zoomed. 0 in an environment with no `visualViewport` (older browsers, SSR). */
+export function useKeyboardInset(): number {
+  return useSyncExternalStore(
+    subscribeViewportInset,
+    getViewportInsetSnapshot,
+    getViewportInsetServerSnapshot,
+  );
+}

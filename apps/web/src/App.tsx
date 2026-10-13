@@ -26,7 +26,9 @@ import {
   SettingsRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
+import { BOARD_COLUMNS } from '@tm/shared/model';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
+import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { Performance } from '@tm/ui/Performance';
@@ -54,6 +56,7 @@ import { UnreachableBanner } from './board/UnreachableBanner';
 import { versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
 import { CompactApp } from './compact/CompactApp';
+import { useHashRoute } from './compact/useHashRoute';
 import { loadWebConfig } from './env';
 
 /** The wide layout's banner strip, moved onto `worstConnectionState`'s single verdict rather
@@ -267,6 +270,12 @@ function SignedInBoard({
     [config.cloudApiBase, auth],
   );
 
+  // Above the layout switch, and read by the WIDE board below rather than by `CompactApp`
+  // (which already keeps its own instance): the open card has to survive crossing that
+  // switch in either direction, which means the one state it is kept in — the hash route —
+  // has to be read before either side of the switch, not owned by whichever side happens
+  // to be mounted (F3.7).
+  const [route, navigate] = useHashRoute();
   const layoutMode = useLayoutMode();
   if (layoutMode === 'compact') {
     return (
@@ -395,6 +404,14 @@ function SignedInBoard({
               state={board.state}
               onMoveTask={(taskId, column) => void board.moveTask(taskId, column)}
               onStatusNoted={board.noteStatus}
+              // The open-card rotation round trip (F3.7): seeded once from whatever card
+              // the hash route named when this wide layout mounted, and written back on
+              // every change so a rotation down to compact and back lands on the same
+              // card and section rather than resetting to nothing selected.
+              initialSelectedTaskId={openCardId(route)}
+              onSelectedTaskChange={(taskId) =>
+                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]), { replace: true })
+              }
             />
           ) : (
             <SyncCurtain

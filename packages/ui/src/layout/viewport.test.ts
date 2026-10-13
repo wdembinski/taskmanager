@@ -6,6 +6,7 @@ import {
   MEDIUM_QUERY,
   WIDE_MIN_PX,
   WIDE_QUERY,
+  keyboardInset,
   layoutMode,
 } from './viewport';
 
@@ -60,5 +61,26 @@ describe('layoutMode agrees with the MEDIA queries', () => {
     const { min, max } = queryBounds(query);
     if (min !== undefined) expect(widthPx).toBeGreaterThanOrEqual(min);
     if (max !== undefined) expect(widthPx).toBeLessThanOrEqual(max);
+  });
+});
+
+describe('keyboardInset', () => {
+  it('is 0 with the keyboard closed (visual viewport fills the layout viewport)', () => {
+    expect(keyboardInset(800, 800, 0, 1)).toBe(0);
+  });
+
+  it('is the gap between the layout and visual viewports with the keyboard open', () => {
+    expect(keyboardInset(800, 500, 0, 1)).toBe(300);
+  });
+
+  it('ignores a pinch-zoom offset — a scale away from 1 never reads as a keyboard', () => {
+    // Same shrink a keyboard would cause, but from a pinch-zoom instead: `scale !== 1` is
+    // the only signal telling the two apart, so this must read as closed (0), not 300.
+    expect(keyboardInset(800, 500, 50, 2)).toBe(0);
+  });
+
+  it('is never negative', () => {
+    expect(keyboardInset(800, 820, 0, 1)).toBe(0);
+    expect(keyboardInset(800, 800, 10, 1)).toBe(0);
   });
 });

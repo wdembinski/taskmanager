@@ -59,6 +59,8 @@ import { TaskDetail } from '@tm/ui/TaskDetail';
 import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
+import { CompactCardScreen } from '@tm/ui/board/CompactCardScreen';
+import type { CardSection } from '@tm/ui/layout/compactRoute';
 import { chainComponent } from '@tm/shared/taskChain';
 import {
   isManualStatus,
@@ -131,7 +133,29 @@ export interface BoardScreenProps {
     onColumnChange: (column: BoardColumn) => void;
     /** A card was tapped — the compact shell opens it full-screen rather than a detail pane. */
     onOpenCard: (id: string) => void;
+    /**
+     * Set by `CompactApp.tsx` when the hash route is a `card` route (F3.7) — this screen
+     * renders `CompactCardScreen` full-screen instead of `column`'s single `KanbanColumn`,
+     * and every `TaskDetail`-shaped prop below follows this card's own id rather than the
+     * wide pane's `selectedTaskId` (`effectiveSelectedId`, above).
+     */
+    card?: {
+      id: string;
+      section: CardSection;
+      onSectionChange: (section: CardSection) => void;
+      onBack: () => void;
+    };
   };
+  /**
+   * The wide pane's own selection, seeded once from `App.tsx`'s own hash route (F3.7) so a
+   * card opened here survives a rotation down to compact and back — `App.tsx` writes the
+   * route from `onSelectedTaskChange` below, and reads this screen's INITIAL selection back
+   * out of it (`openCardId`) the next time the wide layout mounts. Absent on the desktop,
+   * which has no route to round-trip through.
+   */
+  initialSelectedTaskId?: string | null;
+  /** Every change to the wide pane's own selection — see `initialSelectedTaskId`. */
+  onSelectedTaskChange?: (taskId: string | null) => void;
 }
 
 export function BoardScreen({
@@ -139,12 +163,25 @@ export function BoardScreen({
   onMoveTask,
   onStatusNoted,
   compact,
+  initialSelectedTaskId = null,
+  onSelectedTaskChange,
 }: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   const styles = useStyles();
   const transport = useTransport();
   const extras = useBoardExtras();
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskIdRaw] = useState(initialSelectedTaskId);
+  /** Every wide-pane selection change, reported out for `App.tsx`'s own route to follow
+   *  (`onSelectedTaskChange`) as well as applied locally — never for the compact paths,
+   *  which never call this (`compact.card`'s own id is reported through `navigate` itself,
+   *  not through this screen's selection state at all). */
+  const setSelectedTaskId = useCallback(
+    (id: string | null) => {
+      setSelectedTaskIdRaw(id);
+      onSelectedTaskChange?.(id);
+    },
+    [onSelectedTaskChange],
+  );
   const [draggingId, setDraggingId] = useState<string | null>(null);
   /** The card the compact board's "Move to" sheet (F3.6) is open for, or null when shut. */
   const [moveSheetTaskId, setMoveSheetTaskId] = useState<string | null>(null);
@@ -367,13 +404,21 @@ export function BoardScreen({
   }, [state]);
 
   /**
+   * The id `TaskDetail`/`CompactCardScreen` is actually showing — `compact.card`'s own id
+   * when the compact shell has opened a card full-screen (F3.7), since there is no drag or
+   * detail-pane click on that screen to have set `selectedTaskId` with; the wide pane's own
+   * selection otherwise.
+   */
+  const effectiveSelectedId = compact?.card?.id ?? selectedTaskId;
+
+  /**
    * The card the pane is showing — with the same pending overlay its column applies, so a
    * card dragged to DONE does not read "In progress" in the pane beside it.
    */
   const selectedTask = useMemo(() => {
-    const task = selectedTaskId ? (state.tasks[selectedTaskId] ?? null) : null;
+    const task = effectiveSelectedId ? (state.tasks[effectiveSelectedId] ?? null) : null;
     return task ? { ...task, status: displayStatus(state, task) } : null;
-  }, [state, selectedTaskId]);
+  }, [state, effectiveSelectedId]);
 
   /**
    * The card the "Move to" sheet is open for — the same `displayStatus` overlay
@@ -550,7 +595,7 @@ export function BoardScreen({
       setLinkDrag(null);
       setSelectedTaskId(id);
     },
-    [linkDrag, extras, reportError],
+    [linkDrag, extras, reportError, setSelectedTaskId],
   );
 
   /** A card dropped into a column, on either the wide board or the compact one. */
@@ -572,6 +617,64 @@ export function BoardScreen({
     },
     [hiddenColumns, pendingTaskIds, onMoveTask, foldOnAutoFoldColumn, shelvedIds, toggleShelved],
   );
+
+  /**
+   * Every prop `TaskDetail` needs beyond `task` and `section` — shared between the wide
+   * pane's own `<TaskDetail>` below and `CompactCardScreen` (F3.7), so a card drawn
+   * full-screen on a phone and the same card drawn in the wide pane's sidebar can never
+   * drift into disagreeing about what either one offers. `onOpenTask` is the one prop that
+   * has to differ by host: the wide pane swaps its OWN selection in place
+   * (`setSelectedTaskId`), where a full-screen card route has no "in place" to swap —
+   * opening another card (a breadcrumb, a step) there is `compact.onOpenCard`'s own
+   * navigation, the identical call a column tap already makes.
+   */
+  const taskDetailProps = {
+    agentProjects,
+    boards: scopes,
+    subtasks: chain,
+    parentTask: parentOfSelected,
+    mergeRequests: selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : [],
+    afterMergePipeline: settings.features.afterMergePipeline,
+    mrRebaseButton: settings.features.mrRebaseButton,
+    mrMergeButton: settings.features.mrMergeButton,
+    quietAgentProgress: settings.features.quietAgentProgress,
+    attachments: selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : [],
+    parentAttachments: parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : [],
+    statusKeywords: settings.statusKeywords,
+    priorityDisplay: display.priorityDisplay,
+    attention: extras.attention,
+    liveRunTaskIds: extras.liveRunTaskIds,
+    mergingTaskIds: extras.mergingTaskIds,
+    chainWaitingOn: selectedTask ? chainState.get(selectedTask.id)?.waitingOn : undefined,
+    chainMergeHeld: selectedTask ? chainState.get(selectedTask.id)?.mergeHeld : undefined,
+    chainLinks: extras.chainLinks,
+    chainTasksById: tasksById,
+    onUnlinkChain: (linkId: string) => void extras.removeLink(linkId).catch(reportError),
+    onOpenTask: compact?.card ? compact.onOpenCard : setSelectedTaskId,
+    readOnlyNotice: RELAY_NOTICE,
+    // The pane's State dropdown has already sent its own `task:setStatus` through the
+    // transport by the time this runs (`TaskDetailsCell`), so this only records the
+    // optimistic overlay a drag gets — it must not send a second command. The task it hands
+    // back is the transport's stub (`{ id, status }`), never a row worth merging into
+    // `state.tasks`; the next poll brings the real one.
+    onStatusChanged: handleStatusChanged,
+    onStatusSet: foldOnAutoFoldColumn,
+    onSubtasksChanged: extras.refresh,
+  };
+
+  // Full-screen: none of `layout.root`'s board/detail-pane/graph row applies — there is no
+  // second pane sharing this screen with the card the way the wide layout's sidebar does.
+  if (compact?.card) {
+    return (
+      <CompactCardScreen
+        task={selectedTask}
+        section={compact.card.section}
+        onSectionChange={compact.card.onSectionChange}
+        onBack={compact.card.onBack}
+        {...taskDetailProps}
+      />
+    );
+  }
 
   return (
     <div className={layout.root}>
@@ -869,42 +972,7 @@ export function BoardScreen({
           (`compact.onOpenCard` leaves the board for the card screen instead). */}
       {!compact && showDetail && (
         <div className={layout.right}>
-          <TaskDetail
-            task={selectedTask}
-            agentProjects={agentProjects}
-            boards={scopes}
-            subtasks={chain}
-            parentTask={parentOfSelected}
-            mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
-            afterMergePipeline={settings.features.afterMergePipeline}
-            mrRebaseButton={settings.features.mrRebaseButton}
-            mrMergeButton={settings.features.mrMergeButton}
-            quietAgentProgress={settings.features.quietAgentProgress}
-            attachments={selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : []}
-            parentAttachments={
-              parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []
-            }
-            statusKeywords={settings.statusKeywords}
-            priorityDisplay={display.priorityDisplay}
-            attention={extras.attention}
-            liveRunTaskIds={extras.liveRunTaskIds}
-            mergingTaskIds={extras.mergingTaskIds}
-            chainWaitingOn={selectedTask ? chainState.get(selectedTask.id)?.waitingOn : undefined}
-            chainMergeHeld={selectedTask ? chainState.get(selectedTask.id)?.mergeHeld : undefined}
-            chainLinks={extras.chainLinks}
-            chainTasksById={tasksById}
-            onUnlinkChain={(linkId) => void extras.removeLink(linkId).catch(reportError)}
-            readOnlyNotice={RELAY_NOTICE}
-            onOpenTask={setSelectedTaskId}
-            // The pane's State dropdown has already sent its own `task:setStatus` through
-            // the transport by the time this runs (`TaskDetailsCell`), so this only records
-            // the optimistic overlay a drag gets — it must not send a second command. The
-            // task it hands back is the transport's stub (`{ id, status }`), never a row
-            // worth merging into `state.tasks`; the next poll brings the real one.
-            onStatusChanged={handleStatusChanged}
-            onStatusSet={foldOnAutoFoldColumn}
-            onSubtasksChanged={extras.refresh}
-          />
+          <TaskDetail task={selectedTask} {...taskDetailProps} />
         </div>
       )}
 
