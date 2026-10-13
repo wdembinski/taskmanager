@@ -114,6 +114,7 @@ import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import type { ReviewComment } from '@shared/review';
 import type { ParsedTask } from './planParser';
+import { type ReviewCommentRow, reviewCommentToRow, rowToReviewComment } from './reviewCommentRows';
 import { splitProjectTag } from './projectTagMigration';
 import { blockOwnerFor, needsBlockOwner } from './blockOwnerMigration';
 import type { ParkedRun } from './parkedRun';
@@ -3106,6 +3107,46 @@ export function createStore(dbPath: string): Store {
     `UPDATE task_attachments SET cloudBlobAt = ? WHERE id = ?`,
   );
 
+  const selectReviewCommentsForTask = db.prepare(
+    `SELECT * FROM review_comments WHERE taskId = ? ORDER BY createdAt, rowid`,
+  );
+  const selectReviewComment = db.prepare(`SELECT * FROM review_comments WHERE id = ?`);
+  // The review comments of a project's tasks — carried across the delete-and-reinsert a
+  // plan re-sync performs, exactly as `selectAttachmentsForProject` is.
+  const selectReviewCommentsForProject = db.prepare(
+    `SELECT * FROM review_comments
+     WHERE taskId IN (SELECT id FROM tasks WHERE projectId = ?)
+     ORDER BY createdAt, rowid`,
+  );
+  // No conflict target: DO NOTHING covers the primary key, so a re-inserted row on the
+  // plan-sync path is idempotent for free, exactly as `insertAttachment` is.
+  const insertReviewComment = db.prepare<[ReviewCommentRow]>(
+    `INSERT INTO review_comments
+       (id, taskId, diffId, path, oldPath, side, line, startSide, startLine, body, excerpt,
+        createdAt, updatedAt, sentAt)
+     VALUES
+       (@id, @taskId, @diffId, @path, @oldPath, @side, @line, @startSide, @startLine, @body,
+        @excerpt, @createdAt, @updatedAt, @sentAt)
+     ON CONFLICT DO NOTHING`,
+  );
+  // Only `path`/`oldPath` are absent from the SET list: `updateReviewComment`'s patch can
+  // never touch them (see the `Store` interface), and the row is otherwise still anchored
+  // to the same file it was added on. `sentAt IS NULL` is what makes this draft-only —
+  // the store's own enforcement, not just its callers'.
+  const updateReviewCommentStmt = db.prepare(
+    `UPDATE review_comments
+       SET diffId = @diffId, side = @side, line = @line, startSide = @startSide,
+           startLine = @startLine, body = @body, excerpt = @excerpt, updatedAt = @updatedAt
+     WHERE id = @id AND sentAt IS NULL`,
+  );
+  const deleteReviewCommentStmt = db.prepare(
+    `DELETE FROM review_comments WHERE id = ? AND sentAt IS NULL`,
+  );
+  const markReviewSentStmt = db.prepare(
+    `UPDATE review_comments SET sentAt = @sentAt
+     WHERE id = @id AND taskId = @taskId AND sentAt IS NULL`,
+  );
+
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
        (id, runId, taskId, projectId, taskTitle, kind, prompt, options, toolName, reason,
@@ -4582,11 +4623,16 @@ export function createStore(dbPath: string): Store {
       // reach them, so losing the rows would leave a directory of files nothing points at
       // and no way to get them back. Their ids are preserved along with them, so a
       // `vipper-attachment://a/<id>` an open pane is already showing stays valid.
+      //
+      // Review comments are preserved the same way — a draft (or sent) comment belongs to
+      // the task it was left on, not to the plan round that produced the task, so a plan
+      // re-sync must not silently empty out a review in progress.
       const replace = db.transaction((tasks: Task[]) => {
         const links = (selectTaskLinksForProject.all(projectId, projectId) as TaskLinkRow[]).map(
           rowToTaskLink,
         );
         const attachments = selectAttachmentsForProject.all(projectId) as TaskAttachment[];
+        const reviewComments = selectReviewCommentsForProject.all(projectId) as ReviewCommentRow[];
         deleteTasks.run(projectId);
         for (const t of tasks) insertTask.run(taskToRow(t));
         for (const link of links) {
@@ -4596,6 +4642,10 @@ export function createStore(dbPath: string): Store {
         for (const attachment of attachments) {
           if (!selectTask.get(attachment.taskId)) continue;
           insertAttachment.run(attachment);
+        }
+        for (const row of reviewComments) {
+          if (!selectTask.get(row.taskId)) continue;
+          insertReviewComment.run(row);
         }
       });
       replace(desired);
@@ -5121,6 +5171,66 @@ export function createStore(dbPath: string): Store {
 
     markAttachmentUploaded(id, at) {
       markAttachmentUploadedStmt.run(at, id);
+    },
+
+    listReviewComments(taskId) {
+      return (selectReviewCommentsForTask.all(taskId) as ReviewCommentRow[]).map(
+        rowToReviewComment,
+      );
+    },
+
+    addReviewComment(input) {
+      const now = Date.now();
+      const comment: ReviewComment = {
+        ...input,
+        id: randomUUID(),
+        createdAt: now,
+        updatedAt: now,
+        sentAt: null,
+      };
+      // The foreign key rejects an unknown task; the caller gets "no comment" rather than
+      // an exception, the same contract `addAttachment` keeps.
+      try {
+        if (insertReviewComment.run(reviewCommentToRow(comment)).changes === 0) return undefined;
+      } catch {
+        return undefined;
+      }
+      return comment;
+    },
+
+    updateReviewComment(id, patch) {
+      const existing = selectReviewComment.get(id) as ReviewCommentRow | undefined;
+      if (!existing || existing.sentAt !== null) return undefined;
+      const next: ReviewCommentRow = {
+        ...existing,
+        diffId: patch.diffId !== undefined ? patch.diffId : existing.diffId,
+        side: patch.side !== undefined ? patch.side : existing.side,
+        line: patch.line !== undefined ? patch.line : existing.line,
+        startSide: patch.start !== undefined ? patch.start.side : existing.startSide,
+        startLine: patch.start !== undefined ? patch.start.line : existing.startLine,
+        body: patch.body !== undefined ? patch.body : existing.body,
+        excerpt: patch.excerpt !== undefined ? patch.excerpt : existing.excerpt,
+        updatedAt: Date.now(),
+      };
+      if (updateReviewCommentStmt.run(next).changes === 0) return undefined;
+      return rowToReviewComment(next);
+    },
+
+    deleteReviewComment(id) {
+      return deleteReviewCommentStmt.run(id).changes > 0;
+    },
+
+    markReviewSent(taskId, ids, at) {
+      const stamped: ReviewComment[] = [];
+      const tx = db.transaction(() => {
+        for (const id of ids) {
+          if (markReviewSentStmt.run({ id, taskId, sentAt: at }).changes > 0) {
+            stamped.push(rowToReviewComment(selectReviewComment.get(id) as ReviewCommentRow));
+          }
+        }
+      });
+      tx();
+      return stamped;
     },
 
     saveAttention(item, context) {
