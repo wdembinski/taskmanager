@@ -305,6 +305,48 @@ describe('searchIssues', () => {
   });
 });
 
+describe('searchIssuesPage / listRepoLabels', () => {
+  it('asks for an explicit page, at the given page size', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [{ number: 1 }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().searchIssuesPage('is:issue is:open involves:@me', 3, 50);
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('per_page=50&page=3');
+  });
+
+  it('reads hasNext off the Link header rather than a count', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ items: [{ number: 1 }] }, 200, {
+        link: '<https://api.github.com/search/issues?page=2>; rel="next"',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const page = await client().searchIssuesPage('is:issue', 1, 50);
+    expect(page.hasNext).toBe(true);
+  });
+
+  it('answers hasNext: false once there is no next link', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ items: [] })));
+    const page = await client().searchIssuesPage('is:issue', 1, 50);
+    expect(page.hasNext).toBe(false);
+  });
+
+  it('lists a repository’s own labels', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{ name: 'bug' }]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const labels = await client().listRepoLabels('acme', 'web');
+
+    expect(labels).toEqual([{ name: 'bug' }]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web/labels?per_page=100',
+    );
+  });
+});
+
 describe('getIssue / listIssueComments', () => {
   it('asks for one issue by number, with both path parts escaped', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ number: 12, state: 'closed' }));

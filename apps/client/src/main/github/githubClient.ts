@@ -88,6 +88,20 @@ export interface GitHubSearchIssueItem {
   pull_request?: { url?: string; html_url?: string; merged_at?: string | null } | null;
   user?: { id?: number; login?: string } | null;
   labels?: Array<{ name?: string }> | null;
+  /** Who the issue is assigned to, when it has an assignee. */
+  assignee?: { login?: string } | null;
+}
+
+/** One row of `GET /repos/{owner}/{repo}/labels` — the repository's own label taxonomy. */
+export interface GitHubLabel {
+  name?: string | null;
+}
+
+/** One page of `GET /search/issues`, paged explicitly by the caller rather than followed. */
+export interface GitHubSearchIssuePage {
+  items: GitHubSearchIssueItem[];
+  /** Whether the `Link` header carried a `rel="next"` — there is another page past this one. */
+  hasNext: boolean;
 }
 
 /**
@@ -610,6 +624,36 @@ export class GitHubClient {
     // out there we chose not to read, which is exactly as short an answer as a timed-out
     // index and has to be reported as one.
     return { items, incompleteResults, truncated: incompleteResults || url !== null };
+  }
+
+  /**
+   * One EXPLICIT page of `GET /search/issues` — the issue browser's own pager, which asks
+   * for page `N` again rather than following an opaque cursor the way {@link searchIssues}
+   * does for the PR dashboard. `hasNext` is read off the same `Link: rel="next"` header; the
+   * caller decides whether to ask for `page + 1` at all (see `githubIssues.ts`'s page-20 cap).
+   */
+  async searchIssuesPage(q: string, page: number, perPage: number): Promise<GitHubSearchIssuePage> {
+    const query = encodeURIComponent(q.trim());
+    const url = this.url(
+      `/search/issues?q=${query}&advanced_search=true&sort=updated&order=desc` +
+        `&per_page=${perPage}&page=${page}`,
+    );
+    const { body, res } = await this.rawUrl(url);
+    const items = (body as { items?: unknown } | null)?.items;
+    return {
+      items: Array.isArray(items) ? (items as GitHubSearchIssueItem[]) : [],
+      hasNext: nextPageUrl(res.headers?.get('link')) !== null,
+    };
+  }
+
+  /**
+   * A repository's own labels — the first 100 — for the issue browser's facet list.
+   *
+   * Unlike JIRA's instance-wide `/label`, GitHub has no such thing: a label belongs to one
+   * repository, so this is only ever asked when the issue query is scoped to one.
+   */
+  listRepoLabels(owner: string, repo: string): Promise<GitHubLabel[]> {
+    return this.request<GitHubLabel[]>(`${repoPath(owner, repo)}/labels?per_page=100`);
   }
 
   /**
