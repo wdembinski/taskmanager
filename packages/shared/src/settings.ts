@@ -12,6 +12,7 @@ import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
 import { BOARD_COLUMNS } from './model';
 import type { BoardColumn, ManualStatus } from './model';
+import { DEFAULT_PROMPT_TEMPLATES, type PromptTemplate } from './promptTemplates';
 import type { StatusKeyword } from './statusKeywords';
 import { DEFAULT_SESSION_TOKEN_BUDGET, DEFAULT_WEEKLY_TOKEN_BUDGET } from './usage';
 
@@ -780,6 +781,12 @@ export interface AppSettings {
    */
   statusKeywords: StatusKeyword[];
   /**
+   * Canned briefs offered on the Add-task dialog, the assign prompt, and the chat pane —
+   * see `promptTemplates.ts`. Account-scoped like `statusKeywords`: the same list on every
+   * surface and every machine, not a per-project thing.
+   */
+  promptTemplates: PromptTemplate[];
+  /**
    * Whether the My Tasks screen shows its right-hand detail pane. On by default — the
    * pane is the point of the screen — but on a narrow window the board wants the whole
    * width, so it can be folded away from the toolbar. Top-level rather than under
@@ -917,6 +924,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxAutoRetries: 1,
   defaultExecTarget: LOCAL_TARGET,
   statusKeywords: [],
+  promptTemplates: DEFAULT_PROMPT_TEMPLATES,
   showTaskDetail: true,
   showGitGraph: false,
   branchPrefix: '',
@@ -991,6 +999,11 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * them, the desktop pushes them up on sync and adopts them back, and everything here
  * converges to one value per account.
  *
+ * `promptTemplates` belongs here for the same reason `statusKeywords` does: a canned brief
+ * means the same thing — and should read back the same way — whichever machine or surface
+ * (desktop, web) it is picked from, so it converges to one list per account rather than one
+ * per device.
+ *
  * Everything NOT listed is either MACHINE-local — `defaultExecTarget` (a path only that
  * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
  * connection to the server), `toastsEnabled` (that app's toasts), `runInBackground` (this
@@ -1018,6 +1031,7 @@ export const GLOBAL_SETTINGS_KEYS = [
   'writeBackPlan',
   'maxAutoRetries',
   'statusKeywords',
+  'promptTemplates',
   'branchPrefix',
   'autoIntegrate',
   'showTaskDetail',
