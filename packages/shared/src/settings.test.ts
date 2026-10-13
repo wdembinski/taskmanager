@@ -378,6 +378,7 @@ describe('pickGlobalSettings', () => {
     expect(picked.linear).toEqual(DEFAULT_SETTINGS.linear);
     expect(picked.board).toEqual(DEFAULT_SETTINGS.board);
     expect(picked.statusKeywords).toEqual(DEFAULT_SETTINGS.statusKeywords);
+    expect(picked.promptTemplates).toEqual(DEFAULT_SETTINGS.promptTemplates);
   });
 
   it('strips every machine-local and per-surface field — they never cross the wire', () => {
