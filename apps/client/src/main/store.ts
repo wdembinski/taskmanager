@@ -112,7 +112,9 @@ import type {
 import type { AttentionItem } from '@shared/attention';
 import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
+import type { ReviewComment } from '@shared/review';
 import type { ParsedTask } from './planParser';
+import { type ReviewCommentRow, reviewCommentToRow, rowToReviewComment } from './reviewCommentRows';
 import { splitProjectTag } from './projectTagMigration';
 import { blockOwnerFor, needsBlockOwner } from './blockOwnerMigration';
 import type { ParkedRun } from './parkedRun';
@@ -793,6 +795,42 @@ export interface Store {
    * failure the uploader could act on.
    */
   markAttachmentUploaded(id: string, at: number | null): void;
+
+  // --- Review comments (see `@shared/review`). ---
+  /** One task's review comments, oldest first (`createdAt`, then insertion order). */
+  listReviewComments(taskId: string): ReviewComment[];
+  /**
+   * Add a draft comment. The id, `createdAt`/`updatedAt` and `sentAt` are the store's to
+   * assign — `createdAt === updatedAt` for a fresh draft, and `sentAt` starts `null`.
+   *
+   * Undefined when the task is unknown (the foreign key refuses it) — "no comment"
+   * rather than an exception, the same contract `addAttachment`/`addTaskLink` keep.
+   */
+  addReviewComment(
+    input: Omit<ReviewComment, 'id' | 'createdAt' | 'updatedAt' | 'sentAt'>,
+  ): ReviewComment | undefined;
+  /**
+   * Patch a draft's anchor or text — how F6.8 re-anchors a comment after the diff moves
+   * on. Merges the patch, bumps `updatedAt`, and refuses once `sentAt` is set: a sent
+   * comment is history, and only `deleteReviewComment` (also draft-only) or the card
+   * itself can make it go away. Undefined for an unknown id or an already-sent comment —
+   * the store itself enforces "never edit history", not just its callers.
+   */
+  updateReviewComment(
+    id: string,
+    patch: Partial<Pick<ReviewComment, 'body' | 'diffId' | 'side' | 'line' | 'start' | 'excerpt'>>,
+  ): ReviewComment | undefined;
+  /**
+   * Forget a draft. Returns whether a row went — sent comments are history and leave
+   * only with their card, so this never deletes one.
+   */
+  deleteReviewComment(id: string): boolean;
+  /**
+   * Stamp every listed draft on this task as sent, in one transaction, and return only
+   * the comments it actually stamped. A second call with the same ids stamps nothing —
+   * the `sentAt IS NULL` guard is what F6.9's "exactly one message" rests on.
+   */
+  markReviewSent(taskId: string, ids: readonly string[], at: number): ReviewComment[];
 
   /**
    * Persist one open inbox item, with the kind-specific `context` its answer path needs
@@ -1687,6 +1725,37 @@ export function createStore(dbPath: string): Store {
     CREATE INDEX IF NOT EXISTS idx_activity_log_kind    ON activity_log(kind, at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_log_run_once
       ON activity_log(runId, kind) WHERE kind IN ('run-started', 'run-finished');
+    -- A task's review comments (F6.7, @shared/review): one row per comment left on a
+    -- diff, draft until sentAt is set. ON DELETE CASCADE ties a comment's life to its
+    -- task exactly as task_attachments does above, so a deleted card takes its comments
+    -- with it; a plan re-sync restores both the same way, in syncTasksFromPlan.
+    --
+    -- side/startSide are plain TEXT rather than CHECK-constrained: an unknown value is
+    -- the reader's problem to coerce (reviewCommentRows.ts), not the schema's to reject.
+    -- startSide/startLine are both NULL together for a single-line comment and both set
+    -- together for a range — ReviewComment.start is optional for exactly that pair.
+    --
+    -- diffId is NOT a foreign key: a diff is a computed hash of refs and a worktree
+    -- fingerprint, not a stored row, so there is nothing here to point at. A comment
+    -- whose diffId has moved on is read back as-is; recomputing "outdated" is a reader's
+    -- job (F6.8), not this table's.
+    CREATE TABLE IF NOT EXISTS review_comments (
+      id        TEXT PRIMARY KEY,
+      taskId    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      diffId    TEXT NOT NULL,
+      path      TEXT NOT NULL,
+      oldPath   TEXT,             -- NULL unless the file was renamed
+      side      TEXT NOT NULL,    -- 'old' | 'new'
+      line      INTEGER NOT NULL,
+      startSide TEXT,             -- both NULL for a single-line comment
+      startLine INTEGER,
+      body      TEXT NOT NULL,
+      excerpt   TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      sentAt    INTEGER           -- NULL = draft
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_comments_task ON review_comments(taskId, createdAt);
   `);
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
@@ -3036,6 +3105,46 @@ export function createStore(dbPath: string): Store {
   // bytes, NULL when they are known not to be up there any more.
   const markAttachmentUploadedStmt = db.prepare(
     `UPDATE task_attachments SET cloudBlobAt = ? WHERE id = ?`,
+  );
+
+  const selectReviewCommentsForTask = db.prepare(
+    `SELECT * FROM review_comments WHERE taskId = ? ORDER BY createdAt, rowid`,
+  );
+  const selectReviewComment = db.prepare(`SELECT * FROM review_comments WHERE id = ?`);
+  // The review comments of a project's tasks — carried across the delete-and-reinsert a
+  // plan re-sync performs, exactly as `selectAttachmentsForProject` is.
+  const selectReviewCommentsForProject = db.prepare(
+    `SELECT * FROM review_comments
+     WHERE taskId IN (SELECT id FROM tasks WHERE projectId = ?)
+     ORDER BY createdAt, rowid`,
+  );
+  // No conflict target: DO NOTHING covers the primary key, so a re-inserted row on the
+  // plan-sync path is idempotent for free, exactly as `insertAttachment` is.
+  const insertReviewComment = db.prepare<[ReviewCommentRow]>(
+    `INSERT INTO review_comments
+       (id, taskId, diffId, path, oldPath, side, line, startSide, startLine, body, excerpt,
+        createdAt, updatedAt, sentAt)
+     VALUES
+       (@id, @taskId, @diffId, @path, @oldPath, @side, @line, @startSide, @startLine, @body,
+        @excerpt, @createdAt, @updatedAt, @sentAt)
+     ON CONFLICT DO NOTHING`,
+  );
+  // Only `path`/`oldPath` are absent from the SET list: `updateReviewComment`'s patch can
+  // never touch them (see the `Store` interface), and the row is otherwise still anchored
+  // to the same file it was added on. `sentAt IS NULL` is what makes this draft-only —
+  // the store's own enforcement, not just its callers'.
+  const updateReviewCommentStmt = db.prepare(
+    `UPDATE review_comments
+       SET diffId = @diffId, side = @side, line = @line, startSide = @startSide,
+           startLine = @startLine, body = @body, excerpt = @excerpt, updatedAt = @updatedAt
+     WHERE id = @id AND sentAt IS NULL`,
+  );
+  const deleteReviewCommentStmt = db.prepare(
+    `DELETE FROM review_comments WHERE id = ? AND sentAt IS NULL`,
+  );
+  const markReviewSentStmt = db.prepare(
+    `UPDATE review_comments SET sentAt = @sentAt
+     WHERE id = @id AND taskId = @taskId AND sentAt IS NULL`,
   );
 
   const upsertAttentionStmt = db.prepare(
@@ -4514,11 +4623,16 @@ export function createStore(dbPath: string): Store {
       // reach them, so losing the rows would leave a directory of files nothing points at
       // and no way to get them back. Their ids are preserved along with them, so a
       // `vipper-attachment://a/<id>` an open pane is already showing stays valid.
+      //
+      // Review comments are preserved the same way — a draft (or sent) comment belongs to
+      // the task it was left on, not to the plan round that produced the task, so a plan
+      // re-sync must not silently empty out a review in progress.
       const replace = db.transaction((tasks: Task[]) => {
         const links = (selectTaskLinksForProject.all(projectId, projectId) as TaskLinkRow[]).map(
           rowToTaskLink,
         );
         const attachments = selectAttachmentsForProject.all(projectId) as TaskAttachment[];
+        const reviewComments = selectReviewCommentsForProject.all(projectId) as ReviewCommentRow[];
         deleteTasks.run(projectId);
         for (const t of tasks) insertTask.run(taskToRow(t));
         for (const link of links) {
@@ -4528,6 +4642,10 @@ export function createStore(dbPath: string): Store {
         for (const attachment of attachments) {
           if (!selectTask.get(attachment.taskId)) continue;
           insertAttachment.run(attachment);
+        }
+        for (const row of reviewComments) {
+          if (!selectTask.get(row.taskId)) continue;
+          insertReviewComment.run(row);
         }
       });
       replace(desired);
@@ -5053,6 +5171,66 @@ export function createStore(dbPath: string): Store {
 
     markAttachmentUploaded(id, at) {
       markAttachmentUploadedStmt.run(at, id);
+    },
+
+    listReviewComments(taskId) {
+      return (selectReviewCommentsForTask.all(taskId) as ReviewCommentRow[]).map(
+        rowToReviewComment,
+      );
+    },
+
+    addReviewComment(input) {
+      const now = Date.now();
+      const comment: ReviewComment = {
+        ...input,
+        id: randomUUID(),
+        createdAt: now,
+        updatedAt: now,
+        sentAt: null,
+      };
+      // The foreign key rejects an unknown task; the caller gets "no comment" rather than
+      // an exception, the same contract `addAttachment` keeps.
+      try {
+        if (insertReviewComment.run(reviewCommentToRow(comment)).changes === 0) return undefined;
+      } catch {
+        return undefined;
+      }
+      return comment;
+    },
+
+    updateReviewComment(id, patch) {
+      const existing = selectReviewComment.get(id) as ReviewCommentRow | undefined;
+      if (!existing || existing.sentAt !== null) return undefined;
+      const next: ReviewCommentRow = {
+        ...existing,
+        diffId: patch.diffId !== undefined ? patch.diffId : existing.diffId,
+        side: patch.side !== undefined ? patch.side : existing.side,
+        line: patch.line !== undefined ? patch.line : existing.line,
+        startSide: patch.start !== undefined ? patch.start.side : existing.startSide,
+        startLine: patch.start !== undefined ? patch.start.line : existing.startLine,
+        body: patch.body !== undefined ? patch.body : existing.body,
+        excerpt: patch.excerpt !== undefined ? patch.excerpt : existing.excerpt,
+        updatedAt: Date.now(),
+      };
+      if (updateReviewCommentStmt.run(next).changes === 0) return undefined;
+      return rowToReviewComment(next);
+    },
+
+    deleteReviewComment(id) {
+      return deleteReviewCommentStmt.run(id).changes > 0;
+    },
+
+    markReviewSent(taskId, ids, at) {
+      const stamped: ReviewComment[] = [];
+      const tx = db.transaction(() => {
+        for (const id of ids) {
+          if (markReviewSentStmt.run({ id, taskId, sentAt: at }).changes > 0) {
+            stamped.push(rowToReviewComment(selectReviewComment.get(id) as ReviewCommentRow));
+          }
+        }
+      });
+      tx();
+      return stamped;
     },
 
     saveAttention(item, context) {
