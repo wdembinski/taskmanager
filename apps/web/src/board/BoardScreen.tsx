@@ -36,8 +36,8 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Caption1, makeStyles } from '@fluentui/react-components';
-import { COLUMN_META, hiddenColumnsSummary, visibleColumns } from '@tm/ui/board/boardColumns';
-import { statusForColumn } from '@tm/shared/board';
+import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
+import { allowedDropColumns } from '@tm/ui/board/moveTargets';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ColumnSwitcher } from '@tm/ui/board/ColumnSwitcher';
@@ -107,7 +107,9 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 
 export interface BoardScreenProps {
   state: CloudBoardState;
-  onSetStatus: (taskId: string, status: ManualStatus) => void;
+  /** A card dropped into a column, or moved there from the compact board's "Move to"
+   *  sheet — sent as `task:move`, not `task:setStatus`. */
+  onMoveTask: (taskId: string, column: BoardColumn) => void;
   /**
    * A status change the DETAIL PANE has already sent for itself: record the same pending
    * overlay a drag gets, without putting a second identical command on the wire.
@@ -133,7 +135,7 @@ export interface BoardScreenProps {
 
 export function BoardScreen({
   state,
-  onSetStatus,
+  onMoveTask,
   onStatusNoted,
   compact,
 }: BoardScreenProps): JSX.Element {
@@ -542,14 +544,20 @@ export function BoardScreen({
   const handleDropInColumn = useCallback(
     (taskId: string, dropColumn: BoardColumn) => {
       setDraggingId(null);
-      if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
-      onSetStatus(taskId, statusForColumn(dropColumn));
+      if (
+        !allowedDropColumns({ hiddenColumns, pending: pendingTaskIds.has(taskId) }).includes(
+          dropColumn,
+        )
+      ) {
+        return;
+      }
+      onMoveTask(taskId, dropColumn);
       foldOnAutoFoldColumn(taskId, dropColumn);
       // The drag that returns a shelved card to a column is the toggle's other click — see
       // `MyTasks.tsx`'s own `onDropInColumn`.
       if (shelvedIds.has(taskId)) toggleShelved(taskId);
     },
-    [pendingTaskIds, onSetStatus, foldOnAutoFoldColumn, shelvedIds, toggleShelved],
+    [hiddenColumns, pendingTaskIds, onMoveTask, foldOnAutoFoldColumn, shelvedIds, toggleShelved],
   );
 
   return (
@@ -686,7 +694,7 @@ export function BoardScreen({
           )
         ) : (
           <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
-            {visibleColumns(hiddenColumns).map((column) => (
+            {allowedDropColumns({ hiddenColumns, pending: false }).map((column) => (
               <KanbanColumn
                 key={column}
                 column={column}
