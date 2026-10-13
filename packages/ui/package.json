@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tm/protocol": "workspace:*",
     "@tm/shared": "workspace:*"
   },
   "peerDependencies": {

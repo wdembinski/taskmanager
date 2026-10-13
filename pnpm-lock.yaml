@@ -246,6 +246,9 @@ importers:
 
   packages/ui:
     dependencies:
+      '@tm/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@tm/shared':
         specifier: workspace:*
         version: link:../shared
