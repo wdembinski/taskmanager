@@ -361,7 +361,7 @@ the feed.
       there is nothing true a feed with no live source could still show; and `ready` requires a
       `targetClientId`, not just `presence === 'online'`, since there is nothing to key a
       per-desktop cursor against until a target Client is actually picked.
-- [ ] F2.15 Collapse the Activity screen to one column at narrow widths @needs: F2.14 Mount the Activity screen in the web app over the relay
+- [x] F2.15 Collapse the Activity screen to one column at narrow widths @needs: F2.14 Mount the Activity screen in the web app over the relay
 
   - Breakpoint layout in the shared screen; same order on both hosts.
   - Acceptance: build green; screenshot check owed to a human.

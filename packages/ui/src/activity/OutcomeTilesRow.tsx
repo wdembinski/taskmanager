@@ -67,7 +67,13 @@ const LIVE_TILES: ReadonlySet<OutcomeTile> = new Set(['running', 'needsYou']);
 const PERIOD_LABEL: Record<ActivityPeriod, string> = { '24h': '24h', '7d': '7d', '30d': '30d' };
 
 const useStyles = makeStyles({
-  root: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' },
+  root: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '16px',
+    flexWrap: 'wrap',
+  },
   tiles: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
   tile: {
     display: 'flex',
