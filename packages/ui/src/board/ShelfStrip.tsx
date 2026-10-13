@@ -51,6 +51,12 @@ export interface ShelfStripProps {
   onDragEndTask: () => void;
   /** "Return to board", from a shelved card's own menu. */
   onToggleShelved: (id: string) => void;
+  /**
+   * Open the compact board's "Move to" sheet for a shelved card (F3.6) — the same
+   * pass-through `KanbanColumn` gets, so a card parked on the shelf can move straight back
+   * into a column without first returning to the board on a phone with no drag gesture.
+   */
+  onMoveTask?: (id: string) => void;
   /** A card dropped onto the strip — always shelves it, whichever column it came from. */
   onDropOnShelf: (id: string) => void;
   /** `settings.features.afterMergePipeline` — passed straight through to each `TaskCard`. */
@@ -129,6 +135,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
                   selectedTaskId={props.selectedTaskId}
                   shelved
                   onToggleShelved={() => props.onToggleShelved(task.id)}
+                  onMoveTo={props.onMoveTask && (() => props.onMoveTask?.(task.id))}
                   afterMergePipeline={props.afterMergePipeline}
                   mrRebaseButton={props.mrRebaseButton}
                   mrMergeButton={props.mrMergeButton}

@@ -37,12 +37,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Caption1, makeStyles } from '@fluentui/react-components';
 import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
-import { allowedDropColumns } from '@tm/ui/board/moveTargets';
+import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ColumnSwitcher } from '@tm/ui/board/ColumnSwitcher';
 import { columnSwitcherItems } from '@tm/ui/board/compactColumns';
 import { chainPosition } from '@tm/ui/board/chainPosition';
+import { MoveToSheet } from '@tm/ui/board/MoveToSheet';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
@@ -145,6 +146,8 @@ export function BoardScreen({
   const extras = useBoardExtras();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  /** The card the compact board's "Move to" sheet (F3.6) is open for, or null when shut. */
+  const [moveSheetTaskId, setMoveSheetTaskId] = useState<string | null>(null);
   const [selectedLinkId, setSelectedLinkId] = useState<string | null>(null);
   const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
   const [chainFocus, setChainFocus] = useState(false);
@@ -371,6 +374,16 @@ export function BoardScreen({
     const task = selectedTaskId ? (state.tasks[selectedTaskId] ?? null) : null;
     return task ? { ...task, status: displayStatus(state, task) } : null;
   }, [state, selectedTaskId]);
+
+  /**
+   * The card the "Move to" sheet is open for — the same `displayStatus` overlay
+   * {@link selectedTask} carries, so the sheet's current-column checkmark agrees with
+   * where the card's own column already shows it sitting.
+   */
+  const moveSheetTask = useMemo(() => {
+    const task = moveSheetTaskId ? (state.tasks[moveSheetTaskId] ?? null) : null;
+    return task ? { ...task, status: displayStatus(state, task) } : null;
+  }, [state, moveSheetTaskId]);
 
   /**
    * The chain the pane needs: the selected card's own steps, or — when a STEP is selected,
@@ -683,6 +696,7 @@ export function BoardScreen({
               onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
               onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
               onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
+              onMoveTask={setMoveSheetTaskId}
               afterMergePipeline={settings.features.afterMergePipeline}
               mrRebaseButton={settings.features.mrRebaseButton}
               mrMergeButton={settings.features.mrMergeButton}
@@ -824,10 +838,27 @@ export function BoardScreen({
             onDragStartTask={setDraggingId}
             onDragEndTask={() => setDraggingId(null)}
             onToggleShelved={toggleShelved}
+            onMoveTask={compact ? setMoveSheetTaskId : undefined}
             onDropOnShelf={dropOnShelf}
             afterMergePipeline={settings.features.afterMergePipeline}
             mrRebaseButton={settings.features.mrRebaseButton}
             mrMergeButton={settings.features.mrMergeButton}
+          />
+        )}
+        {compact && (
+          <MoveToSheet
+            options={
+              moveSheetTask
+                ? moveSheetOptions(moveSheetTask, {
+                    hiddenColumns,
+                    pending: pendingTaskIds.has(moveSheetTask.id),
+                  })
+                : []
+            }
+            title={moveSheetTask?.title ?? ''}
+            open={moveSheetTask !== null}
+            onPick={(column) => moveSheetTask && handleDropInColumn(moveSheetTask.id, column)}
+            onClose={() => setMoveSheetTaskId(null)}
           />
         )}
       </div>

@@ -1103,6 +1103,12 @@ export interface TaskCardProps {
    */
   onToggleShelved?: () => void;
   /**
+   * Open the compact board's "Move to" sheet for this card (F3.6) — touch's stand-in for
+   * dragging it to another column. Absent on the wide board, which keeps its drag; adding
+   * it is also what makes the "More actions" menu appear on a card with no shelf feature.
+   */
+  onMoveTo?: () => void;
+  /**
    * `settings.features.afterMergePipeline` — whether a merged MR with no genuine pipeline
    * reading draws no dot at all rather than the single grey "unknown"/"none" one. Defaults
    * to on; off restores the old behaviour of always drawing a dot.
@@ -1168,6 +1174,7 @@ export function TaskCard({
   onResume,
   shelved = false,
   onToggleShelved,
+  onMoveTo,
   afterMergePipeline = true,
   mrRebaseButton = true,
   mrMergeButton = true,
@@ -1581,10 +1588,11 @@ export function TaskCard({
               />
             </Tooltip>
           )}
-          {/* The shelf's own menu item — one, since {@link shelved} already says which
-              direction the click goes. Absent whenever the feature is off, same as every
-              other optional control on this card. */}
-          {onToggleShelved && (
+          {/* The "More actions" menu — "Move to…" first (F3.6, touch's stand-in for the
+              drag the compact board has no gesture for), then the shelf's own item, one
+              since {@link shelved} already says which direction the click goes. The menu
+              itself is absent only when neither control has anything to offer. */}
+          {(onToggleShelved || onMoveTo) && (
             <Menu>
               <MenuTrigger disableButtonEnhancement>
                 <Button
@@ -1600,14 +1608,26 @@ export function TaskCard({
               </MenuTrigger>
               <MenuPopover>
                 <MenuList>
-                  <MenuItem
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onToggleShelved();
-                    }}
-                  >
-                    {shelved ? 'Return to board' : 'Move to shelf'}
-                  </MenuItem>
+                  {onMoveTo && (
+                    <MenuItem
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onMoveTo();
+                      }}
+                    >
+                      Move to…
+                    </MenuItem>
+                  )}
+                  {onToggleShelved && (
+                    <MenuItem
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleShelved();
+                      }}
+                    >
+                      {shelved ? 'Return to board' : 'Move to shelf'}
+                    </MenuItem>
+                  )}
                 </MenuList>
               </MenuPopover>
             </Menu>
