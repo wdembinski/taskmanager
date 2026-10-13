@@ -13,6 +13,7 @@ import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/reac
 import type { Person, Task } from '@tm/shared/model';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
+import type { RunPurpose } from '@tm/shared/scheduler';
 import { TaskCard } from './TaskCard';
 import type { AutomationOrigin } from './automationOrigin';
 import type { BoardCard, BoardColumn } from './boardColumns';
@@ -123,6 +124,8 @@ export interface KanbanColumnProps {
   attentionTaskIds?: ReadonlySet<string>;
   /** Task ids the engine has a live run for, so a spawning run still spins. */
   liveRunTaskIds?: ReadonlySet<string>;
+  /** Why the engine is running an agent on a task, when it is a remediation — see `RunPurpose`. */
+  runPurposes?: ReadonlyMap<string, RunPurpose>;
   /** Task ids whose branch is being merged, so the card says so while git works. */
   mergingTaskIds?: ReadonlySet<string>;
   /** Which optional context lines each card draws. */
@@ -297,6 +300,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               statusKeywords={props.statusKeywords}
               attentionTaskIds={props.attentionTaskIds}
               liveRunTaskIds={props.liveRunTaskIds}
+              runPurposes={props.runPurposes}
               mergingTaskIds={props.mergingTaskIds}
               display={props.display}
               selected={task.id === props.selectedTaskId}

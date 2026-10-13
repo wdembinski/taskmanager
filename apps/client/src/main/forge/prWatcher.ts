@@ -14,6 +14,7 @@
 import type { ForgeProvider, MergeRequest, PrWatchAction } from '@shared/mergeRequest';
 import { forgeName, mrRef, prWatchAction } from '@shared/mergeRequest';
 import type { ChatRefusal, ChatSendResult, Task } from '@shared/model';
+import type { RunPurpose } from '@shared/scheduler';
 import type { AppSettings } from '@shared/settings';
 import { GitHubClient } from '../github/githubClient';
 import { GitLabClient } from '../gitlab/gitlabClient';
@@ -35,8 +36,11 @@ export interface PrWatcherDeps {
    * note on its behalf.
    */
   resolveForgeConflict(taskId: string, mr: MergeRequest): void;
-  /** Hand a failing pipeline to the card's agent — `Scheduler.chatWithAgent`. */
-  chatWithAgent(taskId: string, message: string): ChatSendResult;
+  /**
+   * Hand a failing pipeline to the card's agent — `Scheduler.chatWithAgent`, tagged
+   * `fix-pipeline` so the card says why its agent is working again.
+   */
+  chatWithAgent(taskId: string, message: string, opts: { purpose: RunPurpose }): ChatSendResult;
   /** File a note on the card's timeline. */
   note(projectId: string, taskId: string, body: string): void;
   /** Remember that this MR's head commit has already been acted on, and which action it was. */
@@ -119,6 +123,7 @@ async function act(
         task.id,
         `${mrRef(mr)}'s pipeline failed: ${mr.pipelineUrl ?? mr.webUrl}. Please look at what ` +
           `broke, fix it, and push.`,
+        { purpose: 'fix-pipeline' },
       );
       deps.note(task.projectId, task.id, pipelineFixNote(mr, result));
       return;

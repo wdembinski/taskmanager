@@ -16,6 +16,7 @@ import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
 import type { Person, Task } from '@tm/shared/model';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
+import type { RunPurpose } from '@tm/shared/scheduler';
 import { TaskCard } from './TaskCard';
 import type { BoardCard } from './boardColumns';
 import { isChainLinkDrag } from './chainDrag';
@@ -40,6 +41,7 @@ export interface ShelfStripProps {
   statusKeywords?: readonly StatusKeyword[];
   attentionTaskIds?: ReadonlySet<string>;
   liveRunTaskIds?: ReadonlySet<string>;
+  runPurposes?: ReadonlyMap<string, RunPurpose>;
   mergingTaskIds?: ReadonlySet<string>;
   display?: BoardDisplaySettings;
   selectedTaskId: string | null;
@@ -129,6 +131,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
                   statusKeywords={props.statusKeywords}
                   attentionTaskIds={props.attentionTaskIds}
                   liveRunTaskIds={props.liveRunTaskIds}
+                  runPurposes={props.runPurposes}
                   mergingTaskIds={props.mergingTaskIds}
                   display={props.display}
                   selected={task.id === props.selectedTaskId}

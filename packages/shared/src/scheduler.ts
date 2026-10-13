@@ -39,10 +39,65 @@ export interface TaskChange {
   runId: string | null;
 }
 
+/**
+ * Why the ENGINE, rather than a human, has an agent working a card — the PR/MR watcher's
+ * two remediations (`forge/prWatcher.ts`):
+ *
+ *   - `resolve-conflicts` — a rebase (onto a PR/MR's target, or onto base for a local merge)
+ *     left conflict markers, and the agent was requeued to resolve them (Rung 2).
+ *   - `fix-pipeline` — the PR/MR's pipeline failed and the agent was asked to fix it.
+ *
+ * Without it the card's spinner looked exactly like the card's own work restarting, and
+ * nothing said why an agent was thinking on a card whose work had already been handed in.
+ */
+export type RunPurpose = 'resolve-conflicts' | 'fix-pipeline';
+
+/** The card chip's words for a {@link RunPurpose}, and its tooltip. */
+export const RUN_PURPOSE_LABEL: Record<RunPurpose, { label: string; title: string }> = {
+  'resolve-conflicts': {
+    label: 'resolving conflicts',
+    title:
+      'Rebasing this branch left merge conflicts, so the agent was asked to resolve them. ' +
+      'The orchestrator finishes the rebase (and pushes it back to the PR/MR) when it is done.',
+  },
+  'fix-pipeline': {
+    label: 'fixing CI',
+    title: "This card's PR/MR pipeline failed, so the agent was asked to fix it and push.",
+  },
+};
+
+/**
+ * The purpose a card's live work is serving — the card's own run's, else the first live
+ * step's — or null for ordinary work. Same "card or any step" reading as `runPhase`.
+ */
+export function runPurposeOf(
+  task: Pick<Task, 'id'>,
+  subtasks: readonly Pick<Task, 'id'>[],
+  purposes: ReadonlyMap<string, RunPurpose> | undefined,
+): RunPurpose | null {
+  if (!purposes?.size) return null;
+  const own = purposes.get(task.id);
+  if (own) return own;
+  for (const step of subtasks) {
+    const p = purposes.get(step.id);
+    if (p) return p;
+  }
+  return null;
+}
+
+/** The {@link RunPurpose} of every live run that has one, keyed by task id. */
+export function runPurposesOf(runs: readonly ActiveRun[]): ReadonlyMap<string, RunPurpose> {
+  const map = new Map<string, RunPurpose>();
+  for (const r of runs) if (r.purpose) map.set(r.taskId, r.purpose);
+  return map;
+}
+
 /** Maps a currently-running task id to its live run id (seed for the Board on load). */
 export interface ActiveRun {
   taskId: string;
   runId: string;
+  /** Why the engine started this run, when it was not ordinary work — see {@link RunPurpose}. */
+  purpose?: RunPurpose;
 }
 
 /**

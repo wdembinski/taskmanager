@@ -57,6 +57,7 @@ import type {
   SchedulerChange,
   ActiveRun,
   RunOutcome,
+  RunPurpose,
   RunRefusal,
 } from '@shared/scheduler';
 import type {
@@ -865,6 +866,12 @@ interface Run {
    * returned before ever reaching the conflict redemption below it, stranding the rebase.
    */
   conflictFix?: boolean;
+  /**
+   * Why the engine started (or redirected) this run, for the card's chip — see
+   * {@link RunPurpose}. `resolve-conflicts` mirrors {@link Run.conflictFix}; `fix-pipeline`
+   * is set by {@link Scheduler.chatWithAgent} when the PR/MR watcher hands it a failure.
+   */
+  purpose?: RunPurpose;
   /**
    * Whether this run ever put a plan in front of the human (Phase 18).
    *
@@ -1851,7 +1858,11 @@ export class Scheduler {
    * The timeline entry is written BEFORE the send, so a session that dies mid-delivery
    * still leaves a record of what the human said.
    */
-  chatWithAgent(taskId: string, message: string): ChatSendResult {
+  chatWithAgent(
+    taskId: string,
+    message: string,
+    opts: { purpose?: RunPurpose } = {},
+  ): ChatSendResult {
     const text = message.trim();
     const card = this.store.getTask(taskId);
     if (!card) return { status: 'refused', taskId, reason: 'unknown-task' };
@@ -1862,7 +1873,7 @@ export class Scheduler {
       ? undefined
       : [...this.runs.values()].find((r) => r.taskId === target.id);
 
-    if (!run) return this.resumeForChat(target, text);
+    if (!run) return this.resumeForChat(target, text, opts.purpose);
 
     const held = [...this.attention.values()].find(
       (item) =>
@@ -1878,6 +1889,14 @@ export class Scheduler {
     );
     if (question) this.answerAttention(question.id, { decision: 'reply', text });
     else this.sessions.send(run.runId, text);
+
+    // The live run's next turn is now this errand. Nothing about the task changes, so a bare
+    // `task:changed` is what makes the boards re-read `scheduler:activeRuns` for the chip.
+    if (opts.purpose && run.purpose !== opts.purpose) {
+      run.purpose = opts.purpose;
+      const live = this.store.getTask(target.id);
+      if (live) this.emitTask({ task: live, runId: run.runId });
+    }
 
     return { status: 'sent', taskId: target.id, runId: run.runId };
   }
@@ -2064,7 +2083,7 @@ export class Scheduler {
     });
   }
 
-  private resumeForChat(target: Task, text: string): ChatSendResult {
+  private resumeForChat(target: Task, text: string, purpose?: RunPurpose): ChatSendResult {
     const refused = (reason: ChatRefusal): ChatSendResult => ({
       status: 'refused',
       taskId: target.id,
@@ -2090,7 +2109,7 @@ export class Scheduler {
       // this has to be a fresh full brief, and `buildAgentTaskPrompt` reads the timeline's
       // comments (`taskNotes`) to assemble one.
       this.store.addComment(target.projectId, target.id, text);
-      const startedRunId = this.startTask(staged, target);
+      const startedRunId = this.startTask(staged, target, { purpose });
       return { status: 'resumed', taskId: target.id, runId: startedRunId };
     }
     if (!target.parentTaskId && chainInFlight(this.store.getSubtasks(target.id))) {
@@ -2100,7 +2119,7 @@ export class Scheduler {
     if (!project) return refused('never-ran');
 
     this.store.addChatMessage(target.projectId, target.id, text);
-    const runId = this.startTask(project, target, { chatPrompt: text });
+    const runId = this.startTask(project, target, { chatPrompt: text, purpose });
     return { status: 'resumed', taskId: target.id, runId };
   }
 
@@ -2315,7 +2334,7 @@ export class Scheduler {
   activeRuns(): ActiveRun[] {
     return [...this.runs.values()]
       .filter((r) => !r.settled)
-      .map((r) => ({ taskId: r.taskId, runId: r.runId }));
+      .map((r) => ({ taskId: r.taskId, runId: r.runId, purpose: r.purpose }));
   }
 
   /** Snapshot of each project's current run state (seed the Board's buttons on mount). */
@@ -3259,6 +3278,8 @@ export class Scheduler {
       replaceRound?: number;
       /** What started this run (F2.6) — see {@link Run.origin}. Defaults to `'human'`. */
       origin?: ActivityOrigin;
+      /** Why the engine started it — see {@link Run.purpose}. A conflict fix sets its own. */
+      purpose?: RunPurpose;
     } = {},
   ): string {
     const runId = randomUUID();
@@ -3316,6 +3337,7 @@ export class Scheduler {
       reviewSeed,
       releaseSeed: opts.releaseSeed,
       conflictFix: fixingConflict,
+      purpose: fixingConflict ? 'resolve-conflicts' : opts.purpose,
       permissionMode,
       // Planning costs what the project says planning costs. The two flags together are
       // what "this run is planning" means — a turn that was ASKED for a plan and is held
@@ -5728,6 +5750,12 @@ export class Scheduler {
         // because a human merges the PR on the forge, which this app never does for them.
         this.attempts.delete(ctx.taskId);
         this.conflictFixAttempts.delete(ctx.taskId);
+        // …except the one status write that is not about the work at all: giving back what
+        // a Rung 2 conflict fix BORROWED. Its run left the card `running` (or `waiting-input`,
+        // when a human answered "Resolved"), its `settle` handed straight to `finishConflict`
+        // without touching the status, and the push below writes none either — so the card
+        // span "working" with no process behind it, long after the PR/MR was mergeable.
+        this.releaseBorrowedStatus(ctx.taskId);
         void this.pushForgeRebase(project, ctx, result);
         break;
       }
@@ -6027,6 +6055,21 @@ export class Scheduler {
     this.pendingConflictFix.set(ctx.taskId, { projectId: project.id, ...ctx });
     this.fixNotes.set(ctx.taskId, note);
     this.requeue(project, ctx.taskId);
+  }
+
+  /**
+   * Hand back a `running`/`waiting-input` that nothing holds any more — no unsettled run and
+   * no open inbox item for the task. Same split as `merged`: a STEP goes to `done` (it had
+   * finished before its branch was rebased), a CARD to `in-progress`, which `guardCardStatus`
+   * turns back into wherever the human left it. A no-op for a task that borrowed nothing,
+   * which is the plain no-agent rebase.
+   */
+  private releaseBorrowedStatus(taskId: string): void {
+    const task = this.store.getTask(taskId);
+    if (!task || (task.status !== 'running' && task.status !== 'waiting-input')) return;
+    for (const run of this.runs.values()) if (run.taskId === taskId && !run.settled) return;
+    for (const item of this.attention.values()) if (item.taskId === taskId) return;
+    this.updateTask(taskId, { status: task.parentTaskId ? 'done' : 'in-progress' }, null);
   }
 
   /** Park a task whose branch hit a merge conflict, so a human can resolve it. */

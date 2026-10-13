@@ -39,6 +39,7 @@ import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { LinkGate, TaskLink } from '@tm/shared/taskChain';
 import type { AttentionItem } from '@tm/shared/attention';
+import { runPurposesOf, type RunPurpose } from '@tm/shared/scheduler';
 import { DEFAULT_SETTINGS, type AppSettings } from '@tm/shared/settings';
 import { buildAttentionIndex, type AttentionIndex } from '@tm/ui/attentionIndex';
 
@@ -70,6 +71,8 @@ export interface BoardExtras {
   chainLinks: TaskLink[];
   attention: AttentionIndex;
   liveRunTaskIds: ReadonlySet<string>;
+  /** Why the engine runs an agent on a task, when it is a remediation — see `RunPurpose`. */
+  runPurposes: ReadonlyMap<string, RunPurpose>;
   mergingTaskIds: ReadonlySet<string>;
   /**
    * Everyone the account knows about (Phase 24: native tickets) — app-wide, like the
@@ -150,6 +153,7 @@ export function useBoardExtras(): BoardExtras {
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   const [attentionItems, setAttentionItems] = useState<AttentionItem[]>([]);
   const [liveRunTaskIds, setLiveRuns] = useState<ReadonlySet<string>>(new Set());
+  const [runPurposes, setRunPurposes] = useState<ReadonlyMap<string, RunPurpose>>(new Map());
   const [mergingTaskIds, setMerging] = useState<ReadonlySet<string>>(new Set());
   const [people, setPeople] = useState<Person[]>([]);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -191,7 +195,10 @@ export function useBoardExtras(): BoardExtras {
     void load(() => transport.invoke('attention:list'), setAttentionItems);
     void load(
       () => transport.invoke('scheduler:activeRuns'),
-      (runs) => setLiveRuns(new Set(runs.map((r) => r.taskId))),
+      (runs) => {
+        setLiveRuns(new Set(runs.map((r) => r.taskId)));
+        setRunPurposes(runPurposesOf(runs));
+      },
     );
     void load(
       () => transport.invoke('scheduler:integrating'),
@@ -296,6 +303,7 @@ export function useBoardExtras(): BoardExtras {
     chainLinks,
     attention,
     liveRunTaskIds,
+    runPurposes,
     mergingTaskIds,
     people,
     settings,

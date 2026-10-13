@@ -2101,7 +2101,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     getTask: (id) => store.getTask(id),
     tokenFor: forgeToken,
     resolveForgeConflict: (taskId, mr) => scheduler.resolveForgeConflict(taskId, mr),
-    chatWithAgent: (taskId, message) => scheduler.chatWithAgent(taskId, message),
+    chatWithAgent: (taskId, message, opts) => scheduler.chatWithAgent(taskId, message, opts),
     note: (projectId, taskId, body) => {
       store.addComment(projectId, taskId, body);
       send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });

@@ -19,9 +19,18 @@
  * starting long after its agent had stopped.
  */
 import { useEffect, useState } from 'react';
+import { runPurposesOf, type RunPurpose } from '@shared/scheduler';
 
-export function useActiveRuns(): ReadonlySet<string> {
+/**
+ * Also answers WHY, for the runs the engine started as a remediation (`ActiveRun.purpose`) —
+ * read off the same snapshot, so the card's chip can never disagree with its spinner.
+ */
+export function useActiveRuns(): {
+  ids: ReadonlySet<string>;
+  purposes: ReadonlyMap<string, RunPurpose>;
+} {
   const [ids, setIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [purposes, setPurposes] = useState<ReadonlyMap<string, RunPurpose>>(() => new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +54,13 @@ export function useActiveRuns(): ReadonlySet<string> {
             if (prev.size === next.size && [...next].every((id) => prev.has(id))) return prev;
             return next;
           });
+          setPurposes((prev) => {
+            const next = runPurposesOf(runs);
+            if (prev.size === next.size && [...next].every(([id, p]) => prev.get(id) === p)) {
+              return prev;
+            }
+            return next;
+          });
         })
         .catch(() => undefined);
     };
@@ -56,5 +72,5 @@ export function useActiveRuns(): ReadonlySet<string> {
     };
   }, []);
 
-  return ids;
+  return { ids, purposes };
 }
