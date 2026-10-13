@@ -234,6 +234,22 @@ export interface ActivityCursor {
   id: number;
 }
 
+/**
+ * The forward-only `max` of two cursors in `(at, id)` order — never the raw value a caller
+ * just reported. `stored` is null on a first-ever persist (nothing to compare against, so
+ * `reported` wins outright). Shared by the desktop's `activity:setLastSeen` handler and
+ * `@tm/ui`'s `activityUnread.ts`, so the one rule neither ever regresses lives in exactly one
+ * place — see the F2.13 design decisions in `F2-activity-dashboard.md`.
+ */
+export function laterActivityCursor(
+  stored: ActivityCursor | null,
+  reported: ActivityCursor,
+): ActivityCursor {
+  if (stored === null) return reported;
+  if (stored.at !== reported.at) return stored.at > reported.at ? stored : reported;
+  return stored.id >= reported.id ? stored : reported;
+}
+
 /** Encodes a cursor as an opaque, URL-safe string. Callers must treat the result as opaque. */
 export function encodeCursor(cursor: ActivityCursor): string {
   return toBase64Url(`${cursor.at}.${cursor.id}`);

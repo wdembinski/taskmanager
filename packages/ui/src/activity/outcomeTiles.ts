@@ -19,6 +19,7 @@ import type {
   ActivityOverview,
   ActivityQuery,
 } from '@tm/shared/activity';
+import type { FeedFilter, FeedKindGroup } from './activityFeedModel';
 
 export const OUTCOME_TILES = ['running', 'needsYou', 'completed', 'failed'] as const;
 
@@ -98,4 +99,69 @@ export function tileCount(overview: ActivityOverview, tile: OutcomeTile): number
     case 'failed':
       return overview.outcomes.failed;
   }
+}
+
+interface FeedTileFilter {
+  kindGroups?: readonly FeedKindGroup[];
+  outcomes?: readonly ActivityOutcome[];
+}
+
+/**
+ * Each tile's `FeedFilter` bridge (F2.13's design decisions in `F2-activity-dashboard.md`) —
+ * coarser than {@link TILE_FILTERS} above, because `FeedFilter` can only express kind
+ * GROUPS, not individual `ActivityKind`s. `running`/`needsYou` map to the `runs`/`gates`
+ * groups rather than the exact kinds `applyTile` sets; `completed`/`failed` match
+ * {@link TILE_FILTERS} exactly, since outcomes are not grouped at all.
+ */
+const FEED_TILE_FILTERS: Record<OutcomeTile, FeedTileFilter> = {
+  running: { kindGroups: ['runs'] },
+  needsYou: { kindGroups: ['gates'] },
+  completed: { outcomes: ['done'] },
+  failed: { outcomes: ['failed', 'empty'] },
+};
+
+/**
+ * The Activity screen's own tile click: sets `filter.kindGroups`/`outcomes` to that tile's
+ * `FeedFilter` bridge (clearing whichever of the two the tile does not use), or clears both
+ * when the already-active tile is clicked again — the same toggle `applyTile` has, just
+ * aimed at a `FeedFilter` instead of an `ActivityQuery`. `projectIds` and `origins` are
+ * always left exactly as they were.
+ */
+export function applyTileToFeedFilter(filter: FeedFilter, tile: OutcomeTile): FeedFilter {
+  if (activeFeedTile(filter) === tile) {
+    return { ...filter, kindGroups: [], outcomes: [] };
+  }
+  const tileFilter = FEED_TILE_FILTERS[tile];
+  return {
+    ...filter,
+    kindGroups: tileFilter.kindGroups ? [...tileFilter.kindGroups] : [],
+    outcomes: tileFilter.outcomes ? [...tileFilter.outcomes] : [],
+  };
+}
+
+/**
+ * Which tile, if any, `filter` currently reflects — the `FeedFilter` counterpart of
+ * {@link activeTile}, order-insensitive on both arrays. Null when neither field is set, when
+ * a field holds a filter no tile produces (a hand-set toolbar selection), or when both are
+ * set at once.
+ */
+export function activeFeedTile(filter: FeedFilter): OutcomeTile | null {
+  const hasKindGroups = filter.kindGroups.length > 0;
+  const hasOutcomes = filter.outcomes.length > 0;
+  if (hasKindGroups === hasOutcomes) return null;
+
+  for (const tile of OUTCOME_TILES) {
+    const tileFilter = FEED_TILE_FILTERS[tile];
+    if (
+      tileFilter.kindGroups &&
+      hasKindGroups &&
+      sameSet(filter.kindGroups, tileFilter.kindGroups)
+    ) {
+      return tile;
+    }
+    if (tileFilter.outcomes && hasOutcomes && sameSet(filter.outcomes, tileFilter.outcomes)) {
+      return tile;
+    }
+  }
+  return null;
 }

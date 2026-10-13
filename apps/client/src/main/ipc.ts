@@ -242,7 +242,9 @@ import {
   ACTIVITY_PERIOD_MS,
   buildActivityOverview,
   isActivityPeriod,
+  laterActivityCursor,
   normalizeActivityQuery,
+  type ActivityCursor,
 } from '@shared/activity';
 
 /**
@@ -1687,6 +1689,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       attention: scheduler.listAttention(),
       outcomes: store.countOutcomes(now - ACTIVITY_PERIOD_MS[period]),
     });
+  });
+
+  handle('activity:getLastSeen', async () => store.getActivityLastSeen());
+  handle('activity:setLastSeen', async (cursor: ActivityCursor) => {
+    // Relayed args are untrusted, same reasoning as `settings:save`'s model check below: a
+    // bad `at`/`id` here would otherwise persist silently and corrupt every later comparison.
+    if (
+      !Number.isFinite(cursor.at) ||
+      cursor.at < 0 ||
+      !Number.isInteger(cursor.id) ||
+      cursor.id < 1
+    ) {
+      throw new Error(`Not a valid activity cursor: ${JSON.stringify(cursor)}`);
+    }
+    const next = laterActivityCursor(store.getActivityLastSeen(), cursor);
+    store.setActivityLastSeen(next);
+    return next;
   });
 
   handle('settings:get', async () => store.getSettings());

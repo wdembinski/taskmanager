@@ -298,6 +298,38 @@ the feed.
     last-seen in `app_state`.
   - Acceptance: `test/shell-parity.test.ts` green; badge count is a tested pure function. A human
     visual check is owed — never launch the app from an agent (memory `verify-electron-app`).
+  - Design decisions:
+    - Last-seen is host-owned, the screen is host-agnostic: `ActivityScreen` takes `lastSeen` +
+      `onSeen(cursor)` props, the same shape `ActivityFeed` already takes for its own
+      `lastSeen`/`onNewestSeen`. The desktop backs them with an `app_state` key; the web (F2.14)
+      will back them with localStorage.
+    - The divider is pinned at mount: the screen snapshots `lastSeen` once, when it opens, and
+      hands that snapshot to the feed rather than whatever `onSeen` is busy advancing it to.
+      Persisting progress straight back into the prop the feed reads would make the divider
+      disappear the moment it renders.
+    - Last-seen only moves forward: a feed narrowed by a filter can report an older newest row
+      than the unfiltered feed already saw, so the value actually persisted is
+      `max(stored, reported)` by `(at, id)`, never the raw value a filtered view just reported.
+      That makes the persist a pure function of what was stored and what is newly reported.
+    - The badge counts rows newer than last-seen, minus your own column moves (`status-moved`
+      with origin `human`) — a move you just made is not news. The count is capped at
+      `ACTIVITY_PAGE_MAX` and reads 0 when `lastSeen` is null (first visit — no baseline, the
+      same reading the feed's own divider gives); the badge hides while the Activity tab is
+      open. It is monochrome (`color="informative"`), not the Attention badge's `danger` — see
+      memory `board-colour-budget`: colour is for things that move, and an unread count is a
+      standing fact, not a live one.
+    - Tile → `FeedFilter` bridge: clicking a tile sets `kindGroups: ['runs']` (running),
+      `kindGroups: ['gates']` (needsYou), `outcomes: ['done']` (completed), or
+      `outcomes: ['failed', 'empty']` (failed); clicking the active tile again clears it, and
+      `projectIds`/`origins` are left as they were. This is coarser than `outcomeTiles.ts`'s own
+      `applyTile` (which sets exact `ActivityKind`s on an `ActivityQuery`) because `FeedFilter`
+      can only express kind GROUPS, not individual kinds — the tiles row's own counts still come
+      from `activity:overview`, unaffected by whatever the feed itself is filtered to.
+    - Any new IPC channel F2.13 adds (the last-seen get/save pair) is `'relay'` in
+      `RELAY_POLICY`: a cursor is a plain `(at, id)` pair, not a native modal, a credential
+      write, a live session or a host path, so none of `HostOnlyReason`'s five cases apply —
+      that the web never calls it (F2.14 keeps its own cursor in localStorage instead) is not by
+      itself a reason to mark a channel host-only.
 
 ### F2 · Phase 5 — Web and verification
 

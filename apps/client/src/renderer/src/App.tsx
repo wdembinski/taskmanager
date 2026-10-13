@@ -3,8 +3,8 @@
  *
  * A frameless window: a custom <TitleBar> (window drag handle + min/max/close)
  * sits flush at the very top, and under it a **vertical nav rail** on the left —
- * My Tasks, Projects, Performance, the Attention inbox, Settings, a hands-on Scratch
- * run — beside the content region. The rail replaced
+ * My Tasks, Projects, Automations, Performance, Activity, the Attention inbox, Settings, a
+ * hands-on Scratch run — beside the content region. The rail replaced
  * a horizontal tab strip, which cost every screen a band of height at the top,
  * where a board and a chat pane both want it most. A global usage-limit banner
  * (Phase 5) sits above the content; a Claude message bar appears only when
@@ -40,13 +40,17 @@ import {
   FlashRegular,
   FolderRegular,
   PlayRegular,
+  PulseRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import type { AuthState } from '@shared/auth';
+import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from '@ui/Attention';
+import { ActivityScreen } from '@ui/activity/ActivityScreen';
+import { unreadActivityCount } from '@ui/activity/activityUnread';
 import { AutomationsView } from '@ui/automations/AutomationsView';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
@@ -112,6 +116,7 @@ type TabId =
   | 'tickets'
   | 'automations'
   | 'performance'
+  | 'activity'
   | 'attention'
   | 'settings'
   | 'scratch';
@@ -123,6 +128,7 @@ const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
   { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
   { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
+  { id: 'activity', label: 'Activity', icon: <PulseRegular /> },
   { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
   { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
   { id: 'scratch', label: 'Scratch run', icon: <PlayRegular /> },
@@ -163,6 +169,17 @@ export function App(): JSX.Element {
   }, []);
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
+  /**
+   * The Activity tab's persisted unread baseline (F2.13) — read once at boot, and advanced
+   * forward-only by `onSeen` below, which always holds whatever `activity:setLastSeen`
+   * actually persisted rather than the raw value `ActivityScreen` reported.
+   */
+  const [lastSeen, setLastSeen] = useState<ActivityCursor | null>(null);
+  const onSeen = useCallback((cursor: ActivityCursor) => {
+    void window.api.invoke('activity:setLastSeen', cursor).then(setLastSeen);
+  }, []);
+  // The Activity tab's unread badge — hidden below while 0 or while that tab is open.
+  const [unreadCount, setUnreadCount] = useState(0);
   const { dispatchToast } = useToastController(TOASTER_ID);
   /**
    * Raise a toast for an incoming ask, if toasts are on.
@@ -229,6 +246,7 @@ export function App(): JSX.Element {
       window.api.invoke('attention:list').then((items) => setAttentionCount(items.length)),
       window.api.invoke('update:get').then(setUpdate),
       window.api.invoke('sync:state').then(setSyncState),
+      window.api.invoke('activity:getLastSeen').then(setLastSeen),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
     /** Recompute the footer's sprint from the settings flag and the board's cards. */
@@ -276,6 +294,43 @@ export function App(): JSX.Element {
     };
   }, []);
 
+  // The Activity tab's unread badge count. Re-reads whenever `lastSeen` moves and on every
+  // `activity:appended` push, with a trailing debounce so a burst of appends (a chain
+  // tearing through several steps) triggers one re-read, not one per row.
+  useEffect(() => {
+    if (!lastSeen) {
+      setUnreadCount(0);
+      return;
+    }
+    let pending = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const refresh = (): void => {
+      if (pending) return;
+      pending = true;
+      void window.api
+        .invoke('activity:list', { sinceMs: lastSeen.at, limit: ACTIVITY_PAGE_MAX })
+        .then((page) => setUnreadCount(unreadActivityCount(page.rows, lastSeen)))
+        .catch(() => undefined)
+        .finally(() => {
+          pending = false;
+        });
+    };
+
+    refresh();
+    const offAppended = window.api.on('activity:appended', () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        refresh();
+      }, 500);
+    });
+    return () => {
+      offAppended();
+      if (timer) clearTimeout(timer);
+    };
+  }, [lastSeen]);
+
   // A live gate is hard evidence and beats every part of the file check below it.
   const signedOut = auth !== null;
   const claudeOk =
@@ -286,23 +341,39 @@ export function App(): JSX.Element {
       titleBar={<TitleBar />}
       nav={
         <NavRail
-          items={NAV.map((item) =>
-            // The only label the rail ever shows: a count that means "someone is waiting
-            // on you". Built per render rather than in `NAV` because it moves.
-            item.id === 'attention' && attentionCount > 0
-              ? {
-                  ...item,
-                  badge: (
-                    <CounterBadge
-                      count={attentionCount}
-                      color="danger"
-                      size="small"
-                      appearance="filled"
-                    />
-                  ),
-                }
-              : item,
-          )}
+          items={NAV.map((item) => {
+            // The only labels the rail ever shows: counts built per render rather than in
+            // `NAV` because they move. Attention's is "someone is waiting on you"; Activity's
+            // is unread rows, and hides while that tab is the one already open — see
+            // `unreadActivityCount`'s own docstring on why a human move is excluded from it.
+            if (item.id === 'attention' && attentionCount > 0) {
+              return {
+                ...item,
+                badge: (
+                  <CounterBadge
+                    count={attentionCount}
+                    color="danger"
+                    size="small"
+                    appearance="filled"
+                  />
+                ),
+              };
+            }
+            if (item.id === 'activity' && unreadCount > 0 && tab !== 'activity') {
+              return {
+                ...item,
+                badge: (
+                  <CounterBadge
+                    count={unreadCount}
+                    color="informative"
+                    size="small"
+                    appearance="filled"
+                  />
+                ),
+              };
+            }
+            return item;
+          })}
           selected={tab}
           onSelect={(id) => setTab(id as TabId)}
         />
@@ -430,6 +501,8 @@ export function App(): JSX.Element {
         <AutomationsView onOpenTask={openTaskOnBoard} />
       ) : tab === 'performance' ? (
         <Performance />
+      ) : tab === 'activity' ? (
+        <ActivityScreen lastSeen={lastSeen} onSeen={onSeen} onOpenTask={openTaskOnBoard} />
       ) : tab === 'attention' ? (
         <Attention />
       ) : tab === 'settings' ? (
