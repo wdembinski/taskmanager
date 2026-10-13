@@ -30,6 +30,7 @@ import { DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
+import { draftKey, useDraft } from './drafts';
 import { PaneLoading } from './PaneLoading';
 import { useTransport } from './transport';
 import { useInitialLoad, type InitialLoad } from './useInitialLoad';
@@ -131,7 +132,11 @@ export function InboxItem({
   onDismiss: (id: string) => Promise<void>;
 }): JSX.Element {
   const styles = useStyles();
-  const [note, setNote] = useState('');
+  // A draft, not plain state: this component is now ALSO mounted inside the compact inbox's
+  // full-screen detail view, which unmounts on every "Back" — unlike the wide list, where an
+  // item stays mounted for as long as it is open. Without this, closing and reopening an item
+  // on a phone would throw away whatever was typed.
+  const note = useDraft(draftKey(item.id, 'note'), '');
   const [busy, setBusy] = useState(false);
   const [dismissError, setDismissError] = useState<string | null>(null);
 
@@ -210,6 +215,7 @@ export function InboxItem({
           questions={item.questions!}
           busy={busy}
           onAnswer={(a) => void answer(a)}
+          draftItemId={item.id}
         />
       ) : item.kind === 'task-failed' || item.kind === 'proposal' ? (
         <>
@@ -220,7 +226,11 @@ export function InboxItem({
                 appearance={option === item.options[0] ? 'primary' : 'secondary'}
                 disabled={busy}
                 onClick={() =>
-                  void answer({ decision: 'reply', text: option, note: note.trim() || undefined })
+                  void answer({
+                    decision: 'reply',
+                    text: option,
+                    note: note.value.trim() || undefined,
+                  })
                 }
               >
                 {option}
@@ -236,9 +246,9 @@ export function InboxItem({
             }
           >
             <Textarea
-              value={note}
+              value={note.value}
               resize="vertical"
-              onChange={(_e, d) => setNote(d.value)}
+              onChange={(_e, d) => note.set(d.value)}
               placeholder={
                 item.kind === 'proposal' ? 'Extra guidance…' : 'Extra guidance for a retry…'
               }
@@ -266,9 +276,9 @@ export function InboxItem({
             label={item.kind === 'plan-approval' ? 'Optional note' : 'Optional note to Claude'}
           >
             <Textarea
-              value={note}
+              value={note.value}
               resize="vertical"
-              onChange={(_e, d) => setNote(d.value)}
+              onChange={(_e, d) => note.set(d.value)}
               placeholder={
                 item.kind === 'plan-approval'
                   ? 'Guidance to file on the card, or the reason to re-plan…'
@@ -279,13 +289,15 @@ export function InboxItem({
           <Button
             appearance="primary"
             disabled={busy}
-            onClick={() => void answer({ decision: 'approve', note: note.trim() || undefined })}
+            onClick={() =>
+              void answer({ decision: 'approve', note: note.value.trim() || undefined })
+            }
           >
             {item.kind === 'plan-approval' ? 'Approve plan' : 'Approve'}
           </Button>
           <Button
             disabled={busy}
-            onClick={() => void answer({ decision: 'deny', note: note.trim() || undefined })}
+            onClick={() => void answer({ decision: 'deny', note: note.value.trim() || undefined })}
           >
             {item.kind === 'plan-approval' ? 'Re-plan' : 'Deny'}
           </Button>
@@ -311,16 +323,16 @@ export function InboxItem({
               label={item.options.length > 0 ? 'Or answer in your own words' : 'Your answer'}
             >
               <Textarea
-                value={note}
+                value={note.value}
                 resize="vertical"
-                onChange={(_e, d) => setNote(d.value)}
+                onChange={(_e, d) => note.set(d.value)}
                 placeholder="Type your reply…"
               />
             </Field>
             <Button
               appearance="primary"
-              disabled={busy || note.trim().length === 0}
-              onClick={() => void answer({ decision: 'reply', text: note.trim() })}
+              disabled={busy || note.value.trim().length === 0}
+              onClick={() => void answer({ decision: 'reply', text: note.value.trim() })}
             >
               Send
             </Button>

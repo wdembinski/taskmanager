@@ -1,15 +1,23 @@
 /**
  * The compact Inbox screen (F3.3) — what the phone layout's Inbox tab shows instead of the
- * wide `Attention()` list. Same data, same answer/dismiss channels, same `InboxItem` form
- * (imported from `./Attention` rather than redrawn), but a single scrolling list sorted by
- * `sortByUrgency` and a tap-to-open full-screen detail instead of every item expanded at once
- * — the wide layout has room for that, a phone does not.
+ * wide `Attention()` list. Same data, same answer/dismiss channels, a single scrolling list
+ * sorted by `sortByUrgency`, and a tap-to-open full-screen detail instead of every item
+ * expanded at once — the wide layout has room for that, a phone does not.
+ *
+ * The detail view itself is one of two things (F3.4): `CompactAnswerView` for the three kinds
+ * worth a dedicated touch screen (`agent-question`, `permission`, `plan-approval`), and the
+ * generic `InboxItem` (from `./Attention`, not redrawn) for the rest.
  *
  * State lives here, in a `useReducer(inboxReducer)` over `inboxState.ts`'s pure transitions —
- * see that file's header for why `answeringId` exists and what `notice` means. Both `answer`
- * and `dismiss` route through the same `answerStarted`/`answerSucceeded`/`answerFailed` cycle:
- * from the reducer's point of view a dismiss is just an `invoke` that happens not to carry an
- * `AttentionAnswer`.
+ * see that file's header for why `answeringId` exists and what `notice` means. `answer`,
+ * `dismiss`, and `chat` all route through the same `answerStarted`/`answerSucceeded`/
+ * `answerFailed` cycle: from the reducer's point of view each is just an `invoke` that may or
+ * may not carry an `AttentionAnswer`.
+ *
+ * `openId` is parked under its own draft key (`drafts.ts`) rather than only living in
+ * `InboxState`, so leaving the Inbox tab and coming back — which unmounts this whole
+ * component, unlike the wide board — reopens whatever was open rather than dropping back to
+ * the list.
  */
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import {
@@ -27,7 +35,9 @@ import { ArrowLeftRegular, DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import { InboxItem, KindBadge } from './Attention';
 import { questionDeadline, sortByUrgency } from './attentionUrgency';
+import { CompactAnswerView } from './CompactAnswerView';
 import { formatAge, formatCountdown } from './countdown';
+import { draftKey, parkDraft, readDraft } from './drafts';
 import {
   EMPTY_INBOX_STATE,
   answerFailed,
@@ -42,8 +52,17 @@ import {
   type InboxState,
 } from './inboxState';
 import { PaneLoading } from './PaneLoading';
+import { REFUSAL_HINT } from './taskChat';
 import { useTransport } from './transport';
 import { useInitialLoad } from './useInitialLoad';
+
+/** The three kinds `CompactAnswerView` renders; every other kind keeps `InboxItem`. */
+function isAnswerKind(kind: AttentionItem['kind']): boolean {
+  return kind === 'agent-question' || kind === 'permission' || kind === 'plan-approval';
+}
+
+/** Where the open item's id is parked — one scope, not per-item, since the Inbox is a singleton. */
+const OPEN_ID_KEY = draftKey('compact-inbox', 'openId');
 
 const useStyles = makeStyles({
   root: {
@@ -114,8 +133,19 @@ function inboxReducer(state: InboxState, action: InboxAction): InboxState {
 export function CompactInbox(): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
-  const [state, dispatch] = useReducer(inboxReducer, EMPTY_INBOX_STATE);
+  const [state, dispatch] = useReducer(inboxReducer, EMPTY_INBOX_STATE, (base): InboxState => ({
+    ...base,
+    openId: readDraft<string>(OPEN_ID_KEY) ?? null,
+  }));
   const [now, setNow] = useState(() => Date.now());
+
+  // Survives this component unmounting — switching away from the Inbox tab and back, unlike
+  // the wide board, tears the whole tree down. `seeded`/`resolved` already close the view (with
+  // `ANSWERED_ELSEWHERE`) if the restored id is no longer present, so there is nothing else to
+  // reconcile here.
+  useEffect(() => {
+    parkDraft(OPEN_ID_KEY, state.openId, state.openId !== null);
+  }, [state.openId]);
 
   const seed = useCallback(async () => {
     const items = await transport.invoke('attention:list');
@@ -173,6 +203,28 @@ export function CompactInbox(): JSX.Element {
     [transport],
   );
 
+  /**
+   * The chat fallback for an `agent-question` that expired before it was answered (`CompactAnswerView`
+   * decides when this is the right channel, not here). The relay's own tool call has already
+   * timed out by then, so there is nothing left to approve/deny — once the message is delivered
+   * the item is dismissed, the same as tapping the X on a question nobody can answer any more.
+   */
+  const chat = useCallback(
+    async (id: string, taskId: string, message: string): Promise<void> => {
+      dispatch({ type: 'answerStarted', id });
+      try {
+        const result = await transport.invoke('task:chat', taskId, message);
+        if (result.status === 'refused') throw new Error(REFUSAL_HINT[result.reason]);
+        await transport.invoke('attention:dismiss', id);
+        dispatch({ type: 'answerSucceeded', id });
+      } catch (e) {
+        dispatch({ type: 'answerFailed', id });
+        throw e;
+      }
+    },
+    [transport],
+  );
+
   if (state.items === null) {
     return (
       <PaneLoading
@@ -197,7 +249,17 @@ export function CompactInbox(): JSX.Element {
         >
           Back
         </Button>
-        <InboxItem item={openItem} onAnswer={answer} onDismiss={dismiss} />
+        {isAnswerKind(openItem.kind) ? (
+          <CompactAnswerView
+            item={openItem}
+            now={now}
+            onAnswer={answer}
+            onChat={(message) => chat(openItem.id, openItem.taskId, message)}
+            onDismiss={dismiss}
+          />
+        ) : (
+          <InboxItem item={openItem} onAnswer={answer} onDismiss={dismiss} />
+        )}
       </div>
     );
   }

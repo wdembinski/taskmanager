@@ -27,8 +27,20 @@
  * held tool call must resolve one way or another), but the agent is told this is NOT a
  * decision, so it should respond and ask again if it still needs one. Unlike "Send answer"
  * it needs no option chosen and no every-question coverage — one typed thought is enough.
+ *
+ * ## `variant` and `draftItemId` (F3.4)
+ *
+ * `variant="compact"` is the same form with bigger, tap-first targets for the full-screen
+ * phone view — it changes sizing only, never behaviour, so a human switching between the
+ * desktop board and a phone never has to learn the form twice.
+ *
+ * `draftItemId`, when given, parks `selections`/`freeText` under that id (`drafts.ts`) so
+ * they survive this component unmounting — which the compact view does on every "Back" and
+ * every tab switch, unlike the wide inbox where `InboxItem` stays mounted for as long as the
+ * item does. Omit it (as every existing wide caller does) and the form behaves exactly as it
+ * did before this landed: plain, unpersisted `useState`.
  */
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
   Button,
   Caption1,
@@ -42,6 +54,7 @@ import {
 } from '@fluentui/react-components';
 import type { AttentionAnswer, AttentionQuestion } from '@tm/shared/attention';
 import { Markdown } from './chat/MarkdownView';
+import { draftKey, useDraft } from './drafts';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '14px' },
@@ -76,6 +89,9 @@ const useStyles = makeStyles({
     cursor: 'pointer',
     ':hover': { backgroundColor: tokens.colorNeutralBackground2Hover },
   },
+  // `variant="compact"` widens the tap target to the 44px touch minimum (`CompactInbox`'s
+  // own rows and `BottomTabBar` use the same number) — only sizing changes, never behaviour.
+  optionCompact: { minHeight: '44px', padding: '10px 12px', gap: '3px' },
   // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
   optionChosen: {
     border: `1px solid ${tokens.colorBrandStroke1}`,
@@ -93,30 +109,58 @@ export interface AgentQuestionFormProps {
   /** Disables every control while an answer is in flight. */
   busy?: boolean;
   onAnswer: (answer: AttentionAnswer) => void;
+  /** Bigger, tap-first targets for the full-screen phone view. Defaults to `'wide'`. */
+  variant?: 'wide' | 'compact';
+  /** Parks `selections`/`freeText` under this id so they survive an unmount. See the file header. */
+  draftItemId?: string | null;
+}
+
+interface QuestionDraft {
+  selections: string[][];
+  freeText: string[];
+}
+
+/** A draft worth parking has a selection or typed text somewhere — matches `isComplete`'s shape. */
+function questionDraftUnchanged(value: QuestionDraft): boolean {
+  return (
+    value.selections.every((row) => row.length === 0) &&
+    value.freeText.every((t) => t.trim().length === 0)
+  );
 }
 
 export function AgentQuestionForm({
   questions,
   busy = false,
   onAnswer,
+  variant = 'wide',
+  draftItemId = null,
 }: AgentQuestionFormProps): JSX.Element {
   const styles = useStyles();
-  // Indexed by question. Chosen labels, and the free text that replaces them.
-  const [selections, setSelections] = useState<string[][]>(() => questions.map(() => []));
-  const [freeText, setFreeText] = useState<string[]>(() => questions.map(() => ''));
+  const compact = variant === 'compact';
+  // Indexed by question. Chosen labels, and the free text that replaces them. Backed by a
+  // draft only when `draftItemId` is given — every existing (wide) caller passes neither prop
+  // and gets back exactly today's unpersisted `useState`.
+  const draft = useDraft<QuestionDraft>(
+    draftItemId !== null ? draftKey(draftItemId, 'questions') : null,
+    useMemo(
+      () => ({ selections: questions.map(() => []), freeText: questions.map(() => '') }),
+      [questions],
+    ),
+    (value) => questionDraftUnchanged(value),
+  );
+  const selections = draft.value.selections;
+  const freeText = draft.value.freeText;
 
   const choose = (qi: number, label: string, multi: boolean): void => {
-    setSelections((prev) => {
-      const next = prev.map((row) => [...row]);
-      if (!multi) {
-        next[qi] = [label];
-      } else if (next[qi].includes(label)) {
-        next[qi] = next[qi].filter((l) => l !== label);
-      } else {
-        next[qi] = [...next[qi], label];
-      }
-      return next;
-    });
+    const next = selections.map((row) => [...row]);
+    if (!multi) {
+      next[qi] = [label];
+    } else if (next[qi].includes(label)) {
+      next[qi] = next[qi].filter((l) => l !== label);
+    } else {
+      next[qi] = [...next[qi], label];
+    }
+    draft.set({ selections: next, freeText });
   };
 
   /**
@@ -161,7 +205,7 @@ export function AgentQuestionForm({
                   return (
                     <label
                       key={opt.label}
-                      className={`${styles.option} ${chosen ? styles.optionChosen : ''}`}
+                      className={`${styles.option} ${compact ? styles.optionCompact : ''} ${chosen ? styles.optionChosen : ''}`}
                     >
                       <Checkbox
                         checked={chosen}
@@ -189,7 +233,7 @@ export function AgentQuestionForm({
                   return (
                     <label
                       key={opt.label}
-                      className={`${styles.option} ${chosen ? styles.optionChosen : ''}`}
+                      className={`${styles.option} ${compact ? styles.optionCompact : ''} ${chosen ? styles.optionChosen : ''}`}
                     >
                       <Radio value={opt.label} disabled={busy} label={opt.label} />
                       {opt.description && (
@@ -212,7 +256,7 @@ export function AgentQuestionForm({
                 : 'Your answer, or ask a question with "Discuss instead" below…'
             }
             onChange={(_e, d) =>
-              setFreeText((prev) => prev.map((t, i) => (i === qi ? d.value : t)))
+              draft.set({ selections, freeText: freeText.map((t, i) => (i === qi ? d.value : t)) })
             }
           />
         </div>
@@ -221,6 +265,7 @@ export function AgentQuestionForm({
       <div className={styles.actions}>
         <Button
           appearance="primary"
+          size={compact ? 'large' : 'medium'}
           disabled={busy || !complete}
           title={complete ? undefined : 'Answer every question first.'}
           onClick={() =>
@@ -234,6 +279,7 @@ export function AgentQuestionForm({
           Send answer
         </Button>
         <Button
+          size={compact ? 'large' : 'medium'}
           disabled={busy || !discussText}
           title="Send what you typed without committing to an answer — the agent replies and can ask again."
           onClick={() => onAnswer({ decision: 'discuss', text: discussText })}
@@ -243,6 +289,7 @@ export function AgentQuestionForm({
         <span className={styles.grow} />
         {/* The ONLY path by which the agent chooses — and it takes a deliberate click. */}
         <Button
+          size={compact ? 'large' : 'medium'}
           disabled={busy}
           title="The agent picks its own recommended option and carries on."
           onClick={() => onAnswer({ decision: 'deny', note: 'Use your own judgement.' })}
