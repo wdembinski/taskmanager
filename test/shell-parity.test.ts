@@ -470,6 +470,54 @@ describe('the activity tab both hosts render from the shared screen (F2.13/F2.14
   });
 });
 
+describe('the issues tab both hosts render from the shared screen (F5.10)', () => {
+  /**
+   * `apps/client/src/renderer/src/App.tsx` imports `IssuesScreen` straight from
+   * `@ui/issues/IssuesScreen` and lists `id: 'issues'` in its NAV — step 1 of this ticket. The
+   * web half is a wrapper, the same shape as the activity tab above: `WEB_APP` lists the NAV
+   * entry, but the `IssuesScreen` import itself lives one file over, in
+   * `apps/web/src/issues/WebIssuesScreen.tsx` — which reuses `activityGate` rather than
+   * growing a second gate, since Issues has the same one source (a live desktop) that
+   * Activity does.
+   */
+  const WEB_ISSUES = 'apps/web/src/issues/WebIssuesScreen.tsx';
+
+  for (const [label, path] of [
+    ['the browser client', WEB_ISSUES],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`renders ${label}'s issues tab from @tm/ui`, () => {
+      const source = read(path);
+      expect(
+        importedFrom(source, 'issues/IssuesScreen'),
+        `${path} must import IssuesScreen from @tm/ui/issues/IssuesScreen (or its @ui alias). ` +
+          'F5.10 mounts one Issues screen so both hosts render the same one; an import from ' +
+          'anywhere else is a second implementation.',
+      ).toContain('IssuesScreen');
+    });
+  }
+
+  it("lists an issues tab in both hosts' NAV", () => {
+    for (const path of [WEB_APP, DESKTOP_APP]) {
+      expect(
+        read(path),
+        `${path} must list { id: 'issues', … } in its NAV — a screen nothing links to is a ` +
+          'file, not a tab.',
+      ).toMatch(/id:\s*'issues'/);
+    }
+  });
+
+  it('leaves no local IssuesScreen behind in a host tree', () => {
+    const copies = HOST_TREES.flatMap((tree) => filesUnder(tree, /^IssuesScreen\.tsx?$/));
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements the issues screen that lives in packages/ui. ` +
+        'Delete it and import from @tm/ui — a host-local copy is a second implementation that ' +
+        'only diverges, and nothing else in this repo can see it happen.',
+    ).toEqual([]);
+  });
+});
+
 describe('the theme both hosts mount', () => {
   for (const [label, path] of [
     ['The browser entry point', WEB_MAIN],

@@ -26,6 +26,7 @@ import {
   PulseRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
+  TicketDiagonalRegular,
 } from '@fluentui/react-icons';
 import { BOARD_COLUMNS } from '@tm/shared/model';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
@@ -44,6 +45,7 @@ import { Fleet } from './agents/Fleet';
 import { AutomationsScreen } from './automations/AutomationsScreen';
 import { useWebLastSeen } from './activity/useWebLastSeen';
 import { WebActivityScreen } from './activity/WebActivityScreen';
+import { WebIssuesScreen } from './issues/WebIssuesScreen';
 import { CloudAuth } from './auth/cloudAuth';
 import { SignInScreen } from './auth/SignInScreen';
 import { useCloudAuth } from './auth/useCloudAuth';
@@ -103,7 +105,7 @@ const DESKTOP_ONLY = 'desktop only';
  * plus Fleet, which the desktop does not have yet (this same plan's own step 6, ahead of the
  * desktop side of it).
  *
- * Eight of the nine are live now. Attention and Performance moved into `@tm/ui` whole (they
+ * Nine of the ten are live now. Attention and Performance moved into `@tm/ui` whole (they
  * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
  * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
  * app's and the host-free sections are shared. Projects renders `ProjectAdmin` — a project's
@@ -122,13 +124,16 @@ const DESKTOP_ONLY = 'desktop only';
  * (F2.14) — a web-only gate over `pollError`/`presence`/`targetClientId`, since this tab's one
  * source is a live desktop and there is nothing stale to fall back to; its `lastSeen`/`onSeen`
  * are backed by a per-desktop localStorage cursor (`useWebLastSeen`) rather than the desktop's
- * own `app_state` key. Scratch run stays off — it drives a live `session:start`, which is
- * host-only by policy (`@tm/shared/ipcRelay`).
+ * own `app_state` key. Issues (F5.10) renders the shared `IssuesScreen` behind
+ * `WebIssuesScreen`, which reuses `activityGate` for the same reason: there is a live desktop
+ * behind it or there is nothing to show. Scratch run stays off — it drives a live
+ * `session:start`, which is host-only by policy (`@tm/shared/ipcRelay`).
  */
 const NAV: readonly NavRailItem[] = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
+  { id: 'issues', label: 'Issues', icon: <TicketDiagonalRegular /> },
   { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
   { id: 'fleet', label: 'Fleet', icon: <BotRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
@@ -143,6 +148,7 @@ type Screen =
   | 'mytasks'
   | 'projects'
   | 'tickets'
+  | 'issues'
   | 'automations'
   | 'fleet'
   | 'performance'
@@ -434,6 +440,17 @@ function SignedInBoard({
           ))}
         {screen === 'projects' && <ProjectAdmin />}
         {screen === 'tickets' && <Projects />}
+        {screen === 'issues' && (
+          <WebIssuesScreen
+            pollError={board.pollError}
+            presence={presence}
+            targetClientId={board.targetClientId}
+            onOpenTask={(taskId) => {
+              setScreen('mytasks');
+              navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+            }}
+          />
+        )}
         {screen === 'automations' && <AutomationsScreen clients={board.state.clients} now={now} />}
         {screen === 'fleet' && <Fleet state={board.state} apiDeps={apiDeps} />}
         {screen === 'performance' && <Performance />}
