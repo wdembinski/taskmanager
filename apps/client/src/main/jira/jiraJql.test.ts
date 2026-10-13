@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chunkKeys, isIssueKey, keysInJql, withKeysIn } from './jiraJql';
+import { chunkKeys, isIssueKey, jqlString, keysInJql, withKeysIn } from './jiraJql';
 
 describe('isIssueKey', () => {
   it('accepts real keys, including digits and underscores in the project', () => {
@@ -78,5 +78,23 @@ describe('chunkKeys', () => {
   it('takes a custom size and never degenerates to a zero step', () => {
     expect(chunkKeys(keys(5), 2).map((c) => c.length)).toEqual([2, 2, 1]);
     expect(chunkKeys(keys(3), 0)).toEqual([['AB-1'], ['AB-2'], ['AB-3']]);
+  });
+});
+
+describe('jqlString', () => {
+  it('quotes a plain value', () => {
+    expect(jqlString('login bug')).toBe('"login bug"');
+  });
+
+  it('escapes an embedded quote rather than letting it close the literal early', () => {
+    expect(jqlString('say "hi"')).toBe('"say \\"hi\\""');
+  });
+
+  it("escapes a backslash before escaping quotes, so the quote's escape is not swallowed", () => {
+    expect(jqlString('a\\"b')).toBe('"a\\\\\\"b"');
+  });
+
+  it('round-trips an attempted clause injection as a harmless string', () => {
+    expect(jqlString('x") OR project = SECRET; ("')).toBe('"x\\") OR project = SECRET; (\\""');
   });
 });
