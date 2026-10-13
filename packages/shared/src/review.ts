@@ -76,6 +76,50 @@ export interface DiffFile {
   tooLarge?: { bytes: number };
 }
 
+/**
+ * One file's result from `parsePatch` (F6.2). The design doc describes the signature as
+ * `parsePatch(text) → DiffHunk[]`; this is a deliberate deviation from that doc. The ticket
+ * needs added/deleted/renamed/copied and binary facts, and those only live in a file's
+ * header lines, not in any hunk — so parsing returns one `PatchFile` per file instead of a
+ * bare hunk list. A one-file read (F6.6) takes `parsePatch(t)[0]?.hunks ?? []`.
+ *
+ * `parsePatch`'s own contract, fixed here for F6.2's implementation step:
+ *
+ * - **CRLF.** Split on `\n` and strip one trailing `\r` per line, so a CRLF-transported patch
+ *   and a CRLF file's own content both yield clean `text` — `DiffLine.text` never contains `\r`.
+ * - **`DiffHunk.header`** is the whole `@@ -a,b +c,d @@ section` line, kept renderable as-is.
+ * - **A hunk's body is consumed by count, not by line prefix.** Read lines until `oldLines`
+ *   old-side and `newLines` new-side lines have been used, so a content line that happens to
+ *   start `--- `, `+++ ` or `diff ` is never mistaken for the next header. Omitted counts
+ *   default to 1 (`@@ -3 +3 @@`); `-0,0`/`+0,0` means that side is empty.
+ * - **Line kinds.** `' '` is context (`oldLine` and `newLine` both set), `'-'` is a deletion
+ *   (`oldLine` only), `'+'` is an addition (`newLine` only). A bare empty line inside a hunk is
+ *   context `""` (some tools trim trailing whitespace on write). `\ No newline at end of file`
+ *   sets `noNewlineAtEof: true` on the line before it and is not itself a line.
+ * - **Headers recognised:** `diff --git`, `new file mode`, `deleted file mode`, `old mode`/
+ *   `new mode`, `similarity index`/`dissimilarity index`, `rename from`/`rename to`,
+ *   `copy from`/`copy to`, `index`, `---`/`+++` (including `/dev/null`), `Binary files … differ`,
+ *   and `GIT binary patch` (its body is skipped, never parsed as hunks).
+ * - **Paths.** Prefer `rename/copy from/to` and `---`/`+++`; fall back to the
+ *   `diff --git a/X b/X` line (split it symmetrically so a path containing spaces still
+ *   works). C-style quoted paths (`"a/t\303\251st.txt"`) are unquoted — octal escapes decode as
+ *   UTF-8 bytes, plus `\t \n \" \\` — and `a/`/`b/` prefixes are stripped.
+ * - **Status.** `added` (new file mode, or `--- /dev/null`), `deleted`, `renamed`, `copied`,
+ *   else `modified` (this also covers a mode-only change with no hunks). An empty added/deleted
+ *   file parses to `hunks: []`.
+ * - **Out of scope.** Combined diffs (`diff --cc`) are not handled. Any text before the first
+ *   `diff --git` line is ignored. Empty input returns `[]`.
+ */
+export interface PatchFile {
+  /** New-side path; the old-side path for a deletion. */
+  path: string;
+  /** Set only when the file was renamed or copied. */
+  oldPath?: string;
+  status: DiffFileStatus;
+  binary: boolean;
+  hunks: DiffHunk[];
+}
+
 export type DiffImageSide =
   { bytes: number; mime: string; base64: string } | { bytes: number; tooLarge: true };
 
