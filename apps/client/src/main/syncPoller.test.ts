@@ -103,4 +103,111 @@ describe('SyncPoller', () => {
       vi.useRealTimers();
     }
   });
+
+  it('pauses only the backed-off service, leaving the others on their normal interval', async () => {
+    vi.useFakeTimers();
+    try {
+      const resetAt = Date.now() + 5 * 60_000;
+      const jiraRun = vi.fn().mockResolvedValue(undefined);
+      const githubRun = vi.fn().mockResolvedValue(undefined);
+      const linearRun = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('rate limited'))
+        .mockResolvedValue(undefined);
+      const services: SyncService[] = [
+        { id: 'jira', isEnabled: () => true, run: jiraRun },
+        { id: 'github', isEnabled: () => true, run: githubRun },
+        {
+          id: 'linear',
+          isEnabled: () => true,
+          run: linearRun,
+          backoffUntil: () => resetAt,
+        },
+      ];
+      const poller = new SyncPoller(storeWith(1), services);
+      poller.reschedule();
+
+      // First tick: all three are due; linear rejects and records its back-off.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(jiraRun).toHaveBeenCalledTimes(1);
+      expect(githubRun).toHaveBeenCalledTimes(1);
+      expect(linearRun).toHaveBeenCalledTimes(1);
+
+      // Next few ticks, still inside the back-off window: jira/github keep running every
+      // interval, linear is skipped.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(jiraRun).toHaveBeenCalledTimes(4);
+      expect(githubRun).toHaveBeenCalledTimes(4);
+      expect(linearRun).toHaveBeenCalledTimes(1);
+
+      // One more tick lands exactly on the reset: linear is swept again (and this time
+      // succeeds).
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(linearRun).toHaveBeenCalledTimes(2);
+
+      poller.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a service that never settles does not stop the others running on later ticks', async () => {
+    vi.useFakeTimers();
+    try {
+      const jiraRun = vi.fn().mockResolvedValue(undefined);
+      const githubRun = vi.fn().mockResolvedValue(undefined);
+      const linearRun = vi.fn(() => new Promise<void>(() => {})); // never settles
+      const services: SyncService[] = [
+        { id: 'jira', isEnabled: () => true, run: jiraRun },
+        { id: 'github', isEnabled: () => true, run: githubRun },
+        { id: 'linear', isEnabled: () => true, run: linearRun },
+      ];
+      const poller = new SyncPoller(storeWith(1), services);
+      poller.reschedule();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(jiraRun).toHaveBeenCalledTimes(1);
+      expect(githubRun).toHaveBeenCalledTimes(1);
+      expect(linearRun).toHaveBeenCalledTimes(1);
+
+      // jira/github keep being swept on the following ticks; linear is never re-entered
+      // since it is still "in flight".
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(jiraRun).toHaveBeenCalledTimes(3);
+      expect(githubRun).toHaveBeenCalledTimes(3);
+      expect(linearRun).toHaveBeenCalledTimes(1);
+
+      poller.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries on the next tick when backoffUntil returns null', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn().mockRejectedValue(new Error('transient'));
+      const service: SyncService = {
+        id: 'linear',
+        isEnabled: () => true,
+        run,
+        backoffUntil: () => null,
+      };
+      const poller = new SyncPoller(storeWith(1), [service]);
+      poller.reschedule();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(2);
+
+      poller.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

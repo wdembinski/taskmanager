@@ -13,7 +13,8 @@
  *
  * The lifecycle rules are the two the old pair had, and they are the ones that matter:
  * read the interval fresh on every (re)schedule, so a Settings change takes effect at once;
- * and never stack a tick on a sweep that is still running.
+ * and never stack a tick on a sweep that is still running — now tracked **per service**, so
+ * one slow or backed-off integration no longer holds up the others on the next tick.
  */
 import { clampSyncInterval } from '@shared/settings';
 import { logMain } from './log';
@@ -25,12 +26,17 @@ export interface SyncService {
   /** Read fresh per tick: an integration switched off mid-run must stop being swept. */
   isEnabled: (store: Store) => boolean;
   run: () => Promise<unknown>;
+  /** Given a rejection from `run`, the epoch ms before which this service must not be swept
+   *  again — or null for no back-off. Absent entirely for services with no such concept. */
+  backoffUntil?: (error: unknown) => number | null;
 }
 
 export class SyncPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
-  /** Guards against a slow sweep overlapping the next tick. */
-  private running = false;
+  /** Services a sweep must skip because their own back-off has not passed yet. */
+  private readonly pausedUntil = new Map<string, number>();
+  /** Guards against a slow sweep overlapping the next tick, per service. */
+  private readonly inFlight = new Set<string>();
 
   constructor(
     private readonly store: Store,
@@ -54,24 +60,37 @@ export class SyncPoller {
     this.timer = setInterval(() => void this.tick(), minutes * 60_000);
   }
 
-  /** Sweep every enabled service once. Exposed for tests; the timer calls it. */
+  /** Sweep every enabled, non-paused, non-in-flight service once. Exposed for tests; the
+   *  timer calls it. */
   async tick(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-    try {
-      const due = this.services.filter((s) => s.isEnabled(this.store));
-      // `allSettled`, not `all`: one integration being unreachable must not cancel the
-      // others, and a background poll must never crash the app. A rejection here is a tick
-      // skipped for that one service — the next one retries, and the status bar already
-      // carries the reason (see `trackSync`).
-      const results = await Promise.allSettled(due.map((s) => s.run()));
-      results.forEach((r, i) => {
-        // To file, because nobody is watching a console when this fires.
-        if (r.status === 'rejected') logMain(`${due[i].id} background sync failed`, r.reason);
-      });
-    } finally {
-      this.running = false;
-    }
+    const now = Date.now();
+    const due = this.services.filter((s) => {
+      if (!s.isEnabled(this.store)) return false;
+      if (this.inFlight.has(s.id)) return false;
+      const until = this.pausedUntil.get(s.id);
+      return until === undefined || now >= until;
+    });
+    // Each service's own state update is chained off ITS run() directly, not off a
+    // `Promise.allSettled` over the whole batch: a service that never settles must not
+    // delay clearing `inFlight` for the others once theirs resolve, and must not stop this
+    // tick's promise standing for "every due service was launched".
+    due.forEach((s) => {
+      this.inFlight.add(s.id);
+      s.run().then(
+        () => {
+          this.inFlight.delete(s.id);
+          this.pausedUntil.delete(s.id);
+        },
+        (error: unknown) => {
+          this.inFlight.delete(s.id);
+          // To file, because nobody is watching a console when this fires.
+          logMain(`${s.id} background sync failed`, error);
+          const until = s.backoffUntil?.(error) ?? null;
+          if (until === null) this.pausedUntil.delete(s.id);
+          else this.pausedUntil.set(s.id, until);
+        },
+      );
+    });
   }
 
   stop(): void {

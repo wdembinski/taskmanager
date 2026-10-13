@@ -879,6 +879,10 @@ export interface Store {
   /** Cache GitHub's `GET /user` per instance; see {@link saveGitLabIdentity}. */
   saveGitHubIdentity(cache: GitHubIdentityCache): void;
   loadGitHubIdentity(): GitHubIdentityCache | null;
+  /** The Linear API key ciphertext — the same trio again, one more forge over. */
+  saveLinearApiKey(value: string): void;
+  loadLinearApiKey(): string | null;
+  clearLinearApiKey(): void;
   saveJiraToken(value: string): void;
   /** Load the stored JIRA token ciphertext, or null if none is set. */
   loadJiraToken(): string | null;
@@ -939,6 +943,15 @@ export interface Store {
   saveGitHubLastQuery(query: string): void;
   /** The issue query of the last GitHub sync, or null if none has been recorded. */
   loadGitHubLastQuery(): string | null;
+  /**
+   * The same, for Linear's issue filter — team keys, assignee scope, included state types and
+   * `advancedFilter` folded into one JSON string by the sync. A separate row for the same
+   * reason as GitHub's: a changed filter is a changed question, and the removal guard stands
+   * down for it alone.
+   */
+  saveLinearLastFilter(json: string): void;
+  /** The last-recorded Linear filter JSON, or null if none has been recorded. */
+  loadLinearLastFilter(): string | null;
   /**
    * Remember the main window's geometry so the next launch opens where the last one
    * closed. Written on a debounce while the window moves, so it stays cheap.
@@ -2649,6 +2662,12 @@ export function createStore(dbPath: string): Store {
 
   /** The issue query the last GitHub sync ran — `JIRA_LAST_QUERY_KEY`'s counterpart. */
   const GITHUB_LAST_QUERY_KEY = 'github.lastQuery';
+
+  /** The Linear API key ciphertext — the same trio again, one more forge over. */
+  const LINEAR_API_KEY_KEY = 'linear.apiKey';
+
+  /** The issue filter the last Linear sync ran — `GITHUB_LAST_QUERY_KEY`'s counterpart. */
+  const LINEAR_LAST_FILTER_KEY = 'linear.lastFilter';
 
   /** A pre-PAT vipper.iam refresh token, if this database predates this ticket — see
    *  `clearLegacyCloudSignIn`. Nothing writes this key any more. */
@@ -5403,6 +5422,19 @@ export function createStore(dbPath: string): Store {
       }
     },
 
+    saveLinearApiKey(value) {
+      upsertState.run(LINEAR_API_KEY_KEY, value);
+    },
+
+    loadLinearApiKey() {
+      const row = selectState.get(LINEAR_API_KEY_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    clearLinearApiKey() {
+      deleteState.run(LINEAR_API_KEY_KEY);
+    },
+
     saveJiraToken(value) {
       upsertState.run(JIRA_TOKEN_KEY, value);
     },
@@ -5562,6 +5594,15 @@ export function createStore(dbPath: string): Store {
 
     loadGitHubLastQuery() {
       const row = selectState.get(GITHUB_LAST_QUERY_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    saveLinearLastFilter(json) {
+      upsertState.run(LINEAR_LAST_FILTER_KEY, json);
+    },
+
+    loadLinearLastFilter() {
+      const row = selectState.get(LINEAR_LAST_FILTER_KEY) as { value: string } | undefined;
       return row?.value ?? null;
     },
 
