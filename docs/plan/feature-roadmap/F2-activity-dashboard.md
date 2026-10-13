@@ -365,6 +365,27 @@ the feed.
 
   - Breakpoint layout in the shared screen; same order on both hosts.
   - Acceptance: build green; screenshot check owed to a human.
+  - Design decisions:
+    - Order is source order: tiles → feed → rail, on both hosts, by construction — one
+      shared `ActivityScreen`, no `order:` CSS. Visual order matching DOM order keeps
+      keyboard/screen-reader order honest, and the "Needs you" live count already sits on
+      the tiles row at the top, so the rail does not need hoisting above the feed to still
+      be noticed once it collapses underneath.
+    - The feed keeps its own scroll region; the screen scrolls as a whole. Collapsed,
+      `ActivityScreen`'s `grid` style drops to a single column
+      (`gridTemplateColumns: 'minmax(0, 1fr)'`) with a bounded first row
+      (`gridTemplateRows: 'min(70vh, 640px) auto'`) and `flex: 'none'`, and `root` gets
+      `overflowY: 'auto'`. Without the bounded first row, either the feed's own infinite
+      scroll swallows the rail below it forever, or two `auto` rows split a `100%`-height
+      parent and the feed collapses to nothing.
+    - The tiles row wraps unconditionally: `OutcomeTilesRow`'s root gets
+      `flexWrap: 'wrap'` with no breakpoint guard — harmless at wide widths, since the row
+      never needs to wrap there — so the period `TabList` drops below the tiles instead of
+      overflowing the row once it narrows.
+    - Viewport media queries, via `layout/viewport.ts`'s `MEDIA.compact` (width <
+      `MEDIUM_MIN_PX`, 640px), not container queries — matches the breakpoint contract the
+      web and desktop shells already agree on instead of introducing a second way to ask
+      "how wide is this?".
 - [ ] F2.16 Verify the activity log end to end with a stub claude and document it @needs: F2.15 Collapse the Activity screen to one column at narrow widths
 
   - Drive a chain with the stub CLI (memory `stub-claude-on-path`) and assert the rows; add a
