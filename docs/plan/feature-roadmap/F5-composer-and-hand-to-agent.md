@@ -138,6 +138,43 @@ section; the trigger section is not asking the same question twice, just asking 
 write order, but `addTaskPlan` itself already honours `startNow` today
 (`AddTaskDialog.tsx:331-334`), so nothing about the pure plan needs to wait for F5.3.
 
+## F5.12 — verification (step 5 of 5)
+
+All three gates re-run forced, so no step reused a cached result (memory
+*a-cached-gate-is-not-a-gate*): `pnpm typecheck --force` (9/9 tasks, 0 cached,
+covering `@tm/protocol`, `@tm/server`, `@tm/shared`, `@tm/ui`, `@tm/web` and
+`claude-orchestrator`/`apps/client`); `pnpm build --force` (6/6 tasks, 0
+cached); `pnpm test` (268 files / 4749 tests passed, 11 skipped). The five
+files this ticket's steps 2-4 touched or added
+(`automationRunner.test.ts`, `automationTrackerFirings.test.ts`,
+`automation.test.ts`, `automationEditorModel.test.ts`,
+`AddTaskDialog.test.ts`) run clean in isolation too: 85/85.
+
+`pnpm test` has 5 pre-existing failures, none of them this ticket's: 4
+subprocess timeouts in `apps/client/src/main/git.test.ts` and one
+environment-gated assertion in `worktreeWsl.test.ts` (needs a live WSL
+distro). Both files were last touched by 3577045, well before TM-86 — the
+same flakiness commit 827a7f6 already called out.
+
+Red before green: the `else if (automation.action.taskId)` branch in
+`fireOne` (`automationRunner.ts`) was removed, falling the attached-card
+path through to card creation. Two of the three attached-card tests failed
+as expected — "works the existing card and creates none" (delegate never
+called with the attached id) and "refuses unknown-task with a strike when
+the attached card is missing" (started instead of refused), since a
+taskId-less automation with no boardProjectId both tests leave unset falls
+into the no-project refusal instead. The third ("is skipped, not a strike,
+when the attached card is already being worked") still passed, because the
+overlap check at `fireOne`'s step 2 catches that case before reaching the
+branch under test — expected, not a gap. The branch was restored verbatim
+(`git diff` empty against HEAD) and the suite returned to 9/9 green.
+
+Not verifiable headlessly, and not attempted (memory *verify-electron-app*
+— never launch the app from this machine): a human still needs to open the
+composer, confirm the "Run on a schedule" section renders, save a card with
+a trigger attached, and confirm the automation appears on the Automations
+screen pointed at that card.
+
 ## Tasks
 
 ### F5 · Phase 1 — Add and start
