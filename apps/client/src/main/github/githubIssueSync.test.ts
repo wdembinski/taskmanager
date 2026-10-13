@@ -371,6 +371,41 @@ describe('reconcileGitHubIssues', () => {
   );
 });
 
+describe('pinnedImport — a card imported outside the search', () => {
+  const pinnedCard = (over: Partial<Task> = {}): Task =>
+    card({ id: 'gh-pin', externalKey: 'acme/web#9', pinnedImport: true, ...over });
+
+  it('upserts a pinned open card the search left out, rather than archiving it', () => {
+    const result = reconcileGitHubIssues([pinnedCard()], [], {
+      ...opts,
+      rechecked: new Map([['acme/web#9', issue(9)]]),
+      recheckedKeys: ['acme/web#9'],
+    });
+    expect(result.removals).toEqual([]);
+    expect(result.upserts).toHaveLength(1);
+    expect(result.upserts[0].retainedSince).toBeNull();
+  });
+
+  it('archives an UNPINNED twin left-query in the same pass', () => {
+    const twin = card({ id: 'gh-twin', externalKey: 'acme/web#10' });
+    const result = reconcileGitHubIssues([pinnedCard(), twin], [], {
+      ...opts,
+      rechecked: new Map([
+        ['acme/web#9', issue(9)],
+        ['acme/web#10', issue(10)],
+      ]),
+      recheckedKeys: ['acme/web#9', 'acme/web#10'],
+    });
+    expect(removedKeys(result)).toEqual(['acme/web#10']);
+    expect(result.removals[0].reason).toBe('left-query');
+    expect(result.upserts.map((u) => u.id)).toEqual(['gh-pin']);
+  });
+
+  it('issuesToRecheck still lists the pinned card for the by-number re-read', () => {
+    expect(issuesToRecheck([pinnedCard()], []).map((r) => r.key)).toEqual(['acme/web#9']);
+  });
+});
+
 describe('issueToTask — assigning tickets to their own board', () => {
   const project = (over: Partial<Project>): Project => ({
     id: 'p1',
