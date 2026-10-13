@@ -187,9 +187,62 @@ mentions and attachment upload in comments.
 
 - [ ] F4.5 Implement the Linear GraphQL client with rate-limit and auth errors @needs: F4.4 Build the Linear GraphQL query and filter builders
 
-  - `apps/client/src/main/linear/linearClient.ts` with injected `fetch`.
-  - Acceptance: mocked-fetch tests for 401, `RATELIMITED` with reset parsed from headers, partial
-    GraphQL errors, pagination across pages, and the 500-issue cap reported.
+  - `apps/client/src/main/linear/linearClient.ts`, shaped after `github/githubClient.ts`'s doc
+    density and error-text pattern (status + first 300 chars of the response), but with
+    `fetchImpl?: typeof fetch` injected in the `agentProfilesApi.ts` style (default the global)
+    rather than GitHub's constructor config — this client needs no base-URL derivation.
+    `LinearClientConfig { apiKey: string; fetchImpl?: typeof fetch; endpoint?: string }`,
+    `endpoint` defaulting to `https://api.linear.app/graphql`. Headers:
+    `Authorization: <sanitizeToken(apiKey)>` (`@shared/secretToken`) — a Linear personal API key
+    goes on the wire raw, no `Bearer` — and `Content-Type: application/json`.
+  - Error ladder, every class extending `LinearError extends Error` and carrying `status`:
+    - `LinearAuthError` — HTTP 401, or ANY GraphQL error with `extensions.code ===
+      'AUTHENTICATION_ERROR'`. Linear often answers a bad key with HTTP 400 and that code rather
+      than 401, so the body is parsed and `errors` read even on a non-2xx response — unlike
+      `githubClient`'s `raw`/`write`, `request` cannot stop at `res.ok`.
+    - `LinearRateLimitError(resetAt: number | null)` — any `errors` entry with `extensions.code
+      === 'RATELIMITED'`, or HTTP 429. `resetAt` (epoch ms) comes from the exported pure
+      `parseRateLimitReset(headers)`: reads `x-ratelimit-requests-reset`, falling back to
+      `x-ratelimit-complexity-reset`, accepts either epoch-ms or epoch-seconds (a value `< 1e12` is
+      ×1000), null when absent/unparseable. Message names when Linear will be read again, since
+      the status bar shows it as-is.
+    - `LinearGraphQLError(errors, partialData)` — any other `errors` array, INCLUDING when `data`
+      is also present: Linear's partial-success shape is surfaced rather than discarded (the
+      opposite of `githubClient.graphql`'s all-or-nothing throw). Message joins the error
+      messages; `partialData` kept on the instance for a caller that wants what did come back.
+    - Plain `LinearError` for everything else non-2xx or unparseable, exactly `githubClient`'s
+      status-plus-snippet pattern.
+  - `request<T>(req: LinearRequest): Promise<T>` is the one POST every other method funnels
+    through — one `fetchImpl` call, the error ladder above, then `data` returned.
+    `LinearRequest` is `linearQueries.ts`'s own `{ query, variables }` (F4.4); this client never
+    builds a document itself.
+  - `fetchIssues(filter, { cap = 500, pageSize = 50 } = {})` → `LinearIssuePage { issues:
+    LinearIssue[]; truncated: boolean; cap }`: drives `issuesQuery(filter, after, pageSize)`,
+    follows `pageInfo.endCursor` while `hasNextPage`, stops at `cap` (slicing the final page down
+    to size) and sets `truncated: true` whenever Linear still had more — the cap REPORTS itself,
+    `GitHubSearchResult.truncated`'s same contract, so `linearSync.ts`'s reconciler (F4.6) never
+    reads a short page as a shrunken board. A `hasNextPage: true` with no `endCursor` also stops,
+    `truncated: true`, instead of looping on an unchanged cursor.
+  - `fetchIssuesByIds(ids)` → `LinearIssue[]`: `chunkIds(ids)` then one `request` per chunk built
+    by `issuesByIdQuery`; an id list where every id is invalid short-circuits to `[]` with no
+    call, since `issuesByIdQuery` itself returns `null` for that case (no request built).
+  - `fetchComments(issueId, maxPages = 2)`, `updateIssueState(issueId, stateId)`,
+    `createComment(issueId, body)` — thin wrappers over `commentsQuery` /
+    `issueUpdateStateMutation` / `commentCreateMutation` (F4.4). The two mutations throw
+    `LinearError` when the payload's `success` is `false`, so the transition-before-local-write
+    rule above has something to catch and roll an optimistic move back on.
+  - `LinearIssue` / `LinearComment` mirror `ISSUE_FIELDS` and the comment selection in
+    `linearQueries.ts` field for field, so widening one query without the other becomes a type
+    error rather than a silent gap.
+  - Acceptance: `linearClient.test.ts` (vitest), fetch passed in as `fetchImpl` the way
+    `agentProfilesApi.test.ts` does — never `vi.stubGlobal` — covering header/endpoint/body shape
+    and key sanitising; 401 and 400+`AUTHENTICATION_ERROR` both to `LinearAuthError`;
+    `RATELIMITED` with `x-ratelimit-requests-reset` to `LinearRateLimitError.resetAt`, plus
+    `parseRateLimitReset`'s seconds-vs-ms and missing-header cases on their own; `data`+`errors`
+    to `LinearGraphQLError` with `partialData` attached; three-page pagination each passing the
+    prior `endCursor` as `after`; an 11×50-page cap of 500 → exactly 500 issues, `truncated:
+    true`, 10 calls made; an exact 500 on the last page → `truncated: false`; 120 ids → 3 chunk
+    calls; `success: false` on either mutation throws.
 - [ ] F4.6 Reconcile Linear issues onto the board with done retention @needs: F4.2 Map Linear workflow state types to board columns through the shared resolver, F4.5 Implement the Linear GraphQL client with rate-limit and auth errors
 
   - `apps/client/src/main/linear/linearSync.ts`, modelled on `githubIssueSync.ts` (+ its tests).
