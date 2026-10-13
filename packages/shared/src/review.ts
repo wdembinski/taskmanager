@@ -76,6 +76,315 @@ export interface DiffFile {
   tooLarge?: { bytes: number };
 }
 
+/**
+ * One file's result from `parsePatch` (F6.2). The design doc describes the signature as
+ * `parsePatch(text) → DiffHunk[]`; this is a deliberate deviation from that doc. The ticket
+ * needs added/deleted/renamed/copied and binary facts, and those only live in a file's
+ * header lines, not in any hunk — so parsing returns one `PatchFile` per file instead of a
+ * bare hunk list. A one-file read (F6.6) takes `parsePatch(t)[0]?.hunks ?? []`.
+ *
+ * `parsePatch`'s own contract, fixed here for F6.2's implementation step:
+ *
+ * - **CRLF.** Split on `\n` and strip one trailing `\r` per line, so a CRLF-transported patch
+ *   and a CRLF file's own content both yield clean `text` — `DiffLine.text` never contains `\r`.
+ * - **`DiffHunk.header`** is the whole `@@ -a,b +c,d @@ section` line, kept renderable as-is.
+ * - **A hunk's body is consumed by count, not by line prefix.** Read lines until `oldLines`
+ *   old-side and `newLines` new-side lines have been used, so a content line that happens to
+ *   start `--- `, `+++ ` or `diff ` is never mistaken for the next header. Omitted counts
+ *   default to 1 (`@@ -3 +3 @@`); `-0,0`/`+0,0` means that side is empty.
+ * - **Line kinds.** `' '` is context (`oldLine` and `newLine` both set), `'-'` is a deletion
+ *   (`oldLine` only), `'+'` is an addition (`newLine` only). A bare empty line inside a hunk is
+ *   context `""` (some tools trim trailing whitespace on write). `\ No newline at end of file`
+ *   sets `noNewlineAtEof: true` on the line before it and is not itself a line.
+ * - **Headers recognised:** `diff --git`, `new file mode`, `deleted file mode`, `old mode`/
+ *   `new mode`, `similarity index`/`dissimilarity index`, `rename from`/`rename to`,
+ *   `copy from`/`copy to`, `index`, `---`/`+++` (including `/dev/null`), `Binary files … differ`,
+ *   and `GIT binary patch` (its body is skipped, never parsed as hunks).
+ * - **Paths.** Prefer `rename/copy from/to` and `---`/`+++`; fall back to the
+ *   `diff --git a/X b/X` line (split it symmetrically so a path containing spaces still
+ *   works). C-style quoted paths (`"a/t\303\251st.txt"`) are unquoted — octal escapes decode as
+ *   UTF-8 bytes, plus `\t \n \" \\` — and `a/`/`b/` prefixes are stripped.
+ * - **Status.** `added` (new file mode, or `--- /dev/null`), `deleted`, `renamed`, `copied`,
+ *   else `modified` (this also covers a mode-only change with no hunks). An empty added/deleted
+ *   file parses to `hunks: []`.
+ * - **Out of scope.** Combined diffs (`diff --cc`) are not handled. Any text before the first
+ *   `diff --git` line is ignored. Empty input returns `[]`.
+ */
+export interface PatchFile {
+  /** New-side path; the old-side path for a deletion. */
+  path: string;
+  /** Set only when the file was renamed or copied. */
+  oldPath?: string;
+  status: DiffFileStatus;
+  binary: boolean;
+  hunks: DiffHunk[];
+}
+
+const DIFF_GIT_PREFIX = 'diff --git ';
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+const NO_NEWLINE_MARKER = '\\ No newline at end of file';
+
+/** Strip one trailing `\r`, so a CRLF-transported patch and a CRLF file's own content both yield clean lines. */
+function stripTrailingCr(line: string): string {
+  return line.endsWith('\r') ? line.slice(0, -1) : line;
+}
+
+/**
+ * The closing `"` of a C-style quoted string starting at `s[0]`, honouring backslash escapes
+ * (`\"`, `\\`, an octal byte) so an escaped quote inside the path is never mistaken for the end
+ * of it.
+ */
+function findClosingQuote(s: string): number {
+  let escaped = false;
+  for (let i = 1; i < s.length; i += 1) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (s[i] === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (s[i] === '"') return i;
+  }
+  return s.length - 1;
+}
+
+/**
+ * Decode a C-style quoted path (`"a/t\303\251st.txt"`, quotes included) into the real string.
+ * Octal escapes are bytes, not characters — they are collected and decoded as UTF-8 only when a
+ * non-escaped character breaks the run, so a multi-byte character split across several `\NNN`
+ * escapes comes back as one. `\t`, `\n`, `\"` and `\\` decode directly.
+ */
+function unquotePath(quoted: string): string {
+  const inner = quoted.slice(1, -1);
+  const bytes: number[] = [];
+  let out = '';
+  const flushBytes = () => {
+    if (bytes.length > 0) {
+      out += new TextDecoder().decode(Uint8Array.from(bytes));
+      bytes.length = 0;
+    }
+  };
+  for (let i = 0; i < inner.length; i += 1) {
+    const c = inner[i];
+    if (c !== '\\') {
+      flushBytes();
+      out += c;
+      continue;
+    }
+    const next = inner[i + 1];
+    if (next >= '0' && next <= '7') {
+      let j = i + 1;
+      let octal = '';
+      while (j < inner.length && octal.length < 3 && inner[j] >= '0' && inner[j] <= '7') {
+        octal += inner[j];
+        j += 1;
+      }
+      bytes.push(Number.parseInt(octal, 8));
+      i = j - 1;
+      continue;
+    }
+    flushBytes();
+    if (next === 't') out += '\t';
+    else if (next === 'n') out += '\n';
+    else out += next ?? '';
+    i += 1;
+  }
+  flushBytes();
+  return out;
+}
+
+/** Decode `raw` if it is a quoted path; otherwise return it unchanged. */
+function maybeUnquote(raw: string): string {
+  if (!raw.startsWith('"')) return raw;
+  return unquotePath(raw.slice(0, findClosingQuote(raw) + 1));
+}
+
+/** Strip a leading `a/` or `b/` prefix, as used by `---`/`+++` and the `diff --git` line. */
+function stripAbPrefix(p: string): string {
+  return p.startsWith('a/') || p.startsWith('b/') ? p.slice(2) : p;
+}
+
+/** A `---`/`+++` line's path: `null` for `/dev/null`, else unquoted with its `a/`/`b/` prefix gone. */
+function parsePathLine(raw: string): string | null {
+  if (raw === '/dev/null') return null;
+  return stripAbPrefix(maybeUnquote(raw));
+}
+
+/**
+ * The two paths on a `diff --git a/X b/X` line. Outside a rename, `a` and `b` are the identical
+ * path, so an unquoted line is split exactly in half rather than searched for `" b/"` — a search
+ * would misfire if the path itself contained that substring.
+ */
+function parseGitDiffHeader(line: string): { a: string; b: string } {
+  const rest = line.slice(DIFF_GIT_PREFIX.length);
+  if (rest.startsWith('"')) {
+    const aRaw = rest.slice(0, findClosingQuote(rest) + 1);
+    const a = stripAbPrefix(unquotePath(aRaw));
+    const b = stripAbPrefix(maybeUnquote(rest.slice(aRaw.length + 1)));
+    return { a, b };
+  }
+  const pathLength = (rest.length - 5) / 2;
+  return { a: rest.slice(2, 2 + pathLength), b: rest.slice(2 + pathLength + 3) };
+}
+
+/** The four numbers on a hunk header, with omitted counts defaulting to 1. */
+function parseHunkCounts(header: string): {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+} {
+  const match = HUNK_HEADER.exec(header);
+  if (!match) return { oldStart: 0, oldLines: 0, newStart: 0, newLines: 0 };
+  const [, oldStart, oldLines, newStart, newLines] = match;
+  return {
+    oldStart: Number(oldStart),
+    oldLines: oldLines === undefined ? 1 : Number(oldLines),
+    newStart: Number(newStart),
+    newLines: newLines === undefined ? 1 : Number(newLines),
+  };
+}
+
+/**
+ * One hunk starting at `lines[i]`, consumed by count rather than by line prefix — so a content
+ * line that happens to start `--- `, `+++ ` or `diff ` is never mistaken for the next header.
+ * Returns the index just past the hunk, for the caller to resume at.
+ */
+function parseHunk(lines: string[], i: number, end: number): { hunk: DiffHunk; next: number } {
+  const counts = parseHunkCounts(lines[i]);
+  const diffLines: DiffLine[] = [];
+  let oldLine = counts.oldStart;
+  let newLine = counts.newStart;
+  let oldRemaining = counts.oldLines;
+  let newRemaining = counts.newLines;
+  let j = i + 1;
+  while (j < end && (oldRemaining > 0 || newRemaining > 0)) {
+    const raw = lines[j];
+    if (raw === '' || raw[0] === ' ') {
+      diffLines.push({ kind: 'context', text: raw === '' ? '' : raw.slice(1), oldLine, newLine });
+      oldLine += 1;
+      newLine += 1;
+      oldRemaining -= 1;
+      newRemaining -= 1;
+    } else if (raw[0] === '-') {
+      diffLines.push({ kind: 'del', text: raw.slice(1), oldLine });
+      oldLine += 1;
+      oldRemaining -= 1;
+    } else if (raw[0] === '+') {
+      diffLines.push({ kind: 'add', text: raw.slice(1), newLine });
+      newLine += 1;
+      newRemaining -= 1;
+    } else {
+      break; // malformed input — stop rather than loop forever
+    }
+    j += 1;
+    if (lines[j] === NO_NEWLINE_MARKER) {
+      diffLines[diffLines.length - 1].noNewlineAtEof = true;
+      j += 1;
+    }
+  }
+  return {
+    hunk: {
+      oldStart: counts.oldStart,
+      oldLines: counts.oldLines,
+      newStart: counts.newStart,
+      newLines: counts.newLines,
+      header: lines[i],
+      lines: diffLines,
+    },
+    next: j,
+  };
+}
+
+/** One file's section, from its `diff --git` line up to (not including) `end`. */
+function parseFileSection(lines: string[], start: number, end: number): PatchFile {
+  const { a: gitA, b: gitB } = parseGitDiffHeader(lines[start]);
+
+  let newFile = false;
+  let deletedFile = false;
+  let renameFrom: string | undefined;
+  let renameTo: string | undefined;
+  let copyFrom: string | undefined;
+  let copyTo: string | undefined;
+  let minusPath: string | null | undefined;
+  let plusPath: string | null | undefined;
+  let binary = false;
+  const hunks: DiffHunk[] = [];
+
+  for (let i = start + 1; i < end; i += 1) {
+    const line = lines[i];
+    if (line.startsWith('@@ ')) {
+      const parsed = parseHunk(lines, i, end);
+      hunks.push(parsed.hunk);
+      i = parsed.next - 1;
+    } else if (line.startsWith('new file mode')) {
+      newFile = true;
+    } else if (line.startsWith('deleted file mode')) {
+      deletedFile = true;
+    } else if (line.startsWith('rename from ')) {
+      renameFrom = maybeUnquote(line.slice('rename from '.length));
+    } else if (line.startsWith('rename to ')) {
+      renameTo = maybeUnquote(line.slice('rename to '.length));
+    } else if (line.startsWith('copy from ')) {
+      copyFrom = maybeUnquote(line.slice('copy from '.length));
+    } else if (line.startsWith('copy to ')) {
+      copyTo = maybeUnquote(line.slice('copy to '.length));
+    } else if (line.startsWith('--- ')) {
+      minusPath = parsePathLine(line.slice('--- '.length));
+    } else if (line.startsWith('+++ ')) {
+      plusPath = parsePathLine(line.slice('+++ '.length));
+    } else if (line.startsWith('Binary files ') && line.endsWith(' differ')) {
+      binary = true;
+    } else if (line.startsWith('GIT binary patch')) {
+      binary = true;
+      break; // its body is never hunks — nothing after this belongs to this file
+    }
+    // old/new mode, similarity/dissimilarity index, index: recognised, nothing to extract.
+  }
+
+  let status: DiffFileStatus;
+  if (renameFrom !== undefined && renameTo !== undefined) status = 'renamed';
+  else if (copyFrom !== undefined && copyTo !== undefined) status = 'copied';
+  else if (newFile || minusPath === null) status = 'added';
+  else if (deletedFile || plusPath === null) status = 'deleted';
+  else status = 'modified';
+
+  let path: string;
+  let oldPath: string | undefined;
+  if (status === 'renamed') {
+    path = renameTo ?? gitB;
+    oldPath = renameFrom;
+  } else if (status === 'copied') {
+    path = copyTo ?? gitB;
+    oldPath = copyFrom;
+  } else if (status === 'deleted') {
+    path = minusPath ?? gitA;
+  } else {
+    path = plusPath ?? gitB;
+  }
+
+  return { path, oldPath, status, binary, hunks };
+}
+
+/**
+ * Parse `git diff --no-color --no-ext-diff` output into one {@link PatchFile} per file. See the
+ * contract fixed above {@link PatchFile}.
+ */
+export function parsePatch(text: string): PatchFile[] {
+  if (!text) return [];
+  const lines = text.split('\n').map(stripTrailingCr);
+  const starts: number[] = [];
+  lines.forEach((line, i) => {
+    if (line.startsWith(DIFF_GIT_PREFIX)) starts.push(i);
+  });
+  return starts.map((start, idx) => {
+    const end = idx + 1 < starts.length ? starts[idx + 1] : lines.length;
+    return parseFileSection(lines, start, end);
+  });
+}
+
 export type DiffImageSide =
   { bytes: number; mime: string; base64: string } | { bytes: number; tooLarge: true };
 
