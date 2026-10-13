@@ -78,7 +78,7 @@ import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
 import { isEpic } from '@tm/shared/tickets';
-import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
+import { LINK_GATE_LABEL } from '@tm/shared/taskChain';
 import {
   DEFAULT_PERMISSION_MODE,
   modeForPickedProject,
@@ -86,6 +86,7 @@ import {
   PERMISSION_MODES,
   seedNewCardAssign,
 } from './agentPickers';
+import { addTaskSteps, executeAddTaskSteps, outcomeMessage } from './addTaskSteps';
 import { isFileDrag } from './AttachmentStrip';
 import { clipboardFiles, pastedFilePaths } from './attachFiles';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
@@ -467,12 +468,14 @@ export interface AddTaskDialogProps {
   onClose: () => void;
   onCreated: () => void;
   /**
-   * Something the board should say once this dialog has gone.
+   * The one combined notice {@link outcomeMessage} builds from everything `save` did after
+   * the card itself landed — a dropped ticket, chain link, or attachment, and/or whether the
+   * agent actually started. Only ever called with a `warning` tone; a quiet success closes
+   * the dialog without one.
    *
-   * The chain link is drawn AFTER the card exists, so a refusal there cannot be reported
-   * where an error normally is: the card was created, the dialog is closing, and an error
-   * bar inside it would either vanish or invite a second Add. It goes to the board, which
-   * is where the new card now is.
+   * These happen AFTER the card exists, so they cannot be reported where an error normally
+   * is: the card was created, the dialog is closing, and an error bar inside it would either
+   * vanish or invite a second Add. It goes to the board, which is where the new card now is.
    */
   onNotice?: (message: string) => void;
 }
@@ -697,66 +700,6 @@ export function AddTaskDialog({
   }
 
   /**
-   * Draw the arrow the picker asked for — `created` runs after `fromTaskId`.
-   *
-   * Deliberately not part of `save`'s try: the card is already on the board by the time
-   * this runs, so a link that will not draw is a note to the human rather than a failure of
-   * the whole dialog. It takes the default `after-merge` gate, changed on the arrow itself
-   * afterwards — a strict default is the one you can loosen once you have seen the chain.
-   */
-  async function chainAfter(fromTaskId: string, createdId: string): Promise<void> {
-    const excuse = (why: string): void =>
-      onNotice?.(`The card was created, but it could not be chained — ${why}.`);
-    try {
-      const result = await transport.invoke('chain:link', fromTaskId, createdId);
-      if (result.status === 'refused') excuse(LINK_REFUSAL_MESSAGE[result.reason]);
-    } catch (e) {
-      excuse(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  /**
-   * Raise the ticket the switch asked for, on the card that now exists.
-   *
-   * Reported the way a refused chain link is, and for the same reason: by the time this
-   * runs the card is on the board, so JIRA being unreachable is a note to the human
-   * rather than a failure of the whole dialog. Losing what you typed because a network
-   * call failed is the outcome writing the card first exists to prevent.
-   */
-  async function ticketFor(
-    createdId: string,
-    ticket: { projectKey: string; issueTypeId: string; summary: string; description?: string },
-  ): Promise<void> {
-    try {
-      await transport.invoke('jira:createTask', { ...ticket, adoptTaskId: createdId });
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      onNotice?.(`The card was created, but its JIRA ticket was not — ${why}`);
-    }
-  }
-
-  /**
-   * Copy the staged files onto the row that now exists.
-   *
-   * Reported the way a refused chain link and an unraised ticket are, and for the reason
-   * they give: by the time this runs the card is on the board, so a file that would not
-   * copy is a note to the human rather than a failure of the whole dialog. Losing what you
-   * typed because one of five picked files was locked is the outcome writing the row first
-   * exists to prevent — and main attaches what it can and reports the rest, so a refusal
-   * here does not mean nothing landed.
-   */
-  async function attachTo(createdId: string, paths: string[]): Promise<void> {
-    try {
-      await transport.invoke('attachment:add', createdId, paths);
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      onNotice?.(
-        `The ${isStep ? 'step' : 'card'} was created, but its files were not attached — ${why}`,
-      );
-    }
-  }
-
-  /**
    * Write `@name` into the description at the caret — the same fold, and the same reason
    * for it, as the detail pane's strip: each call would otherwise read the same
    * `description` from this render, so a pick of five files would cite only the fifth. With
@@ -832,7 +775,14 @@ export function AddTaskDialog({
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }
 
-  async function save(): Promise<void> {
+  /**
+   * Add, or Add and start — the two differ only in `startNow`, which decides whether the
+   * `assign` step {@link addTaskSteps} may emit also starts the agent. The writes themselves
+   * are `addTaskSteps`' own ordered list, run by `executeAddTaskSteps` against this
+   * transport; this function's only jobs are building the plan, reading the one combined
+   * notice back off the result, and closing.
+   */
+  async function save(startNow: boolean): Promise<void> {
     const plan = addTaskPlan({
       title,
       description,
@@ -849,10 +799,9 @@ export function AddTaskDialog({
       boardId,
       boardOwnsTickets,
       // A step never gets one of its own — it joins its parent's board and runs under
-      // whatever agent is already on that card. F5.3 is what actually starts this run;
-      // here it is only ever recorded onto the card.
+      // whatever agent is already on that card.
       assign: isStep ? null : { agentProjectId, model, mode },
-      startNow: false,
+      startNow,
     });
     if (plan.kind === 'incomplete') {
       setError(plan.error);
@@ -861,35 +810,13 @@ export function AddTaskDialog({
     setSaving(true);
     setError(null);
     try {
-      // The card the chain link is drawn to, once there is one. A step never has it: its
-      // order comes from the plan it belongs to, and `canLink` refuses steps at either end.
-      let created: Task | null = null;
-      // The row the files hang off, which a step DOES have — `task:addSubtask` returns the
-      // step it made. A separate local rather than reusing `created`, which must stay null
-      // for a step so the chain link below is never drawn for one.
-      let createdId: string;
-      // A step is created through its parent (it inherits the delegation and joins the
-      // chain); a `ticket` plan writes a native ticket on the board that owns it; anything
-      // else is an ordinary ad-hoc card, `type` and all — `addTaskPlan` already decided
-      // which of the two this is, from `boardOwnsTickets` alone.
-      if (plan.kind === 'step') {
-        createdId = (await transport.invoke('task:addSubtask', plan.parentId, plan.step)).id;
-      } else if (plan.kind === 'ticket') {
-        created = await transport.invoke('ticket:create', plan.board, plan.ticket);
-        createdId = created.id;
-      } else {
-        created = await transport.invoke('task:create', plan.board, plan.card);
-        createdId = created.id;
-        if (plan.ticket) await ticketFor(created.id, plan.ticket);
-      }
-      // Only now is there a `taskId` to hang a file off — the whole reason they were staged.
-      if (staged.length) {
-        await attachTo(
-          createdId,
-          staged.map((s) => s.path),
-        );
-      }
-      if (created && runsAfter) await chainAfter(runsAfter.id, created.id);
+      const steps = addTaskSteps(plan, {
+        attachments: staged.map((s) => s.path),
+        runsAfterId: runsAfter?.id ?? null,
+      });
+      const result = await executeAddTaskSteps(steps, transport.invoke);
+      const msg = outcomeMessage(result);
+      if (msg?.tone === 'warning') onNotice?.(msg.text);
       onCreated();
       onClose();
     } catch (e) {
@@ -899,9 +826,21 @@ export function AddTaskDialog({
     }
   }
 
+  // An agent is picked and there is a card (never a step) to start it on — the moment Add
+  // and start has anything to do beyond the plain Add it is offered alongside.
+  const canStartNow = !isStep && agentProjectId !== '';
+  const primary = (): void => void save(canStartNow);
+
   return (
     <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
-      <DialogSurface>
+      <DialogSurface
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !saving && title.trim()) {
+            e.preventDefault();
+            primary();
+          }
+        }}
+      >
         <DialogBody>
           <DialogTitle>{isStep ? 'Add step' : 'Add task'}</DialogTitle>
           <DialogContent>
@@ -1318,6 +1257,19 @@ export function AddTaskDialog({
             <Button appearance="secondary" onClick={onClose} disabled={saving}>
               Cancel
             </Button>
+            {/* With an agent picked, Add alone would silently drop "start now" — so it stays
+                offered, next to the button that actually starts the run. Mirrors
+                AssignAgentDialog's own Assign / Assign & start pair. */}
+            {canStartNow && (
+              <Button
+                appearance="secondary"
+                onClick={() => void save(false)}
+                disabled={saving || !title.trim()}
+                title="Add the card and assign the agent, without starting it."
+              >
+                Add
+              </Button>
+            )}
             {/* The spinner is not decoration on a web client: `task:create` is relayed
                 there, so Add settles on the desktop's next drain rather than in the
                 microsecond an in-process write takes. A button that only greys out reads as
@@ -1325,11 +1277,11 @@ export function AddTaskDialog({
                 honest picture of how long that write actually takes. */}
             <Button
               appearance="primary"
-              onClick={() => void save()}
+              onClick={primary}
               disabled={saving || !title.trim()}
               icon={saving ? <Spinner size="tiny" /> : undefined}
             >
-              {isStep ? 'Add step' : 'Add task'}
+              {canStartNow ? 'Add and start' : isStep ? 'Add step' : 'Add task'}
             </Button>
           </DialogActions>
         </DialogBody>
