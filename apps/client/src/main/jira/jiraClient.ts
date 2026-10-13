@@ -55,6 +55,8 @@ export interface JiraIssue {
     issuetype?: { name: string } | null;
     labels?: string[] | null;
     updated?: string;
+    /** Who the issue is assigned to, when it has an assignee. */
+    assignee?: { displayName: string } | null;
     /** Present when the search requests the `comment` field (used for unread detection). */
     comment?: { comments: JiraComment[] } | null;
     /** Plain string on v2; Atlassian Document Format (object) on v3. Null when empty. */
@@ -169,7 +171,7 @@ export function commentBodyToText(body: unknown): string {
  * into a card identical to a synced one and the next poll changes nothing.
  */
 const ISSUE_FIELDS =
-  'summary,status,priority,project,issuetype,labels,updated,comment,description,parent';
+  'summary,status,priority,project,issuetype,labels,updated,comment,description,parent,assignee';
 
 /**
  * How many pages one search will ever fetch. A backstop against a server that never
@@ -336,9 +338,75 @@ export class JiraClient {
     return { issues: issues.slice(0, limit), truncated };
   }
 
+  /**
+   * One page of a JQL search, for a caller that pages explicitly — the issue browser —
+   * rather than wanting the whole answer at once (that's {@link searchAll}). Same
+   * v2/v3 fork, but the cursor it hands back is opaque and round-trips straight into
+   * the next call's `cursor`: v3 (Cloud)'s is `nextPageToken`, v2 (Server/DC)'s is the
+   * `startAt` to resume at, encoded as a string for either case.
+   *
+   * v2 still needs `total` to know whether it just served the last page — an instance
+   * that doesn't report one (see `searchAll`) is treated the same way: no cursor back,
+   * since there is no way to tell "more" from "no more" without it.
+   */
+  async searchPage(
+    jql: string,
+    opts: { maxResults?: number; cursor?: string | null; fields?: readonly string[] } = {},
+  ): Promise<{ issues: JiraIssue[]; nextCursor: string | null }> {
+    const maxResults = Math.max(1, Math.min(100, opts.maxResults ?? 50));
+    const fields = (opts.fields ?? [ISSUE_FIELDS]).join(',');
+
+    if (this.config.apiVersion !== '3') {
+      const startAt = opts.cursor ? Number(opts.cursor) || 0 : 0;
+      const params = new URLSearchParams({
+        jql,
+        startAt: String(startAt),
+        maxResults: String(maxResults),
+        fields,
+      });
+      const data = await this.request<{ issues?: JiraIssue[]; total?: number }>(
+        `/search?${params.toString()}`,
+      );
+      const issues = data.issues ?? [];
+      const total = typeof data.total === 'number' ? data.total : null;
+      const nextStartAt = startAt + issues.length;
+      const nextCursor =
+        issues.length > 0 && total !== null && nextStartAt < total ? String(nextStartAt) : null;
+      return { issues, nextCursor };
+    }
+
+    const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields });
+    if (opts.cursor) params.set('nextPageToken', opts.cursor);
+    const data = await this.request<{
+      issues?: JiraIssue[];
+      nextPageToken?: string;
+      isLast?: boolean;
+    }>(`/search/jql?${params.toString()}`);
+    return {
+      issues: data.issues ?? [],
+      nextCursor: data.isLast ? null : (data.nextPageToken ?? null),
+    };
+  }
+
   /** GET /field — the instance's field metadata (used to discover the Epic Link field). */
   async listFields(): Promise<JiraField[]> {
     return (await this.request<JiraField[]>('/field')) ?? [];
+  }
+
+  /**
+   * Every label this instance has, for the issue browser's facet list — the first 100,
+   * which is every label on any site we've seen one from. Not every instance exposes
+   * this endpoint; a 404 is a deployment fact (not an error worth surfacing), answered
+   * with `null` so a caller can tell "no labels" from "can't ask".
+   */
+  async listLabels(): Promise<string[] | null> {
+    try {
+      const data = await this.request<{ values?: string[] }>('/label?maxResults=100');
+      return data.values ?? [];
+    } catch (e) {
+      if (e instanceof JiraError && e.status === 404) return null;
+      throw e;
+    }
   }
 
   /**

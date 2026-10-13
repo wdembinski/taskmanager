@@ -386,6 +386,119 @@ describe('JiraClient.listFields', () => {
   });
 });
 
+describe('JiraClient.searchPage', () => {
+  it('sends maxResults=50 and the default fields (including assignee) with no cursor on the first page', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ issues: [], nextPageToken: 'tok-2' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await cloudClient().searchPage('statusCategory != Done', { maxResults: 50 });
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.pathname).toContain('/rest/api/3/search/jql');
+    expect(url.searchParams.get('maxResults')).toBe('50');
+    expect((url.searchParams.get('fields') ?? '').split(',')).toContain('assignee');
+    expect(url.searchParams.has('nextPageToken')).toBe(false);
+  });
+
+  it('clamps an out-of-range maxResults into the 1-100 window', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ issues: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await cloudClient().searchPage('statusCategory != Done', { maxResults: 500 });
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('maxResults')).toBe('100');
+  });
+
+  it('v3: returns nextPageToken as the cursor, and sends a cursor back as nextPageToken', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ issues: [{ id: '1', key: 'AB-1', fields: {} }], nextPageToken: 'tok-3' }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const page = await cloudClient().searchPage('statusCategory != Done', { cursor: 'tok-2' });
+    expect(page.nextCursor).toBe('tok-3');
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('nextPageToken')).toBe(
+      'tok-2',
+    );
+  });
+
+  it('v3: the last page (isLast) answers a null cursor', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ issues: [{ id: '1', key: 'AB-1', fields: {} }], isLast: true }),
+        ),
+    );
+    const page = await cloudClient().searchPage('statusCategory != Done');
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('v2: resumes from the given cursor as startAt, and returns the next startAt as the cursor', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ issues: [{ id: '1', key: 'AB-1', fields: {} }], total: 3 }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const page = await serverClient().searchPage('statusCategory != Done', { cursor: '1' });
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('startAt')).toBe('1');
+    expect(page.nextCursor).toBe('2');
+  });
+
+  it('v2: the last page (reaching total) answers a null cursor', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ issues: [{ id: '1', key: 'AB-1', fields: {} }], total: 1 }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const page = await serverClient().searchPage('statusCategory != Done');
+    expect(page.nextCursor).toBeNull();
+  });
+
+  it('v2: an instance that reports no total is treated as a last page rather than looped forever', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ issues: [{ id: '1', key: 'AB-1', fields: {} }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const page = await serverClient().searchPage('statusCategory != Done');
+    expect(page.nextCursor).toBeNull();
+  });
+});
+
+describe('JiraClient.listLabels', () => {
+  it('GETs /label and returns the first 100 values', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ values: ['bug', 'urgent'], total: 2, isLast: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const labels = await serverClient().listLabels();
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.pathname).toContain('/rest/api/2/label');
+    expect(url.searchParams.get('maxResults')).toBe('100');
+    expect(labels).toEqual(['bug', 'urgent']);
+  });
+
+  it('answers null (rather than throwing) when the instance has no /label endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 404)));
+    await expect(serverClient().listLabels()).resolves.toBeNull();
+  });
+
+  it('still throws a non-404 error, since that is not "no labels"', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({}, 500)));
+    await expect(serverClient().listLabels()).rejects.toBeInstanceOf(JiraError);
+  });
+});
+
 describe('JiraClient.addComment', () => {
   it('posts a plain-string body on v2', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: '10' }));
