@@ -404,7 +404,10 @@ export function retainedKeys(existing: readonly Task[], issues: readonly JiraIss
     if (returned.has(task.externalKey)) continue;
     if (task.archivedAt != null) continue; // already off the board; nothing left to decide
     if (restingStatus(task) === 'blocked') continue; // never dropped, so never worth asking about
-    if (isRetained(task)) keys.push(task.externalKey);
+    // A pinned card is outside the query by design — never returned, never worth checking
+    // against the query at all — but it still needs the by-key question so the sync keeps
+    // following its ticket, same as a retained card. See `Task.pinnedImport`.
+    if (isRetained(task) || task.pinnedImport) keys.push(task.externalKey);
   }
   return keys;
 }
@@ -437,6 +440,7 @@ export function removalCandidateKeys(
     if (returned.has(task.externalKey)) continue;
     if (task.archivedAt != null) continue; // already off the board
     if (restingStatus(task) === 'blocked') continue; // never removed; see {@link retainedKeys}
+    if (task.pinnedImport) continue; // never removed; {@link retainedKeys} asks about these too
     if (isRetained(task)) continue; // {@link retainedKeys} asks about these, by key
     keys.push(task.externalKey);
   }
@@ -470,16 +474,25 @@ export function removalCandidateKeys(
  *   4. **this sync's own answer looks incomplete** ({@link isIncompleteAnswer}: a large,
  *      query-unchanged share of the board is missing from `issues`) — everything is kept,
  *      for the same reason as 3: an instance under-answering this badly cannot be trusted to
- *      have gotten the handful of per-key follow-ups below right either.
- *   5. **never asked about** (`queryChecked` has no such key) — kept.
- *   6. **asked, and JIRA says it still matches** (`queryMatches`) — kept, and counted: this
+ *      have gotten the handful of per-key follow-ups below right either. A pinned card never
+ *      counts towards the shortfall this measures — it is missing from `issues` BY DESIGN,
+ *      not because the instance under-answered, so `missingCount` excludes it outright.
+ *   5. **pinned, and not retained** (`task.pinnedImport`) — outside the query by design (see
+ *      `Task.pinnedImport`), so never put to `queryChecked`/`queryMatches` at all; asked by
+ *      key instead, with the same discipline as a retained card: not asked
+ *      (`rechecked === null`, or the key missing from `recheckedKeys`) — kept; asked and JIRA
+ *      does not have it — `gone-from-jira`; asked and present — upserted from the re-read
+ *      issue, `retainedSince` staying null. A pinned card that is ALSO retained (finished)
+ *      falls through to 8–10 unchanged, the same as any other finished card.
+ *   6. **never asked about** (`queryChecked` has no such key) — kept.
+ *   7. **asked, and JIRA says it still matches** (`queryMatches`) — kept, and counted: this
  *      is a *paging artifact*, the case that was eating the board, and the count is the most
  *      diagnostic number this function produces.
- *   7. **asked, and JIRA says it no longer matches** — `left-query`.
- *   8. **retained past its window** — `retention-expired`.
- *   9. **retained, its batch failed** (`recheckedKeys` has no such key) — kept.
- *  10. **retained, asked for by key, and JIRA does not have it** — `gone-from-jira`.
- *  11. otherwise — upserted from the re-read issue, with its retention clock preserved.
+ *   8. **asked, and JIRA says it no longer matches** — `left-query`.
+ *   9. **retained past its window** — `retention-expired`.
+ *  10. **retained, its batch failed** (`recheckedKeys` has no such key) — kept.
+ *  11. **retained, asked for by key, and JIRA does not have it** — `gone-from-jira`.
+ *  12. otherwise — upserted from the re-read issue, with its retention clock preserved.
  *
  * Whatever survives all that is then put to {@link guardRemovals}, **here** rather than in
  * the caller: a guard the caller can forget to apply is not a guard.
@@ -521,7 +534,11 @@ export function reconcileJiraTasks(
   // *why* — a paging artifact, a genuine departure, a re-check that could not run are all
   // still "missing from `issues`" at this point, and that raw share is what a broadly
   // under-answering instance actually looks like from here.
-  const missingCount = onBoardJiraCards.filter((t) => !seen.has(t.externalKey as string)).length;
+  // A pinned card is excluded here: it is missing from `issues` BY DESIGN, never because the
+  // instance under-answered, so it must not count towards a shortfall meant to measure that.
+  const missingCount = onBoardJiraCards.filter(
+    (t) => !seen.has(t.externalKey as string) && !t.pinnedImport,
+  ).length;
   const incompleteAnswer = isIncompleteAnswer(missingCount, boardCount, opts);
 
   const candidates: JiraRemoval[] = [];
@@ -554,6 +571,24 @@ export function reconcileJiraTasks(
     if (restingStatus(task) === 'blocked') continue;
 
     if (!isRetained(task)) {
+      // A pinned card was never in the query to begin with, so the query never has an
+      // opinion to confirm — it is asked about BY KEY, same question as a retained card gets
+      // below, not the queryChecked/queryMatches confirm pass. See `Task.pinnedImport`.
+      if (task.pinnedImport) {
+        // The re-read didn't run (or failed for this key). Keep it rather than retire it on
+        // a question nobody put.
+        if (rechecked === null) continue;
+        if (recheckedKeys !== null && !recheckedKeys.has(task.externalKey)) continue;
+        const pinnedIssue = rechecked.get(task.externalKey);
+        // JIRA answered and does not have it: deleted, or no longer visible to this token.
+        if (!pinnedIssue) {
+          drop(task, 'gone-from-jira');
+          continue;
+        }
+        // Still outside the query by design, so no retention clock starts.
+        upserts.push(issueToTask(pinnedIssue, task, opts, task.order));
+        continue;
+      }
       // Nobody put the question: the confirm pass did not run, or did not cover this key
       // (its batch failed, or the key was added after the pass was built).
       if (queryChecked === null || !queryChecked.has(task.externalKey)) continue;

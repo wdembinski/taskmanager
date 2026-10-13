@@ -445,7 +445,9 @@ export function parseIssueKey(key: string): IssueRef | null {
  *   4. **this sync's own answer looks incomplete** ({@link isIncompleteAnswer}: a large,
  *      query-unchanged share of the board is missing from `issues`) — everything is kept, for
  *      the same reason as 3: an instance under-answering this badly cannot be trusted to have
- *      gotten the handful of by-number re-reads below right either.
+ *      gotten the handful of by-number re-reads below right either. A pinned card never counts
+ *      towards the shortfall this measures — it is missing from `issues` BY DESIGN, not because
+ *      the instance under-answered, so `missingCount` excludes it outright.
  *   5. **the re-read did not run, or this issue's own call failed** — kept. A card must not
  *      be archived on a question that errored.
  *   6. **asked for by number, and GitHub does not have it** — `gone-from-jira`, which is this
@@ -453,9 +455,13 @@ export function parseIssueKey(key: string): IssueRef | null {
  *   7. **asked, and GitHub says it is closed** — kept and retained, even if the card was not
  *      already finished. The answer is in hand and it says the work landed; taking the card
  *      off the board at the exact moment a human wants to see it land would be perverse.
- *   8. **asked, still open, and nothing is retaining it** — `left-query`.
- *   9. **retained past its window** — `retention-expired`.
- *  10. otherwise — upserted from the re-read issue, with its retention clock preserved.
+ *   8. **asked, still open, nothing is retaining it, and the card is pinned**
+ *      (`task.pinnedImport`) — upserted rather than dropped: a pinned card is outside the
+ *      search by design, so "still open and not in the search" says nothing about it that
+ *      wasn't already known. See `Task.pinnedImport`.
+ *   9. **asked, still open, and nothing is retaining it** — `left-query`.
+ *  10. **retained past its window** — `retention-expired`.
+ *  11. otherwise — upserted from the re-read issue, with its retention clock preserved.
  *
  * Whatever survives that is put to `guardRemovals`, **here** rather than in the caller: a
  * guard the caller can forget to apply is not a guard.
@@ -497,7 +503,11 @@ export function reconcileGitHubIssues(
   // How much of the board this search itself left out, before any per-issue re-read says
   // *why* — still "missing from `issues`" either way, and that raw share is what a broadly
   // under-answering instance actually looks like from here.
-  const missingCount = onBoardGitHubCards.filter((t) => !seen.has(t.externalKey as string)).length;
+  // A pinned card is excluded here: it is missing from `issues` BY DESIGN, never because the
+  // instance under-answered, so it must not count towards a shortfall meant to measure that.
+  const missingCount = onBoardGitHubCards.filter(
+    (t) => !seen.has(t.externalKey as string) && !t.pinnedImport,
+  ).length;
   const incompleteAnswer = isIncompleteAnswer(missingCount, boardCount, opts);
 
   const candidates: ForgeRemoval[] = [];
@@ -555,6 +565,14 @@ export function reconcileGitHubIssues(
       opts.learned,
     ).column;
     if (!isRetained(task) && column !== 'done') {
+      // A pinned card is outside the search by design, so GitHub still having it open is not
+      // the question — it was never going to be found by the search either way. Upsert from
+      // the re-read instead of archiving it, with no retention clock: it stays pinned, not
+      // retained. See `Task.pinnedImport`.
+      if (task.pinnedImport) {
+        upserts.push(issueToTask(issue, task, opts, task.order));
+        continue;
+      }
       drop(task, 'left-query');
       continue;
     }

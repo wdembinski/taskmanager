@@ -99,6 +99,7 @@ import {
   reconcileJiraTasks,
   removalCandidateKeys,
   retainedKeys,
+  type JiraSyncOptions,
 } from './jira/jiraSync';
 import { confirmStillMatching, recheckByKey } from './jira/jiraConfirm';
 import { chunkKeys, keysInJql } from './jira/jiraJql';
@@ -119,6 +120,7 @@ import { createJiraIssueProvider } from './issues/jiraIssues';
 import { createGithubIssueProvider } from './issues/githubIssues';
 import { createGitlabIssueProvider } from './issues/gitlabIssues';
 import { listIssuePage, type IssueProvider } from './issues/issueProvider';
+import { importIssue } from './issues/importIssue';
 import type { ClientInfo, CommandEnvelope } from '@protocol/wire';
 import { PAT_PREFIX, PAT_SECRET_LENGTH, PROTOCOL_VERSION } from '@protocol/wire';
 import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
@@ -150,6 +152,7 @@ import { buildCommentBody } from './github/githubComment';
 import {
   categoryForColumn,
   issuesToRecheck,
+  issueToTask as githubIssueToTask,
   parseIssueKey,
   reconcileGitHubIssues,
   type IssueRef,
@@ -3005,20 +3008,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Read the issue back and build the card with the SAME `issueToTask` a sync uses,
     // rather than hand-building a Task. A hand-built one would differ from what the next
     // poll produces — a different status, a missing field — and appear to mutate on its own.
-    const epicField = await epicFieldId(jira.baseUrl, client);
-    const sprintField = await sprintFieldId(jira.baseUrl, client);
-    const extraFields = [epicField, sprintField].filter((f): f is string => f !== null);
+    const opts = await jiraCardOptions(client);
+    const extraFields = [opts.epicFieldId, opts.sprintFieldId].filter(
+      (f): f is string => typeof f === 'string',
+    );
     const issue = await client.getIssue(created.key, extraFields);
-    const card = issueToBoardTask(issue, adopt, {
-      baseUrl: jira.baseUrl,
-      overrides: jira.statusCategoryOverrides,
-      learned: jira.learnedStatusColumns,
-      epicFieldId: epicField,
-      sprintFieldId: sprintField,
-      identity: await jiraIdentity(jira.baseUrl, client),
-      assignOwnBoard: settings.features.ticketsToOwnBoard,
-      projects: store.listProjects(),
-    });
+    const card = issueToBoardTask(issue, adopt, opts);
     // The stored row, not the computed one: adopting keeps everything JIRA knows nothing
     // about (the filing, the type, an assignment), and only the round trip has those.
     const task = store.upsertJiraTask(card);
@@ -3384,7 +3379,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('automation:runNow', automationHandlers['automation:runNow']);
   handle('automation:runs', automationHandlers['automation:runs']);
 
-  // --- Issues (F5) — read-only browsing; import lands in F5.6. ---------------
+  // --- Issues (F5) — read-only browsing, and the one-click import onto the board (F5.6). ---
   /**
    * Builds the tracker's provider lazily, per call — the same reason `buildJiraClient` and
    * its GitHub/GitLab siblings above are never cached: credentials can change between two
@@ -3418,8 +3413,77 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const provider = buildIssueProvider(query.provider);
     return listIssuePage(provider, query, store.getAllBoardTasks());
   });
-  handle('issues:import', async () => {
-    throw new Error('issues:import is not implemented yet (F5.6)');
+
+  /**
+   * Read ONE issue fresh from its tracker and build the card it would land on the board as —
+   * `importIssue`'s `fetchCard`, called only for an issue that is not already on the board in
+   * any archived state. The same mapping a sync uses (`issueToBoardTask`/`issueToTask`), so an
+   * imported card looks exactly like one the next poll would have produced.
+   */
+  async function fetchIssueCard(provider: IssueProviderId, key: string): Promise<Task> {
+    if (provider === 'jira') {
+      const { jira } = store.getSettings();
+      if (!jira.enabled) throw new Error('JIRA is switched off.');
+      const client = buildJiraClient();
+      const opts = await jiraCardOptions(client);
+      const extraFields = [opts.epicFieldId, opts.sprintFieldId].filter(
+        (f): f is string => typeof f === 'string',
+      );
+      const issue = await client.getIssue(key, extraFields);
+      return issueToBoardTask(issue, undefined, opts);
+    }
+    const { github, features } = store.getSettings();
+    if (!github.enabled) throw new Error('GitHub is switched off.');
+    const ref = parseIssueKey(key);
+    if (!ref) throw new Error(`Not a valid GitHub issue key: ${key}`);
+    const client = buildGitHubClient();
+    const issue = await client.getIssue(ref.owner, ref.repo, ref.number);
+    const identity = await githubIdentity(github.baseUrl, client);
+    // Same scope the SQL `nextOrder` would use for a brand-new card on the Personal board —
+    // every one of this project's rows, archived included, so a restored card never gets its
+    // slot handed to the new one.
+    const order = Math.max(-1, ...store.getPersonalTasksForSync().map((t) => t.order)) + 1;
+    return githubIssueToTask(
+      issue,
+      undefined,
+      {
+        overrides: github.labelColumnOverrides,
+        learned: github.learnedLabelColumns,
+        identity,
+        assignOwnBoard: features.ticketsToOwnBoard,
+        projects: store.listProjects(),
+      },
+      order,
+    );
+  }
+
+  handle('issues:import', async (provider, key) => {
+    const task = await importIssue(provider, key, {
+      findCard: (source, k) =>
+        [...store.getAllBoardTasks(), ...store.getAllArchivedBoardTasks()].find(
+          (t) => t.externalSource === source && t.externalKey === k,
+        ),
+      fetchCard: fetchIssueCard,
+      insert(card) {
+        const inserted = store.upsertJiraTask(card);
+        return store.pinImport(inserted.id) ?? inserted;
+      },
+      unarchive(id) {
+        store.unarchiveTask(id);
+      },
+      pin(id) {
+        const pinned = store.pinImport(id);
+        if (!pinned) throw new Error('That card is no longer there.');
+        return pinned;
+      },
+    });
+    // The same push `ticket:create` makes: the board this card lives on just gained (or
+    // un-archived) one, and nothing else would tell that project's window so.
+    send('project:tasksChanged', {
+      projectId: task.projectId,
+      tasks: store.getTasks(task.projectId),
+    });
+    return task;
   });
 
   // --- The chain of execution ------------------------------------------------
@@ -3644,6 +3708,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     } catch {
       return null;
     }
+  };
+
+  /**
+   * The mapping options every JIRA issue→card build needs — epic/sprint field ids, the
+   * signed-in identity, and the own-board assignment inputs — read fresh off settings so
+   * neither caller can act on a stale baseUrl or toggle. Shared by `jira:createTask` and
+   * `issues:import` so the two can never map the SAME issue two different ways.
+   */
+  const jiraCardOptions = async (client: JiraClient): Promise<JiraSyncOptions> => {
+    const settings = store.getSettings();
+    const { jira } = settings;
+    const epicFieldIdValue = await epicFieldId(jira.baseUrl, client);
+    const sprintFieldIdValue = await sprintFieldId(jira.baseUrl, client);
+    return {
+      baseUrl: jira.baseUrl,
+      overrides: jira.statusCategoryOverrides,
+      learned: jira.learnedStatusColumns,
+      epicFieldId: epicFieldIdValue,
+      sprintFieldId: sprintFieldIdValue,
+      identity: await jiraIdentity(jira.baseUrl, client),
+      assignOwnBoard: settings.features.ticketsToOwnBoard,
+      projects: store.listProjects(),
+    };
   };
 
   /**

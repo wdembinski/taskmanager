@@ -956,6 +956,75 @@ describe('the incomplete-answer guard leaves the loud refusal unreachable, not j
   });
 });
 
+describe('pinnedImport — a card imported outside the query', () => {
+  /** A card `issues:import` created, never returned by the board's JQL. */
+  const pinned = (over: Partial<Task> = {}): Task =>
+    jiraTask({
+      id: 'jira-pin',
+      externalKey: 'PROJ-9',
+      pinnedImport: true,
+      status: 'pending',
+      ...over,
+    });
+
+  it('upserts a pinned card the by-key re-read still finds, without starting a retention clock', () => {
+    const result = reconcileJiraTasks([pinned()], [], {
+      ...opts,
+      rechecked: [issue('9', 'PROJ-9', 'new')],
+      recheckedKeys: ['PROJ-9'],
+    });
+    expect(result.removals).toEqual([]);
+    expect(result.upserts).toHaveLength(1);
+    expect(result.upserts[0].retainedSince).toBeNull();
+  });
+
+  it('drops an unpinned twin through the ordinary left-query path in the same pass', () => {
+    const twin = jiraTask({ id: 'jira-10', externalKey: 'PROJ-10', status: 'pending' });
+    const result = reconcileJiraTasks([pinned(), twin], [], {
+      ...opts,
+      ...asked('PROJ-10'),
+      rechecked: [issue('9', 'PROJ-9', 'new')],
+      recheckedKeys: ['PROJ-9'],
+    });
+    expect(result.removals).toEqual([
+      { taskId: 'jira-10', key: 'PROJ-10', title: 'Do a thing', reason: 'left-query' },
+    ]);
+    expect(result.upserts.map((u) => u.id)).toEqual(['jira-pin']);
+  });
+
+  it('retires a pinned card JIRA no longer has, asked for by key', () => {
+    const result = reconcileJiraTasks([pinned()], [], {
+      ...opts,
+      rechecked: [],
+      recheckedKeys: ['PROJ-9'],
+    });
+    expect(removedIds(result)).toEqual(['jira-pin']);
+    expect(result.removals[0].reason).toBe('gone-from-jira');
+  });
+
+  it('is asked for by key (retainedKeys) and is never a removal candidate', () => {
+    expect(retainedKeys([pinned()], [])).toEqual(['PROJ-9']);
+    expect(removalCandidateKeys([pinned()], [])).toEqual([]);
+  });
+
+  it('does not trip the incomplete-answer guard, however many pinned cards the query leaves out', () => {
+    // Twenty pinned cards missing from a twenty-card board would be a 100% shortfall if it
+    // counted — it must not count at all, since every one of them is outside the query by
+    // design rather than by an under-answering instance.
+    const board: Task[] = Array.from({ length: 20 }, (_, i) =>
+      jiraTask({
+        id: `jira-p${i}`,
+        externalKey: `PIN-${i}`,
+        pinnedImport: true,
+        status: 'pending',
+      }),
+    );
+    const result = reconcileJiraTasks(board, [], { ...opts, rechecked: null });
+    expect(result.removals).toEqual([]);
+    expect(result.warning).toBeNull();
+  });
+});
+
 describe('reconcileJiraTasks — assigning tickets to their own board', () => {
   const project = (over: Partial<Project>): Project => ({
     id: 'p1',
