@@ -586,3 +586,37 @@ export function formatReviewMessage(
 
   return parts.join('\n\n');
 }
+
+export const WORD_DIFF_MAX_CHARS = 2_000; // per side; above it, skip tokenising entirely
+export const WORD_DIFF_MAX_TOKENS = 400; // per side, after trimming common prefix/suffix
+
+export type WordSegmentKind = 'same' | 'del' | 'add';
+
+export interface WordSegment {
+  kind: WordSegmentKind;
+  text: string;
+}
+
+/**
+ * A changed line's inner highlight, one side at a time: `old` carries `same`/`del`
+ * segments, `new` carries `same`/`add` segments — a unified view highlights the `-`
+ * line from `old` and the `+` line from `new`. `wholeLine` means tokenising was
+ * skipped or gave up (too long, too many tokens, or nothing meaningful in common);
+ * the line should render as a plain whole-line change, not word-highlighted.
+ */
+export interface WordDiff {
+  old: WordSegment[];
+  new: WordSegment[];
+  wholeLine: boolean;
+}
+
+/**
+ * Token-level diff between one old/new line pair, bounded so a single huge or
+ * minified line cannot blow up cost: `WORD_DIFF_MAX_CHARS` skips tokenising
+ * entirely, `WORD_DIFF_MAX_TOKENS` bounds the LCS after trimming the common
+ * prefix/suffix. Falls back to a whole-line `del`/`add` pair (`wholeLine: true`)
+ * past either cap, or when nothing meaningful survives in common.
+ */
+export function wordDiff(_oldText: string, _newText: string): WordDiff {
+  throw new Error('not implemented');
+}
