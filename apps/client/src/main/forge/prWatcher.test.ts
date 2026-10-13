@@ -87,7 +87,7 @@ interface Rig {
   notes: Array<{ projectId: string; taskId: string; body: string }>;
   marked: Array<{ mrId: string; headSha: string; action: string }>;
   resolveForgeConflictCalls: Array<{ taskId: string; mr: MergeRequest }>;
-  chatCalls: Array<{ taskId: string; message: string }>;
+  chatCalls: Array<{ taskId: string; message: string; purpose: string }>;
 }
 
 function rig(partial: Partial<PrWatcherDeps> = {}): Rig {
@@ -102,8 +102,8 @@ function rig(partial: Partial<PrWatcherDeps> = {}): Rig {
     resolveForgeConflict: (taskId, mr) => {
       resolveForgeConflictCalls.push({ taskId, mr });
     },
-    chatWithAgent: (taskId, message): ChatSendResult => {
-      chatCalls.push({ taskId, message });
+    chatWithAgent: (taskId, message, opts): ChatSendResult => {
+      chatCalls.push({ taskId, message, purpose: opts.purpose });
       return { status: 'sent', taskId, runId: 'run-1' };
     },
     note: (projectId, taskId, body) => notes.push({ projectId, taskId, body }),
@@ -315,6 +315,8 @@ describe('watchMergeRequests: fix-pipeline', () => {
     expect(chatCalls[0]?.taskId).toBe('task-1');
     expect(chatCalls[0]?.message).toContain('!1');
     expect(chatCalls[0]?.message).toContain(row.pipelineUrl);
+    // Tagged, so the card can say it is fixing CI rather than look like its work restarted.
+    expect(chatCalls[0]?.purpose).toBe('fix-pipeline');
     expect(notes).toEqual([
       {
         projectId: 'project-1',

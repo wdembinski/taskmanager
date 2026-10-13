@@ -53,6 +53,7 @@ import {
   ArrowSyncRegular,
   BeakerRegular,
   BookmarkRegular,
+  BranchForkRegular,
   BranchRequestClosedFilled,
   BugRegular,
   CheckmarkCircleFilled,
@@ -89,6 +90,7 @@ import {
   runPhase,
 } from '@tm/shared/board';
 import type { ChainDecline } from '@tm/shared/taskChain';
+import { RUN_PURPOSE_LABEL, runPurposeOf, type RunPurpose } from '@tm/shared/scheduler';
 import { priorityIndicatorShown } from '@tm/shared/priority';
 import { delegatedAgentName } from '@tm/shared/tickets';
 import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
@@ -990,6 +992,12 @@ export interface TaskCardProps {
    */
   liveRunTaskIds?: ReadonlySet<string>;
   /**
+   * Why the engine has an agent working a task, when it is a remediation rather than the
+   * card's own work (`ActiveRun.purpose`) — so a spinner on a card whose work was already
+   * handed in says "resolving conflicts" or "fixing CI" instead of looking like a restart.
+   */
+  runPurposes?: ReadonlyMap<string, RunPurpose>;
+  /**
    * The task ids whose branch is being merged, so the card says "Merging branch…" for the
    * minute git takes. Nothing about the task itself moves in that window, so without this
    * a card that had just been sent to merge looked identical to one nobody had touched.
@@ -1155,6 +1163,7 @@ export function TaskCard({
   statusKeywords,
   attentionTaskIds,
   liveRunTaskIds,
+  runPurposes,
   mergingTaskIds,
   display = DEFAULT_BOARD_DISPLAY,
   selected,
@@ -1305,6 +1314,19 @@ export function TaskCard({
   // `status === 'running'`, which could not see a run that had spawned but not yet been
   // persisted — the "it's clearly working but there's no spinner" complaint.
   const run = runPhase(task, subtasks, liveRunTaskIds, mergingTaskIds);
+  // Why the agent is working, when the engine sent it on an errand rather than the card's own
+  // work — only while something is visibly running, so a stale snapshot never outlives it.
+  const purpose = run.spinner ? runPurposeOf(task, subtasks, runPurposes) : null;
+  const purposeChip = purpose ? (
+    <span className={styles.chainChip} title={RUN_PURPOSE_LABEL[purpose].title}>
+      {purpose === 'fix-pipeline' ? (
+        <BugRegular className={styles.chainChipIcon} />
+      ) : (
+        <BranchForkRegular className={styles.chainChipIcon} />
+      )}
+      <span className={styles.chainChipText}>{RUN_PURPOSE_LABEL[purpose].label}</span>
+    </span>
+  ) : null;
   // The status worth badging, which needs the run: a card whose STEP is parked behind the
   // usage-limit gate is an ordinary `in-progress` card in IN PROGRESS, so only the phase
   // knows there is anything to say.
@@ -1695,8 +1717,12 @@ export function TaskCard({
           showsPoints ||
           showsAssignee ||
           chainChip !== null ||
+          purposeChip !== null ||
           chainPosition != null) && (
           <div className={styles.footer}>
+            {/* What the agent is doing, when it is not the card's own work — ahead of
+                everything, since it is the one thing here that is moving. */}
+            {purposeChip}
             {/* First in the row, ahead of the ticket badge: it is the reason this card is
                 not moving, and that outranks where it came from. */}
             {chainChip}

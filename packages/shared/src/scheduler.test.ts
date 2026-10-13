@@ -3,9 +3,31 @@ import {
   CARD_RECORDS_PARK,
   RUN_REFUSAL_MESSAGE,
   isParkedRefusal,
+  runPurposeOf,
+  runPurposesOf,
   type ParkedRefusal,
   type RunRefusal,
 } from './scheduler';
+
+describe('run purposes', () => {
+  const purposes = runPurposesOf([
+    { taskId: 'card', runId: 'r1' },
+    { taskId: 'step-2', runId: 'r2', purpose: 'resolve-conflicts' },
+  ]);
+
+  it('keeps only the runs that have one', () => {
+    expect([...purposes]).toEqual([['step-2', 'resolve-conflicts']]);
+  });
+
+  it("reads the card's own run, else a step's — and null for ordinary work", () => {
+    expect(runPurposeOf({ id: 'step-2' }, [], purposes)).toBe('resolve-conflicts');
+    expect(runPurposeOf({ id: 'card' }, [{ id: 'step-1' }, { id: 'step-2' }], purposes)).toBe(
+      'resolve-conflicts',
+    );
+    expect(runPurposeOf({ id: 'card' }, [{ id: 'step-1' }], purposes)).toBeNull();
+    expect(runPurposeOf({ id: 'card' }, [], undefined)).toBeNull();
+  });
+});
 
 /**
  * Every refusal the engine can give, written out by hand.

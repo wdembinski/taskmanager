@@ -4209,6 +4209,20 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     expect(start.mock.calls[0][1].resumeSessionId).toBe('sess-1');
   });
 
+  it('tags the run with its purpose, resumed or live, so the card can say why it works', () => {
+    const resumed = setupChat({ card: { status: 'in-progress' } });
+    const result = resumed.scheduler.chatWithAgent('c1', 'CI failed', { purpose: 'fix-pipeline' });
+    expect(result).toMatchObject({ status: 'resumed' });
+    expect(resumed.scheduler.activeRuns()).toEqual([
+      expect.objectContaining({ taskId: 'c1', purpose: 'fix-pipeline' }),
+    ]);
+
+    const live = setupChat({ liveFor: 'c1' });
+    expect(live.scheduler.activeRuns()[0]?.purpose).toBeUndefined();
+    live.scheduler.chatWithAgent('c1', 'CI failed', { purpose: 'fix-pipeline' });
+    expect(live.scheduler.activeRuns()[0]?.purpose).toBe('fix-pipeline');
+  });
+
   it('refuses to resume a card mid-chain — its steps hold the conversation', () => {
     for (const status of ['pending', 'failed', 'blocked-by-limit'] as const) {
       const { scheduler, start, chats } = setupChat({
@@ -7375,6 +7389,51 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
 
     expect(finishCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
     expect(pushCalls).toEqual([{ branch: 'orch/t1', expected: 'sha-remote-1' }]);
+  });
+
+  // The card span "working" long after its PR/MR was mergeable: the fix run borrowed
+  // `running`, `settle` handed straight to `finishConflict`, and the `rebased` outcome wrote
+  // no status at all — so nothing ever gave it back. No process was behind the spinner.
+  it('a conflict fix says what it is doing, and gives the status back once rebased', async () => {
+    const { scheduler, card, start, fire, pushCalls } = setup({
+      rebaseResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'refs/remotes/origin/main',
+      },
+    });
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    const fixRunId = (start.mock.calls[0][1] as { runId: string }).runId;
+    fire(fixRunId, {
+      kind: 'started',
+      sessionId: 'sess-1',
+      model: '',
+      cwd: '',
+      permissionMode: '',
+    });
+    await flush();
+    expect(card.status).toBe('running');
+    expect(scheduler.activeRuns()).toEqual([
+      expect.objectContaining({ taskId: 't1', purpose: 'resolve-conflicts' }),
+    ]);
+
+    fire(fixRunId, okResult);
+    await flush();
+
+    expect(pushCalls).toHaveLength(1);
+    expect(card.status).toBe('in-progress');
+    expect(scheduler.activeRuns()).toEqual([]);
+  });
+
+  it('a clean rebase with no agent leaves a resting card exactly where it was', async () => {
+    const { scheduler, card } = setup();
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(card.status).toBe('in-progress');
   });
 
   // `chainLandedAt` hijacked the Rung 2 run: a card whose chain had just landed carried the
