@@ -67,6 +67,14 @@ export interface AutomationAction {
   planningModel?: ClaudeModel;
   autoCreatePr?: boolean | null;
   autoIntegrate?: boolean | null;
+  /**
+   * Work this already-existing card instead of a fresh one. For a schedule trigger, this
+   * skips `createTask` and the `titleTemplate`/`boardProjectId` it would have used — the
+   * card already has a title — and `briefTemplate` is prepended to it the same way it is
+   * for a tracker firing. For a tracker trigger, this scopes the trigger to that one
+   * card's events instead of any ticket that matches.
+   */
+  taskId?: string;
 }
 
 /** The schedule|tracker union an {@link Automation} fires on. */
@@ -172,7 +180,7 @@ export function validateAutomation(a: Automation): string[] {
           break;
       }
     }
-    if (!a.action.titleTemplate.trim()) {
+    if (!a.action.taskId && !a.action.titleTemplate.trim()) {
       errors.push('A title template is required for a schedule automation.');
     }
   } else {

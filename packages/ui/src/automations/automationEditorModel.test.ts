@@ -137,6 +137,22 @@ describe('automation/draft round trip', () => {
     const a = TRACKER_AUTOMATION;
     expect(automationFromDraft(draftFromAutomation(a), a)).toEqual(a);
   });
+
+  it('keeps an attached action.taskId through the round trip, though the draft has no field for it', () => {
+    const a: Automation = {
+      ...SCHEDULE_AUTOMATION,
+      action: { ...SCHEDULE_AUTOMATION.action, taskId: 'task-1' },
+    };
+    expect(automationFromDraft(draftFromAutomation(a), a)).toEqual(a);
+  });
+
+  it('drops action.taskId when editing with base: null', () => {
+    const a: Automation = {
+      ...SCHEDULE_AUTOMATION,
+      action: { ...SCHEDULE_AUTOMATION.action, taskId: 'task-1' },
+    };
+    expect(automationFromDraft(draftFromAutomation(a), null).action.taskId).toBeUndefined();
+  });
 });
 
 describe('switching trigger kind', () => {

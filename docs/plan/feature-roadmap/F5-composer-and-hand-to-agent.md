@@ -27,6 +27,7 @@ Two gaps between "I have work" and "an agent is doing it":
 - `IssueSummary` (shared): `{ provider: 'jira' | 'github' | 'gitlab', key, title, url, state, labels: string[], type?, assignee?, updatedAt, onBoardTaskId: string | null }` — `onBoardTaskId` is resolved in main by matching `externalSource`+`externalKey` against the store, so the UI can show "On board → open" instead of importing twice.
 - IPC (all `relay` in `RELAY_POLICY`): `issues:list(query: IssueQuery)` → `{ items: IssueSummary[], labels: string[], nextCursor? }`; `issues:import(provider, key)` → `Task` (idempotent: returns the existing card if already on the board).
 - `AddTaskForm` gains `assign: { agentProjectId, model: ClaudeModel | null, mode: PermissionMode | null } | null` and `startNow: boolean`; `AddTaskPlan`'s `card` variant gains the same `assign`. Steps never carry it (a step runs in its parent's worktree).
+- `AutomationAction.taskId` (F5.12) is the attach point: the composer's "Run on a schedule" section builds the trigger and `addTaskPlan` carries it, but the automation itself is only ever pointed at a card through this field — nothing else on `Automation`/`AutomationTrigger` names the card.
 - Task: `pinnedImport?: boolean` (or a new `source: 'import'` — see Open questions) so a card imported from outside the sync query is **not** archived as `left-query`. Store migration (memory *the-store-has-no-tests* for how to cover it).
 
 ### Engine / main process
@@ -75,6 +76,104 @@ Two gaps between "I have work" and "an agent is doing it":
 2. **Should Hand to agent pick a JIRA board or always land on Personal?** *Recommended default:* Personal board (where delegated cards live today), filed under the project resolved from the issue.
 3. **GitLab issues** — worth building now, given only MRs are used today? *Recommended default:* yes, behind the same interface; it is one list call.
 4. **Composer: one dialog or a full-screen composer?** *Recommended default:* keep the existing dialog and add the "Run it" section — the form already answers the other questions and a second composer would be a second set of answers.
+
+## F5.12 — decisions taken (step 1 of 5)
+
+Five build steps are approved for F5.12. Step 1 is not code — it is the decisions the
+model and plan changes build on, settled here so step 2's engine wiring and step 3's plan
+extension build on a record instead of each re-deriving it in a headless session with no
+one to ask.
+
+### An automation can be pointed at a card that already exists
+
+`AutomationAction` gains `taskId?: string` (`packages/shared/src/automation.ts:56-70`).
+When set, a firing works that card instead of creating one: a schedule automation with
+`taskId` re-delegates and starts it the same way `task:assignAgent` does (`titleTemplate`/
+`briefTemplate` go unused, same as the tracker branch already treats them as tracker-only —
+see the doc comment at `automation.ts:51-55`); a tracker automation with `taskId` only fires
+for events on that one card, rather than any ticket matching the trigger the way a
+tracker automation with no `taskId` does today. If the card is gone, the firing is refused
+with `unknown-task` — a reason the refusal ladder already has
+(`packages/shared/src/scheduler.ts:65,142`), and one `automationRunner.ts`'s tracker branch
+already raises when a tracker firing's `taskId` can't be found in the store (`fireOne`,
+`:270-278`). That refusal counts as a strike the same as any other (`applyStrike`,
+`:139-149`), and three strikes auto-disables the automation (`MAX_CONSECUTIVE_FAILURES`,
+`:28`) — so a deleted attached card does not need its own cascade-delete of the automation
+in v1; the existing strike ladder already retires it.
+
+### The composer offers only "Run on a schedule"
+
+A freshly composed card has no tracker history yet — `detectTrackerEvents` needs a
+before/after diff of cards a sync already wrote (`automationTracker.ts`), and a card that
+does not exist yet has neither. So the attach-a-trigger section in `AddTaskDialog` only
+builds a `{ kind: 'schedule' }` trigger; it does not offer "when …" at all. Nothing about
+the plan type is schedule-only, though: `addTaskPlan`'s new `trigger` field (step 3) takes
+a full `AutomationTrigger`, and tracker scoping is implemented in the engine (previous
+decision) — so a later "when …" UI can follow without touching the model again.
+
+### A trigger needs an agent, so addTaskPlan refuses one without `assign`
+
+`AutomationAction.agentProjectId` is required, not optional (`automation.ts:59`;
+`validateAutomation` rejects a blank one at `:198-200`) — an automation with no agent
+project cannot fire. So a trigger attached with no `assign` is refused by `addTaskPlan`
+before the card is ever written, the same way `startNow` without `assign` already is
+(`AddTaskDialog.tsx:331-333`): same `kind: 'incomplete'` shape, a message naming the fix.
+Mode defaults to `assign.mode ?? 'acceptEdits'` — the editor's own default for a fresh
+automation (`newAutomationDraft`, `automationEditorModel.ts:110`) — rather than leaving it
+unset. `manual` is never offered as a choice for a trigger's mode: `validateAutomation`
+would refuse it anyway (a headless run has no one to answer a permission prompt, memory
+*a-headless-turn-has-no-next-turn*), so the plan refuses it directly rather than
+constructing a trigger the engine would reject with a different message.
+
+### The trigger section brings its own minimal agent-project dropdown
+
+F5.2 (the Run it section with agent project/model/mode pickers) has not landed on this
+branch, and Phase 3's tasks were scoped to need only F7/F1 — not F5.2 (see the Phase 3
+header below). A trigger cannot fire without an agent project (previous decision), so
+step 4's "Run on a schedule" section brings its own small agent-project dropdown that
+writes straight into `form.assign` and only appears once the schedule toggle is on — not a
+second, competing picker. When F5.2 lands, it grows this same field into the full Run it
+section; the trigger section is not asking the same question twice, just asking it early.
+`startNow` stays hard-wired `false` from the dialog until F5.3 builds the "Add and start"
+write order, but `addTaskPlan` itself already honours `startNow` today
+(`AddTaskDialog.tsx:331-334`), so nothing about the pure plan needs to wait for F5.3.
+
+## F5.12 — verification (step 5 of 5)
+
+All three gates re-run forced, so no step reused a cached result (memory
+*a-cached-gate-is-not-a-gate*): `pnpm typecheck --force` (9/9 tasks, 0 cached,
+covering `@tm/protocol`, `@tm/server`, `@tm/shared`, `@tm/ui`, `@tm/web` and
+`claude-orchestrator`/`apps/client`); `pnpm build --force` (6/6 tasks, 0
+cached); `pnpm test` (268 files / 4749 tests passed, 11 skipped). The five
+files this ticket's steps 2-4 touched or added
+(`automationRunner.test.ts`, `automationTrackerFirings.test.ts`,
+`automation.test.ts`, `automationEditorModel.test.ts`,
+`AddTaskDialog.test.ts`) run clean in isolation too: 85/85.
+
+`pnpm test` has 5 pre-existing failures, none of them this ticket's: 4
+subprocess timeouts in `apps/client/src/main/git.test.ts` and one
+environment-gated assertion in `worktreeWsl.test.ts` (needs a live WSL
+distro). Both files were last touched by 3577045, well before TM-86 — the
+same flakiness commit 827a7f6 already called out.
+
+Red before green: the `else if (automation.action.taskId)` branch in
+`fireOne` (`automationRunner.ts`) was removed, falling the attached-card
+path through to card creation. Two of the three attached-card tests failed
+as expected — "works the existing card and creates none" (delegate never
+called with the attached id) and "refuses unknown-task with a strike when
+the attached card is missing" (started instead of refused), since a
+taskId-less automation with no boardProjectId both tests leave unset falls
+into the no-project refusal instead. The third ("is skipped, not a strike,
+when the attached card is already being worked") still passed, because the
+overlap check at `fireOne`'s step 2 catches that case before reaching the
+branch under test — expected, not a gap. The branch was restored verbatim
+(`git diff` empty against HEAD) and the suite returned to 9/9 green.
+
+Not verifiable headlessly, and not attempted (memory *verify-electron-app*
+— never launch the app from this machine): a human still needs to open the
+composer, confirm the "Run on a schedule" section renders, save a card with
+a trigger attached, and confirm the automation appears on the Automations
+screen pointed at that card.
 
 ## Tasks
 
@@ -202,7 +301,7 @@ Two gaps between "I have work" and "an agent is doing it":
 
   - Requires F7's template store. Menu inserts at the caret; into an untouched pre-filled box it appends below the reference rather than above it.
   - Acceptance: pure `insertTemplate(text, caret, template, untouched)` tested for caret, untouched-append and empty cases. Gates green.
-- [ ] F5.12 Add an optional attach a trigger section to the composer
+- [x] F5.12 Add an optional attach a trigger section to the composer
 
   - Requires F1's trigger model. "Run on a schedule / when …" attaches an F1 trigger to the new card instead of (or as well as) starting now.
   - Acceptance: `addTaskPlan` tests — trigger plus startNow both honoured; trigger on a step rejected; the created trigger references the new card id. Gates green.

@@ -16,9 +16,16 @@
  * taken-list a brand-new task has on both sides.
  */
 import { describe, expect, it } from 'vitest';
+import { validateAutomation, type AutomationTrigger } from '@tm/shared/automation';
 import { attachmentName } from '@tm/shared/attachments';
-import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
-import { addTaskPlan, stageAttachments, type AddTaskForm } from './AddTaskDialog';
+import { PERSONAL_PROJECT_ID, type Task } from '@tm/shared/model';
+import { MANUAL_MODE_EXPLANATION } from './automations/automationEditorModel';
+import {
+  addTaskPlan,
+  attachedAutomation,
+  stageAttachments,
+  type AddTaskForm,
+} from './AddTaskDialog';
 
 const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
   title: 'Ship the thing',
@@ -35,6 +42,7 @@ const form = (over: Partial<AddTaskForm> = {}): AddTaskForm => ({
   boardOwnsTickets: false,
   assign: null,
   startNow: false,
+  trigger: null,
   ...over,
 });
 
@@ -65,6 +73,7 @@ describe('addTaskPlan', () => {
       ticket: null,
       assign: null,
       startNow: false,
+      trigger: null,
     });
   });
 
@@ -101,6 +110,7 @@ describe('addTaskPlan', () => {
       },
       assign: null,
       startNow: false,
+      trigger: null,
     });
   });
 
@@ -247,6 +257,81 @@ describe('addTaskPlan', () => {
       kind: 'incomplete',
       error: 'Pick an agent project to start it in first.',
     });
+  });
+
+  const SCHEDULE_TRIGGER: AutomationTrigger = {
+    kind: 'schedule',
+    schedule: { type: 'daily', hour: 4, minute: 0 },
+  };
+
+  it('attaches a trigger plus startNow onto a card plan — both kept', () => {
+    const plan = addTaskPlan(
+      form({
+        assign: { agentProjectId: 'p-billing', model: null, mode: 'acceptEdits' },
+        startNow: true,
+        trigger: SCHEDULE_TRIGGER,
+      }),
+    );
+    expect(plan.kind).toBe('card');
+    if (plan.kind !== 'card') return;
+    expect(plan.trigger).toEqual(SCHEDULE_TRIGGER);
+    expect(plan.startNow).toBe(true);
+  });
+
+  it('attaches a trigger plus startNow onto a ticket-board plan — both kept', () => {
+    const plan = addTaskPlan(
+      form({
+        boardId: 'p-billing',
+        boardOwnsTickets: true,
+        assign: { agentProjectId: 'p-billing', model: null, mode: 'acceptEdits' },
+        startNow: true,
+        trigger: SCHEDULE_TRIGGER,
+      }),
+    );
+    expect(plan.kind).toBe('ticket');
+    if (plan.kind !== 'ticket') return;
+    expect(plan.trigger).toEqual(SCHEDULE_TRIGGER);
+    expect(plan.startNow).toBe(true);
+  });
+
+  it('refuses a trigger on a step — it runs inside its parent’s plan', () => {
+    expect(addTaskPlan(form({ parentId: 'c1', trigger: SCHEDULE_TRIGGER }))).toEqual({
+      kind: 'incomplete',
+      error:
+        "A step runs inside its parent's plan — attach the schedule to the parent card instead.",
+    });
+  });
+
+  it('refuses a trigger with no agent project, before the card is written', () => {
+    expect(addTaskPlan(form({ assign: null, trigger: SCHEDULE_TRIGGER }))).toEqual({
+      kind: 'incomplete',
+      error: 'Pick an agent project for the schedule to run in first.',
+    });
+  });
+
+  it('refuses a trigger whose assignment is manual permission mode', () => {
+    expect(
+      addTaskPlan(
+        form({
+          assign: { agentProjectId: 'p-billing', model: null, mode: 'manual' },
+          trigger: SCHEDULE_TRIGGER,
+        }),
+      ),
+    ).toEqual({ kind: 'incomplete', error: MANUAL_MODE_EXPLANATION });
+  });
+});
+
+describe('attachedAutomation', () => {
+  it('points the action at the card, and validates cleanly', () => {
+    const card = { id: 'c1', title: 'Ship the thing' } as Task;
+    const automation = attachedAutomation(
+      { kind: 'schedule', schedule: { type: 'daily', hour: 4, minute: 0 } },
+      card,
+      { agentProjectId: 'p-billing', model: null, mode: 'acceptEdits' },
+      { now: 1700000000000, timeZone: 'UTC' },
+    );
+    expect(automation.action.taskId).toBe(card.id);
+    expect(validateAutomation(automation)).toEqual([]);
   });
 });
 

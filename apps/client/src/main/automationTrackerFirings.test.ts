@@ -147,6 +147,26 @@ describe('trackerFirings', () => {
     expect(firings).toEqual([]);
   });
 
+  it('fires only for the attached card when action.taskId is set', () => {
+    const before = [
+      card({ id: 'task-1', externalKey: 'TM-1', externalStatus: 'Backlog', labels: ['agent'] }),
+      card({ id: 'task-2', externalKey: 'TM-2', externalStatus: 'Backlog', labels: ['agent'] }),
+    ];
+    const upserts = [
+      card({ id: 'task-1', externalKey: 'TM-1', externalStatus: 'To Do', labels: ['agent'] }),
+      card({ id: 'task-2', externalKey: 'TM-2', externalStatus: 'To Do', labels: ['agent'] }),
+    ];
+    const attached = baseAutomation({ action: { ...baseAutomation().action, taskId: 'task-2' } });
+
+    const firings = trackerFirings([attached], before, upserts, {
+      now: NOW,
+      localClientId: LOCAL_CLIENT_ID,
+    });
+
+    expect(firings).toHaveLength(1);
+    expect(firings[0].firing.taskId).toBe('task-2');
+  });
+
   it('two automations matching the same card yield two firings', () => {
     const before = [card({ externalStatus: 'Backlog', labels: ['agent'] })];
     const upserts = [card({ externalStatus: 'To Do', labels: ['agent'] })];

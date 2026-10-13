@@ -71,6 +71,12 @@ import {
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
+import {
+  HOUR_INTERVALS,
+  type AutomationTrigger,
+  type HourInterval,
+  type ScheduleShape,
+} from '@tm/shared/automation';
 import type { IssueType, Project, Task, TaskType } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
@@ -87,8 +93,16 @@ import {
   seedNewCardAssign,
 } from './agentPickers';
 import { addTaskSteps, executeAddTaskSteps, outcomeMessage } from './addTaskSteps';
+// Lives beside the executor that saves it; re-exported so the dialog stays its public home.
+export { attachedAutomation } from './addTaskSteps';
 import { isFileDrag } from './AttachmentStrip';
 import { clipboardFiles, pastedFilePaths } from './attachFiles';
+import { SCHEDULE_TYPE_LABELS, WEEKDAY_LABELS } from './automations/AutomationEditor';
+import {
+  MANUAL_MODE_EXPLANATION,
+  SCHEDULE_TYPES,
+  type ScheduleType,
+} from './automations/automationEditorModel';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
 import { ModelField } from './ModelField';
 import { TicketTypeFields } from './projects/TicketTypeFields';
@@ -207,6 +221,14 @@ export interface AddTaskForm {
   assign: AddTaskAssign | null;
   /** Start that agent immediately once assigned. Ignored with {@link assign} `null`. */
   startNow: boolean;
+  /**
+   * An F1 automation to attach to the card as it is created, or `null` for none — see
+   * {@link attachedAutomation}. Requires {@link assign}: a trigger with no agent project can
+   * never fire, so `addTaskPlan` refuses one with `assign: null` rather than writing a
+   * trigger the engine would never run. Never meaningful for a step — a step runs inside
+   * its parent's own plan, not on a schedule of its own.
+   */
+  trigger: AutomationTrigger | null;
 }
 
 /**
@@ -238,6 +260,9 @@ export type AddTaskPlan =
    * `assign` and `startNow` carry the agent the form was filled in with, if any — see
    * {@link AddTaskAssign}. The write order stays the same either way: the card lands first,
    * and the assignment (then the start) are things done to the card that now exists.
+   *
+   * `trigger` carries the F1 automation the form was filled in with, if any — see
+   * {@link attachedAutomation}. Drawn onto the card once it exists, the same way `ticket` is.
    */
   | {
       kind: 'card';
@@ -257,6 +282,7 @@ export type AddTaskPlan =
       } | null;
       assign: AddTaskAssign | null;
       startNow: boolean;
+      trigger: AutomationTrigger | null;
     }
   /**
    * A native ticket on `board`'s own list (`ticket:create`) — chosen because `board` owns
@@ -287,6 +313,7 @@ export type AddTaskPlan =
       };
       assign: AddTaskAssign | null;
       startNow: boolean;
+      trigger: AutomationTrigger | null;
     };
 
 /**
@@ -313,6 +340,15 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
   if (!title) return { kind: 'incomplete', error: null };
 
   if (form.parentId) {
+    // A step runs inside its parent's own plan — there is no schedule of its own for a
+    // trigger to attach to.
+    if (form.trigger) {
+      return {
+        kind: 'incomplete',
+        error:
+          "A step runs inside its parent's plan — attach the schedule to the parent card instead.",
+      };
+    }
     return {
       kind: 'step',
       parentId: form.parentId,
@@ -334,6 +370,23 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
   }
   const startNow = form.startNow;
 
+  // A trigger with no agent project can never fire — refuse before the card is written,
+  // the same way `startNow` without `assign` already is above. `manual` is refused here
+  // directly too, rather than constructing a trigger `validateAutomation` would reject with
+  // a different message (see `attachedAutomation`).
+  const trigger = form.trigger;
+  if (trigger) {
+    if (!assign) {
+      return {
+        kind: 'incomplete',
+        error: 'Pick an agent project for the schedule to run in first.',
+      };
+    }
+    if (assign.mode === 'manual') {
+      return { kind: 'incomplete', error: MANUAL_MODE_EXPLANATION };
+    }
+  }
+
   // The one routing decision: what the destination OWNS, not what it is named. A keyless
   // non-Personal board is as much a `task:create` destination as Personal is — see
   // `BoardScope.ownsTickets`.
@@ -351,6 +404,7 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
       },
       assign,
       startNow,
+      trigger,
     };
   }
 
@@ -375,6 +429,7 @@ export function addTaskPlan(form: AddTaskForm): AddTaskPlan {
       : null,
     assign,
     startNow,
+    trigger,
   };
 }
 
@@ -539,6 +594,15 @@ export function AddTaskDialog({
   /** Stops {@link seedNewCardAssign} re-seeding over a human's own pick — the `branchTouched`
    *  pattern `AssignAgentDialog` already uses for the same reason. */
   const [assignTouched, setAssignTouched] = useState(false);
+  /** The "Run on a schedule" switch — off by default, same as the Run it section. */
+  const [scheduleOn, setScheduleOn] = useState(false);
+  /** The schedule's own fields, kept the same way `AutomationEditor`'s draft keeps them — see
+   *  {@link scheduleShape}, below, for the `ScheduleShape` they resolve to. */
+  const [scheduleType, setScheduleType] = useState<ScheduleType>('weekdays');
+  const [scheduleHour, setScheduleHour] = useState(4);
+  const [scheduleMinute, setScheduleMinute] = useState(0);
+  const [scheduleDay, setScheduleDay] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
+  const [scheduleEvery, setScheduleEvery] = useState<HourInterval>(1);
   /** The description's textarea, so a chip can write `@name` where the caret actually is. */
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -562,6 +626,14 @@ export function AddTaskDialog({
       // Collapsed, and re-seedable — the effect below fills it back in from scratch.
       setRunOpen(false);
       setAssignTouched(false);
+      // Off, and back to its defaults — a schedule left on from a previous Add would
+      // otherwise attach itself to a card nobody meant to put on a clock.
+      setScheduleOn(false);
+      setScheduleType('weekdays');
+      setScheduleHour(4);
+      setScheduleMinute(0);
+      setScheduleDay(1);
+      setScheduleEvery(1);
     }
   }, [open, defaultParentId, projectId]);
 
@@ -690,6 +762,24 @@ export function AddTaskDialog({
   const runSummary = selectedAgentProject
     ? `${selectedAgentProject.name} · ${PERMISSION_MODE_LABELS[mode]}`
     : "Don't assign";
+  /** Captured once per render rather than per keystroke — the schedule section shows it as
+   *  the editor does, read-only, since an IANA zone is never a thing to type by hand. */
+  const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+
+  /** The schedule section's own fields → `ScheduleShape`, the same cases
+   *  `AutomationEditor`'s `scheduleShapeFromDraft` picks between — not shared directly, since
+   *  that one reads a full `AutomationDraft` and this section keeps none of its other fields. */
+  function scheduleShape(): ScheduleShape {
+    switch (scheduleType) {
+      case 'daily':
+      case 'weekdays':
+        return { type: scheduleType, hour: scheduleHour, minute: scheduleMinute };
+      case 'weekly':
+        return { type: 'weekly', day: scheduleDay, hour: scheduleHour, minute: scheduleMinute };
+      case 'hours':
+        return { type: 'hours', every: scheduleEvery };
+    }
+  }
 
   /** A fresh project pick also switches the mode to ITS default — see `modeForPickedProject`.
    *  The model deliberately does not follow suit; it already means "follow the project". */
@@ -802,6 +892,10 @@ export function AddTaskDialog({
       // whatever agent is already on that card.
       assign: isStep ? null : { agentProjectId, model, mode },
       startNow,
+      // A step never gets one either, for the reason `assign` doesn't — and the switch
+      // itself is hidden whenever `isStep` is true, so this only ever reads `scheduleOn`
+      // for a card or ticket.
+      trigger: !isStep && scheduleOn ? { kind: 'schedule', schedule: scheduleShape() } : null,
     });
     if (plan.kind === 'incomplete') {
       setError(plan.error);
@@ -813,6 +907,7 @@ export function AddTaskDialog({
       const steps = addTaskSteps(plan, {
         attachments: staged.map((s) => s.path),
         runsAfterId: runsAfter?.id ?? null,
+        timeZone,
       });
       const result = await executeAddTaskSteps(steps, transport.invoke);
       const msg = outcomeMessage(result);
@@ -1250,6 +1345,132 @@ export function AddTaskDialog({
                     </AccordionPanel>
                   </AccordionItem>
                 </Accordion>
+              )}
+              {/* Attaches an F1 schedule automation to the card as it is created, instead of
+                  opening the Automations screen on it a moment later. Never offered for a
+                  step (its parent's plan is its schedule), nor with no agent project to run
+                  it in — a trigger can never fire without one, so there is nothing this
+                  section could usefully ask for. */}
+              {!isStep && agentProjects.length > 0 && (
+                <>
+                  <Field
+                    label="Run on a schedule"
+                    hint={
+                      scheduleOn
+                        ? 'Creates a schedule automation for this card once it exists.'
+                        : 'Off: this card is created once, like any other.'
+                    }
+                  >
+                    <Switch checked={scheduleOn} onChange={(_e, d) => setScheduleOn(d.checked)} />
+                  </Field>
+                  {scheduleOn && (
+                    <div className={styles.runPanel}>
+                      <div className={styles.row}>
+                        <Field label="Shape">
+                          <Dropdown
+                            value={SCHEDULE_TYPE_LABELS[scheduleType]}
+                            selectedOptions={[scheduleType]}
+                            onOptionSelect={(_e, d) =>
+                              d.optionValue && setScheduleType(d.optionValue as ScheduleType)
+                            }
+                          >
+                            {SCHEDULE_TYPES.map((t) => (
+                              <Option key={t} value={t} text={SCHEDULE_TYPE_LABELS[t]}>
+                                {SCHEDULE_TYPE_LABELS[t]}
+                              </Option>
+                            ))}
+                          </Dropdown>
+                        </Field>
+                        {scheduleType !== 'hours' && (
+                          <>
+                            <Field label="Hour">
+                              <Input
+                                type="number"
+                                value={String(scheduleHour)}
+                                onChange={(_e, d) => {
+                                  const n = d.value === '' ? 0 : Number(d.value);
+                                  if (!Number.isNaN(n)) setScheduleHour(n);
+                                }}
+                              />
+                            </Field>
+                            <Field label="Minute">
+                              <Input
+                                type="number"
+                                value={String(scheduleMinute)}
+                                onChange={(_e, d) => {
+                                  const n = d.value === '' ? 0 : Number(d.value);
+                                  if (!Number.isNaN(n)) setScheduleMinute(n);
+                                }}
+                              />
+                            </Field>
+                          </>
+                        )}
+                        {scheduleType === 'weekly' && (
+                          <Field label="Day">
+                            <Dropdown
+                              value={WEEKDAY_LABELS[scheduleDay - 1]}
+                              selectedOptions={[String(scheduleDay)]}
+                              onOptionSelect={(_e, d) =>
+                                d.optionValue &&
+                                setScheduleDay(Number(d.optionValue) as typeof scheduleDay)
+                              }
+                            >
+                              {WEEKDAY_LABELS.map((label, i) => (
+                                <Option key={label} value={String(i + 1)} text={label}>
+                                  {label}
+                                </Option>
+                              ))}
+                            </Dropdown>
+                          </Field>
+                        )}
+                        {scheduleType === 'hours' && (
+                          <Field label="Every">
+                            <Dropdown
+                              value={
+                                scheduleEvery === 1 ? 'every hour' : `every ${scheduleEvery} hours`
+                              }
+                              selectedOptions={[String(scheduleEvery)]}
+                              onOptionSelect={(_e, d) =>
+                                d.optionValue &&
+                                setScheduleEvery(Number(d.optionValue) as HourInterval)
+                              }
+                            >
+                              {HOUR_INTERVALS.map((h) => (
+                                <Option key={h} value={String(h)} text={`every ${h} hours`}>
+                                  {h === 1 ? 'every hour' : `every ${h} hours`}
+                                </Option>
+                              ))}
+                            </Dropdown>
+                          </Field>
+                        )}
+                      </div>
+                      <Field
+                        label="Agent project"
+                        hint={
+                          selectedAgentProject
+                            ? selectedAgentProject.path
+                            : 'The repository the schedule runs in.'
+                        }
+                      >
+                        <Dropdown
+                          value={selectedAgentProject?.name ?? "Don't assign"}
+                          selectedOptions={[agentProjectId]}
+                          onOptionSelect={(_e, d) =>
+                            pickAgentProject(d.optionValue ?? NO_AGENT_PROJECT)
+                          }
+                        >
+                          <Option value={NO_AGENT_PROJECT}>Don&rsquo;t assign</Option>
+                          {agentProjects.map((p) => (
+                            <Option key={p.id} value={p.id} text={p.name}>
+                              {p.name}
+                            </Option>
+                          ))}
+                        </Dropdown>
+                      </Field>
+                      <Caption1 className={styles.hint}>Time zone: {timeZone}</Caption1>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </DialogContent>
