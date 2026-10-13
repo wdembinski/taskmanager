@@ -76,6 +76,67 @@ Two gaps between "I have work" and "an agent is doing it":
 3. **GitLab issues** — worth building now, given only MRs are used today? *Recommended default:* yes, behind the same interface; it is one list call.
 4. **Composer: one dialog or a full-screen composer?** *Recommended default:* keep the existing dialog and add the "Run it" section — the form already answers the other questions and a second composer would be a second set of answers.
 
+## F5.12 — decisions taken (step 1 of 5)
+
+Five build steps are approved for F5.12. Step 1 is not code — it is the decisions the
+model and plan changes build on, settled here so step 2's engine wiring and step 3's plan
+extension build on a record instead of each re-deriving it in a headless session with no
+one to ask.
+
+### An automation can be pointed at a card that already exists
+
+`AutomationAction` gains `taskId?: string` (`packages/shared/src/automation.ts:56-70`).
+When set, a firing works that card instead of creating one: a schedule automation with
+`taskId` re-delegates and starts it the same way `task:assignAgent` does (`titleTemplate`/
+`briefTemplate` go unused, same as the tracker branch already treats them as tracker-only —
+see the doc comment at `automation.ts:51-55`); a tracker automation with `taskId` only fires
+for events on that one card, rather than any ticket matching the trigger the way a
+tracker automation with no `taskId` does today. If the card is gone, the firing is refused
+with `unknown-task` — a reason the refusal ladder already has
+(`packages/shared/src/scheduler.ts:65,142`), and one `automationRunner.ts`'s tracker branch
+already raises when a tracker firing's `taskId` can't be found in the store (`fireOne`,
+`:270-278`). That refusal counts as a strike the same as any other (`applyStrike`,
+`:139-149`), and three strikes auto-disables the automation (`MAX_CONSECUTIVE_FAILURES`,
+`:28`) — so a deleted attached card does not need its own cascade-delete of the automation
+in v1; the existing strike ladder already retires it.
+
+### The composer offers only "Run on a schedule"
+
+A freshly composed card has no tracker history yet — `detectTrackerEvents` needs a
+before/after diff of cards a sync already wrote (`automationTracker.ts`), and a card that
+does not exist yet has neither. So the attach-a-trigger section in `AddTaskDialog` only
+builds a `{ kind: 'schedule' }` trigger; it does not offer "when …" at all. Nothing about
+the plan type is schedule-only, though: `addTaskPlan`'s new `trigger` field (step 3) takes
+a full `AutomationTrigger`, and tracker scoping is implemented in the engine (previous
+decision) — so a later "when …" UI can follow without touching the model again.
+
+### A trigger needs an agent, so addTaskPlan refuses one without `assign`
+
+`AutomationAction.agentProjectId` is required, not optional (`automation.ts:59`;
+`validateAutomation` rejects a blank one at `:198-200`) — an automation with no agent
+project cannot fire. So a trigger attached with no `assign` is refused by `addTaskPlan`
+before the card is ever written, the same way `startNow` without `assign` already is
+(`AddTaskDialog.tsx:331-333`): same `kind: 'incomplete'` shape, a message naming the fix.
+Mode defaults to `assign.mode ?? 'acceptEdits'` — the editor's own default for a fresh
+automation (`newAutomationDraft`, `automationEditorModel.ts:110`) — rather than leaving it
+unset. `manual` is never offered as a choice for a trigger's mode: `validateAutomation`
+would refuse it anyway (a headless run has no one to answer a permission prompt, memory
+*a-headless-turn-has-no-next-turn*), so the plan refuses it directly rather than
+constructing a trigger the engine would reject with a different message.
+
+### The trigger section brings its own minimal agent-project dropdown
+
+F5.2 (the Run it section with agent project/model/mode pickers) has not landed on this
+branch, and Phase 3's tasks were scoped to need only F7/F1 — not F5.2 (see the Phase 3
+header below). A trigger cannot fire without an agent project (previous decision), so
+step 4's "Run on a schedule" section brings its own small agent-project dropdown that
+writes straight into `form.assign` and only appears once the schedule toggle is on — not a
+second, competing picker. When F5.2 lands, it grows this same field into the full Run it
+section; the trigger section is not asking the same question twice, just asking it early.
+`startNow` stays hard-wired `false` from the dialog until F5.3 builds the "Add and start"
+write order, but `addTaskPlan` itself already honours `startNow` today
+(`AddTaskDialog.tsx:331-334`), so nothing about the pure plan needs to wait for F5.3.
+
 ## Tasks
 
 ### F5 · Phase 1 — Add and start
