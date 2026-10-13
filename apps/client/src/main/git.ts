@@ -12,7 +12,9 @@
  * caller decides what a failure means (e.g. a non-zero `rebase` = conflicts).
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { GitPreflight } from '@shared/model';
+import type { DiffFileStatus } from '@shared/review';
 import { localHost, type ExecHost } from './exec';
 
 export interface GitResult {
@@ -550,6 +552,286 @@ export async function changedInBranch(
 ): Promise<string[]> {
   const res = await git(dir, ['diff', '-z', '--name-only', `${base}..${branch}`], host);
   return res.code === 0 ? splitZ(res.stdout) : [];
+}
+
+/**
+ * Reading a diff's actual file contents — status, counts, and the patch text itself
+ * (Phase: F6 in-app code review). Where {@link changedInBranch} only names files, these
+ * answer "what changed in this one" and "what did this file's old/new side actually
+ * contain", which a diff viewer needs one file at a time rather than all at once.
+ *
+ * Every helper here keeps this file's own contract: a failure is data (`[]`/`''`/`null`),
+ * never a throw, so a diff viewer can show "couldn't read this file" instead of crashing
+ * the whole screen.
+ */
+
+/** One file's row out of {@link diffNameStatus} / {@link diffWorkingTree}. */
+export interface NameStatusEntry {
+  path: string;
+  /** Set only for a rename or copy — the path it moved from. */
+  oldPath?: string;
+  status: DiffFileStatus;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  /** This entry came from {@link listUntracked}, not a tracked diff — see {@link diffWorkingTree}. */
+  untracked?: boolean;
+}
+
+/** Split a NUL-delimited `-z` stream into tokens, dropping the trailing empty one it leaves. */
+function splitZTokens(stdout: string): string[] {
+  const tokens = stdout.split('\0');
+  if (tokens.length > 0 && tokens[tokens.length - 1] === '') tokens.pop();
+  return tokens;
+}
+
+/**
+ * One `--name-status -z` record: `<status>\0<path>\0` ordinarily, or
+ * `<status>\0<oldPath>\0<newPath>\0` for a rename/copy (`status` starting `R`/`C`, e.g.
+ * `R100`). Pure, and exported so a fixture's raw bytes can be tested without a real repo.
+ */
+export function parseNameStatusZ(
+  stdout: string,
+): Array<{ status: string; path: string; oldPath?: string }> {
+  const tokens = splitZTokens(stdout);
+  const out: Array<{ status: string; path: string; oldPath?: string }> = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const status = tokens[i++];
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const oldPath = tokens[i++] ?? '';
+      const path = tokens[i++] ?? '';
+      out.push({ status, path, oldPath });
+    } else {
+      const path = tokens[i++] ?? '';
+      out.push({ status, path });
+    }
+  }
+  return out;
+}
+
+/**
+ * One `--numstat -z` record: `<added>\t<deleted>\t<path>\0` ordinarily (`-`/`-` means a
+ * binary file, reported here as 0/0), or `<added>\t<deleted>\t\0<oldPath>\0<newPath>\0`
+ * for a rename/copy — the empty path field before the first NUL is what signals that a
+ * second NUL-delimited token pair follows instead. Pure, same reason as
+ * {@link parseNameStatusZ}.
+ */
+export function parseNumstatZ(stdout: string): Array<{
+  path: string;
+  oldPath?: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}> {
+  const tokens = splitZTokens(stdout);
+  const out: Array<{
+    path: string;
+    oldPath?: string;
+    additions: number;
+    deletions: number;
+    binary: boolean;
+  }> = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const head = tokens[i++];
+    const match = /^(-|\d+)\t(-|\d+)\t(.*)$/.exec(head);
+    if (!match) continue; // not a record we understand — skip rather than throw
+    const [, addRaw, delRaw, pathPart] = match;
+    const binary = addRaw === '-' || delRaw === '-';
+    const additions = binary ? 0 : Number(addRaw);
+    const deletions = binary ? 0 : Number(delRaw);
+    if (pathPart === '') {
+      const oldPath = tokens[i++] ?? '';
+      const path = tokens[i++] ?? '';
+      out.push({ path, oldPath, additions, deletions, binary });
+    } else {
+      out.push({ path: pathPart, additions, deletions, binary });
+    }
+  }
+  return out;
+}
+
+/** A `name-status` code's first letter, mapped to the shape the review UI speaks ({@link DiffFileStatus}). */
+function fileStatusOf(code: string): DiffFileStatus {
+  switch (code[0]) {
+    case 'A':
+      return 'added';
+    case 'D':
+      return 'deleted';
+    case 'R':
+      return 'renamed';
+    case 'C':
+      return 'copied';
+    default:
+      return 'modified'; // M (modified) and T (type change)
+  }
+}
+
+/**
+ * Every file `from..to` touched, with status AND counts. Two `git diff` calls merged by
+ * path rather than one, because git will not combine `--name-status` and `--numstat`
+ * into a single output no matter how it's asked.
+ *
+ * `to === null` means the working tree against `from` (tracked files only — see
+ * {@link diffWorkingTree} for untracked ones too). Callers pass a {@link mergeBase} SHA
+ * as `from` to get the three-dot (`...`) comparison the review design wants, without
+ * actually using git's `...` syntax — which a working-tree diff (`to === null`) cannot
+ * take at all.
+ */
+export async function diffNameStatus(
+  dir: string,
+  from: string,
+  to: string | null,
+  host?: ExecHost,
+): Promise<NameStatusEntry[]> {
+  const refs = to === null ? [from] : [from, to];
+  const [nameStatusRes, numstatRes] = await Promise.all([
+    git(dir, ['diff', '-z', '-M', '--no-color', '--no-ext-diff', '--name-status', ...refs], host),
+    git(dir, ['diff', '-z', '-M', '--no-color', '--no-ext-diff', '--numstat', ...refs], host),
+  ]);
+  if (nameStatusRes.code !== 0) return [];
+
+  const numstatByPath = new Map(
+    (numstatRes.code === 0 ? parseNumstatZ(numstatRes.stdout) : []).map((n) => [n.path, n]),
+  );
+
+  return parseNameStatusZ(nameStatusRes.stdout).map((entry): NameStatusEntry => {
+    const numstat = numstatByPath.get(entry.path);
+    return {
+      path: entry.path,
+      ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+      status: fileStatusOf(entry.status),
+      additions: numstat?.additions ?? 0,
+      deletions: numstat?.deletions ?? 0,
+      binary: numstat?.binary ?? false,
+    };
+  });
+}
+
+/**
+ * {@link diffNameStatus}'s working-tree variant, with untracked files folded in as
+ * `added` — the file list a review screen shows when uncommitted work is included.
+ *
+ * An untracked file has no tracked "old side" for `--numstat` to diff against, so its
+ * counts come from a one-off `diff --no-index` against `/dev/null` instead — the one
+ * git call in this file where a non-zero exit (1, "the two sides differ") is the
+ * expected outcome rather than a failure, so it is accepted alongside 0.
+ */
+export async function diffWorkingTree(
+  dir: string,
+  from: string,
+  host?: ExecHost,
+): Promise<NameStatusEntry[]> {
+  const tracked = await diffNameStatus(dir, from, null, host);
+  const untrackedPaths = await listUntracked(dir, host);
+  const untracked = await Promise.all(
+    untrackedPaths.map(async (path): Promise<NameStatusEntry> => {
+      const res = await git(
+        dir,
+        ['diff', '--no-index', '-z', '--numstat', '--', '/dev/null', path],
+        host,
+      );
+      const [counts] = res.code === 0 || res.code === 1 ? parseNumstatZ(res.stdout) : [];
+      return {
+        path,
+        status: 'added',
+        additions: counts?.additions ?? 0,
+        deletions: counts?.deletions ?? 0,
+        binary: counts?.binary ?? false,
+        untracked: true,
+      };
+    }),
+  );
+  return [...tracked, ...untracked];
+}
+
+/**
+ * The patch text for one file, straight off `git diff` and ready for `parsePatch`
+ * (`@shared/review`) to turn into hunks. `null` on failure.
+ *
+ * Both `oldPath` and `path` go in the pathspec for a tracked rename, not just `path`:
+ * git only reports a move as a rename — rather than an unrelated delete plus add — when
+ * it can see both sides to compare. `to` omitted or `null` means the working tree.
+ */
+export async function diffFilePatch(
+  dir: string,
+  req: { from: string; to?: string | null; path: string; oldPath?: string; untracked?: boolean },
+  host?: ExecHost,
+): Promise<string | null> {
+  if (req.untracked) {
+    const res = await git(
+      dir,
+      ['diff', '--no-index', '--no-color', '--no-ext-diff', '-U3', '--', '/dev/null', req.path],
+      host,
+    );
+    return res.code === 0 || res.code === 1 ? res.stdout : null;
+  }
+  const refs = req.to ? [req.from, req.to] : [req.from];
+  const paths = req.oldPath ? [req.oldPath, req.path] : [req.path];
+  const res = await git(
+    dir,
+    ['diff', '--no-color', '--no-ext-diff', '-U3', '-M', ...refs, '--', ...paths],
+    host,
+  );
+  return res.code === 0 ? res.stdout : null;
+}
+
+/**
+ * The raw bytes of `path` as it existed at `ref` — an image diff's "old" side, or its
+ * "new" side when the working tree isn't included. Read with `encoding: 'latin1'`
+ * rather than the usual UTF-8: it is the one encoding that round-trips every byte value
+ * 1:1 through a JS string, so arbitrary binary content (a PNG, a JPEG) survives
+ * `ExecHost.exec`'s string-based result instead of being corrupted as invalid UTF-8.
+ */
+export async function showBlob(
+  dir: string,
+  ref: string,
+  path: string,
+  host?: ExecHost,
+): Promise<Buffer | null> {
+  const res = await (host ?? localHost()).exec(dir, 'git', ['cat-file', 'blob', `${ref}:${path}`], {
+    maxBuffer: 32 * 1024 * 1024,
+    encoding: 'latin1',
+  });
+  if (res.code !== 0) return null;
+  return Buffer.from(res.stdout, 'latin1');
+}
+
+/**
+ * The byte size of `path` at `ref`, without reading the blob itself — `-1` when it
+ * can't be answered. Lets F6.6 weigh a file against `DIFF_IMAGE_MAX_BYTES` before
+ * paying for {@link showBlob}'s full read.
+ */
+export async function blobSize(
+  dir: string,
+  ref: string,
+  path: string,
+  host?: ExecHost,
+): Promise<number> {
+  const res = await git(dir, ['cat-file', '-s', `${ref}:${path}`], host);
+  if (res.code !== 0) return -1;
+  const n = Number.parseInt(res.stdout.trim(), 10);
+  return Number.isFinite(n) ? n : -1;
+}
+
+/**
+ * A work-tree file's raw bytes, or `null` if it can't be read — an image diff's "new"
+ * side when the working tree is included. There is no git plumbing command that reads a
+ * work-tree file's current content without first writing it into an object, so this
+ * goes straight to `fs`; `host.toApp` is what lets a WSL project's path resolve from
+ * this (Windows) process at all.
+ */
+export function readWorkingFile(
+  dir: string,
+  path: string,
+  host: ExecHost = localHost(),
+): Buffer | null {
+  try {
+    return readFileSync(join(host.toApp(dir), path));
+  } catch {
+    return null;
+  }
 }
 
 /**
