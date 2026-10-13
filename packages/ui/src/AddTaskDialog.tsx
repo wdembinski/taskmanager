@@ -44,6 +44,10 @@
  */
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
 import {
+  Accordion,
+  AccordionHeader,
+  AccordionItem,
+  AccordionPanel,
   Badge,
   Button,
   Caption1,
@@ -67,15 +71,25 @@ import {
 } from '@fluentui/react-components';
 import { Switch } from '@fluentui/react-components';
 import { AttachRegular } from '@fluentui/react-icons';
-import type { IssueType, Task, TaskType } from '@tm/shared/model';
+import type { IssueType, Project, Task, TaskType } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
+import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
 import { isEpic } from '@tm/shared/tickets';
 import { LINK_GATE_LABEL, LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
+import {
+  DEFAULT_PERMISSION_MODE,
+  modeForPickedProject,
+  NO_AGENT_PROJECTS_MESSAGE,
+  PERMISSION_MODES,
+  seedNewCardAssign,
+} from './agentPickers';
 import { isFileDrag } from './AttachmentStrip';
 import { clipboardFiles, pastedFilePaths } from './attachFiles';
+import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
+import { ModelField } from './ModelField';
 import { TicketTypeFields } from './projects/TicketTypeFields';
 import { useTransport } from './transport';
 
@@ -131,6 +145,8 @@ const useStyles = makeStyles({
   /** `TicketTypeFields`' two pickers, side by side — same layout as `TicketDrawer`'s. */
   fieldsRow: { display: 'flex', gap: '12px' },
   fieldsCell: { flex: 1, minWidth: 0 },
+  /** The Run it panel's own pickers, stacked the same way the rest of the form is. */
+  runPanel: { display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '4px' },
 });
 
 /** Sentinel for "no parent" in the parent dropdown (an Option needs a value). */
@@ -139,6 +155,10 @@ const NO_PARENT = '';
 const NO_LINK = '';
 /** The same again, for a ticket with no epic. */
 const NO_EPIC = '';
+/** The same again, for the Run it section's "Don't assign" option. */
+const NO_AGENT_PROJECT = '';
+/** The Run it `AccordionItem`'s one value — a single-item accordion still needs one. */
+const RUN_ITEM = 'run';
 
 /**
  * The agent an `AddTaskForm` may already be filled in with, same shape `task:assignAgent`
@@ -427,6 +447,12 @@ export interface AddTaskDialogProps {
    */
   jiraEnabled?: boolean;
   /**
+   * Agent projects (repos), for the Run it section's picker — `project:list`, filtered to a
+   * repo the same way `AssignAgentDialog`'s own prop is. Omit (or pass an empty list) to show
+   * {@link NO_AGENT_PROJECTS_MESSAGE} instead of the pickers, exactly as that dialog does.
+   */
+  agentProjects?: Project[];
+  /**
    * Whether this host can put files on the card as it is created. Defaults to on, because
    * the host that cannot is the exception: a browser has no OS file picker to open and no
    * path to hand a dropped `File`, so the whole section — pick, drop, chips, staging — is
@@ -459,6 +485,7 @@ export function AddTaskDialog({
   defaultParentId = null,
   chainCandidates = [],
   jiraEnabled = false,
+  agentProjects = [],
   filesEnabled = true,
   onClose,
   onCreated,
@@ -500,6 +527,15 @@ export function AddTaskDialog({
   const [staged, setStaged] = useState<StagedAttachment[]>([]);
   /** True while a file is over the strip, for the border that says it will be taken. */
   const [over, setOver] = useState(false);
+  /** The Run it section — collapsed by default, see the `AccordionItem` below. */
+  const [runOpen, setRunOpen] = useState(false);
+  /** `''` for "don't assign" — the Run it section's own picks. */
+  const [agentProjectId, setAgentProjectId] = useState('');
+  const [model, setModel] = useState<ClaudeModel | null>(null);
+  const [mode, setMode] = useState<PermissionMode>(DEFAULT_PERMISSION_MODE);
+  /** Stops {@link seedNewCardAssign} re-seeding over a human's own pick — the `branchTouched`
+   *  pattern `AssignAgentDialog` already uses for the same reason. */
+  const [assignTouched, setAssignTouched] = useState(false);
   /** The description's textarea, so a chip can write `@name` where the caret actually is. */
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -520,6 +556,9 @@ export function AddTaskDialog({
       // second card silently carrying the first one's files is the worst kind of surprise.
       setStaged([]);
       setOver(false);
+      // Collapsed, and re-seedable — the effect below fills it back in from scratch.
+      setRunOpen(false);
+      setAssignTouched(false);
     }
   }, [open, defaultParentId, projectId]);
 
@@ -563,6 +602,19 @@ export function AddTaskDialog({
       live = false;
     };
   }, [open, boardId, boardOwnsTickets, transport]);
+
+  // Re-seed the Run it section the same way `AssignAgentDialog` seeds an existing card — see
+  // `seedNewCardAssign`. Skipped once the human has touched any of its three pickers, the same
+  // `branchTouched` guard that dialog already uses, so a pick made before the board or epic
+  // settles is never clobbered once they do.
+  useEffect(() => {
+    if (!open || assignTouched) return;
+    const epic = boardTickets.find((t) => t.id === epicTaskId) ?? null;
+    const seeded = seedNewCardAssign({ boardId, epic }, agentProjects);
+    setAgentProjectId(seeded.agentProjectId);
+    setModel(seeded.model);
+    setMode(seeded.mode);
+  }, [open, boardId, epicTaskId, boardTickets, assignTouched, agentProjects]);
 
   // The projects list is only worth fetching once the switch is on — it is a network
   // call, and most cards are still local. Seeded from what was created last time.
@@ -626,6 +678,23 @@ export function AddTaskDialog({
     [chainCandidates, runsAfterId],
   );
   const epicCandidates = useMemo(() => boardTickets.filter(isEpic), [boardTickets]);
+  const selectedAgentProject = useMemo(
+    () => agentProjects.find((p) => p.id === agentProjectId) ?? null,
+    [agentProjects, agentProjectId],
+  );
+  /** Collapsed, the header names the pick rather than leaving "Run it (optional)" to mean
+   *  nothing until the panel is opened. */
+  const runSummary = selectedAgentProject
+    ? `${selectedAgentProject.name} · ${PERMISSION_MODE_LABELS[mode]}`
+    : "Don't assign";
+
+  /** A fresh project pick also switches the mode to ITS default — see `modeForPickedProject`.
+   *  The model deliberately does not follow suit; it already means "follow the project". */
+  function pickAgentProject(id: string): void {
+    setAssignTouched(true);
+    setAgentProjectId(id);
+    setMode((current) => modeForPickedProject(agentProjects, id, current));
+  }
 
   /**
    * Draw the arrow the picker asked for — `created` runs after `fromTaskId`.
@@ -779,8 +848,10 @@ export function AddTaskDialog({
       jiraTypeId,
       boardId,
       boardOwnsTickets,
-      // The pickers land in F5.2; until then every card is created unassigned.
-      assign: null,
+      // A step never gets one of its own — it joins its parent's board and runs under
+      // whatever agent is already on that card. F5.3 is what actually starts this run;
+      // here it is only ever recorded onto the card.
+      assign: isStep ? null : { agentProjectId, model, mode },
       startNow: false,
     });
     if (plan.kind === 'incomplete') {
@@ -1159,6 +1230,87 @@ export function AddTaskDialog({
                     />
                   </Field>
                 </>
+              )}
+              {/* Pick an agent (and its model/mode) as the card is created, instead of
+                  opening `AssignAgentDialog` on it a moment later. Collapsed by default — most
+                  cards are still created unassigned — and never offered for a step, which runs
+                  under whatever agent is already on its parent. */}
+              {!isStep && (
+                <Accordion
+                  collapsible
+                  openItems={runOpen ? [RUN_ITEM] : []}
+                  onToggle={(_e, data) => setRunOpen(data.openItems.includes(RUN_ITEM))}
+                >
+                  <AccordionItem value={RUN_ITEM}>
+                    <AccordionHeader>
+                      Run it (optional)
+                      {!runOpen && <Caption1 className={styles.hint}> · {runSummary}</Caption1>}
+                    </AccordionHeader>
+                    <AccordionPanel>
+                      <div className={styles.runPanel}>
+                        {agentProjects.length === 0 ? (
+                          <MessageBar intent="warning">
+                            <MessageBarBody>{NO_AGENT_PROJECTS_MESSAGE}</MessageBarBody>
+                          </MessageBar>
+                        ) : (
+                          <>
+                            <Field
+                              label="Agent project"
+                              hint={
+                                selectedAgentProject
+                                  ? selectedAgentProject.path
+                                  : 'The repository the agent works in.'
+                              }
+                            >
+                              <Dropdown
+                                value={selectedAgentProject?.name ?? "Don't assign"}
+                                selectedOptions={[agentProjectId]}
+                                onOptionSelect={(_e, d) =>
+                                  pickAgentProject(d.optionValue ?? NO_AGENT_PROJECT)
+                                }
+                              >
+                                <Option value={NO_AGENT_PROJECT}>Don&rsquo;t assign</Option>
+                                {agentProjects.map((p) => (
+                                  <Option key={p.id} value={p.id} text={p.name}>
+                                    {p.name}
+                                  </Option>
+                                ))}
+                              </Dropdown>
+                            </Field>
+                            <ModelField
+                              label="Model"
+                              value={model ?? PROJECT_DEFAULT}
+                              onChange={(v) => {
+                                setAssignTouched(true);
+                                setModel(cardModelFromOption(v));
+                              }}
+                              sentinel={{
+                                value: PROJECT_DEFAULT,
+                                label: projectDefaultLabel(selectedAgentProject),
+                              }}
+                            />
+                            <Field label="Permission mode">
+                              <Dropdown
+                                value={PERMISSION_MODE_LABELS[mode]}
+                                selectedOptions={[mode]}
+                                onOptionSelect={(_e, d) => {
+                                  setAssignTouched(true);
+                                  setMode(d.optionValue as PermissionMode);
+                                }}
+                              >
+                                {PERMISSION_MODES.map((m) => (
+                                  <Option key={m} value={m} text={PERMISSION_MODE_LABELS[m]}>
+                                    {PERMISSION_MODE_LABELS[m]}
+                                  </Option>
+                                ))}
+                              </Dropdown>
+                            </Field>
+                          </>
+                        )}
+                      </div>
+                    </AccordionPanel>
+                  </AccordionItem>
+                </Accordion>
               )}
             </div>
           </DialogContent>
