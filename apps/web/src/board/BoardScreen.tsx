@@ -36,19 +36,13 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Caption1, makeStyles } from '@fluentui/react-components';
-import {
-  COLUMN_META,
-  focusCards,
-  groupSubtasks,
-  hiddenColumnsSummary,
-  partitionShelved,
-  sortCards,
-  visibleColumns,
-  type BoardCard,
-} from '@tm/ui/board/boardColumns';
-import { columnForTask, statusForColumn } from '@tm/shared/board';
+import { COLUMN_META, hiddenColumnsSummary, visibleColumns } from '@tm/ui/board/boardColumns';
+import { statusForColumn } from '@tm/shared/board';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
+import { ColumnSwitcher } from '@tm/ui/board/ColumnSwitcher';
+import { columnSwitcherItems } from '@tm/ui/board/compactColumns';
+import { chainPosition } from '@tm/ui/board/chainPosition';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
@@ -76,7 +70,12 @@ import {
 } from '@tm/shared/model';
 import type { BoardScope } from '@tm/shared/ipc';
 import { BoardToolbar } from './BoardToolbar';
-import { selectAgentProjects, selectArchivedTasks, selectBoardTasks } from './boardSelectors';
+import {
+  bucketBoardCards,
+  selectAgentProjects,
+  selectArchivedTasks,
+  selectBoardTasks,
+} from './boardSelectors';
 import { displayStatus, isTaskPending, type CloudBoardState } from './cloudBoardStore';
 import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 
@@ -114,9 +113,30 @@ export interface BoardScreenProps {
    * overlay a drag gets, without putting a second identical command on the wire.
    */
   onStatusNoted: (taskId: string, status: ManualStatus) => void;
+  /**
+   * The compact one-column board (F3.5) — set by `CompactApp` on a narrow viewport. Renders
+   * `BoardToolbar` as today, then a `ColumnSwitcher`, then ONE `KanbanColumn` for `column`
+   * instead of all of them side by side: no `ChainOverlay`, no `ChainLinkPopover`, no
+   * link-drag handles (there is no room to draw an arrow over a single column — `TaskCard`'s
+   * "step n of m" caption says what it would have), and no right-hand detail pane or git
+   * graph. The `ShelfStrip` stays, as it does on the wide board. Absent, the wide path below
+   * is unchanged.
+   */
+  compact?: {
+    /** The column to show, or `null` only when every column is hidden. */
+    column: BoardColumn | null;
+    onColumnChange: (column: BoardColumn) => void;
+    /** A card was tapped — the compact shell opens it full-screen rather than a detail pane. */
+    onOpenCard: (id: string) => void;
+  };
 }
 
-export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenProps): JSX.Element {
+export function BoardScreen({
+  state,
+  onSetStatus,
+  onStatusNoted,
+  compact,
+}: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   const styles = useStyles();
   const transport = useTransport();
@@ -300,32 +320,24 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
       ...task,
       status: displayStatus(state, task),
     }));
-    const byColumn = new Map<BoardColumn, BoardCard[]>();
-    for (const meta of COLUMN_META) byColumn.set(meta.column, []);
-    const { onBoard, shelved } = partitionShelved(
-      focusCards(groupSubtasks(displayTasks, mrsByTask), focusIds),
+    return bucketBoardCards(
+      displayTasks,
+      mrsByTask,
+      focusIds,
       shelvedIds,
+      extras.attention.taskIds,
     );
-    for (const card of onBoard) byColumn.get(columnForTask(card.task))?.push(card);
-    // The desktop's ordering, so the same board reads the same way in both places: cards
-    // that want you first, then priority, then `order`. The inbox's ids go in too, now that
-    // this app has them — the ordering and the orange ring are one predicate, and passing it
-    // to the card but not to the sort would have the two disagree.
-    for (const meta of COLUMN_META) {
-      byColumn.set(
-        meta.column,
-        sortCards(byColumn.get(meta.column) ?? [], extras.attention.taskIds),
-      );
-    }
-    return {
-      cardsByColumn: byColumn,
-      shelvedCards: sortCards(shelved, extras.attention.taskIds),
-    };
   }, [boardTasks, state, mrsByTask, focusIds, extras.attention.taskIds, shelvedIds]);
 
   const hiddenDone = useMemo(
     () => hiddenColumnsSummary(cardsByColumn.get('done') ?? [], ['done']),
     [cardsByColumn],
+  );
+
+  /** The compact board's column tabs — absent entirely on the wide path. */
+  const switcherItems = useMemo(
+    () => columnSwitcherItems(cardsByColumn, hiddenColumns),
+    [cardsByColumn, hiddenColumns],
   );
 
   /** Where every card is, for the arrows — see `useCardAnchors`. */
@@ -526,6 +538,20 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
     [linkDrag, extras, reportError],
   );
 
+  /** A card dropped into a column, on either the wide board or the compact one. */
+  const handleDropInColumn = useCallback(
+    (taskId: string, dropColumn: BoardColumn) => {
+      setDraggingId(null);
+      if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
+      onSetStatus(taskId, statusForColumn(dropColumn));
+      foldOnAutoFoldColumn(taskId, dropColumn);
+      // The drag that returns a shelved card to a column is the toggle's other click — see
+      // `MyTasks.tsx`'s own `onDropInColumn`.
+      if (shelvedIds.has(taskId)) toggleShelved(taskId);
+    },
+    [pendingTaskIds, onSetStatus, foldOnAutoFoldColumn, shelvedIds, toggleShelved],
+  );
+
   return (
     <div className={layout.root}>
       <div className={layout.board}>
@@ -594,6 +620,16 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
 
         {error && <Caption1 className={styles.error}>{error}</Caption1>}
 
+        {/* The compact board's column tabs — standing in for the wide board's five
+            side-by-side columns, which a single-column layout has no room for. */}
+        {compact && (
+          <ColumnSwitcher
+            items={switcherItems}
+            selected={compact.column}
+            onSelect={compact.onColumnChange}
+          />
+        )}
+
         {/* The empty state is about the CARD SET, not the mirror: a board with a hundred rows
             in other projects still has nothing to draw, and saying "no board data" there would
             be a lie. Only when nothing at all has arrived is it a sync that hasn't happened. */}
@@ -603,6 +639,51 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
               ? 'No board data yet — waiting on the first sync from your desktop app.'
               : `No cards on ${scope === 'all' ? 'any board' : `the ${scopeLabel} board`}.`}
           </Caption1>
+        ) : compact ? (
+          // The compact board: no chain overlay, no link-drag handles, no popover — there is
+          // no second column to draw an arrow into, and `chainPositionOf` says in words what
+          // the arrows would have. `compact.column` is only `null` when every column is
+          // hidden, which this simply renders as nothing rather than an empty-state lie (the
+          // board is not empty — there is just nowhere configured to show it).
+          compact.column && (
+            <KanbanColumn
+              column={compact.column}
+              label={COLUMN_LABEL[compact.column]}
+              cards={cardsByColumn.get(compact.column) ?? []}
+              layout="compact"
+              projectNameOf={projectNameOf}
+              epicNameOf={epicNameOf}
+              assigneeOf={assigneeOf}
+              agentNameOf={agentNameOf}
+              projectColorOf={projectColorOf}
+              display={boardDisplay}
+              showSprint={!settings.jira.currentSprintOnly}
+              statusKeywords={settings.statusKeywords}
+              attentionTaskIds={extras.attention.taskIds}
+              liveRunTaskIds={extras.liveRunTaskIds}
+              mergingTaskIds={extras.mergingTaskIds}
+              foldedStepTaskIds={foldedSteps}
+              onToggleSteps={toggleSteps}
+              shownEarlierStepTaskIds={shownEarlierSteps}
+              onToggleEarlierSteps={toggleEarlierSteps}
+              shownLaterStepTaskIds={shownLaterSteps}
+              onToggleLaterSteps={toggleLaterSteps}
+              chainStateOf={(t) => chainState.get(t.id)}
+              chainPositionOf={(t) => chainPosition(extras.chainLinks, t.id) ?? undefined}
+              selectedTaskId={selectedTaskId}
+              draggingId={draggingId}
+              onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
+              onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
+              onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
+              afterMergePipeline={settings.features.afterMergePipeline}
+              mrRebaseButton={settings.features.mrRebaseButton}
+              mrMergeButton={settings.features.mrMergeButton}
+              onSelectTask={(id) => compact.onOpenCard(id)}
+              onDragStartTask={setDraggingId}
+              onDragEndTask={() => setDraggingId(null)}
+              onDropInColumn={handleDropInColumn}
+            />
+          )
         ) : (
           <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
             {visibleColumns(hiddenColumns).map((column) => (
@@ -677,15 +758,7 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
                 onSelectTask={selectTask}
                 onDragStartTask={setDraggingId}
                 onDragEndTask={() => setDraggingId(null)}
-                onDropInColumn={(taskId, dropColumn) => {
-                  setDraggingId(null);
-                  if (pendingTaskIds.has(taskId)) return; // one edit in flight at a time per card
-                  onSetStatus(taskId, statusForColumn(dropColumn));
-                  foldOnAutoFoldColumn(taskId, dropColumn);
-                  // The drag that returns a shelved card to a column is the toggle's other
-                  // click — see `MyTasks.tsx`'s own `onDropInColumn`.
-                  if (shelvedIds.has(taskId)) toggleShelved(taskId);
-                }}
+                onDropInColumn={handleDropInColumn}
               />
             ))}
             {/* Last, so the arrows paint over the cards — and inside the scroll container,
@@ -752,8 +825,10 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
       </div>
 
       {/* The desktop's own pane, the same component — and now with the same props, so it
-          draws the same sections rather than degrading to a card and a timeline. */}
-      {showDetail && (
+          draws the same sections rather than degrading to a card and a timeline. Never on
+          the compact board: there is no room for it, and no gesture here opens it anyway
+          (`compact.onOpenCard` leaves the board for the card screen instead). */}
+      {!compact && showDetail && (
         <div className={layout.right}>
           <TaskDetail
             task={selectedTask}
@@ -797,8 +872,9 @@ export function BoardScreen({ state, onSetStatus, onStatusNoted }: BoardScreenPr
       {/* The desktop's commit graph, over the relay. Last in the row so folding it away never
           shifts the detail pane sideways, and unmounted rather than hidden for the reason the
           desktop unmounts it: a graph nobody is looking at should not be asking a desktop to
-          re-read a repository every time a card changes. */}
-      {showGraph && (
+          re-read a repository every time a card changes. Never on the compact board — same
+          reason as the detail pane above. */}
+      {!compact && showGraph && (
         <div className={layout.graph}>
           <GitGraphPane
             projects={agentProjects}

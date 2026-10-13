@@ -15,11 +15,14 @@
  * - **Screens are placeholders where a later step owns the real one**:
  *   - `inbox` → `<CompactInbox />` (F3.3): its own urgency-sorted list and tap-to-open detail,
  *     not the wide `<Attention />` list.
- *   - `board` and `card` routes both render today's `BoardScreen` (gated by `boardIsReady`,
- *     `<SyncCurtain>` otherwise) exactly as the wide layout does — F3.5/F3.6 replace this
- *     with the tap-to-move compact board and the sectioned card detail (`CardSection`). A
- *     `card` route still highlights the Board tab (`tabForRoute`), even though the screen
- *     drawn today is the same `BoardScreen` a bare `board` route shows.
+ *   - `board` and `card` routes both render `BoardScreen` (gated by `boardIsReady`,
+ *     `<SyncCurtain>` otherwise), with its `compact` prop set (F3.5) — one `ColumnSwitcher`
+ *     tab's worth of cards instead of the wide layout's five side-by-side columns.
+ *     `activeCompactColumn` resolves which column that is: a `board` route's own column, or
+ *     a `card` route's card's column with that card selected on it. F3.7 still replaces the
+ *     `card` route with the full-screen, sectioned card detail (`CardSection`) rather than
+ *     this board-with-a-card-highlighted stand-in — until then a `card` route highlights the
+ *     Board tab (`tabForRoute`) and shows the same board the bare route does.
  *   - `search` → a Fluent `Input` plus result rows from `searchCards(Object.values(
  *     board.state.tasks), query)` (`CloudBoardState.tasks` is keyed by id, not an array);
  *     tapping a row navigates to `#/card/<id>/chat` (the `chat` section is the default
@@ -42,6 +45,9 @@ import {
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
 import type { ClientPresence } from '@tm/protocol/wire';
+import { BOARD_COLUMNS } from '@tm/shared/model';
+import { columnForTask } from '@tm/shared/board';
+import { activeCompactColumn } from '@tm/ui/board/compactColumns';
 import { BottomTabBar, type BottomTabBarItem } from '@tm/ui/shell/BottomTabBar';
 import { CompactShell } from '@tm/ui/shell/CompactShell';
 import { CompactInbox } from '@tm/ui/CompactInbox';
@@ -106,6 +112,20 @@ export function CompactApp({
   const [route, navigate] = useHashRoute();
   const [query, setQuery] = useState('');
 
+  // The column a `card` route's own card sits on — undefined when the route carries no
+  // card, or the id names no task this tab has a mirrored row for yet (`activeCompactColumn`
+  // falls back to the first column either way). No `hiddenBoardColumns` filtering here: this
+  // tab has no settings of its own (`useBoardExtras` is `BoardScreen`'s alone), so the full
+  // column order stands in for "visible" — a column hidden on the desktop simply never gets
+  // picked by a `board` route's own column either, since `routeForTab`/`BottomTabBar` never
+  // offer one.
+  const routeTask = route.kind === 'card' ? board.state.tasks[route.id] : undefined;
+  const activeColumn = activeCompactColumn(
+    route,
+    BOARD_COLUMNS,
+    routeTask && columnForTask(routeTask),
+  );
+
   const connection = worstConnectionState(
     board.pollError,
     presence === 'offline' ? { everSeenClient: board.targetClientId !== null } : null,
@@ -151,6 +171,11 @@ export function CompactApp({
             state={board.state}
             onSetStatus={(taskId, status) => void board.setStatus(taskId, status)}
             onStatusNoted={board.noteStatus}
+            compact={{
+              column: activeColumn,
+              onColumnChange: (column) => navigate({ kind: 'board', column }),
+              onOpenCard: (id) => navigate({ kind: 'card', id, section: 'chat' }),
+            }}
           />
         ) : (
           <SyncCurtain

@@ -16,6 +16,7 @@ import type { BoardDisplaySettings } from '@tm/shared/settings';
 import { TaskCard } from './TaskCard';
 import type { AutomationOrigin } from './automationOrigin';
 import type { BoardCard, BoardColumn } from './boardColumns';
+import type { ChainPosition } from './chainPosition';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 import type { ChainState } from './chainStates';
 
@@ -71,6 +72,14 @@ const useStyles = makeStyles({
     flex: 1,
   },
   empty: { color: tokens.colorNeutralForeground4, padding: '8px 4px' },
+  /**
+   * The compact board's one visible column (F3.5) — no sticky header (there is only one
+   * column on screen, so a label pinned above it says nothing a `ColumnSwitcher` tab above
+   * it hasn't already), and full-width rather than a grid track sized by its siblings, since
+   * it has none.
+   */
+  columnCompact: { padding: 0, width: '100%' },
+  listCompact: { width: '100%' },
 });
 
 export interface KanbanColumnProps {
@@ -78,6 +87,13 @@ export interface KanbanColumnProps {
   label: string;
   /** The column's cards, each carrying the steps that render inside it. */
   cards: BoardCard[];
+  /**
+   * `'compact'` drops the sticky column header and stretches the list full-width — the
+   * compact board's single-column view (`BoardScreen`'s `compact` prop), which already says
+   * which column this is in its own `ColumnSwitcher` tab. Absent on every wide caller, so
+   * wide rendering is unchanged.
+   */
+  layout?: 'compact';
   projectNameOf: (task: Task) => string | undefined;
   /** Name of the agent project a delegated card runs in (tooltip on the agent glyph). */
   agentNameOf: (task: Task) => string | undefined;
@@ -159,6 +175,13 @@ export interface KanbanColumnProps {
    * already has one (see `MyTasks`). Undefined for a card nobody chained.
    */
   chainStateOf?: (task: Task) => ChainState | undefined;
+  /**
+   * A chained card's "step n of m" (F3.5) — the compact board's stand-in for the wide
+   * board's arrows, which there is no room to draw over a single column. Asked per card like
+   * `chainStateOf`, over `@tm/ui/board/chainPosition`'s pure walk of the chain graph. Absent
+   * on every wide caller, so wide rendering is unchanged.
+   */
+  chainPositionOf?: (task: Task) => ChainPosition | undefined;
   selectedTaskId: string | null;
   draggingId: string | null;
   /**
@@ -196,9 +219,15 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
   const styles = useStyles();
   const [over, setOver] = useState(false);
 
+  const compact = props.layout === 'compact';
+
   return (
     <div
-      className={mergeClasses(styles.column, over && styles.columnOver)}
+      className={mergeClasses(
+        styles.column,
+        over && styles.columnOver,
+        compact && styles.columnCompact,
+      )}
       onDragOver={(e) => {
         // A link being drawn is not this column's business. Without this the column would
         // accept the drop as well, so drawing an arrow ACROSS a column would also move the
@@ -223,13 +252,15 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
         if (id) props.onDropInColumn(id, props.column);
       }}
     >
-      <div className={styles.header}>
-        <Text weight="semibold" size={200} className={styles.headerLabel}>
-          {props.label}
-        </Text>
-        <Caption1 className={styles.count}>({props.cards.length})</Caption1>
-      </div>
-      <div className={styles.list}>
+      {!compact && (
+        <div className={styles.header}>
+          <Text weight="semibold" size={200} className={styles.headerLabel}>
+            {props.label}
+          </Text>
+          <Caption1 className={styles.count}>({props.cards.length})</Caption1>
+        </div>
+      )}
+      <div className={mergeClasses(styles.list, compact && styles.listCompact)}>
         {props.cards.length === 0 ? (
           <Caption1 className={styles.empty}>—</Caption1>
         ) : (
@@ -281,6 +312,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}
               chainBlocked={props.chainStateOf?.(task)?.blocked}
+              chainPosition={props.chainPositionOf?.(task)}
               // Every card, unconditionally. A chain says what runs after what, never where
               // a card belongs; and a run only BORROWS the card's status (`cardStatusGuard`),
               // so not even a live agent or a live step takes a card out of the human's
