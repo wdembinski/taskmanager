@@ -112,6 +112,7 @@ import type {
 import type { AttentionItem } from '@shared/attention';
 import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
+import type { ReviewComment } from '@shared/review';
 import type { ParsedTask } from './planParser';
 import { splitProjectTag } from './projectTagMigration';
 import { blockOwnerFor, needsBlockOwner } from './blockOwnerMigration';
@@ -793,6 +794,42 @@ export interface Store {
    * failure the uploader could act on.
    */
   markAttachmentUploaded(id: string, at: number | null): void;
+
+  // --- Review comments (see `@shared/review`). ---
+  /** One task's review comments, oldest first (`createdAt`, then insertion order). */
+  listReviewComments(taskId: string): ReviewComment[];
+  /**
+   * Add a draft comment. The id, `createdAt`/`updatedAt` and `sentAt` are the store's to
+   * assign — `createdAt === updatedAt` for a fresh draft, and `sentAt` starts `null`.
+   *
+   * Undefined when the task is unknown (the foreign key refuses it) — "no comment"
+   * rather than an exception, the same contract `addAttachment`/`addTaskLink` keep.
+   */
+  addReviewComment(
+    input: Omit<ReviewComment, 'id' | 'createdAt' | 'updatedAt' | 'sentAt'>,
+  ): ReviewComment | undefined;
+  /**
+   * Patch a draft's anchor or text — how F6.8 re-anchors a comment after the diff moves
+   * on. Merges the patch, bumps `updatedAt`, and refuses once `sentAt` is set: a sent
+   * comment is history, and only `deleteReviewComment` (also draft-only) or the card
+   * itself can make it go away. Undefined for an unknown id or an already-sent comment —
+   * the store itself enforces "never edit history", not just its callers.
+   */
+  updateReviewComment(
+    id: string,
+    patch: Partial<Pick<ReviewComment, 'body' | 'diffId' | 'side' | 'line' | 'start' | 'excerpt'>>,
+  ): ReviewComment | undefined;
+  /**
+   * Forget a draft. Returns whether a row went — sent comments are history and leave
+   * only with their card, so this never deletes one.
+   */
+  deleteReviewComment(id: string): boolean;
+  /**
+   * Stamp every listed draft on this task as sent, in one transaction, and return only
+   * the comments it actually stamped. A second call with the same ids stamps nothing —
+   * the `sentAt IS NULL` guard is what F6.9's "exactly one message" rests on.
+   */
+  markReviewSent(taskId: string, ids: readonly string[], at: number): ReviewComment[];
 
   /**
    * Persist one open inbox item, with the kind-specific `context` its answer path needs
@@ -1687,6 +1724,37 @@ export function createStore(dbPath: string): Store {
     CREATE INDEX IF NOT EXISTS idx_activity_log_kind    ON activity_log(kind, at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_log_run_once
       ON activity_log(runId, kind) WHERE kind IN ('run-started', 'run-finished');
+    -- A task's review comments (F6.7, @shared/review): one row per comment left on a
+    -- diff, draft until sentAt is set. ON DELETE CASCADE ties a comment's life to its
+    -- task exactly as task_attachments does above, so a deleted card takes its comments
+    -- with it; a plan re-sync restores both the same way, in syncTasksFromPlan.
+    --
+    -- side/startSide are plain TEXT rather than CHECK-constrained: an unknown value is
+    -- the reader's problem to coerce (reviewCommentRows.ts), not the schema's to reject.
+    -- startSide/startLine are both NULL together for a single-line comment and both set
+    -- together for a range — ReviewComment.start is optional for exactly that pair.
+    --
+    -- diffId is NOT a foreign key: a diff is a computed hash of refs and a worktree
+    -- fingerprint, not a stored row, so there is nothing here to point at. A comment
+    -- whose diffId has moved on is read back as-is; recomputing "outdated" is a reader's
+    -- job (F6.8), not this table's.
+    CREATE TABLE IF NOT EXISTS review_comments (
+      id        TEXT PRIMARY KEY,
+      taskId    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      diffId    TEXT NOT NULL,
+      path      TEXT NOT NULL,
+      oldPath   TEXT,             -- NULL unless the file was renamed
+      side      TEXT NOT NULL,    -- 'old' | 'new'
+      line      INTEGER NOT NULL,
+      startSide TEXT,             -- both NULL for a single-line comment
+      startLine INTEGER,
+      body      TEXT NOT NULL,
+      excerpt   TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      sentAt    INTEGER           -- NULL = draft
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_comments_task ON review_comments(taskId, createdAt);
   `);
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
