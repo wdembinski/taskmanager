@@ -724,6 +724,12 @@ export interface Task {
    * which already has one.
    */
   stoppedAt?: number | null;
+  /**
+   * Serialised {@link SkillRef}s (`lib:<id>` / `repo:<name>`, see `@shared/skills`) attached
+   * to this card or step; a step runs with the card's refs union its own, card first (F7.6).
+   * Null or empty means none attached. Written only through `setTaskSkillRefs`.
+   */
+  skillRefs?: string[] | null;
   /** Ordering within the project (phase order, then position in the plan). */
   order: number;
   /**
