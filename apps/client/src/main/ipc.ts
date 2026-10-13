@@ -182,6 +182,17 @@ import {
   rematchPullRequests,
 } from './github/githubPrSync';
 import {
+  LinearClient,
+  LinearRateLimitError,
+  type LinearComment,
+  type LinearIssue,
+} from './linear/linearClient';
+import { buildIssueFilter } from './linear/linearQueries';
+import {
+  issuesToRecheck as linearIssuesToRecheck,
+  reconcileLinearIssues,
+} from './linear/linearSync';
+import {
   forgeName,
   mrIsSettled,
   mrReadyToMerge,
@@ -1964,6 +1975,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     return new GitHubClient({ baseUrl, token: decryptSecret(cipher, forgeName('github')) });
   };
 
+  /**
+   * The GitHub builder above, one source over — same guard, same reason — but a raw API
+   * key goes on the wire rather than a Bearer token, and there is no base URL to resolve:
+   * Linear has one endpoint.
+   */
+  const buildLinearClient = (): LinearClient => {
+    const cipher = store.loadLinearApiKey();
+    if (!cipher) throw new Error('No Linear API key saved — add one in Settings.');
+    return new LinearClient({ apiKey: decryptSecret(cipher, 'Linear') });
+  };
+
   handle('github:getConfigStatus', async () => {
     const { github } = store.getSettings();
     return {
@@ -2341,8 +2363,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     jira: { lastSyncAt: null, syncing: false, error: null },
     gitlab: { lastSyncAt: null, syncing: false, error: null },
     github: { lastSyncAt: null, syncing: false, error: null },
-    // No `services` row for it yet — F4.7 registers the service; this entry exists only so
-    // `syncClock` (a `Record<SyncServiceId, …>`) stays total over the id union.
     linear: { lastSyncAt: null, syncing: false, error: null },
     cloud: { lastSyncAt: null, syncing: false, error: null },
   };
@@ -2353,6 +2373,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       { id: 'jira', label: 'JIRA', enabled: settings.jira.enabled, ...syncClock.jira },
       { id: 'gitlab', label: 'GitLab', enabled: settings.gitlab.enabled, ...syncClock.gitlab },
       { id: 'github', label: 'GitHub', enabled: settings.github.enabled, ...syncClock.github },
+      { id: 'linear', label: 'Linear', enabled: settings.linear.enabled, ...syncClock.linear },
       { id: 'cloud', label: 'Cloud', enabled: settings.cloud.enabled, ...syncClock.cloud },
     ];
     // The NEWEST of the services' clocks, so a sweep in which one tracker failed still
@@ -4077,6 +4098,127 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   /**
+   * `githubCommentsReadAt`, one tracker over: when we last read an issue's comments, by
+   * UUID → the issue's `updatedAt` at that moment, so only an issue that has actually
+   * moved since costs a comment fetch.
+   */
+  const linearCommentsReadAt = new Map<string, number>();
+
+  /**
+   * One Linear sync: run the user's issue filter, re-read by id whatever it left out,
+   * fetch comments for anything that moved, reconcile, apply.
+   *
+   * `syncGitHubIssues` above, one tracker over — same order, same reasons, down to
+   * upsert-then-archive. The one rule with no GitHub analogue: a `LinearRateLimitError`,
+   * however it surfaces, is RETHROWN rather than logged-and-kept the way a single failed
+   * recheck or comment fetch is — the background poller's back-off only engages if the
+   * error actually reaches it.
+   */
+  const syncLinear = async (): Promise<Task[]> => {
+    const { linear, features } = store.getSettings();
+    if (!linear.enabled) return store.getPersonalTasks();
+    const client = buildLinearClient();
+
+    const filterResult = buildIssueFilter(linear);
+    if (!filterResult.ok) throw new Error(filterResult.error);
+    const filter = filterResult.filter;
+    const filterKey = JSON.stringify(filter);
+    // Whether the question itself changed since last time. Null is read as *unchanged*, so
+    // the first sync after an upgrade does not have the guard stand down on a board it has
+    // never seen.
+    const lastFilter = store.loadLinearLastFilter();
+    const queryChanged = lastFilter !== null && lastFilter !== filterKey;
+
+    const { issues, truncated } = await client.fetchIssues(filter);
+    if (truncated) {
+      logMain(
+        `Linear sync: the issue filter returned ${issues.length} issues without reaching ` +
+          `the end of the filter — nothing will be removed from the board this sync.`,
+      );
+    }
+
+    // The ONE read that includes archived cards — see `getPersonalTasksForSync`'s doc on
+    // the GitHub sync above.
+    const personalForSync = store.getPersonalTasksForSync();
+
+    // Re-read, by UUID, every card the filter left out. Bounded by the board, and on a
+    // healthy board it is zero calls.
+    const toRecheck = linearIssuesToRecheck(personalForSync, issues);
+    let rechecked: Map<string, LinearIssue> | null = new Map();
+    const recheckedIds = new Set<string>(toRecheck);
+    if (toRecheck.length > 0) {
+      try {
+        const fetched = await client.fetchIssuesByIds(toRecheck);
+        rechecked = new Map(fetched.map((issue) => [issue.id, issue] as const));
+      } catch (e) {
+        // A rate limit must reach the poller, not read as "kept" — everything else (a
+        // transient error, an issue that just went private) leaves the card untouched
+        // rather than retiring it on a question that failed to get answered.
+        if (e instanceof LinearRateLimitError) throw e;
+        logMain('Linear sync: re-read of missing issues failed — kept', e);
+        rechecked = null;
+      }
+    }
+
+    // The comments, for the issues that could have gained one since `linearCommentsReadAt`.
+    // A key ABSENT from this map means "not asked this time", which keeps whatever the card
+    // already knew; present-and-empty means "asked, and there are none".
+    const comments = new Map<string, LinearComment[]>();
+    const commentQueue = [...issues, ...(rechecked ? rechecked.values() : [])].filter((issue) => {
+      const updatedAt = Date.parse(issue.updatedAt) || 0;
+      return updatedAt > (linearCommentsReadAt.get(issue.id) ?? 0);
+    });
+    const commentWorker = async (): Promise<void> => {
+      for (let issue = commentQueue.shift(); issue; issue = commentQueue.shift()) {
+        try {
+          comments.set(issue.id, await client.fetchComments(issue.id));
+          linearCommentsReadAt.set(issue.id, Date.parse(issue.updatedAt) || 0);
+        } catch (e) {
+          if (e instanceof LinearRateLimitError) throw e;
+          logMain(`Linear sync: comments for ${issue.id} could not be read — kept as they were`, e);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, commentQueue.length) }, commentWorker));
+
+    const now = Date.now();
+    // Recorded before the reconcile rather than after: nothing below can throw a network
+    // error, so this is the last point at which "the filter we just ran" is true.
+    store.saveLinearLastFilter(filterKey);
+    const { upserts, removals, refused, warning } = reconcileLinearIssues(personalForSync, issues, {
+      overrides: linear.stateColumnOverrides,
+      learned: linear.learnedStateColumns,
+      comments,
+      rechecked,
+      recheckedIds,
+      truncated,
+      queryChanged,
+      now,
+      retentionMs: Math.max(0, linear.doneRetentionDays) * 24 * 60 * 60 * 1000,
+      assignOwnBoard: features.ticketsToOwnBoard,
+      projects: store.listProjects(),
+    });
+    for (const t of upserts) store.upsertJiraTask(t);
+    // ARCHIVED, not deleted — see the same loop in `syncJira`/`syncGitHubIssues`.
+    for (const r of removals) {
+      store.archiveTask(r.taskId, now, r.reason);
+      logMain(`Linear sync: archived ${r.key} — ${r.reason} (${r.title})`);
+    }
+    for (const r of refused) {
+      logMain(`Linear sync: REFUSED to remove ${r.key} (${r.title}) — ${warning ?? 'guarded'}`);
+    }
+    if (warning) {
+      logMain(`Linear sync: ${warning}`);
+      // Its own bar, not the error bar: nothing failed, and a warning that reads as an
+      // error teaches people to dismiss both.
+      send('board:notice', { text: warning, intent: 'warning' });
+    }
+    const tasks = store.getPersonalTasks();
+    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    return tasks;
+  };
+
+  /**
    * `syncJira`, with the diagnosis attached to whatever it throws — so the board's error
    * bar explains a bad deployment/credential the same way the Settings "Test connection"
    * button does.
@@ -4776,6 +4918,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       // GitHub cards current, and a poller wired to only one of the two halves is exactly how
       // an integration comes to work when you press the button and not otherwise.
       run: () => trackSync('github', syncGitHub),
+    },
+    {
+      id: 'linear',
+      isEnabled: (s) => s.getSettings().linear.enabled,
+      run: () => trackSync('linear', syncLinear),
+      backoffUntil: (e) =>
+        e instanceof LinearRateLimitError ? (e.resetAt ?? Date.now() + 60_000) : null,
     },
   ]);
   syncPoller.reschedule();
