@@ -43,6 +43,7 @@ import {
   PulseRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
+  TicketDiagonalRegular,
 } from '@fluentui/react-icons';
 import type { AuthState } from '@shared/auth';
 import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
@@ -52,6 +53,7 @@ import { Attention } from '@ui/Attention';
 import { ActivityScreen } from '@ui/activity/ActivityScreen';
 import { unreadActivityCount } from '@ui/activity/activityUnread';
 import { AutomationsView } from '@ui/automations/AutomationsView';
+import { IssuesScreen } from '@ui/issues/IssuesScreen';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
@@ -109,11 +111,14 @@ const useStyles = makeStyles({
  * the tickets this app tracks itself, with no repo and no plan file. Creating and editing a
  * ticket project happens on the Projects tab like any other project; the Tickets tab is
  * purely a workspace over whichever one you pick.
+ *
+ * Issues (F5.10) browses tracker issues outside the sync query and hands one to an agent.
  */
 type TabId =
   | 'mytasks'
   | 'projects'
   | 'tickets'
+  | 'issues'
   | 'automations'
   | 'performance'
   | 'activity'
@@ -126,6 +131,7 @@ const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
   { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
   { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
   { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
+  { id: 'issues', label: 'Issues', icon: <TicketDiagonalRegular /> },
   { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
   { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
   { id: 'activity', label: 'Activity', icon: <PulseRegular /> },
@@ -497,6 +503,8 @@ export function App(): JSX.Element {
         <Projects />
       ) : tab === 'tickets' ? (
         <TicketWorkspace />
+      ) : tab === 'issues' ? (
+        <IssuesScreen onOpenTask={openTaskOnBoard} />
       ) : tab === 'automations' ? (
         <AutomationsView onOpenTask={openTaskOnBoard} />
       ) : tab === 'performance' ? (
