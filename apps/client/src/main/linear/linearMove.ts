@@ -183,7 +183,12 @@ export function resolveLinearMove(
 
   const configured = configuredState(team, toColumn, settings);
   if (configured) {
-    return { ...base, noop: false, target: { state: configured, via: 'configured' }, refusal: null };
+    return {
+      ...base,
+      noop: false,
+      target: { state: configured, via: 'configured' },
+      refusal: null,
+    };
   }
 
   for (const tier of STATUS_REASONS) {
