@@ -169,6 +169,8 @@ interface TaskRow {
   preRunStatus: string | null;
   /** When this card started being kept past the JQL. See `Task.retainedSince`. */
   retainedSince: number | null;
+  /** 1 for a card `issues:import` created, NULL otherwise. See `Task.pinnedImport`. */
+  pinnedImport: number | null;
   /** When this card was taken off the board, the row surviving. See `Task.archivedAt`. */
   archivedAt: number | null;
   /** Which answer took it off the board. See `Task.archivedReason`. */
@@ -465,6 +467,12 @@ export interface Store {
    * cleared, since it no longer describes anything. Undefined if unknown.
    */
   unarchiveTask(id: string): Task | undefined;
+  /**
+   * Mark a card as `issues:import`'s own — set once, never cleared — so a sync never archives
+   * it for having left the query it was never part of. See `Task.pinnedImport`. Undefined if
+   * unknown.
+   */
+  pinImport(id: string): Task | undefined;
   /**
    * Destroy every card archived before `cutoff`, exactly as `deleteTask` would — the retention
    * backstop, so a board that archives forever does not grow forever. Returns how many cards
@@ -1284,6 +1292,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus         TEXT,
       preRunStatus           TEXT,
       retainedSince          INTEGER,
+      pinnedImport           INTEGER,
       archivedAt             INTEGER,
       archivedReason         TEXT,
       lastReadCommentAt      INTEGER,
@@ -2057,6 +2066,10 @@ export function createStore(dbPath: string): Store {
     // NULL on every existing row, which reads as "the JQL still returns this card" — true
     // of anything already on the board when the app starts.
     ['retainedSince', 'INTEGER'],
+    // NULL on every existing row, which reads as "the sync brought this card in" — true of
+    // every card already on the board when this column was added, none of which went
+    // through `issues:import`. See `Task.pinnedImport`.
+    ['pinnedImport', 'INTEGER'],
     ['lastReadCommentAt', 'INTEGER'],
     ['latestCommentAt', 'INTEGER'],
     // Agent delegation: the epic/parent key and description come from JIRA (a re-sync
@@ -2451,7 +2464,7 @@ export function createStore(dbPath: string): Store {
         externalSource, externalKey, externalId, externalUrl, externalStatus, externalStatusCategory,
         externalPriority, externalType, externalLabel, externalParentKey, externalEpicName, externalSprint,
         externalDescription,
-        preBlockStatus, preRunStatus, retainedSince, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
+        preBlockStatus, preRunStatus, retainedSince, pinnedImport, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
         agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
@@ -2462,7 +2475,7 @@ export function createStore(dbPath: string): Store {
         @externalSource, @externalKey, @externalId, @externalUrl, @externalStatus, @externalStatusCategory,
         @externalPriority, @externalType, @externalLabel, @externalParentKey, @externalEpicName, @externalSprint,
         @externalDescription,
-        @preBlockStatus, @preRunStatus, @retainedSince, @archivedAt, @archivedReason, @lastReadCommentAt, @latestCommentAt,
+        @preBlockStatus, @preRunStatus, @retainedSince, @pinnedImport, @archivedAt, @archivedReason, @lastReadCommentAt, @latestCommentAt,
         -- The filing column was added after this INSERT was written and only ever set by
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
@@ -2496,6 +2509,8 @@ export function createStore(dbPath: string): Store {
   const unarchiveTaskStmt = db.prepare(
     `UPDATE tasks SET archivedAt = NULL, archivedReason = NULL WHERE id = @id OR parentTaskId = @id`,
   );
+  // One column, written by id, and never cleared — see `Task.pinnedImport`.
+  const pinImportStmt = db.prepare(`UPDATE tasks SET pinnedImport = 1 WHERE id = @id`);
   // The ids the retention sweep is allowed to destroy. Selected rather than deleted in one
   // statement so each goes out through the same `deleteTaskDeep` an explicit delete uses, and
   // takes its timeline and transcript with it — a bare DELETE would strand both.
@@ -3508,6 +3523,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus: task.preBlockStatus ?? null,
       preRunStatus: task.preRunStatus ?? null,
       retainedSince: task.retainedSince ?? null,
+      pinnedImport: task.pinnedImport ? 1 : null,
       archivedAt: task.archivedAt ?? null,
       archivedReason: task.archivedReason ?? null,
       lastReadCommentAt: task.lastReadCommentAt ?? null,
@@ -3598,6 +3614,7 @@ export function createStore(dbPath: string): Store {
       preBlockStatus: (r.preBlockStatus as Task['preBlockStatus']) ?? null,
       preRunStatus: (r.preRunStatus as Task['preRunStatus']) ?? null,
       retainedSince: r.retainedSince ?? null,
+      pinnedImport: r.pinnedImport === 1 ? true : null,
       archivedAt: r.archivedAt ?? null,
       archivedReason: (r.archivedReason as Task['archivedReason']) ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
@@ -4481,6 +4498,12 @@ export function createStore(dbPath: string): Store {
       return getTask(id);
     },
 
+    pinImport(id) {
+      if (!getTask(id)) return undefined;
+      pinImportStmt.run({ id });
+      return getTask(id);
+    },
+
     unarchiveTask(id) {
       if (!getTask(id)) return undefined;
       unarchiveTaskStmt.run({ id });
@@ -4511,6 +4534,11 @@ export function createStore(dbPath: string): Store {
         // touched a removed card put it silently back on the board. Archiving and restoring go
         // through `archiveTask` / `unarchiveTask`, which write those two columns and nothing
         // else.
+        //
+        // `pinnedImport` is absent for the same sharper reason: it is set once, by
+        // `issues:import`, and a sync refresh of an already-pinned card must never clear it —
+        // that would hand the card straight back to left-query archival the very next poll.
+        // `pinImport` writes that column and nothing else.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
