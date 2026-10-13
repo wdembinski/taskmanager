@@ -27,6 +27,7 @@ Two gaps between "I have work" and "an agent is doing it":
 - `IssueSummary` (shared): `{ provider: 'jira' | 'github' | 'gitlab', key, title, url, state, labels: string[], type?, assignee?, updatedAt, onBoardTaskId: string | null }` — `onBoardTaskId` is resolved in main by matching `externalSource`+`externalKey` against the store, so the UI can show "On board → open" instead of importing twice.
 - IPC (all `relay` in `RELAY_POLICY`): `issues:list(query: IssueQuery)` → `{ items: IssueSummary[], labels: string[], nextCursor? }`; `issues:import(provider, key)` → `Task` (idempotent: returns the existing card if already on the board).
 - `AddTaskForm` gains `assign: { agentProjectId, model: ClaudeModel | null, mode: PermissionMode | null } | null` and `startNow: boolean`; `AddTaskPlan`'s `card` variant gains the same `assign`. Steps never carry it (a step runs in its parent's worktree).
+- `AutomationAction.taskId` (F5.12) is the attach point: the composer's "Run on a schedule" section builds the trigger and `addTaskPlan` carries it, but the automation itself is only ever pointed at a card through this field — nothing else on `Automation`/`AutomationTrigger` names the card.
 - Task: `pinnedImport?: boolean` (or a new `source: 'import'` — see Open questions) so a card imported from outside the sync query is **not** archived as `left-query`. Store migration (memory *the-store-has-no-tests* for how to cover it).
 
 ### Engine / main process
@@ -263,7 +264,7 @@ write order, but `addTaskPlan` itself already honours `startNow` today
 
   - Requires F7's template store. Menu inserts at the caret; into an untouched pre-filled box it appends below the reference rather than above it.
   - Acceptance: pure `insertTemplate(text, caret, template, untouched)` tested for caret, untouched-append and empty cases. Gates green.
-- [ ] F5.12 Add an optional attach a trigger section to the composer
+- [x] F5.12 Add an optional attach a trigger section to the composer
 
   - Requires F1's trigger model. "Run on a schedule / when …" attaches an F1 trigger to the new card instead of (or as well as) starting now.
   - Acceptance: `addTaskPlan` tests — trigger plus startNow both honoured; trigger on a step rejected; the created trigger references the new card id. Gates green.

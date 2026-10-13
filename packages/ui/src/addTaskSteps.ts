@@ -3,7 +3,7 @@
  * the dialog says once that sequence has run.
  *
  * `AddTaskDialog`'s own `save()` used to inline every write it makes (create, JIRA link,
- * attachments, chain, assign) with its own `onNotice` excuses scattered across three local
+ * attachments, chain, schedule, assign) with its own `onNotice` excuses scattered across three local
  * helpers. That made the one rule actually governing it — "the card is never rolled back,
  * whatever happens after it exists" — something you had to read the whole function to
  * believe rather than something a test could pin down. `addTaskSteps` turns a settled
@@ -11,6 +11,7 @@
  * `invoke`, so the no-rollback rule is a unit test over a fake transport instead of a
  * click-through.
  */
+import type { Automation, AutomationAction, AutomationTrigger } from '@tm/shared/automation';
 import type { Task } from '@tm/shared/model';
 import { RUN_REFUSAL_MESSAGE, type ParkedRefusal, type RunRefusal } from '@tm/shared/scheduler';
 import { LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
@@ -27,13 +28,15 @@ type StepPlan = Extract<AddTaskPlan, { kind: 'step' }>;
 
 /**
  * One write `addTaskSteps` would otherwise make inline, in the order {@link addTaskSteps}
- * emits them: create, JIRA link, attachments, chain, assign.
+ * emits them: create, JIRA link, attachments, chain, schedule, assign.
  *
  * `create-step` / `create-card` / `create-ticket` are mutually exclusive and always first —
  * nothing else here carries an id of its own, because none exists until whichever of these
  * three resolves. `link-jira` and `chain-after` apply only to a `card`/`ticket` plan (a step
  * is never ticketed, chained, or assigned separately — see {@link AddTaskPlan}); `attach`
- * applies to any of the three. `assign` is always last — attachments must land before it,
+ * applies to any of the three. `schedule` (F5.12) saves the F1 automation the plan's
+ * `trigger` becomes, pointed at the new card — see {@link attachedAutomation}; like the
+ * chain it is a `card`/`ticket`-only step, because `addTaskPlan` refuses a trigger on a step. `assign` is always last — attachments must land before it,
  * because a started agent's first prompt quotes the brief's `@name`s, and the files must
  * already be on disk when that prompt is built rather than racing it.
  */
@@ -44,16 +47,17 @@ export type AddTaskStep =
   | { kind: 'link-jira'; ticket: NonNullable<CardPlan['ticket']> }
   | { kind: 'attach'; paths: string[] }
   | { kind: 'chain-after'; fromTaskId: string }
+  | { kind: 'schedule'; trigger: AutomationTrigger; assign: AddTaskAssign; timeZone: string }
   | { kind: 'assign'; assign: AddTaskAssign; start: boolean };
 
 /**
  * Turn a settled plan into the writes `save()` makes today, as data. `extras` carries what
- * `AddTaskPlan` itself does not — the staged files and the chain pick live on the dialog's
- * own state, not on the plan.
+ * `AddTaskPlan` itself does not — the staged files, the chain pick and the time zone a
+ * schedule runs in live on the dialog's own state, not on the plan.
  */
 export function addTaskSteps(
   plan: Exclude<AddTaskPlan, { kind: 'incomplete' }>,
-  extras: { attachments: readonly string[]; runsAfterId: string | null },
+  extras: { attachments: readonly string[]; runsAfterId: string | null; timeZone: string },
 ): AddTaskStep[] {
   const steps: AddTaskStep[] = [];
 
@@ -72,9 +76,62 @@ export function addTaskSteps(
 
   if (extras.attachments.length) steps.push({ kind: 'attach', paths: [...extras.attachments] });
   if (extras.runsAfterId) steps.push({ kind: 'chain-after', fromTaskId: extras.runsAfterId });
+  // `plan.assign` is never null once `plan.trigger` is set — `addTaskPlan` refuses a trigger
+  // with no agent project before anything is written — but the guard keeps that a type fact.
+  if (plan.trigger && plan.assign) {
+    steps.push({
+      kind: 'schedule',
+      trigger: plan.trigger,
+      assign: plan.assign,
+      timeZone: extras.timeZone,
+    });
+  }
   if (plan.assign) steps.push({ kind: 'assign', assign: plan.assign, start: plan.startNow });
 
   return steps;
+}
+
+/**
+ * The automation `trigger` attaches to `card` — never saved by this function itself.
+ * `automation:save` (F1.11 decisions) mints `id`, stamps `revision`/`createdAt`/`updatedAt`/
+ * `enabledAt`/`nextRunAt`/`consecutiveFailures`, and takes ownership (`ownerClientId`); `now`
+ * is only here so this already returns a complete, individually valid `Automation` — the
+ * same shape {@link validateAutomation} sees — rather than one with holes a save fills in.
+ *
+ * `assign` is the plan's own, already-refused-if-missing assignment (see `addTaskPlan`), so
+ * `mode` defaults to `'acceptEdits'` the same way a fresh automation in the editor does
+ * (`newAutomationDraft`) rather than carrying a `null` the action has no room for.
+ */
+export function attachedAutomation(
+  trigger: AutomationTrigger,
+  card: Task,
+  assign: AddTaskAssign,
+  { now, timeZone }: { now: number; timeZone: string },
+): Automation {
+  const action: AutomationAction = {
+    taskId: card.id,
+    agentProjectId: assign.agentProjectId,
+    titleTemplate: card.title,
+    briefTemplate: '',
+    mode: assign.mode ?? 'acceptEdits',
+  };
+  if (assign.model) action.model = assign.model;
+
+  return {
+    id: '',
+    revision: 0,
+    name: `${card.title} — schedule`,
+    enabled: true,
+    ownerClientId: null,
+    timeZone,
+    trigger,
+    action,
+    enabledAt: now,
+    nextRunAt: null,
+    consecutiveFailures: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 /**
@@ -183,19 +240,21 @@ export async function executeAddTaskSteps(
   if (!first) throw new Error('addTaskSteps produced no steps to run.');
 
   let created: AddTaskResult['created'];
-  let createdId: string;
+  // The whole row, not just its id: a `schedule` step names its automation after the title.
+  let row: Task;
   if (first.kind === 'create-step') {
     created = 'step';
-    createdId = (await invoke('task:addSubtask', first.parentId, first.step)).id;
+    row = await invoke('task:addSubtask', first.parentId, first.step);
   } else if (first.kind === 'create-ticket') {
     created = 'ticket';
-    createdId = (await invoke('ticket:create', first.board, first.ticket)).id;
+    row = await invoke('ticket:create', first.board, first.ticket);
   } else if (first.kind === 'create-card') {
     created = 'card';
-    createdId = (await invoke('task:create', first.board, first.card)).id;
+    row = await invoke('task:create', first.board, first.card);
   } else {
     throw new Error(`addTaskSteps must start with a create step, got "${first.kind}".`);
   }
+  const createdId = row.id;
 
   const problems: string[] = [];
   let run: AddTaskRun = 'none';
@@ -213,6 +272,14 @@ export async function executeAddTaskSteps(
             `The card was created, but it could not be chained — ${LINK_REFUSAL_MESSAGE[result.reason]}.`,
           );
         }
+      } else if (step.kind === 'schedule') {
+        await invoke(
+          'automation:save',
+          attachedAutomation(step.trigger, row, step.assign, {
+            now: Date.now(),
+            timeZone: step.timeZone,
+          }),
+        );
       } else if (step.kind === 'assign') {
         const task = await invoke('task:assignAgent', createdId, {
           agentProjectId: step.assign.agentProjectId,
@@ -234,6 +301,8 @@ export async function executeAddTaskSteps(
         );
       } else if (step.kind === 'chain-after') {
         problems.push(`The card was created, but it could not be chained — ${message}.`);
+      } else if (step.kind === 'schedule') {
+        problems.push(`The card was created, but its schedule was not saved — ${message}`);
       }
     }
   }

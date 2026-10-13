@@ -88,14 +88,17 @@ const useStyles = makeStyles({
   list: { margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '2px' },
 });
 
-const SCHEDULE_TYPE_LABELS: Record<ScheduleType, string> = {
+/** Exported so `AddTaskDialog`'s own schedule section reads the same labels rather than
+ *  inventing a second copy that could drift from this one. */
+export const SCHEDULE_TYPE_LABELS: Record<ScheduleType, string> = {
   daily: 'Daily',
   weekdays: 'Weekdays',
   weekly: 'Weekly',
   hours: 'Every N hours',
 };
 
-const WEEKDAY_LABELS = [
+/** Same reason as {@link SCHEDULE_TYPE_LABELS} — shared with `AddTaskDialog`'s weekly picker. */
+export const WEEKDAY_LABELS = [
   'Monday',
   'Tuesday',
   'Wednesday',

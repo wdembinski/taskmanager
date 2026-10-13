@@ -54,10 +54,15 @@ const stepPlan = (over: Partial<Extract<AddTaskPlan, { kind: 'step' }>> = {}) =>
   }) satisfies Extract<AddTaskPlan, { kind: 'step' }>;
 
 const extras = (
-  over: Partial<{ attachments: readonly string[]; runsAfterId: string | null }> = {},
+  over: Partial<{
+    attachments: readonly string[];
+    runsAfterId: string | null;
+    timeZone: string;
+  }> = {},
 ) => ({
   attachments: [],
   runsAfterId: null,
+  timeZone: 'UTC',
   ...over,
 });
 
@@ -124,6 +129,37 @@ describe('addTaskSteps', () => {
     );
     const assign = steps.find((s) => s.kind === 'assign');
     expect(assign).toMatchObject({ start: true });
+  });
+
+  it('puts the trigger schedule after the chain and before assign, honouring startNow too', () => {
+    const trigger = { kind: 'schedule', schedule: { type: 'daily', hour: 9, minute: 0 } } as const;
+    const assign = { agentProjectId: 'p-repo', model: null, mode: 'plan' } as const;
+    const steps = addTaskSteps(
+      cardPlan({ assign, startNow: true, trigger }),
+      extras({ runsAfterId: 'c0', timeZone: 'Europe/Warsaw' }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual(['create-card', 'chain-after', 'schedule', 'assign']);
+    expect(steps[2]).toEqual({ kind: 'schedule', trigger, assign, timeZone: 'Europe/Warsaw' });
+    expect(steps[3]).toMatchObject({ kind: 'assign', start: true });
+  });
+
+  it('emits a schedule step for a ticket-board plan too', () => {
+    const steps = addTaskSteps(
+      ticketPlan({
+        assign: { agentProjectId: 'p-billing', model: null, mode: null },
+        trigger: { kind: 'schedule', schedule: { type: 'hours', every: 4 } },
+      }),
+      extras(),
+    );
+    expect(steps.map((s) => s.kind)).toEqual(['create-ticket', 'schedule', 'assign']);
+  });
+
+  it('emits no schedule step without a trigger', () => {
+    const steps = addTaskSteps(
+      cardPlan({ assign: { agentProjectId: 'p-repo', model: null, mode: null } }),
+      extras(),
+    );
+    expect(steps.some((s) => s.kind === 'schedule')).toBe(false);
   });
 });
 
@@ -277,5 +313,58 @@ describe('executeAddTaskSteps', () => {
     const result = await executeAddTaskSteps(steps, invoke);
     expect(result.run).toBe('started');
     expect(result.problems).toEqual([]);
+  });
+
+  const scheduled: AddTaskStep[] = [
+    {
+      kind: 'create-card',
+      board: 'p-repo',
+      card: { title: 'Ship it', type: 'feature', projectTagId: 'p-repo' },
+    },
+    {
+      kind: 'schedule',
+      trigger: { kind: 'schedule', schedule: { type: 'daily', hour: 9, minute: 0 } },
+      assign: { agentProjectId: 'p-repo', model: 'opus', mode: null },
+      timeZone: 'Europe/Warsaw',
+    },
+  ];
+
+  it('saves an automation pointed at the id the create step returned', async () => {
+    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'task:create') return task({ id: 'new-card', title: 'Ship it' });
+      if (channel === 'automation:save') return args[0];
+      throw new Error(`unexpected channel ${channel}`);
+    }) as unknown as TransportInvoke;
+
+    const result = await executeAddTaskSteps(scheduled, invoke);
+    expect(result.problems).toEqual([]);
+    expect(invoke).toHaveBeenCalledWith(
+      'automation:save',
+      expect.objectContaining({
+        timeZone: 'Europe/Warsaw',
+        trigger: { kind: 'schedule', schedule: { type: 'daily', hour: 9, minute: 0 } },
+        action: expect.objectContaining({
+          taskId: 'new-card',
+          agentProjectId: 'p-repo',
+          model: 'opus',
+          mode: 'acceptEdits',
+        }),
+      }),
+    );
+  });
+
+  it('keeps the card and words a problem when the schedule will not save', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'task:create') return task({ title: 'Ship it' });
+      if (channel === 'automation:save') throw new Error('engine offline');
+      throw new Error(`unexpected channel ${channel}`);
+    }) as unknown as TransportInvoke;
+
+    const result = await executeAddTaskSteps(scheduled, invoke);
+    expect(result.created).toBe('card');
+    expect(result.problems).toEqual([
+      'The card was created, but its schedule was not saved — engine offline',
+    ]);
+    expect(invoke).not.toHaveBeenCalledWith('task:delete', expect.anything());
   });
 });
