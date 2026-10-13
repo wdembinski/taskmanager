@@ -88,7 +88,7 @@ Two gaps between "I have work" and "an agent is doing it":
 
   - Reuse `resolveAgentProject` and the option lists from `AssignAgentDialog.tsx` (extract them to a shared `agentPickers.ts` rather than copying); collapsible; hidden for steps; both hosts.
   - Acceptance: extracted helpers unit-tested (pre-fill from epic, default model null); AssignAgentDialog still uses the same helpers (no behaviour change — its existing tests pass). Gates green.
-- [ ] F5.3 Make Add and start create the card then assign and start it with one error surface @needs: F5.2 Add a Run it section with agent project model and mode pickers to AddTaskDialog
+- [x] F5.3 Make Add and start create the card then assign and start it with one error surface @needs: F5.2 Add a Run it section with agent project model and mode pickers to AddTaskDialog
 
   - New pure module `packages/ui/src/addTaskSteps.ts`, built around `AddTaskDialog.tsx`'s own
     `AddTaskPlan`/`AddTaskAssign` (type-only import — the dialog is 1340 lines and this module
