@@ -175,6 +175,25 @@ composer, confirm the "Run on a schedule" section renders, save a card with
 a trigger attached, and confirm the automation appears on the Automations
 screen pointed at that card.
 
+## F5.10 — decisions taken (step 2 of 3)
+
+Step 2 mounted the gated Issues tab in `apps/web`, alongside step 1's desktop
+mount. Three decisions settled here rather than re-derived by step 3:
+
+- **The web gate reuses `activityGate` (`apps/web/src/activity/activityGate.ts`)
+  as-is.** Issues has the same one source as Activity — a live desktop — and
+  the same three facts decide `unreachable`/`checking`/`ready`, so
+  `WebIssuesScreen.tsx` imports it rather than growing a second copy under a
+  new name.
+- **No palette source, because F9 had not landed.** The ticket's own note
+  anticipated registering "Hand issue … to agent" in a command palette;
+  F9.4/F9.5 should pick this up once that palette exists, rather than this
+  ticket building a palette entry with nothing to plug it into.
+- **The human reachability check is still owed in both hosts.** Neither step
+  1 nor step 2 could open a browser or launch the app from this machine
+  (memory *verify-electron-app*) — a human still needs to click the Issues
+  tab on each host and confirm it renders.
+
 ## Tasks
 
 ### F5 · Phase 1 — Add and start
@@ -290,7 +309,7 @@ screen pointed at that card.
 
   - Hand to agent = `issues:import` → `task:assignAgent` (notes = the prompt box) → toast + inline "View card"; Add to board = import only.
   - Acceptance: pure `handOffSteps` tested — already-on-board issue skips import; refusal keeps the imported card and reports the reason; park reports success. Verified end-to-end with the stub CLI from *stub-claude-on-path* (import → run starts). Gates green.
-- [ ] F5.10 Mount the Issues screen in the desktop nav and in apps/web @needs: F5.8 Build the Issues screen with list detail and hand-off panel in packages/ui
+- [x] F5.10 Mount the Issues screen in the desktop nav and in apps/web @needs: F5.8 Build the Issues screen with list detail and hand-off panel in packages/ui
 
   - Nav item in `apps/client/src/renderer/src/App.tsx` and `apps/web/src/App.tsx`; if F9 has landed, register a palette source ("Hand issue … to agent").
   - Acceptance: web settings/nav section tests updated; the screen is reachable in both hosts (human check noted as owed — no DOM harness). Gates green.
