@@ -16,6 +16,7 @@ import type {
   TaskType,
 } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
+import type { Skill } from '@tm/shared/skills';
 import type { CadenceDirective } from './cadence';
 
 /**
@@ -724,4 +725,22 @@ export interface CreatedPersonalAccessToken {
 /** What `GET /v1/tokens` answers. */
 export interface PersonalAccessTokenList {
   tokens: PersonalAccessToken[];
+}
+
+/**
+ * Response to `GET /v1/skills` — every library skill mirrored for this account, live and
+ * tombstoned, read as a whole rather than through `MirrorDelta`. `Skill` itself (its own
+ * docstring in `@tm/shared/skills`) explains why: an uncapped sync payload already wedged
+ * the mirror once (`one-answer-wedges-the-mirror`), so skills travel over their own
+ * bounded, per-id `PUT`/`DELETE /v1/skills/:id` pair and this whole-set `GET`, never inside
+ * `SyncRequest.deltas`.
+ *
+ * `deletedSkillIds` rather than a `Tombstone` row: a skill's tombstone lives on its own
+ * mirror row (`deletedAt`), not the shared `tombstones` table, because that table is keyed
+ * for a desktop Client's catch-up delta and a browser's whole-set read has no cursor to
+ * advance it with anyway — see `skillMirror.entity.ts`.
+ */
+export interface SkillsResponse {
+  skills: Skill[];
+  deletedSkillIds: string[];
 }

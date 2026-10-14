@@ -14,6 +14,7 @@ import type { AdfBlock, CommentAttachment } from './adf';
 import type { ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode, SessionEvent } from './session';
 import type { WorkflowStep } from './workflow';
+import type { RepoSkillSummary } from './skills';
 
 /**
  * Lifecycle of a single task. Two overlapping worlds share one field:
@@ -347,6 +348,19 @@ export interface Project {
    * about. Nothing about how the project runs depends on it.
    */
   color: string;
+  /**
+   * The `.claude/skills` this project's own worktree carries, as of the last local
+   * refresh — names/descriptions/paths only, never a body (see {@link RepoSkillSummary});
+   * a repo skill's body is read fresh off disk at run time, not synced. `undefined` for a
+   * project that predates the field or hasn't been scanned since the app last started; a
+   * project with no `.claude/skills` directory reads `[]`, not `undefined`, once scanned.
+   *
+   * Carried on the project mirror purely so a browser (which has no worktree of its own to
+   * read) can still list a repo's skills in a picker. Written only by
+   * `Store.setProjectRepoSkills` — never by `addProject`/`updateProject`/a cloud pull, all
+   * of which leave it exactly as it was.
+   */
+  repoSkills?: RepoSkillSummary[];
   /** Epoch ms when the project was added. */
   createdAt: number;
 }

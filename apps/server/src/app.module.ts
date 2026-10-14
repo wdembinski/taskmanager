@@ -13,6 +13,7 @@ import { Command } from './entities/command.entity';
 import { CommandResultRow } from './entities/commandResult.entity';
 import { PersonalAccessToken } from './entities/personalAccessToken.entity';
 import { SettingsMirror } from './entities/settingsMirror.entity';
+import { SkillMirror } from './entities/skillMirror.entity';
 import { Tombstone } from './entities/tombstone.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
@@ -22,6 +23,7 @@ import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { MirrorModule } from './mirror/mirror.module';
 import { PresenceModule } from './presence/presence.module';
+import { SkillsModule } from './skills/skills.module';
 import { TokensModule } from './tokens/tokens.module';
 
 @Module({
@@ -57,6 +59,7 @@ import { TokensModule } from './tokens/tokens.module';
           PersonalAccessToken,
           ProjectMirror,
           SettingsMirror,
+          SkillMirror,
           TaskMirror,
           Tombstone,
         ],
@@ -71,6 +74,7 @@ import { TokensModule } from './tokens/tokens.module';
     MirrorModule,
     AttachmentsModule,
     AgentsModule,
+    SkillsModule,
     TokensModule,
   ],
 })

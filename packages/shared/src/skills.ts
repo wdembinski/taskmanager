@@ -139,6 +139,29 @@ export type SkillRef = { kind: 'library'; id: string } | { kind: 'repo'; name: s
  */
 export const SKILL_BODY_MAX = 64 * 1024;
 
+/**
+ * `body`'s size the way {@link SKILL_BODY_MAX} actually bounds it — UTF-8 bytes, not
+ * `string.length` (UTF-16 code units). A body full of multi-byte characters (CJK text, most
+ * emoji) is under budget by `.length` while already over it in the bytes the server and the
+ * desktop's own store both count, so this is the one function either side may use to decide.
+ * `TextEncoder`, not Node's `Buffer`: this module is pure and runs in the browser too.
+ */
+export function skillBodyBytes(body: string): number {
+  return new TextEncoder().encode(body).length;
+}
+
+/**
+ * The sentence a 413 earns, worded identically wherever it is shown: the server's own
+ * response body and the desktop Settings page both call this rather than each wording their
+ * own version, which is how the two ends ended up saying the same thing in the first place.
+ * `bytes` is rounded UP to whole KiB, so a body one byte over {@link SKILL_BODY_MAX} never
+ * reads as "64 KiB > 64 KiB" — a contradiction a reader would reasonably doubt.
+ */
+export function skillTooLargeMessage(bytes: number): string {
+  const kib = Math.ceil(bytes / 1024);
+  return `too large to sync (${kib} KiB > ${SKILL_BODY_MAX / 1024} KiB)`;
+}
+
 /** The slug `Skill.name` and a `repo:` ref's name must satisfy — lower-case ASCII, digits
  *  and hyphens, 1 to 64 characters. The same shape a URL path segment or a CLI skill
  *  directory name would want. */
