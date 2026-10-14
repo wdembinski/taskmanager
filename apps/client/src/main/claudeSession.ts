@@ -291,6 +291,27 @@ export function buildClaudeArgs(
   return args;
 }
 
+/** Env var the CLI reads to override its own context-compaction threshold. */
+const AUTOCOMPACT_ENV_VAR = 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE';
+/** Env var the CLI reads to pick the model its own subagents run on. */
+const SUBAGENT_MODEL_ENV_VAR = 'CLAUDE_CODE_SUBAGENT_MODEL';
+
+/**
+ * Extra environment for the CLI process, built from the request's own settings
+ * fields rather than read from disk here — the launch site (`Scheduler.launch`)
+ * reads `AppSettings` fresh on every call and puts the result on the request, so
+ * this stays pure and the two can be unit-tested without a store.
+ *
+ * Both are omitted — not sent as empty strings — when unset, so `opts.env` stays
+ * empty and neither host does any extra work for a run that didn't ask for either.
+ */
+export function buildSessionEnv(req: StartSessionRequest): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (req.autoCompactPercent != null) env[AUTOCOMPACT_ENV_VAR] = String(req.autoCompactPercent);
+  if (req.subagentModel) env[SUBAGENT_MODEL_ENV_VAR] = req.subagentModel;
+  return env;
+}
+
 /**
  * Write the throwaway MCP config that tells the CLI how to spawn our relay for
  * one session. The host decides how the relay is launched — locally that is
@@ -380,7 +401,11 @@ export function runClaudeSession(
 
   // resolveViaShell lets Windows resolve `claude.cmd` from PATH the way a terminal
   // does; the host also hides the console window that would otherwise flash up.
-  const { child, terminate } = host.spawn(req.cwd, 'claude', args, { resolveViaShell: true });
+  const env = buildSessionEnv(req);
+  const { child, terminate } = host.spawn(req.cwd, 'claude', args, {
+    resolveViaShell: true,
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+  });
 
   // Feed the prompt as the first stream-json message and LEAVE stdin open, so we
   // can push follow-up answers into the running session (see send() below).

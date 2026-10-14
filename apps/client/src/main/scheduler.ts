@@ -3744,6 +3744,10 @@ export class Scheduler {
             worktreePath,
             permissionMode: run.permissionMode,
           }));
+    // Read fresh on every launch, not cached on the scheduler, so a change on the
+    // Settings screen takes effect on the very next run rather than whichever one
+    // happened to be in flight when it was saved.
+    const { autoCompactPercent, subagentModel } = this.store.getSettings();
     const request: StartSessionRequest = {
       prompt,
       cwd: prep.cwd,
@@ -3751,6 +3755,8 @@ export class Scheduler {
       // defaults when the task has none); older runs without them use the project's.
       model: run.model ?? project.defaultModel,
       permissionMode: run.permissionMode ?? project.defaultPermissionMode,
+      autoCompactPercent,
+      subagentModel,
     };
     this.recordRunStarted(run, task);
     this.sessions.start(request, {

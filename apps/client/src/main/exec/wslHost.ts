@@ -192,9 +192,23 @@ export class WslExecHost implements ExecHost {
     });
   }
 
-  spawn(cwd: string, file: string, args: string[]): SpawnedProcess {
+  /**
+   * Unlike `exec`'s `opts.env` (which crosses INTO Linux via `withEnv`'s `env NAME=VALUE`
+   * prefix — see that method's doc), a variable the `claude` process itself needs has to
+   * reach bash's own environment before the run script's `exec "$@"` replaces it, and
+   * `wsl.exe` is the one Windows-side launcher that already does this for us: a name
+   * listed in `WSLENV` on the WINDOWS side of the call is shared into the new Linux
+   * session automatically, the same mechanism `relaySpec` uses in the other direction.
+   * Set on the Node `spawn()` call's own `env` (not `opts.env`'s script-prefix trick),
+   * since that is the environment `wsl.exe` itself reads `WSLENV` against.
+   */
+  spawn(cwd: string, file: string, args: string[], opts: ExecOptions = {}): SpawnedProcess {
+    const envNames = opts.env ? Object.keys(opts.env) : [];
     const child = spawn('wsl.exe', this.argv(cwd, file, args, RUN_SCRIPT_ANNOUNCE_PID), {
       windowsHide: true,
+      ...(envNames.length > 0
+        ? { env: { ...process.env, ...opts.env, WSLENV: envNames.join(':') } }
+        : {}),
     }) as ChildProcessWithoutNullStreams;
 
     // Learn the Linux-side pid from the wrapper's first stderr line. Watching without

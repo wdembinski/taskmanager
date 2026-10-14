@@ -69,6 +69,9 @@ export class LocalExecHost implements ExecHost {
       cwd,
       shell: opts.resolveViaShell,
       windowsHide: true,
+      // Same rule as `exec` above: added ON TOP of this process' own environment,
+      // and omitted entirely when there is nothing to add.
+      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
     }) as ChildProcessWithoutNullStreams;
 
     return { child, terminate: () => terminateTree(child) };

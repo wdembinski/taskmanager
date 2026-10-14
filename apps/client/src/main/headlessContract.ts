@@ -23,6 +23,11 @@
  * because the CLI is spawned with `shell: true` (so Windows can resolve `claude.cmd` from
  * PATH) and a multi-line argument containing quotes and ampersands would be mangled by
  * `cmd.exe`. Only a path crosses the shell.
+ *
+ * The delegation rule at the end is a separate, smaller lesson learned the same way: a
+ * subagent returns its whole file dump into THIS turn's context, so spawning one for a
+ * lookup a Grep/Read already answers is pure waste, cached on every session this contract
+ * is appended to.
  */
 export const HEADLESS_TURN_CONTRACT = [
   'You are running headless, driven by an orchestrator, in a SINGLE automated turn.',
@@ -45,4 +50,7 @@ export const HEADLESS_TURN_CONTRACT = [
   '  is never a valid way to end — there is no later in which to continue.',
   '- If you are in plan mode, the plan only reaches the human when you call `ExitPlanMode`.',
   '  A plan written out as prose in your reply is discarded with the session.',
+  '- Answer a single lookup (a known file, a specific symbol) yourself with Grep/Read; reserve',
+  '  a subagent for a broad sweep whose file dumps you do not need back. Read file ranges,',
+  '  not whole large files, and pass a cheaper `model` to a search-only subagent.',
 ].join('\n');

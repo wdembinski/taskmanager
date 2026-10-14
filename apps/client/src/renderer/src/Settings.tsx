@@ -103,6 +103,7 @@ import { PaneLoading } from '@ui/PaneLoading';
 import { PeopleSettings } from '@ui/projects/PeopleSettings';
 import { ModelField } from '@ui/ModelField';
 import { PlanningModelField } from '@ui/PlanningModelField';
+import { SubagentModelField } from '@ui/SubagentModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
 import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from '@ui/theme';
@@ -1008,6 +1009,38 @@ export function Settings(): JSX.Element {
                 }}
               />
             </Field>
+
+            <Field
+              label="Compact context at (%)"
+              hint="Percent of the context window at which the CLI auto-compacts a session's history. Blank keeps the CLI's own default; 70 is a reasonable starting point for a project that runs long chains."
+            >
+              <Input
+                type="number"
+                min={1}
+                max={100}
+                value={
+                  settings.autoCompactPercent == null ? '' : String(settings.autoCompactPercent)
+                }
+                placeholder="CLI default"
+                onChange={(_e, d) => {
+                  if (d.value === '') {
+                    patch({ autoCompactPercent: null });
+                    return;
+                  }
+                  const n = Number(d.value);
+                  if (Number.isFinite(n)) {
+                    patch({ autoCompactPercent: Math.min(100, Math.max(1, Math.round(n))) });
+                  }
+                }}
+              />
+            </Field>
+
+            <SubagentModelField
+              label="Subagent model"
+              value={settings.subagentModel}
+              onChange={(subagentModel) => patch({ subagentModel })}
+              hint="What a subagent a session spawns runs on. Leave it following the session to keep a delegated lookup priced the same as the work that delegated it."
+            />
 
             <Field
               label="Auto-retry failed tasks"

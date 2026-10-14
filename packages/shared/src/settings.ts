@@ -742,6 +742,18 @@ export interface AppSettings {
    */
   maxParallelSessions: number;
   /**
+   * Percent of the context window at which the CLI should auto-compact a session's
+   * history, or `null` for the CLI's own built-in default. Read fresh on every launch
+   * and threaded into `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` — see `claudeSession.ts`.
+   */
+  autoCompactPercent: number | null;
+  /**
+   * Model every subagent a session spawns runs on, or `null` to inherit the
+   * session's own model (today's behaviour). Read fresh on every launch and
+   * threaded into `CLAUDE_CODE_SUBAGENT_MODEL` — see `claudeSession.ts`.
+   */
+  subagentModel: string | null;
+  /**
    * **How often every integration is refreshed, in minutes.** 0 = off; the manual Sync
    * button always works.
    *
@@ -926,6 +938,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   concurrency: 1,
   // 0 = unlimited: a fresh install imposes no scheduler-wide cap until a human sets one.
   maxParallelSessions: 0,
+  // null on both: a fresh install runs the CLI's own compaction default and lets every
+  // subagent inherit its session's model, exactly as it always has.
+  autoCompactPercent: null,
+  subagentModel: null,
   // Two minutes: the faster of the pair this replaced, so no integration polls less often
   // than it did before the two timers became one. Pipelines are the reason — a red one you
   // learn about ten minutes late has already cost you the context to fix it.
@@ -1038,6 +1054,8 @@ export const GLOBAL_SETTINGS_KEYS = [
   'defaultPermissionMode',
   'concurrency',
   'maxParallelSessions',
+  'autoCompactPercent',
+  'subagentModel',
   'syncIntervalMinutes',
   'limitJitterMs',
   'sessionTokenBudget',
