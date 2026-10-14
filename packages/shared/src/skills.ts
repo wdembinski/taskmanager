@@ -150,6 +150,27 @@ export function isValidSkillName(value: unknown): value is string {
   return typeof value === 'string' && SKILL_NAME_RE.test(value);
 }
 
+/**
+ * `fileName` (a bare name, never a path — a caller importing a `SKILL.md` passes its
+ * parent folder's name instead, see `fallbackNameFromPath` in `skillHandlers.ts`), slugged
+ * to {@link SKILL_NAME_RE}'s shape for use as an import's fallback skill name: a trailing
+ * `.md` is dropped case-insensitively, then every run of characters outside `[a-z0-9]`
+ * becomes one hyphen, leading/trailing hyphens are trimmed, and the result is capped at 64
+ * characters (trimming a hyphen the cap exposes too).
+ *
+ * `''` — never a string that fails {@link isValidSkillName} — when nothing usable
+ * survives, e.g. a name made entirely of punctuation.
+ */
+export function skillNameFromFileName(fileName: string): string {
+  const stem = fileName.replace(/\.md$/i, '');
+  const collapsed = stem
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const capped = collapsed.slice(0, 64).replace(/-+$/g, '');
+  return isValidSkillName(capped) ? capped : '';
+}
+
 const LIBRARY_PREFIX = 'lib';
 const REPO_PREFIX = 'repo';
 

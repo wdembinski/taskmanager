@@ -20,9 +20,9 @@ import type { ExecTarget } from '@shared/execTarget';
 import { hasRepo, type Task } from '@shared/model';
 import type { IpcApi } from '@shared/ipc';
 import {
-  isValidSkillName,
   parseSkillMarkdown,
   serializeSkillMarkdown,
+  skillNameFromFileName,
   SKILL_BODY_MAX,
   type Skill,
   type SkillImportRequest,
@@ -91,33 +91,16 @@ function saveRefusalMessage(
 }
 
 /**
- * `raw`, lower-cased and squashed to {@link isValidSkillName}'s shape: runs of anything
- * outside `[a-z0-9]` become one hyphen, leading/trailing hyphens are trimmed, and the result
- * is capped at 64 characters (trimming a hyphen the cap exposes too). `''` — never a string
- * that fails {@link isValidSkillName} — when nothing usable survives.
- */
-function slugifyFallbackName(raw: string): string {
-  const collapsed = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  const capped = collapsed.slice(0, 64).replace(/-+$/g, '');
-  return isValidSkillName(capped) ? capped : '';
-}
-
-/**
  * The fallback name a file at `path` offers `parseSkillMarkdown` when its own frontmatter has
  * none (or an invalid one): `SKILL.md` falls back to its PARENT folder's name (the folder
- * import's one-level-down `SKILL.md` shape), anything else falls back to its own name with
- * `.md` dropped.
- * Either way the result is slugified, so `My Skill.md` still offers `my-skill` rather than
- * failing outright over capitalisation or spaces.
+ * import's one-level-down `SKILL.md` shape), anything else falls back to its own file name.
+ * Either way {@link skillNameFromFileName} slugs the result, so `My Skill.md` still offers
+ * `my-skill` rather than failing outright over capitalisation or spaces.
  */
 function fallbackNameFromPath(path: string): string {
   const base = basename(path);
-  const stem =
-    base.toLowerCase() === 'skill.md' ? basename(dirname(path)) : base.replace(/\.md$/i, '');
-  return slugifyFallbackName(stem);
+  const stem = base.toLowerCase() === 'skill.md' ? basename(dirname(path)) : base;
+  return skillNameFromFileName(stem);
 }
 
 /**

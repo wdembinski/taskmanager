@@ -53,6 +53,8 @@ export type HostOnlyReason =
  * Relayed, one of them wedges cloud sync — the relay drains serially — until somebody who
  * did not ask for it dismisses a dialog that appeared on their screen. Worse, the paths it
  * returns are paths on THAT machine, which is exactly the thing a browser cannot use.
+ * `skill:import`/`skill:export` are the same shape: a file/folder picker for where a batch
+ * of `SKILL.md`s comes from or goes to, same reason `project:pickFile` already is one.
  *
  * **Window / OS.** `window:*` moves a window nobody is looking at; `update:install` quits
  * the app out from under its user; `attachment:open` pops a file open on someone else's

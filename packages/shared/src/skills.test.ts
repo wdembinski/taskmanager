@@ -5,6 +5,7 @@ import {
   parseSkillMarkdown,
   parseSkillRef,
   serializeSkillMarkdown,
+  skillNameFromFileName,
   SKILL_BODY_MAX,
   type SkillRef,
 } from './skills';
@@ -40,6 +41,32 @@ describe('isValidSkillName', () => {
     expect(isValidSkillName(null)).toBe(false);
     expect(isValidSkillName(42)).toBe(false);
     expect(isValidSkillName({})).toBe(false);
+  });
+});
+
+describe('skillNameFromFileName', () => {
+  it('drops a trailing .md case-insensitively', () => {
+    expect(skillNameFromFileName('tdd.md')).toBe('tdd');
+    expect(skillNameFromFileName('tdd.MD')).toBe('tdd');
+  });
+
+  it('slugs spaces, punctuation and mixed case', () => {
+    expect(skillNameFromFileName('My Skill.md')).toBe('my-skill');
+    expect(skillNameFromFileName('write_failing.test!.md')).toBe('write-failing-test');
+  });
+
+  it('trims leading and trailing hyphens left over after slugging', () => {
+    expect(skillNameFromFileName('-- Skill --.md')).toBe('skill');
+  });
+
+  it('caps the result at 64 characters, trimming a trailing hyphen the cap exposes', () => {
+    const long = `${'a'.repeat(64)}-overflow.md`;
+    expect(skillNameFromFileName(long)).toBe('a'.repeat(64));
+  });
+
+  it('returns an empty string when nothing usable survives', () => {
+    expect(skillNameFromFileName('***.md')).toBe('');
+    expect(skillNameFromFileName('.md')).toBe('');
   });
 });
 
