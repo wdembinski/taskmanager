@@ -17,6 +17,8 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['project:pickFile', 'native-modal'],
   ['attachment:pick', 'native-modal'],
   ['jira:pickAttachments', 'native-modal'],
+  ['skill:import', 'native-modal'],
+  ['skill:export', 'native-modal'],
   ['window:minimize', 'window-os'],
   ['window:toggleMaximize', 'window-os'],
   ['window:close', 'window-os'],
