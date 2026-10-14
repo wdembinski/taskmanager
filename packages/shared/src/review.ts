@@ -21,6 +21,21 @@ export const DIFF_COLLAPSE_LINES = 2000; // generated/lock files above this coll
 
 export type DiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
 
+/** Lock files and the usual generated outputs — what {@link isCollapsedByDefault} folds away. */
+const GENERATED_FILE =
+  /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock|go\.sum)$|\.(min\.(js|css)|map|snap)$|(^|\/)(dist|build|generated|__generated__)\//;
+
+/**
+ * Whether a file starts collapsed in the review pane: a lock or generated file with more
+ * than `DIFF_COLLAPSE_LINES` changed lines. Still readable on demand, under the same
+ * per-file cap as any other — this decides the default, not what can be read.
+ */
+export function isCollapsedByDefault(
+  entry: Pick<DiffFileEntry, 'path' | 'additions' | 'deletions'>,
+): boolean {
+  return GENERATED_FILE.test(entry.path) && entry.additions + entry.deletions > DIFF_COLLAPSE_LINES;
+}
+
 /** One file's row in a `DiffSummary`. `path` is repo-relative — never a host path (WSL). */
 export interface DiffFileEntry {
   path: string;

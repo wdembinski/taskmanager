@@ -262,6 +262,7 @@ import { createStore, type Store } from './store';
 import { Updater } from './updater';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
+import { createDiffGit, DiffService } from './review/diffService';
 import { bucketUsageDaily, DAY_MS, normalizeDailyOptions } from '@shared/usage';
 import {
   ACTIVITY_PERIOD_MS,
@@ -1038,6 +1039,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     await scheduler.cleanupTaskWorktree(taskId);
   });
+
+  // --- Reading a card's diff (F6) ---------------------------------------------
+  const diffs = new DiffService({
+    getTask: (id) => store.getTask(id),
+    getProject: (id) => store.getProject(id),
+    inspect: (project, ownerTaskId, branchName) =>
+      worktrees.inspect(project, ownerTaskId, branchName),
+    gitFor: (project) => createDiffGit(hostFor(project.target)),
+    listMergeRequests: () => store.listMergeRequests(),
+  });
+  handle('task:diffSummary', async (taskId) => diffs.summary(taskId));
+  handle('task:diffFile', async (taskId, diffId, path) => diffs.file(taskId, diffId, path));
+  handle('task:diffImage', async (taskId, diffId, path) => diffs.image(taskId, diffId, path));
 
   // --- Agent delegation (a My Tasks card → an agent project) ------------------
 
