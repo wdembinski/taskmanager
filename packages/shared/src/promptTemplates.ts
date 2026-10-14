@@ -101,12 +101,29 @@ export type TemplateSelection = number | { start: number; end: number };
  * backwards drag-select produces) is swapped before anything else runs, and the caret
  * lands just after the inserted text either way — so continuing to type picks up right
  * where the template ended.
+ *
+ * Empty `text` just becomes `rendered` outright, `selection` ignored — there is nothing to
+ * place a caret relative to yet.
+ *
+ * `untouched` (default `false`) marks `text` as a hand-off box's own pre-filled reference —
+ * the issue's key and link, from `prefillPrompt` — that the human has not edited. That
+ * reference must stay the first thing the agent reads, so a template lands *below* it
+ * instead of at `selection`: `text` (trimmed of trailing whitespace) followed by a blank
+ * line, then `rendered`, with the caret at the very end.
  */
 export function insertTemplate(
   text: string,
   selection: TemplateSelection,
   rendered: string,
+  untouched = false,
 ): { text: string; caret: number } {
+  if (text.trim() === '') {
+    return { text: rendered, caret: rendered.length };
+  }
+  if (untouched) {
+    const next = `${text.trimEnd()}\n\n${rendered}`;
+    return { text: next, caret: next.length };
+  }
   const raw = typeof selection === 'number' ? { start: selection, end: selection } : selection;
   const lo = Math.min(raw.start, raw.end);
   const hi = Math.max(raw.start, raw.end);

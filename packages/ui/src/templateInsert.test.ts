@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import type { IssueSummary } from '@tm/shared/issues';
 import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import type { ComposerValue, MentionRange } from './chat/mentions';
 import {
   applyTemplateToComposer,
   applyTemplateToText,
+  templateVarsForIssue,
   templateVarsForNewTask,
   templateVarsForTask,
 } from './templateInsert';
@@ -51,6 +53,36 @@ describe('templateVarsForTask', () => {
   });
 });
 
+describe('templateVarsForIssue', () => {
+  const issue = (overrides: Partial<IssueSummary> = {}): IssueSummary => ({
+    provider: 'jira',
+    key: 'TM-7',
+    title: 'Fix login',
+    url: 'https://example.test/TM-7',
+    state: 'Open',
+    labels: [],
+    updatedAt: 1,
+    onBoardTaskId: null,
+    ...overrides,
+  });
+
+  it('carries title and key, with no project', () => {
+    expect(templateVarsForIssue(issue())).toEqual({
+      title: 'Fix login',
+      key: 'TM-7',
+      project: undefined,
+    });
+  });
+
+  it('carries project when given', () => {
+    expect(templateVarsForIssue(issue(), 'Website')).toEqual({
+      title: 'Fix login',
+      key: 'TM-7',
+      project: 'Website',
+    });
+  });
+});
+
 describe('applyTemplateToText (add-task)', () => {
   it('keeps the text before and after the caret, and renders {{key}} empty', () => {
     const result = applyTemplateToText(
@@ -77,6 +109,21 @@ describe('applyTemplateToText (assign)', () => {
     );
     const result = applyTemplateToText('', 0, template('{{title}} ({{key}}) — {{project}}'), vars);
     expect(result).toEqual({ text: 'Fix login (TM-7) — Website', caret: 26 });
+  });
+
+  it('appends below an untouched reference instead of inserting at the caret', () => {
+    const vars = templateVarsForIssue({ title: 'Fix login', key: 'TM-7' });
+    const result = applyTemplateToText(
+      'TM-7\nhttps://example.test/TM-7',
+      0,
+      template('{{title}} ({{key}})'),
+      vars,
+      true,
+    );
+    expect(result).toEqual({
+      text: 'TM-7\nhttps://example.test/TM-7\n\nFix login (TM-7)',
+      caret: 'TM-7\nhttps://example.test/TM-7\n\nFix login (TM-7)'.length,
+    });
   });
 });
 

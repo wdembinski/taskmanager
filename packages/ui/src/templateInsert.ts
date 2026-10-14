@@ -7,6 +7,7 @@
  * Pure, no React: a surface calls the matching `applyTemplate*` with its own text/selection (or
  * `ComposerValue`) and gets back where the result and the caret land.
  */
+import type { IssueSummary } from '@tm/shared/issues';
 import type { Project, Task } from '@tm/shared/model';
 import {
   insertTemplate,
@@ -37,14 +38,30 @@ export function templateVarsForTask(
   };
 }
 
-/** Add-task and assign: a plain text field with a caret or selection. */
+/**
+ * Vars for an issue-browser hand-off: no `ticketKey`/`externalKey` split like
+ * {@link templateVarsForTask}, since an {@link IssueSummary} only ever has the one tracker key.
+ */
+export function templateVarsForIssue(
+  issue: Pick<IssueSummary, 'title' | 'key'>,
+  project?: string,
+): TemplateVars {
+  return { title: issue.title, key: issue.key, project };
+}
+
+/**
+ * Add-task and assign: a plain text field with a caret or selection. `untouched` (default
+ * `false`) passes straight through to `insertTemplate` — see its doc comment for what it
+ * does to a hand-off panel's pre-filled reference.
+ */
 export function applyTemplateToText(
   text: string,
   selection: TemplateSelection,
   template: PromptTemplate,
   vars: TemplateVars,
+  untouched = false,
 ): { text: string; caret: number } {
-  return insertTemplate(text, selection, renderTemplate(template.body, vars));
+  return insertTemplate(text, selection, renderTemplate(template.body, vars), untouched);
 }
 
 /**
