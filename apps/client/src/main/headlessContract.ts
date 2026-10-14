@@ -13,6 +13,15 @@
  * `run_in_background: false`, got its answers mid-turn and went on to produce a plan — so
  * the fix is to say which of the two applies here, not to ban delegation.
  *
+ * The same gap reopened on 2026-10-13 (F7.2, "Verify and commit"): the step had two
+ * uncommitted files sitting from its predecessor, started a background build and a
+ * `Monitor` call to watch it, and ended its turn there. Both `Monitor` and a
+ * `run_in_background` Bash command report back only as a notification delivered on a
+ * *later* turn — and headless mode has no later turn, so the commit never happened and the
+ * card parked on a refusal that blamed the wrong wall (see `docs/plan/README.md`, "a task's
+ * finished work is uncommitted and the PR button refuses it"). Named explicitly below so the
+ * two tools that look like "just start it and move on" don't reopen this a third way.
+ *
  * Why this is a system prompt and not a line in `agentTaskPrompt.ts`: it is a property of
  * the SESSION, not of any one task, and it has to reach the one path that has no prompt
  * builder at all — a chat resume, whose prompt is the human's raw words (see
@@ -40,7 +49,10 @@ export const HEADLESS_TURN_CONTRACT = [
   '  when your turn ends and its work is lost — silently, because you will already have',
   '  reported that you are waiting for it.',
   '- Never end a turn waiting on anything: not a subagent, not a background command, not a',
-  '  build. Wait for it here, or do the work yourself.',
+  '  build. This covers the Monitor tool and any Bash command you ran with',
+  '  `run_in_background`, too — both report back only as a notification on a later turn, and',
+  '  a headless run never gets one. Wait for it in the foreground, or poll for it yourself',
+  '  before the turn ends, or do the work yourself.',
   '- Finish the task, or state plainly what blocked you. "I will continue once X returns"',
   '  is never a valid way to end — there is no later in which to continue.',
   '- If you are in plan mode, the plan only reaches the human when you call `ExitPlanMode`.',
