@@ -10,7 +10,9 @@
  * all at once.
  */
 import { isUsableModel } from './model';
+import type { Task } from './model';
 import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from './session';
+import { parseSkillRef } from './skills';
 
 /** How many steps a single workflow may hold. Generous for any real recipe, small
  *  enough that a malformed or runaway import can't produce an unbounded document. */
@@ -31,6 +33,9 @@ export interface AgentStep {
   model?: ClaudeModel;
   /** Overrides the project's default permission mode for this step alone. */
   mode?: PermissionMode;
+  /** Serialised {@link SkillRef}s (see `@shared/skills`) this step's run carries, in
+   *  addition to the card's own. */
+  skillRefs?: string[];
 }
 
 /** What a gate does when its command exits non-zero. */
@@ -97,6 +102,15 @@ function checkAgentStep(step: AgentStep, issues: string[]): void {
   }
   if (step.mode !== undefined && !(step.mode in PERMISSION_MODE_LABELS)) {
     issues.push(`Agent step "${step.id}"'s mode ("${step.mode}") is not a known permission mode.`);
+  }
+  if (step.skillRefs !== undefined) {
+    if (!Array.isArray(step.skillRefs)) {
+      issues.push(`Agent step "${step.id}"'s skillRefs must be an array.`);
+    } else if (
+      step.skillRefs.some((ref) => typeof ref !== 'string' || parseSkillRef(ref) === null)
+    ) {
+      issues.push(`Agent step "${step.id}"'s skillRefs contains an invalid skill reference.`);
+    }
   }
 }
 
@@ -299,4 +313,127 @@ export function boundOutputTail(output: string, maxBytes: number): string {
   }
 
   return markerFor(cut) + new TextDecoder().decode(encoded.subarray(cut));
+}
+
+/** A gate's {@link GateOnFail} with `retryFrom` resolved to the target step's position
+ *  (0-based) among {@link instantiateWorkflow}'s drafts. */
+export interface ResolvedGateOnFail extends GateOnFail {
+  retryFromIndex: number;
+}
+
+/** What a draft's `stepSpec` snapshots: an agent step verbatim, or a gate step with its
+ *  `onFail` (if any) resolved to a {@link ResolvedGateOnFail}. */
+export type StepSpec = AgentStep | (Omit<GateStep, 'onFail'> & { onFail?: ResolvedGateOnFail });
+
+/** One row {@link instantiateWorkflow} produces per workflow step — not yet a `Task`,
+ *  but everything a caller needs to build the step rows for a card's plan round. */
+export interface WorkflowStepDraft {
+  /** The card this round's steps belong to (`Task.id`). */
+  parentTaskId: string;
+  /** The plan round these steps join (`Task.planRound`). */
+  planRound: number;
+  /** The workflow document this draft was instantiated from (`WorkflowDoc.id`). */
+  workflowId: string;
+  title: string;
+  /** An agent step's brief; null for a gate (its command lives in `stepSpec` instead). */
+  description: string | null;
+  /** `step.model` for an agent step, else null — the model ladder applies unchanged. */
+  agentModel: ClaudeModel | null;
+  /** `step.mode` for an agent step, else null. */
+  agentMode: PermissionMode | null;
+  /** A copy of the agent step's `skillRefs`, or null when absent or empty. */
+  skillRefs: string[] | null;
+  /** A deep snapshot of the `WorkflowStep` this draft came from. */
+  stepSpec: StepSpec;
+  /** 1-based position among all of this instantiation's steps. */
+  stepNumber: number;
+  /** Total number of steps in this instantiation. */
+  stepCount: number;
+  /** 1-based position among agent steps only; null on a gate. */
+  agentStepNumber: number | null;
+  /** Total number of agent steps in this instantiation. */
+  agentStepCount: number;
+}
+
+/**
+ * Turn a workflow document into the ordered drafts its steps become on `card`'s
+ * `round`-th plan round.
+ *
+ * **Precondition:** `doc` has already passed {@link validateWorkflow} — every
+ * `onFail.retryFrom` is known to resolve to an earlier agent step, so the only way
+ * this function can throw is a caller skipping that check.
+ *
+ * Pure: snapshots `doc.steps` with `JSON.parse(JSON.stringify(...))` before touching it
+ * (workflow docs are JSON by contract), so no draft's `stepSpec` ever aliases the
+ * document, and mutating `doc` after the call cannot change a draft already returned.
+ */
+export function instantiateWorkflow(
+  doc: WorkflowDoc,
+  card: Pick<Task, 'id'>,
+  round: number,
+): WorkflowStepDraft[] {
+  const steps: WorkflowStep[] = JSON.parse(JSON.stringify(doc.steps));
+
+  const indexById = new Map<string, number>();
+  steps.forEach((step, index) => indexById.set(step.id, index));
+
+  const agentStepNumberByIndex = new Map<number, number>();
+  let agentStepCount = 0;
+  steps.forEach((step, index) => {
+    if (isAgentStep(step)) {
+      agentStepCount += 1;
+      agentStepNumberByIndex.set(index, agentStepCount);
+    }
+  });
+
+  return steps.map((step, index) => {
+    const stepSpec = toStepSpec(step, index, steps, indexById);
+    return {
+      parentTaskId: card.id,
+      planRound: round,
+      workflowId: doc.id,
+      title: step.title,
+      description: isAgentStep(step) ? step.brief : null,
+      agentModel: isAgentStep(step) ? (step.model ?? null) : null,
+      agentMode: isAgentStep(step) ? (step.mode ?? null) : null,
+      skillRefs:
+        isAgentStep(step) && step.skillRefs && step.skillRefs.length > 0 ? step.skillRefs : null,
+      stepSpec,
+      stepNumber: index + 1,
+      stepCount: steps.length,
+      agentStepNumber: agentStepNumberByIndex.get(index) ?? null,
+      agentStepCount,
+    };
+  });
+}
+
+/** Build a {@link StepSpec} for one (already-snapshotted) step: an agent step as is, or
+ *  a gate step with its `onFail` resolved to a {@link ResolvedGateOnFail}. Throws if
+ *  `onFail.retryFrom` does not resolve to an earlier agent step — a programmer error,
+ *  since {@link instantiateWorkflow}'s precondition is that `doc` already passed
+ *  {@link validateWorkflow}, which rules this out. */
+function toStepSpec(
+  step: WorkflowStep,
+  index: number,
+  steps: WorkflowStep[],
+  indexById: Map<string, number>,
+): StepSpec {
+  if (isAgentStep(step)) return step;
+  if (!step.onFail) {
+    const { onFail: _onFail, ...rest } = step;
+    return rest;
+  }
+
+  const retryFromIndex = indexById.get(step.onFail.retryFrom);
+  if (
+    retryFromIndex === undefined ||
+    retryFromIndex >= index ||
+    !isAgentStep(steps[retryFromIndex])
+  ) {
+    throw new Error(
+      `Gate step "${step.id}"'s onFail.retryFrom ("${step.onFail.retryFrom}") does not resolve to an earlier agent step.`,
+    );
+  }
+
+  return { ...step, onFail: { ...step.onFail, retryFromIndex } };
 }

@@ -4,6 +4,7 @@ import {
   decideGateOutcome,
   GATE_FAILURE_NOTE_TAIL_BYTES,
   GATE_TIMELINE_TAIL_BYTES,
+  instantiateWorkflow,
   isAgentStep,
   isGateStep,
   MAX_WORKFLOW_STEPS,
@@ -246,6 +247,16 @@ describe('validateWorkflow', () => {
     if (!result.ok) expect(result.issues.some((i) => i.toLowerCase().includes('mode'))).toBe(true);
   });
 
+  it('rejects a skillRefs that is not an array, or that contains an unparseable ref', () => {
+    for (const skillRefs of ['lib:1' as unknown as string[], ['not-a-ref']]) {
+      const result = validateWorkflow(workflowDoc({ steps: [agentStep({ skillRefs })] }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.issues.some((i) => i.toLowerCase().includes('skillrefs'))).toBe(true);
+      }
+    }
+  });
+
   it('reports every problem in a document with several', () => {
     const steps = [
       agentStep({ id: 'dup', title: '   ' }),
@@ -399,5 +410,133 @@ describe('boundOutputTail', () => {
   it('defines the tail byte caps as 16384 and 8192', () => {
     expect(GATE_TIMELINE_TAIL_BYTES).toBe(16384);
     expect(GATE_FAILURE_NOTE_TAIL_BYTES).toBe(8192);
+  });
+});
+
+describe('instantiateWorkflow', () => {
+  const card = { id: 'card-1' };
+
+  it('maps a mixed workflow (agent, gate, agent with overrides, gate with retryOn)', () => {
+    const doc = workflowDoc({
+      id: 'wf-mixed',
+      steps: [
+        agentStep({ id: 'a1', title: 'First step', brief: 'Do the first thing.' }),
+        gateStep({ id: 'g1', title: 'First gate', onFail: { retryFrom: 'a1', maxAttempts: 3 } }),
+        agentStep({
+          id: 'a2',
+          title: 'Second step',
+          brief: 'Do the second thing.',
+          model: 'sonnet',
+          mode: 'plan',
+          skillRefs: ['lib:abc123', 'repo:my-skill'],
+        }),
+        gateStep({
+          id: 'g2',
+          title: 'Second gate',
+          onFail: { retryFrom: 'a2', maxAttempts: 2, retryOn: [1] },
+        }),
+      ],
+    });
+
+    const drafts = instantiateWorkflow(doc, card, 2);
+
+    expect(drafts).toHaveLength(4);
+    expect(drafts.map((d) => d.title)).toEqual([
+      'First step',
+      'First gate',
+      'Second step',
+      'Second gate',
+    ]);
+    expect(drafts.map((d) => d.description)).toEqual([
+      'Do the first thing.',
+      null,
+      'Do the second thing.',
+      null,
+    ]);
+
+    for (const draft of drafts) {
+      expect(draft.parentTaskId).toBe('card-1');
+      expect(draft.planRound).toBe(2);
+      expect(draft.workflowId).toBe('wf-mixed');
+    }
+
+    expect(drafts.map((d) => d.agentModel)).toEqual([null, null, 'sonnet', null]);
+    expect(drafts.map((d) => d.agentMode)).toEqual([null, null, 'plan', null]);
+    expect(drafts.map((d) => d.skillRefs)).toEqual([
+      null,
+      null,
+      ['lib:abc123', 'repo:my-skill'],
+      null,
+    ]);
+
+    const g1 = drafts[1].stepSpec as GateStep & { onFail: { retryFromIndex: number } };
+    const g2 = drafts[3].stepSpec as GateStep & { onFail: { retryFromIndex: number } };
+    expect(g1.onFail.retryFromIndex).toBe(0);
+    expect(g2.onFail.retryFromIndex).toBe(2);
+
+    expect(drafts.map((d) => d.stepNumber)).toEqual([1, 2, 3, 4]);
+    expect(drafts.map((d) => d.stepCount)).toEqual([4, 4, 4, 4]);
+    expect(drafts.map((d) => d.agentStepNumber)).toEqual([1, null, 2, null]);
+    expect(drafts.map((d) => d.agentStepCount)).toEqual([2, 2, 2, 2]);
+  });
+
+  it('handles a gate-first workflow (no onFail, agent after)', () => {
+    const doc = workflowDoc({
+      id: 'wf-gate-first',
+      steps: [
+        gateStep({ id: 'g1', title: 'Lint', onFail: undefined }),
+        agentStep({ id: 'a1', title: 'Fix it up', brief: 'Fix whatever needs fixing.' }),
+      ],
+    });
+
+    const drafts = instantiateWorkflow(doc, card, 1);
+
+    expect(drafts).toHaveLength(2);
+    const [gateDraft, agentDraft] = drafts;
+
+    expect('onFail' in gateDraft.stepSpec).toBe(false);
+    expect(gateDraft.agentStepNumber).toBeNull();
+    expect(gateDraft.stepNumber).toBe(1);
+    expect(gateDraft.stepCount).toBe(2);
+
+    expect(agentDraft.agentStepNumber).toBe(1);
+    expect(agentDraft.agentStepCount).toBe(1);
+    expect(agentDraft.stepNumber).toBe(2);
+    expect(agentDraft.stepCount).toBe(2);
+  });
+
+  it('never aliases the source doc — a mutation after the call leaves prior drafts untouched', () => {
+    const doc = workflowDoc({
+      id: 'wf-snapshot',
+      steps: [
+        agentStep({ id: 'a1', title: 'Original title', brief: 'Original brief.' }),
+        gateStep({ id: 'g1', onFail: { retryFrom: 'a1', maxAttempts: 3 } }),
+      ],
+    });
+
+    const drafts = instantiateWorkflow(doc, card, 1);
+    const before = JSON.parse(JSON.stringify(drafts));
+
+    (doc.steps[0] as AgentStep).title = 'Mutated title';
+    (doc.steps[0] as AgentStep).brief = 'Mutated brief.';
+    (doc.steps[0] as AgentStep).skillRefs = (doc.steps[0] as AgentStep).skillRefs ?? [];
+    (doc.steps[0] as AgentStep).skillRefs?.push('lib:late-add');
+    (doc.steps[1] as GateStep).onFail!.maxAttempts = 5;
+    doc.steps.push(agentStep({ id: 'a-new', title: 'Appended step' }));
+
+    expect(drafts).toEqual(before);
+    expect(drafts[0].stepSpec).not.toBe(doc.steps[0]);
+  });
+
+  it('throws when a gate onFail.retryFrom cannot be resolved', () => {
+    const doc = workflowDoc({
+      id: 'wf-bad-retry',
+      steps: [
+        agentStep({ id: 'a1' }),
+        gateStep({ id: 'g1', onFail: { retryFrom: 'nope', maxAttempts: 3 } }),
+      ],
+    });
+
+    expect(() => instantiateWorkflow(doc, card, 1)).toThrow();
   });
 });
