@@ -69,6 +69,7 @@ import type { AttentionAnswer, AttentionItem } from './attention';
 import type { AuthState } from './auth';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
+import type { DiffFileResult, DiffImageResult, DiffSummaryResult } from './review';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { TicketLinkResult } from './ticketLinks';
 import type { AppSettings } from './settings';
@@ -716,6 +717,25 @@ export interface IpcApi {
    * No-op for non-worktree projects. Safe only when the task isn't mid-run.
    */
   'task:cleanupWorktree': (taskId: string) => Promise<void>;
+  /**
+   * What a card's agent changed (F6): the file list of the three-dot diff from the base
+   * branch's merge base to the card's worktree — uncommitted and untracked work included —
+   * or to its branch when the worktree is gone. Answers `landed`, `conflicted` or
+   * `no-branch` as data instead of a diff, so "nothing changed" and "this already merged"
+   * never read the same. Never a git error for an expected state.
+   */
+  'task:diffSummary': (taskId: string) => Promise<DiffSummaryResult>;
+  /**
+   * One file's hunks out of the diff the human loaded as `diffId` — one file per call, so a
+   * relayed answer stays bounded. `stale` when the worktree moved on since; a patch over
+   * `DIFF_FILE_MAX_BYTES` comes back `tooLarge` with no hunks.
+   */
+  'task:diffFile': (taskId: string, diffId: string, path: string) => Promise<DiffFileResult>;
+  /**
+   * Both sides of one image file in the diff `diffId`, base64; a side over
+   * `DIFF_IMAGE_MAX_BYTES` comes back `tooLarge` instead. `stale` as for `task:diffFile`.
+   */
+  'task:diffImage': (taskId: string, diffId: string, path: string) => Promise<DiffImageResult>;
 
   /**
    * Delegate a My Tasks card to an agent: persist the assignment (agent project +

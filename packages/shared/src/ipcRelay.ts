@@ -222,6 +222,11 @@ export const RELAY_POLICY: {
   'task:attachSession': 'relay',
   'task:history': 'relay',
   'task:cleanupWorktree': 'relay',
+  // Reads of the desktop's own worktree, answered there and capped per file (F6), so a
+  // browser opening a review fetches one bounded answer at a time.
+  'task:diffSummary': 'relay',
+  'task:diffFile': 'relay',
+  'task:diffImage': 'relay',
   'task:assignAgent': 'relay',
   'task:stopAgent': 'relay',
   'task:resumeAgent': 'relay',

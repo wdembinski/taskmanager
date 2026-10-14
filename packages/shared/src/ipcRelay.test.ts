@@ -93,6 +93,9 @@ describe('the channels that DO relay', () => {
     'usage:daily',
     'issues:list',
     'issues:import',
+    'task:diffSummary',
+    'task:diffFile',
+    'task:diffImage',
   ];
 
   for (const channel of MUST_RELAY) {
