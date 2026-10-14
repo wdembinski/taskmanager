@@ -43,6 +43,7 @@ import {
   type IssueSummary,
 } from '@tm/shared/issues';
 import type { Project } from '@tm/shared/model';
+import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { AppSettings } from '@tm/shared/settings';
@@ -51,12 +52,15 @@ import { relativeAge } from '../gitGraphView';
 import { cardModelFromOption, PROJECT_DEFAULT, projectDefaultLabel } from '../modelChoice';
 import { ModelField } from '../ModelField';
 import { PaneLoading } from '../PaneLoading';
+import { applyTemplateToText, templateVarsForIssue } from '../templateInsert';
+import { TemplateMenu } from '../TemplateMenu';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import {
   EMPTY_ISSUE_BROWSER,
   editDraft,
   forgetIssueDraft,
+  isPromptUntouched,
   issueQueryFor,
   loadStarted,
   pageArrived,
@@ -167,6 +171,10 @@ const useStyles = makeStyles({
   row2: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'start' },
   grow: { flex: 1, minWidth: '180px' },
   actions: { display: 'flex', gap: '8px' },
+  /** The Prompt textarea plus its template menu, side by side — same layout as
+   *  `AddTaskDialog`'s `descRow`. */
+  descRow: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
+  descArea: { flex: 1, minWidth: 0 },
 });
 
 export interface IssuesScreenProps {
@@ -537,6 +545,33 @@ function IssueDetail({
   const styles = useStyles();
   const availability = handOffAvailability(issue, projects);
   const selectedProject = agentProjects.find((p) => p.id === handOffProjectId) ?? null;
+  /** The Prompt textarea, so a template can land where the caret actually is. */
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+
+  /** Insert a picked template into the Prompt at the caret, replacing any selection — the
+   *  untouched-prefill still appends below it rather than overwriting, same as the
+   *  composer (F7.10) — see `isPromptUntouched`. */
+  function pickTemplate(template: PromptTemplate): void {
+    const text = promptFor(state, issue);
+    const el = promptRef.current;
+    const selection = el ? { start: el.selectionStart, end: el.selectionEnd } : text.length;
+    const vars = templateVarsForIssue(issue, selectedProject?.name);
+    const { text: next, caret } = applyTemplateToText(
+      text,
+      selection,
+      template,
+      vars,
+      isPromptUntouched(state, issue),
+    );
+    onEditDraft(next);
+    requestAnimationFrame(() => {
+      const node = promptRef.current;
+      if (node) {
+        node.focus();
+        node.setSelectionRange(caret, caret);
+      }
+    });
+  }
 
   return (
     <>
@@ -592,11 +627,16 @@ function IssueDetail({
       ) : (
         <div className={styles.panel}>
           <Field label="Prompt" hint="Handed to the agent, and recorded on the card's timeline.">
-            <Textarea
-              value={promptFor(state, issue)}
-              resize="vertical"
-              onChange={(_e, d) => onEditDraft(d.value)}
-            />
+            <div className={styles.descRow}>
+              <Textarea
+                className={styles.descArea}
+                value={promptFor(state, issue)}
+                resize="vertical"
+                textarea={{ ref: promptRef }}
+                onChange={(_e, d) => onEditDraft(d.value)}
+              />
+              <TemplateMenu surface="assign" onPick={pickTemplate} />
+            </div>
           </Field>
 
           {availability.kind === 'no-agent-projects' ? (
