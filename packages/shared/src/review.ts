@@ -472,6 +472,41 @@ export type DiffImageResult = { status: 'ok'; image: DiffImage } | DiffStale;
 /** The three fields that locate a comment's anchor, with no dependency on it having an `id`. */
 export type ReviewAnchor = Pick<ReviewComment, 'side' | 'line' | 'start'>;
 
+/** What `review:add` takes: a new comment's anchor and body — everything but what the store assigns. */
+export interface ReviewCommentInput {
+  taskId: string;
+  diffId: string;
+  path: string;
+  side: DiffSide;
+  line: number;
+  start?: { side: DiffSide; line: number };
+  body: string;
+}
+
+/** What `review:update` takes: a body edit, an anchor move (re-quotes `excerpt`), or both. */
+export interface ReviewCommentPatch {
+  body?: string;
+  anchor?: {
+    diffId: string;
+    side: DiffSide;
+    line: number;
+    start?: { side: DiffSide; line: number };
+  };
+}
+
+/** Refused: the comment already went out in a review message and is no longer a draft. */
+export interface ReviewCommentSent {
+  status: 'sent';
+  sentAt: number;
+}
+
+export type ReviewAddResult = { status: 'ok'; comment: ReviewComment } | DiffStale;
+
+export type ReviewUpdateResult =
+  { status: 'ok'; comment: ReviewComment } | DiffStale | ReviewCommentSent;
+
+export type ReviewDeleteResult = { status: 'ok' } | ReviewCommentSent;
+
 function rowIndex(rows: DiffLine[], side: DiffSide, line: number): number {
   return rows.findIndex((row) => (side === 'old' ? row.oldLine : row.newLine) === line);
 }

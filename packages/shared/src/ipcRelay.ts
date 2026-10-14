@@ -229,6 +229,11 @@ export const RELAY_POLICY: {
   'task:diffSummary': 'relay',
   'task:diffFile': 'relay',
   'task:diffImage': 'relay',
+  // Desktop-owned review comments (F6): read and written through the relay, never mirrored.
+  'review:list': 'relay',
+  'review:add': 'relay',
+  'review:update': 'relay',
+  'review:delete': 'relay',
   'task:assignAgent': 'relay',
   'task:stopAgent': 'relay',
   'task:resumeAgent': 'relay',

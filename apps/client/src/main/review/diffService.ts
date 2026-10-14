@@ -33,6 +33,7 @@ import {
   DIFF_IMAGE_MAX_BYTES,
   DIFF_SUMMARY_MAX_FILES,
   parsePatch,
+  type DiffFile,
   type DiffFileEntry,
   type DiffFileResult,
   type DiffImageResult,
@@ -186,6 +187,47 @@ export class DiffService {
     if (current.status === 'stale') return current;
     const { resolved } = current;
     const entry = await this.entryFor(resolved, path);
+    const file = await this.fileFrom(resolved, entry, diffId);
+    return { status: 'ok', file };
+  }
+
+  /**
+   * Every requested path's patch against the current diff, in one `resolve` and one
+   * `entries` call — what F6.8's `ReviewService` recomputes `outdated` against, and
+   * anchors a new or moved comment to, without a round trip per file. Null when the
+   * resolution itself is not `ok` (landed/conflicted/no-branch); a requested path that is
+   * not in the entries maps to `null` rather than throwing, since the caller is checking
+   * several paths at once and one missing path should not fail the rest.
+   */
+  async filesFor(
+    taskId: string,
+    paths: readonly string[],
+  ): Promise<{
+    diffId: string;
+    files: Map<string, { file: DiffFile; oldPath?: string } | null>;
+  } | null> {
+    const resolved = await this.resolve(taskId);
+    if (resolved.status !== 'ok') return null;
+    const entries = await this.entries(resolved);
+    const files = new Map<string, { file: DiffFile; oldPath?: string } | null>();
+    for (const path of paths) {
+      const entry = entries.find((e) => e.path === path);
+      if (!entry) {
+        files.set(path, null);
+        continue;
+      }
+      const file = await this.fileFrom(resolved, entry, resolved.diffId);
+      files.set(path, { file, ...(entry.oldPath ? { oldPath: entry.oldPath } : {}) });
+    }
+    return { diffId: resolved.diffId, files };
+  }
+
+  /** The patch→`DiffFile` conversion (the `tooLarge` cap, then `parsePatch`) `file` and `filesFor` share. */
+  private async fileFrom(
+    resolved: Extract<Resolved, { status: 'ok' }>,
+    entry: NameStatusEntry,
+    diffId: string,
+  ): Promise<DiffFile> {
     const patch = await resolved.git.filePatch(resolved.dir, {
       from: resolved.baseSha,
       to: resolved.to,
@@ -193,13 +235,13 @@ export class DiffService {
       ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
       ...(entry.untracked ? { untracked: true } : {}),
     });
-    if (patch === null) throw new Error(`Couldn't read the changes to ${path}.`);
+    if (patch === null) throw new Error(`Couldn't read the changes to ${entry.path}.`);
     const bytes = Buffer.byteLength(patch, 'utf8');
     if (bytes > DIFF_FILE_MAX_BYTES) {
-      return { status: 'ok', file: { diffId, path: entry.path, hunks: [], tooLarge: { bytes } } };
+      return { diffId, path: entry.path, hunks: [], tooLarge: { bytes } };
     }
     const hunks = parsePatch(patch)[0]?.hunks ?? [];
-    return { status: 'ok', file: { diffId, path: entry.path, hunks } };
+    return { diffId, path: entry.path, hunks };
   }
 
   async image(taskId: string, diffId: string, path: string): Promise<DiffImageResult> {

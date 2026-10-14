@@ -395,6 +395,53 @@ describe('task:diffFile', () => {
   });
 });
 
+describe('filesFor', () => {
+  it('resolves once and returns every requested path', async () => {
+    const s = fakeState({
+      entries: [
+        { path: 'src/a.ts', status: 'modified', additions: 1, deletions: 1, binary: false },
+        { path: 'src/b.ts', status: 'modified', additions: 2, deletions: 0, binary: false },
+      ],
+    });
+    const { svc, g } = service(s);
+
+    const result = await svc.filesFor('t1', ['src/a.ts', 'src/b.ts']);
+
+    if (!result) throw new Error('expected a result');
+    expect(result.files.get('src/a.ts')?.file.hunks).toHaveLength(1);
+    expect(result.files.get('src/b.ts')?.file.hunks).toHaveLength(1);
+    const resolveCalls = g.calls.filter(
+      (c) => c.startsWith('workingTree') || c.startsWith('nameStatus'),
+    );
+    expect(resolveCalls).toHaveLength(1);
+  });
+
+  it('maps a path that is not part of the diff to null, not a throw', async () => {
+    const { svc } = service(fakeState());
+
+    const result = await svc.filesFor('t1', ['src/a.ts', 'missing.ts']);
+
+    if (!result) throw new Error('expected a result');
+    expect(result.files.get('missing.ts')).toBeNull();
+    expect(result.files.get('src/a.ts')).not.toBeNull();
+  });
+
+  it(`marks a path tooLarge above ${DIFF_FILE_MAX_BYTES} bytes within the map`, async () => {
+    const big = `${PATCH}${'+x'.padEnd(DIFF_FILE_MAX_BYTES, 'x')}\n`;
+    const { svc } = service(fakeState({ patch: big }));
+
+    const result = await svc.filesFor('t1', ['src/a.ts']);
+
+    expect(result?.files.get('src/a.ts')?.file.tooLarge).toEqual({ bytes: Buffer.byteLength(big) });
+  });
+
+  it('returns null when the resolution itself is not ok', async () => {
+    const { svc } = service(fakeState({ conflicted: ['src/a.ts'] }));
+
+    expect(await svc.filesFor('t1', ['src/a.ts'])).toBeNull();
+  });
+});
+
 describe('task:diffImage', () => {
   const png = (n: number) => Buffer.alloc(n, 7);
   const imageEntry = (over: Partial<NameStatusEntry> = {}): NameStatusEntry => ({
