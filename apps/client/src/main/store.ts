@@ -858,10 +858,16 @@ export interface Store {
    * comment is history, and only `deleteReviewComment` (also draft-only) or the card
    * itself can make it go away. Undefined for an unknown id or an already-sent comment —
    * the store itself enforces "never edit history", not just its callers.
+   *
+   * `start` is omitted to leave the existing anchor's range alone; `'start' in patch` is
+   * what "set" means, so `null` clears both columns back to a single-line anchor and an
+   * object replaces them — a re-anchor always redefines side/line/start together.
    */
   updateReviewComment(
     id: string,
-    patch: Partial<Pick<ReviewComment, 'body' | 'diffId' | 'side' | 'line' | 'start' | 'excerpt'>>,
+    patch: Partial<Pick<ReviewComment, 'body' | 'diffId' | 'side' | 'line' | 'excerpt'>> & {
+      start?: ReviewComment['start'] | null;
+    },
   ): ReviewComment | undefined;
   /**
    * Forget a draft. Returns whether a row went — sent comments are history and leave
@@ -5438,13 +5444,14 @@ export function createStore(dbPath: string): Store {
     updateReviewComment(id, patch) {
       const existing = selectReviewComment.get(id) as ReviewCommentRow | undefined;
       if (!existing || existing.sentAt !== null) return undefined;
+      const startSet = 'start' in patch;
       const next: ReviewCommentRow = {
         ...existing,
         diffId: patch.diffId !== undefined ? patch.diffId : existing.diffId,
         side: patch.side !== undefined ? patch.side : existing.side,
         line: patch.line !== undefined ? patch.line : existing.line,
-        startSide: patch.start !== undefined ? patch.start.side : existing.startSide,
-        startLine: patch.start !== undefined ? patch.start.line : existing.startLine,
+        startSide: startSet ? (patch.start?.side ?? null) : existing.startSide,
+        startLine: startSet ? (patch.start?.line ?? null) : existing.startLine,
         body: patch.body !== undefined ? patch.body : existing.body,
         excerpt: patch.excerpt !== undefined ? patch.excerpt : existing.excerpt,
         updatedAt: Date.now(),

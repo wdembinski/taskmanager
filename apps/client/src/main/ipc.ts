@@ -263,6 +263,7 @@ import { Updater } from './updater';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 import { createDiffGit, DiffService } from './review/diffService';
+import { ReviewService } from './review/reviewService';
 import { bucketUsageDaily, DAY_MS, normalizeDailyOptions } from '@shared/usage';
 import {
   ACTIVITY_PERIOD_MS,
@@ -1052,6 +1053,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('task:diffSummary', async (taskId) => diffs.summary(taskId));
   handle('task:diffFile', async (taskId, diffId, path) => diffs.file(taskId, diffId, path));
   handle('task:diffImage', async (taskId, diffId, path) => diffs.image(taskId, diffId, path));
+
+  // --- Review comments (F6) ---------------------------------------------------
+  const reviews = new ReviewService({ store, diffs });
+  handle('review:list', async (taskId) => reviews.list(taskId));
+  handle('review:add', async (input) => reviews.add(input));
+  handle('review:update', async (taskId, id, patch) => reviews.update(taskId, id, patch));
+  handle('review:delete', async (taskId, id) => reviews.delete(taskId, id));
 
   // --- Agent delegation (a My Tasks card → an agent project) ------------------
 
