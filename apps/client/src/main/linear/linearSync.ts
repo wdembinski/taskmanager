@@ -60,7 +60,7 @@ const KNOWN_STATE_TYPES: ReadonlySet<string> = new Set([
  * the safe direction, since an unrecognised state reading as "not started" leaves the issue
  * on the board rather than silently filing it as done.
  */
-function narrowStateType(type: string): LinearStateType {
+export function narrowStateType(type: string): LinearStateType {
   return (KNOWN_STATE_TYPES.has(type) ? type : 'unstarted') as LinearStateType;
 }
 

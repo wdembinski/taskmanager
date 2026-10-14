@@ -4,10 +4,14 @@ import {
   buildIssueFilter,
   chunkIds,
   commentCreateMutation,
+  commentsQuery,
   issueUpdateStateMutation,
   issuesByIdQuery,
   issuesQuery,
   parseAdvancedFilter,
+  teamStatesQuery,
+  teamsQuery,
+  viewerQuery,
 } from './linearQueries';
 
 type FilterSettings = Pick<
@@ -239,5 +243,39 @@ describe('commentCreateMutation', () => {
 
   it('throws on an invalid issue id', () => {
     expect(() => commentCreateMutation('not-a-uuid', 'hello')).toThrow();
+  });
+});
+
+describe('commentsQuery', () => {
+  it('asks for the comment user by id, not just name', () => {
+    const request = commentsQuery(ID_A);
+    expect(request.query).toContain('user { id name displayName }');
+  });
+});
+
+describe('viewerQuery', () => {
+  it('has no variables and asks for id, name and displayName', () => {
+    const request = viewerQuery();
+    expect(request.variables).toEqual({});
+    expect(request.query).toContain('viewer { id name displayName }');
+  });
+});
+
+describe('teamsQuery', () => {
+  it('has no variables and asks for id, key and name', () => {
+    const request = teamsQuery();
+    expect(request.variables).toEqual({});
+    expect(request.query).toContain('teams(first: 100)');
+    expect(request.query).toContain('nodes { id key name }');
+  });
+});
+
+describe('teamStatesQuery', () => {
+  it('passes the team key as a variable, never interpolated into the document', () => {
+    const request = teamStatesQuery('ENG');
+    expect(request.variables).toEqual({ key: 'ENG' });
+    expect(request.query).not.toContain('ENG');
+    expect(request.query).toContain('team: { key: { eq: $key } }');
+    expect(request.query).toContain('nodes { id name type position }');
   });
 });
