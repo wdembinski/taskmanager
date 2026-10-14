@@ -210,13 +210,57 @@ export function commentsQuery(issueId: string, after: string | null = null): Lin
       query IssueComments($id: String!, $after: String) {
         issue(id: $id) {
           comments(first: 50, after: $after) {
-            nodes { id body createdAt url user { name displayName } }
+            nodes { id body createdAt url user { id name displayName } }
             pageInfo { hasNextPage endCursor }
           }
         }
       }
     `,
     variables: { id: issueId.trim(), after },
+  };
+}
+
+/** The authenticated token's own identity — who "mine" means when deciding an unread comment. */
+export function viewerQuery(): LinearRequest {
+  return {
+    query: `
+      query Viewer {
+        viewer { id name displayName }
+      }
+    `,
+    variables: {},
+  };
+}
+
+/** Every team in the workspace, for the Settings `teamKeys` picker. */
+export function teamsQuery(): LinearRequest {
+  return {
+    query: `
+      query Teams {
+        teams(first: 100) {
+          nodes { id key name }
+        }
+      }
+    `,
+    variables: {},
+  };
+}
+
+/**
+ * One team's workflow states, for the Settings status-map viewer. `teamKey` travels as a
+ * variable, never interpolated into the document — the same discipline every id-bearing query
+ * here follows, even though a team key is not itself a Linear id.
+ */
+export function teamStatesQuery(teamKey: string): LinearRequest {
+  return {
+    query: `
+      query TeamStates($key: String!) {
+        workflowStates(filter: { team: { key: { eq: $key } } }, first: 100) {
+          nodes { id name type position }
+        }
+      }
+    `,
+    variables: { key: teamKey },
   };
 }
 

@@ -95,6 +95,8 @@ const HOST_ONLY_REASONS = {
   'gitlab:clearCredentials': 'credential-write',
   'github:setCredentials': 'credential-write',
   'github:clearCredentials': 'credential-write',
+  'linear:setCredentials': 'credential-write',
+  'linear:clearCredentials': 'credential-write',
   'cloud:setCredentials': 'credential-write',
   'cloud:clearCredentials': 'credential-write',
 
@@ -289,6 +291,19 @@ export const RELAY_POLICY: {
   'github:addComment': 'relay',
   'github:searchUsers': 'relay',
   'github:markRead': 'relay',
+
+  'linear:getConfigStatus': 'relay',
+  'linear:setCredentials': 'host-only',
+  'linear:clearCredentials': 'host-only',
+  'linear:testConnection': 'relay',
+  'linear:teams': 'relay',
+  'linear:states': 'relay',
+  'linear:sync': 'relay',
+  // The same shared-pane calls as JIRA's/GitHub's, relayed for the same reason: picked by
+  // the card's tracker rather than by which app is asking.
+  'linear:fetchComments': 'relay',
+  'linear:addComment': 'relay',
+  'linear:markRead': 'relay',
 
   // Merge requests are provider-neutral, so these five are `mr:` rather than one set per
   // forge — the reason `mergeRequest.ts` gives. They relay for the same reason the syncs do.

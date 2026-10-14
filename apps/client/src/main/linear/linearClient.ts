@@ -22,8 +22,13 @@ import {
   issueUpdateStateMutation,
   issuesByIdQuery,
   issuesQuery,
+  teamStatesQuery,
+  teamsQuery,
+  viewerQuery,
 } from './linearQueries';
 import { sanitizeToken } from '@shared/secretToken';
+import type { LinearWorkflowState } from './linearMove';
+import { narrowStateType } from './linearSync';
 
 export interface LinearClientConfig {
   apiKey: string;
@@ -138,7 +143,21 @@ export interface LinearComment {
   body: string;
   createdAt: string;
   url: string;
-  user: { name: string; displayName: string } | null;
+  user: { id: string; name: string; displayName: string } | null;
+}
+
+/** Mirrors `linearQueries.ts`'s `viewerQuery` — the authenticated token's own identity. */
+export interface LinearViewer {
+  id: string;
+  name: string;
+  displayName: string;
+}
+
+/** Mirrors `linearQueries.ts`'s `teamsQuery` selection. */
+export interface LinearTeam {
+  id: string;
+  key: string;
+  name: string;
 }
 
 /**
@@ -314,5 +333,30 @@ export class LinearClient {
       throw new LinearError(`Linear commentCreate reported failure for ${issueId}`, 200);
     }
     return data.commentCreate.comment;
+  }
+
+  /** The authenticated token's own identity — used by "Test connection" and to decide "mine". */
+  async getViewer(): Promise<LinearViewer> {
+    const data = await this.request<{ viewer: LinearViewer }>(viewerQuery());
+    return data.viewer;
+  }
+
+  /** Every team in the workspace, for the Settings `teamKeys` picker. */
+  async listTeams(): Promise<LinearTeam[]> {
+    const data = await this.request<{ teams: { nodes: LinearTeam[] } }>(teamsQuery());
+    return data.teams.nodes;
+  }
+
+  /**
+   * One team's workflow states, for the Settings status-map viewer. `type` is narrowed via
+   * `linearSync`'s `narrowStateType`, the same safety net a sync reads a state through.
+   */
+  async listTeamStates(teamKey: string): Promise<LinearWorkflowState[]> {
+    const data = await this.request<{
+      workflowStates: {
+        nodes: Array<{ id: string; name: string; type: string; position: number }>;
+      };
+    }>(teamStatesQuery(teamKey));
+    return data.workflowStates.nodes.map((s) => ({ ...s, type: narrowStateType(s.type) }));
   }
 }

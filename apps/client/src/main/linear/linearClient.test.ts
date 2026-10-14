@@ -300,3 +300,58 @@ describe('LinearClient — mutations', () => {
     await expect(client(fetchImpl).createComment(UUID1, 'hi')).rejects.toBeInstanceOf(LinearError);
   });
 });
+
+describe('LinearClient#getViewer', () => {
+  it('round-trips the viewer query', async () => {
+    const viewer = { id: UUID1, name: 'ada', displayName: 'Ada' };
+    const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+      jsonResponse(200, { data: { viewer } }),
+    );
+
+    const result = await client(fetchImpl).getViewer();
+
+    expect(result).toEqual(viewer);
+    const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
+    expect(body.query).toContain('Viewer');
+  });
+});
+
+describe('LinearClient#listTeams', () => {
+  it('round-trips the teams query', async () => {
+    const teams = [{ id: UUID1, key: 'ENG', name: 'Engineering' }];
+    const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+      jsonResponse(200, { data: { teams: { nodes: teams } } }),
+    );
+
+    const result = await client(fetchImpl).listTeams();
+
+    expect(result).toEqual(teams);
+    const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
+    expect(body.query).toContain('Teams');
+  });
+});
+
+describe('LinearClient#listTeamStates', () => {
+  it('round-trips the team states query, passing the key as a variable', async () => {
+    const nodes = [{ id: UUID1, name: 'Todo', type: 'unstarted', position: 0 }];
+    const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+      jsonResponse(200, { data: { workflowStates: { nodes } } }),
+    );
+
+    const result = await client(fetchImpl).listTeamStates('ENG');
+
+    expect(result).toEqual(nodes);
+    const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
+    expect(body.variables).toEqual({ key: 'ENG' });
+    expect(body.query).not.toContain('"ENG"');
+  });
+
+  it('narrows an unrecognised state type to unstarted', async () => {
+    const nodes = [{ id: UUID1, name: 'Weird', type: 'something-new', position: 0 }];
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { data: { workflowStates: { nodes } } }));
+
+    const result = await client(fetchImpl).listTeamStates('ENG');
+
+    expect(result).toEqual([{ id: UUID1, name: 'Weird', type: 'unstarted', position: 0 }]);
+  });
+});
