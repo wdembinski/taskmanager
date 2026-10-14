@@ -25,8 +25,9 @@
  *    a range comment through `listReviewComments`, and returns `undefined` for an unknown
  *    task (the foreign key refuses it) rather than throwing.
  * 3. `updateReviewComment` merges a patch and bumps `updatedAt`, leaves an unpatched field
- *    alone, and refuses an unknown id AND an already-sent comment — the `sentAt IS NULL`
- *    guard is enforced in SQL, not just by the caller.
+ *    alone, refuses an unknown id AND an already-sent comment — the `sentAt IS NULL`
+ *    guard is enforced in SQL, not just by the caller — and `{ start: null }` clears a
+ *    range back down to a single-line anchor.
  * 4. `deleteReviewComment` removes a draft but refuses a sent one, returning `false` rather
  *    than throwing either way.
  * 5. `markReviewSent` stamps every listed draft on the named task in one transaction,
@@ -230,6 +231,23 @@ let taskB;
     "the sent comment's body did not change",
     stillSent?.body === 'edited body',
   );
+
+  store.close();
+}
+
+// ── Check 3b: updateReviewComment({ start: null }) clears a range ───────────────────
+{
+  const store = createStore(dbPath);
+  const ranged = store.addReviewComment(
+    makeCommentInput(taskA.id, { line: 20, start: { side: 'new', line: 18 } }),
+  );
+  check('setup: the draft starts with a range', ranged?.start?.line === 18);
+
+  const cleared = store.updateReviewComment(ranged.id, { start: null });
+  check('updateReviewComment({ start: null }) returns the comment', cleared != null);
+  check('the range is cleared off the returned comment', cleared?.start === undefined);
+  const stored = store.listReviewComments(taskA.id).find((c) => c.id === ranged.id);
+  check('the cleared range round-trips as absent, not null', stored?.start === undefined);
 
   store.close();
 }

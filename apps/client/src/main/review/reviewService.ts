@@ -46,12 +46,22 @@ export interface ReviewServiceDeps {
 export class ReviewService {
   constructor(private readonly deps: ReviewServiceDeps) {}
 
-  /** Every draft and sent comment on `taskId`, `outdated` recomputed against the current diff. */
+  /**
+   * Every draft and sent comment on `taskId`, `outdated` recomputed against the current
+   * diff. A `filesFor` failure (a flaky git read on some unrelated file) answers the stored
+   * comments unflagged rather than hiding them behind an error — recomputing `outdated` is
+   * a bonus on top of a read, never a precondition for it.
+   */
   async list(taskId: string): Promise<ReviewComment[]> {
     const comments = this.deps.store.listReviewComments(taskId);
     if (comments.length === 0) return comments;
     const paths = [...new Set(comments.map((c) => c.path))];
-    const current = await this.deps.diffs.filesFor(taskId, paths);
+    let current: Awaited<ReturnType<ReviewServiceDeps['diffs']['filesFor']>>;
+    try {
+      current = await this.deps.diffs.filesFor(taskId, paths);
+    } catch {
+      return comments;
+    }
     if (!current) return comments;
     return paths.reduce((acc, path) => {
       const entry = current.files.get(path);
