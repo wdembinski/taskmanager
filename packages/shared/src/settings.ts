@@ -731,6 +731,29 @@ export interface AppSettings {
   /** Max tasks a single project runs at once (scheduler concurrency; 1 = sequential). */
   concurrency: number;
   /**
+   * Max tasks running at once ACROSS every project (scheduler-wide; 0 = unlimited).
+   *
+   * `concurrency` caps one project; this caps the whole scheduler, since every running
+   * session shares one account's usage limit no matter which project it belongs to. An
+   * automatic start (the chain successor, a resumed/unparked task, `pump` itself) checked
+   * against the cap queues instead of starting — the task stays `pending` and `pump` picks
+   * it up once a slot frees. A human clicking Run/Start, replying in chat, or pressing
+   * Release now always proceeds regardless: an explicit click beats a throttle.
+   */
+  maxParallelSessions: number;
+  /**
+   * Percent of the context window at which the CLI should auto-compact a session's
+   * history, or `null` for the CLI's own built-in default. Read fresh on every launch
+   * and threaded into `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` — see `claudeSession.ts`.
+   */
+  autoCompactPercent: number | null;
+  /**
+   * Model every subagent a session spawns runs on, or `null` to inherit the
+   * session's own model (today's behaviour). Read fresh on every launch and
+   * threaded into `CLAUDE_CODE_SUBAGENT_MODEL` — see `claudeSession.ts`.
+   */
+  subagentModel: string | null;
+  /**
    * **How often every integration is refreshed, in minutes.** 0 = off; the manual Sync
    * button always works.
    *
@@ -913,6 +936,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultPlanningModel: null,
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
+  // 0 = unlimited: a fresh install imposes no scheduler-wide cap until a human sets one.
+  maxParallelSessions: 0,
+  // null on both: a fresh install runs the CLI's own compaction default and lets every
+  // subagent inherit its session's model, exactly as it always has.
+  autoCompactPercent: null,
+  subagentModel: null,
   // Two minutes: the faster of the pair this replaced, so no integration polls less often
   // than it did before the two timers became one. Pipelines are the reason — a red one you
   // learn about ten minutes late has already cost you the context to fix it.
@@ -1024,6 +1053,9 @@ export const GLOBAL_SETTINGS_KEYS = [
   'defaultPlanningModel',
   'defaultPermissionMode',
   'concurrency',
+  'maxParallelSessions',
+  'autoCompactPercent',
+  'subagentModel',
   'syncIntervalMinutes',
   'limitJitterMs',
   'sessionTokenBudget',

@@ -9,8 +9,15 @@ import { PassThrough } from 'node:stream';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { MAX_TOOL_ERROR_CHARS } from './eventNoise';
 import { HEADLESS_TURN_CONTRACT } from './headlessContract';
-import { buildClaudeArgs, encodeUserMessage, mapRawEvent, runClaudeSession } from './claudeSession';
+import {
+  buildClaudeArgs,
+  buildSessionEnv,
+  encodeUserMessage,
+  mapRawEvent,
+  runClaudeSession,
+} from './claudeSession';
 import type { ExecHost } from './exec';
+import type { StartSessionRequest } from '@shared/session';
 
 describe('mapRawEvent', () => {
   it('maps the init system event to a started event with the session id', () => {
@@ -348,13 +355,24 @@ describe('session isolation', () => {
     }
   });
 
-  function fakeHost(): { host: ExecHost; argvs: string[][] } {
+  function fakeHost(): {
+    host: ExecHost;
+    argvs: string[][];
+    envs: (Record<string, string> | undefined)[];
+  } {
     const argvs: string[][] = [];
+    const envs: (Record<string, string> | undefined)[] = [];
     const host = {
       target: { kind: 'local' } as const,
       exec: async () => ({ code: 0, stdout: '', stderr: '' }),
-      spawn: (_cwd: string, _file: string, args: string[]) => {
+      spawn: (
+        _cwd: string,
+        _file: string,
+        args: string[],
+        opts?: { env?: Record<string, string> },
+      ) => {
         argvs.push(args);
+        envs.push(opts?.env);
         const contract = args[args.indexOf('--append-system-prompt-file') + 1];
         if (contract) written.push(contract);
         const child = {
@@ -371,15 +389,15 @@ describe('session isolation', () => {
       relaySpec: () => ({ command: '', args: [], env: {} }),
       homeDir: async () => '/home/test',
     } as unknown as ExecHost;
-    return { host, argvs };
+    return { host, argvs, envs };
   }
 
-  const request = {
+  const request: StartSessionRequest = {
     prompt: 'do the thing',
     cwd: '/tmp',
     model: 'haiku',
     permissionMode: 'acceptEdits',
-  } as never;
+  };
 
   it('gives every fresh run its own session id, claimed with --session-id', () => {
     const { host, argvs } = fakeHost();
@@ -432,6 +450,73 @@ describe('session isolation', () => {
 
     const paths = argvs.map((a) => a[a.indexOf('--append-system-prompt-file') + 1]);
     expect(paths[0]).not.toBe(paths[1]);
+  });
+
+  it('passes neither CLI env override when the request sets neither', () => {
+    const { host, envs } = fakeHost();
+    runClaudeSession(request, () => undefined, { host });
+    expect(envs[0]).toBeUndefined();
+  });
+
+  it('passes the compaction override alone when only autoCompactPercent is set', () => {
+    const { host, envs } = fakeHost();
+    runClaudeSession({ ...request, autoCompactPercent: 70 }, () => undefined, { host });
+    expect(envs[0]).toEqual({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70' });
+  });
+
+  it('passes the subagent model override alone when only subagentModel is set', () => {
+    const { host, envs } = fakeHost();
+    runClaudeSession({ ...request, subagentModel: 'haiku' }, () => undefined, { host });
+    expect(envs[0]).toEqual({ CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' });
+  });
+
+  it('passes both overrides when the request sets both', () => {
+    const { host, envs } = fakeHost();
+    runClaudeSession(
+      { ...request, autoCompactPercent: 50, subagentModel: 'opus' },
+      () => undefined,
+      { host },
+    );
+    expect(envs[0]).toEqual({
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'opus',
+    });
+  });
+});
+
+describe('buildSessionEnv', () => {
+  const req = {
+    prompt: 'x',
+    cwd: '/tmp',
+    model: 'haiku' as const,
+    permissionMode: 'acceptEdits' as const,
+  };
+
+  it('is empty when neither setting is set', () => {
+    expect(buildSessionEnv(req)).toEqual({});
+  });
+
+  it('treats null the same as unset — the AppSettings default for both', () => {
+    expect(buildSessionEnv({ ...req, autoCompactPercent: null, subagentModel: null })).toEqual({});
+  });
+
+  it('sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE only when autoCompactPercent is set', () => {
+    expect(buildSessionEnv({ ...req, autoCompactPercent: 70 })).toEqual({
+      CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '70',
+    });
+  });
+
+  it('sets CLAUDE_CODE_SUBAGENT_MODEL only when subagentModel is set', () => {
+    expect(buildSessionEnv({ ...req, subagentModel: 'opus' })).toEqual({
+      CLAUDE_CODE_SUBAGENT_MODEL: 'opus',
+    });
+  });
+});
+
+describe('HEADLESS_TURN_CONTRACT — delegation rule', () => {
+  it('tells a session to answer a lookup itself rather than always delegating', () => {
+    expect(HEADLESS_TURN_CONTRACT).toContain('Grep/Read');
+    expect(HEADLESS_TURN_CONTRACT).toContain('cheaper `model`');
   });
 });
 

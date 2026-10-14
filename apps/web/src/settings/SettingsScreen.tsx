@@ -77,6 +77,7 @@ import { ColorSwatches, PALETTE } from '@tm/ui/ColorSwatches';
 import { PeopleSettings } from '@tm/ui/projects/PeopleSettings';
 import { ModelField } from '@tm/ui/ModelField';
 import { PlanningModelField } from '@tm/ui/PlanningModelField';
+import { SubagentModelField } from '@tm/ui/SubagentModelField';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
@@ -422,6 +423,52 @@ export function SettingsScreen({
                 onChange={(_e, d) => patch({ concurrency: Math.max(1, Number(d.value) || 1) })}
               />
             </Field>
+
+            <Field
+              label="Max sessions at once (all projects)"
+              hint="Caps how many agent sessions run at the same time across every project — they all share one account's usage limit. 0 = unlimited."
+            >
+              <Input
+                type="number"
+                min={0}
+                value={String(settings.maxParallelSessions)}
+                onChange={(_e, d) =>
+                  patch({ maxParallelSessions: Math.max(0, Number(d.value) || 0) })
+                }
+              />
+            </Field>
+
+            <Field
+              label="Compact context at (%)"
+              hint="Percent of the context window at which the CLI auto-compacts a session's history. Blank keeps the CLI's own default."
+            >
+              <Input
+                type="number"
+                min={1}
+                max={100}
+                value={
+                  settings.autoCompactPercent == null ? '' : String(settings.autoCompactPercent)
+                }
+                placeholder="CLI default"
+                onChange={(_e, d) => {
+                  if (d.value === '') {
+                    patch({ autoCompactPercent: null });
+                    return;
+                  }
+                  const n = Number(d.value);
+                  if (Number.isFinite(n)) {
+                    patch({ autoCompactPercent: Math.min(100, Math.max(1, Math.round(n))) });
+                  }
+                }}
+              />
+            </Field>
+
+            <SubagentModelField
+              label="Subagent model"
+              value={settings.subagentModel}
+              onChange={(subagentModel) => patch({ subagentModel })}
+              hint="What a subagent a session spawns runs on. Leave it following the session."
+            />
 
             <Field
               label="Sync every (minutes)"

@@ -49,6 +49,16 @@ export interface StartSessionRequest {
   cwd: string;
   model: ClaudeModel;
   permissionMode: PermissionMode;
+  /**
+   * `AppSettings.autoCompactPercent`, read fresh by the launch site. `null`/`undefined`
+   * leaves the CLI's own compaction default untouched — see `claudeSession.ts`.
+   */
+  autoCompactPercent?: number | null;
+  /**
+   * `AppSettings.subagentModel`, read fresh by the launch site. `null`/`undefined`
+   * leaves every subagent inheriting this session's own model — see `claudeSession.ts`.
+   */
+  subagentModel?: string | null;
 }
 
 /**
