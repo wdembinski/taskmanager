@@ -19,9 +19,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   app,
   dialog,
@@ -83,6 +83,7 @@ import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
 import { createAutomationHandlers } from './automationHandlers';
 import type { Automation } from '@shared/automation';
+import { createSkillHandlers } from './skillHandlers';
 import {
   isBlockedishStatus,
   linearCategory,
@@ -3543,6 +3544,61 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('automation:setEnabled', automationHandlers['automation:setEnabled']);
   handle('automation:runNow', automationHandlers['automation:runNow']);
   handle('automation:runs', automationHandlers['automation:runs']);
+
+  // --- Skills (F7) — list/get/save/delete/import/export, repo skills, and a task's own
+  // skillRefs. The nine handler bodies live in `skillHandlers.ts`, so they can be driven
+  // through a real `RelayRegistry` in a test without standing up Electron; this is just the
+  // native dialogs and disk I/O that file needs and cannot have itself.
+  const skillHandlers = createSkillHandlers({
+    store,
+    now: Date.now,
+    newId: randomUUID,
+    hostFor,
+    pickImportFiles: async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Import skills',
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Skill files', extensions: ['md'] }],
+      });
+      return result.canceled || result.filePaths.length === 0 ? null : result.filePaths;
+    },
+    pickImportFolder: async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Import skills from a folder',
+        properties: ['openDirectory'],
+      });
+      return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+    },
+    pickExportDir: async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Export skills to a folder',
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+    },
+    readText: (path) => readFile(path, 'utf8'),
+    listDir: async (path) => {
+      const entries = await readdir(path, { withFileTypes: true });
+      return entries.map((entry) => ({ name: entry.name, isDirectory: entry.isDirectory() }));
+    },
+    writeText: async (path, text) => {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, text, 'utf8');
+    },
+    taskChanged: (task) => send('task:changed', { task, runId: null }),
+  });
+  // Nine literal calls, not a loop over `Object.keys` — same reason the six `automation:*`
+  // calls above are literal: `test/ipc-relay-coverage.test.ts` finds registrations with a
+  // regex over quoted text right after `handle(`, and a variable there would hide every one.
+  handle('skill:list', skillHandlers['skill:list']);
+  handle('skill:get', skillHandlers['skill:get']);
+  handle('skill:save', skillHandlers['skill:save']);
+  handle('skill:delete', skillHandlers['skill:delete']);
+  handle('skill:import', skillHandlers['skill:import']);
+  handle('skill:export', skillHandlers['skill:export']);
+  handle('skill:listRepo', skillHandlers['skill:listRepo']);
+  handle('skill:getRepo', skillHandlers['skill:getRepo']);
+  handle('task:setSkillRefs', skillHandlers['task:setSkillRefs']);
 
   // --- Issues (F5) — read-only browsing, and the one-click import onto the board (F5.6). ---
   /**

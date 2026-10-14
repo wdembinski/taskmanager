@@ -103,6 +103,16 @@ import type {
   ActivityQuery,
   ActivityRow,
 } from './activity';
+import type {
+  RepoSkillDetail,
+  RepoSkillSummary,
+  Skill,
+  SkillDraft,
+  SkillExportResult,
+  SkillImportRequest,
+  SkillImportResult,
+  SkillSaveResult,
+} from './skills';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -1409,6 +1419,52 @@ export interface IpcApi {
    * null — the log behind the editor's "recent runs" list. `limit` caps how many come back.
    */
   'automation:runs': (automationId: string | null, limit: number) => Promise<AutomationRun[]>;
+
+  // --- Skills (F7): the library a card or step carries into every turn of a run, plus a
+  // read-only view of a project's own `.claude/skills`. See `@shared/skills` for the model. -
+  /** Every library skill, name-sorted — small enough to hand over whole, like `chain:links`. */
+  'skill:list': () => Promise<Skill[]>;
+  /** One library skill by id, or `null` if it is gone — a picker resolving `Task.skillRefs`. */
+  'skill:get': (id: string) => Promise<Skill | null>;
+  /**
+   * Create or edit a library skill, one channel for both: the handler mints `id` when the
+   * draft has none, and keeps an existing row's `createdAt`. A name clash with a different
+   * skill comes back as `{ ok: false, reason: 'name-taken' }` rather than a rejection, so the
+   * editor can offer "replace" next to the field that caused it.
+   */
+  'skill:save': (input: SkillDraft) => Promise<SkillSaveResult>;
+  /** Delete a library skill by id. A card's `skillRefs` are deliberately left dangling — see
+   *  `Task.skillRefs` — so this never cascades into every task that named it. */
+  'skill:delete': (id: string) => Promise<boolean>;
+  /**
+   * Import one or more `SKILL.md`-shaped files — a file picker, a folder, or pasted text,
+   * per `request.source`. One result per candidate, so a bad file in a folder import never
+   * costs the rest; `null` means the human cancelled the native dialog (never happens for a
+   * `'text'` import, which opens none). Host-only: it opens a native file/folder picker.
+   */
+  'skill:import': (request: SkillImportRequest) => Promise<SkillImportResult[] | null>;
+  /**
+   * Write the named library skills to a folder the human picks, one `SKILL.md` per skill
+   * under `<dir>/<name>/` — the CLI's own layout, so committing that folder under a project's
+   * `.claude/skills` makes each one a repo skill too. `null` means the human cancelled the
+   * folder picker. Host-only: it opens a native folder picker.
+   */
+  'skill:export': (ids: string[]) => Promise<SkillExportResult | null>;
+  /**
+   * A project's repo skills — whatever already lives under its `.claude/skills` in the
+   * worktree. `[]` for an unknown project or one with no repo (nothing to read).
+   */
+  'skill:listRepo': (projectId: string) => Promise<RepoSkillSummary[]>;
+  /**
+   * One repo skill's full body, for F7.8's "Copy to library" — `null` for an unknown
+   * project, a project with no repo, or a skill that is not actually there.
+   */
+  'skill:getRepo': (projectId: string, name: string) => Promise<RepoSkillDetail | null>;
+  /**
+   * Replace a task's own `skillRefs` wholesale — the assign dialog's and the step row's
+   * write. Rejects with "Task not found." for an unknown id, like `task:setDescription`.
+   */
+  'task:setSkillRefs': (taskId: string, refs: string[]) => Promise<Task>;
 
   /**
    * Put a removed card back on the board, with the same id and everything hanging off it.

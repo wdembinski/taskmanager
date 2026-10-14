@@ -53,6 +53,8 @@ export type HostOnlyReason =
  * Relayed, one of them wedges cloud sync — the relay drains serially — until somebody who
  * did not ask for it dismisses a dialog that appeared on their screen. Worse, the paths it
  * returns are paths on THAT machine, which is exactly the thing a browser cannot use.
+ * `skill:import`/`skill:export` are the same shape: a file/folder picker for where a batch
+ * of `SKILL.md`s comes from or goes to, same reason `project:pickFile` already is one.
  *
  * **Window / OS.** `window:*` moves a window nobody is looking at; `update:install` quits
  * the app out from under its user; `attachment:open` pops a file open on someone else's
@@ -80,6 +82,8 @@ const HOST_ONLY_REASONS = {
   'project:pickFile': 'native-modal',
   'attachment:pick': 'native-modal',
   'jira:pickAttachments': 'native-modal',
+  'skill:import': 'native-modal',
+  'skill:export': 'native-modal',
 
   'window:minimize': 'window-os',
   'window:toggleMaximize': 'window-os',
@@ -184,6 +188,19 @@ export const RELAY_POLICY: {
   'automation:setEnabled': 'relay',
   'automation:runNow': 'relay',
   'automation:runs': 'relay',
+
+  // F7: a library skill is owned end to end by the desktop's own store, same as an
+  // automation above, so list/get/save/delete/task-refs relay there. Import/export open a
+  // native file or folder dialog on the desktop machine, so those two are host-only.
+  'skill:list': 'relay',
+  'skill:get': 'relay',
+  'skill:save': 'relay',
+  'skill:delete': 'relay',
+  'skill:import': 'host-only',
+  'skill:export': 'host-only',
+  'skill:listRepo': 'relay',
+  'skill:getRepo': 'relay',
+  'task:setSkillRefs': 'relay',
 
   'agentProfile:list': 'relay',
   'agentProfile:add': 'relay',
