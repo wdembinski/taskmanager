@@ -168,6 +168,84 @@ Repo skills are read-only on the web. Import/Export are desktop-only (they touch
 - **Should templates support more placeholders (branch, URL)?** Default: only `{{title}}`, `{{key}}`,
   `{{project}}`; add on demand.
 
+## F7.5 — decisions taken (step 1 of 3)
+
+Three build steps are approved for F7.5. Step 1 is not code — it is the decisions step 2's
+`listRepoSkills`/`readRepoSkill` build on, settled here so a headless session does not
+re-derive them with no one to ask.
+
+### The folder name is the skill's name
+
+A `repo:<name>` ref (`parseSkillRef`, `skills.ts:98-112`) and F7.6's
+`<worktree>/.claude/skills/<name>/SKILL.md` lookup both address the folder, not whatever a
+`SKILL.md`'s frontmatter happens to say. So the folder decides `RepoSkillSummary.name`, and a
+frontmatter `name` that disagrees is silently ignored rather than surfaced as a warning —
+there is no "import" step here to attach a warning to, and a name mismatch between two
+sources describing the same skill is not a fault worth reporting on every listing.
+
+Mechanically: `readRepoSkill` calls `parseSkillMarkdown(text, folderName)` — the folder name
+as the **fallback** — and then overwrites `result.name = folderName` unconditionally
+afterwards, rather than relying on the fallback ever being reached. `parseSkillMarkdown`
+only falls back to its `fallbackName` argument when frontmatter is missing or its own `name`
+is invalid (`skills.ts:215-225`); a well-formed `SKILL.md` with a *different* valid name would
+otherwise win, which would let two folders disagree with their own directory listing.
+
+### A folder name that fails `isValidSkillName` is skipped
+
+No `repo:<name>` ref could ever address such a folder, so listing it would offer something
+nothing could later resolve back to. `readRepoSkill` validates the folder name with
+`isValidSkillName` (`skills.ts:73-75`) before doing anything else and returns `null` if it
+fails; `listRepoSkills` drops those entries rather than including them with a broken ref.
+
+This same check is what keeps path traversal out: `SKILL_NAME_RE` (`skills.ts:69`,
+`[a-z0-9-]{1,64}`) cannot match a name containing `..` or `/`, so a folder entry from
+`readdir` can never be joined into a path that escapes `.claude/skills/`. No separate
+traversal check is needed because the slug regex already excludes every character that
+traversal depends on.
+
+### Path traversal stays inside the skills folder, structurally
+
+`listRepoSkills` reads `.claude/skills/` with `readdir(dir, { withFileTypes: true })` (the
+same call `listClaudeSessions` already uses, `claudeSessions.ts:213`), keeps only entries
+where `entry.isDirectory()`, and for each one requires `<dir>/<entry.name>/SKILL.md` to
+`stat` as a regular file before reading it. That means:
+
+- a loose file directly under `.claude/skills/` (not a directory) is ignored — `isDirectory()`
+  excludes it before a name or a `SKILL.md` is even considered.
+- any other file inside a skill's own folder (`references/`, `notes.md`, …) is ignored — only
+  `SKILL.md` itself is ever opened.
+- a folder with no `SKILL.md` is ignored — the `stat`-as-regular-file check fails and that
+  folder contributes nothing, the same "one bad entry must not lose the others" shape
+  `listClaudeSessions` uses for an unreadable transcript (`claudeSessions.ts:239-241`).
+
+### `path` is relative to the project root, always `/`-separated
+
+`RepoSkillSummary.path` (`skills.ts:44-46`) is documented as "where it lives on disk, relative
+to the project root, for display and for the prompt section to name" — it is always
+`.claude/skills/<name>/SKILL.md`, built with a literal `/` join rather than `node:path.join`,
+because a WSL project's folder is also named with `/` and the value is display text (the
+picker, the "Skills in force" section), never a path handed to `fs` or `ExecHost`. The actual
+on-disk read goes through `host.toApp(hostJoin(projectRoot, '.claude', 'skills', name,
+'SKILL.md'))` (the `appProjectFile`/`listClaudeSessions` pattern), which is a different,
+host-native string that is never exposed on the summary.
+
+### Results are sorted by name
+
+`listRepoSkills` returns its summaries sorted by `name` (`localeCompare`) before returning,
+not in `readdir`'s own order (which is filesystem-dependent and not guaranteed alphabetical
+even on one platform). The picker and the "Skills in force" prompt section both read this
+list directly, so an unsorted result would make both non-deterministic between runs for no
+reason — `readdir`'s order was never a meaningful signal to preserve.
+
+### The module is read-only
+
+`repoSkills.ts` never writes, creates or deletes anything — every project's `.claude/skills/`
+is the human's or the repo's, not this app's. `readRepoSkill`/`listRepoSkills` only ever
+`readdir`/`stat`/read a file; there is no companion "write a repo skill" function in this
+module (library skills already cover the editable case — `Skill` in `skills.ts:23-36` — and
+F7's "Export" writes a `SKILL.md` through a separate, explicit action, not through this
+discovery path).
+
 ## Tasks
 
 ### F7 · Phase 1 — Skill and template model
