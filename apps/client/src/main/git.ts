@@ -157,6 +157,38 @@ export async function isClean(dir: string, host?: ExecHost): Promise<boolean> {
 }
 
 /**
+ * Pull the paths back out of `git status --porcelain` output — pure, so the rename edge
+ * case can be checked without a real repository behind it.
+ *
+ * Each line is a two-letter status code, a space, then the path — except a rename/copy
+ * line (`R  old -> new`), where only the half AFTER the arrow is what exists in the tree
+ * now; the old name is history, not something left to commit.
+ */
+export function parsePorcelainPaths(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((line) => line.slice(3))
+    .filter(Boolean)
+    .map((path) => {
+      const arrow = path.indexOf(' -> ');
+      return arrow === -1 ? path : path.slice(arrow + 4);
+    });
+}
+
+/**
+ * Every path with something uncommitted about it — staged, unstaged, OR untracked — unlike
+ * {@link isClean}, which is asked only "does the tree match HEAD" and so, via
+ * `--untracked-files=no`, never sees a file git hasn't started tracking yet. Exists for the
+ * one place that has to NAME what is sitting there rather than just refuse: a branch with
+ * nothing committed and an empty worktree is a different wall than one whose worktree still
+ * has the very work that was supposed to land, and only this tells them apart.
+ */
+export async function uncommittedPaths(dir: string, host?: ExecHost): Promise<string[]> {
+  const res = await git(dir, ['status', '--porcelain'], host);
+  return res.code === 0 ? parsePorcelainPaths(res.stdout) : [];
+}
+
+/**
  * The remote and ref `branch` tracks (`branch.<name>.remote`/`.merge`), or **null** when it
  * has none configured.
  *

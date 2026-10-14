@@ -80,6 +80,7 @@ import {
   rebaseInProgress,
   remoteBranchSha,
   remoteUrl,
+  uncommittedPaths,
 } from '../git';
 import { hostFor, type ExecHost } from '../exec';
 import { GitHubClient } from '../github/githubClient';
@@ -226,7 +227,10 @@ export async function openPullRequest(
   if (!(await hasCommits(live.cwd, host))) {
     const open = reportOpen();
     if (open) return open;
-    throw new Error(
+    throw await nothingCommittedError(
+      live.cwd,
+      live.branch,
+      host,
       `Nothing has been committed on "${live.branch}" yet, so there is nothing to open a pull request for.`,
     );
   }
@@ -236,7 +240,10 @@ export async function openPullRequest(
     // asked twice — the pull request carries everything the branch has. Report it.
     const open = reportOpen();
     if (open) return open;
-    throw new Error(
+    throw await nothingCommittedError(
+      live.cwd,
+      live.branch,
+      host,
       `"${live.branch}" has no commits that ${live.base} does not already have — it has ` +
         `been merged, or nothing was ever written to it. There is nothing to open a pull ` +
         `request for.`,
@@ -460,6 +467,28 @@ async function refreshDescription(
         `${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/**
+ * The refusal for a branch `commitsAhead`/`hasCommits` found nothing to open a pull request
+ * for — naming whichever is actually true. "Merged, or nothing was ever written" is only an
+ * honest answer when the worktree itself is clean; a run that finished with edits still on
+ * disk (`a-refusal-that-named-the-wrong-wall`'s own case, F7.2) left real work sitting right
+ * there, and the generic sentence sends a human looking for a merge that never happened
+ * instead of telling them to just commit it.
+ */
+async function nothingCommittedError(
+  cwd: string,
+  branch: string,
+  host: ExecHost | undefined,
+  genericMessage: string,
+): Promise<Error> {
+  const dirty = await uncommittedPaths(cwd, host);
+  if (dirty.length === 0) return new Error(genericMessage);
+  return new Error(
+    `Nothing is committed on "${branch}" yet, but its worktree has uncommitted changes ` +
+      `(${dirty.join(', ')}). Commit them, then press this again.`,
+  );
 }
 
 /** The card's open merge request, if it has one. A settled one is history, not a blocker. */
