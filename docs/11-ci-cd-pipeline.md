@@ -341,6 +341,15 @@ it back up once the platform that actually failed goes green.
 so either re-run works. Actions → **Release** → _Run workflow_ → branch **`development`**.
 A dispatch aimed at any other branch fails at the `version` job's first step, by rule 5.
 
+**The `version` job went green with `::notice:: ... a concurrent merge won the race`** —
+this is not a failure and needs no re-run. A plain merge to `development` landed between
+`version`'s checkout and its _Tag and push_ step; the push was rejected as non-fast-forward
+(it may still have pushed a dangling, harmless `v*` tag — `--follow-tags` updates the tag and
+the branch as two separate refs), and that merge already triggered its own run of this same
+workflow, queued behind this one by the `release-development` concurrency group. That queued
+run computes the version from the now-current `development` and releases in this one's
+place — see `raced` in `release.yml`'s `version` job and RELEASE.md §3.
+
 **A dispatch is also how you release a commit that is already on `development`** — after
 fixing a repository setting, say. It is safe to run at any time: if the version's release is
 already **published**, the `version` job reports "nothing to release" as a `::notice`, every
