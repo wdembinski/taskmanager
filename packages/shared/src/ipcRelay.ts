@@ -80,6 +80,8 @@ const HOST_ONLY_REASONS = {
   'project:pickFile': 'native-modal',
   'attachment:pick': 'native-modal',
   'jira:pickAttachments': 'native-modal',
+  'skill:import': 'native-modal',
+  'skill:export': 'native-modal',
 
   'window:minimize': 'window-os',
   'window:toggleMaximize': 'window-os',
@@ -184,6 +186,19 @@ export const RELAY_POLICY: {
   'automation:setEnabled': 'relay',
   'automation:runNow': 'relay',
   'automation:runs': 'relay',
+
+  // F7: a library skill is owned end to end by the desktop's own store, same as an
+  // automation above, so list/get/save/delete/task-refs relay there. Import/export open a
+  // native file or folder dialog on the desktop machine, so those two are host-only.
+  'skill:list': 'relay',
+  'skill:get': 'relay',
+  'skill:save': 'relay',
+  'skill:delete': 'relay',
+  'skill:import': 'host-only',
+  'skill:export': 'host-only',
+  'skill:listRepo': 'relay',
+  'skill:getRepo': 'relay',
+  'task:setSkillRefs': 'relay',
 
   'agentProfile:list': 'relay',
   'agentProfile:add': 'relay',

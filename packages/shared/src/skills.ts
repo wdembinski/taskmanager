@@ -46,6 +46,82 @@ export interface RepoSkillSummary {
   path: string;
 }
 
+/** A repo skill read in full — `skill:getRepo`'s answer, for F7.8's "Copy to library".
+ *  `path` is relative like {@link RepoSkillSummary.path}, never the host's absolute `dir`. */
+export interface RepoSkillDetail {
+  name: string;
+  description: string;
+  body: string;
+  path: string;
+  warnings: string[];
+}
+
+/**
+ * `skill:save`'s input — what an editor has in hand before a save mints the rest. `id`
+ * absent means "new skill": the handler mints a uuid, and there is no existing row to keep
+ * `createdAt` from.
+ */
+export interface SkillDraft {
+  id?: string;
+  name: string;
+  description: string;
+  body: string;
+}
+
+/**
+ * `skill:save`'s answer. A value, not a throw, because a name clash is something the UI
+ * offers "replace" over rather than an error to show and abandon — the same reason
+ * {@link SkillImportResult}'s `'clash'` status is a value too.
+ *
+ * Mirrors the store's own `SaveSkillResult` (`apps/client/src/main/store.ts`) plus a
+ * human-readable `message` on refusal; the store stays reason-only since nothing inside the
+ * main process needs a sentence, only the handler that hands one to a human.
+ */
+export type SkillSaveResult =
+  | { ok: true; skill: Skill }
+  | { ok: false; reason: 'invalid-name' | 'too-large' | 'name-taken'; message: string };
+
+/** `skill:import`'s input — one call imports a batch from exactly one source. Pasted text
+ *  carries its own bytes because there is no file for the main process to read. */
+export type SkillImportRequest =
+  { source: 'files' } | { source: 'folder' } | { source: 'text'; text: string };
+
+/**
+ * One imported candidate's outcome, discriminated on `status`. A batch (`skill:import`'s
+ * answer) is an array of these, one per file/paste — never a single refusal for the whole
+ * call, so one bad file in a folder import does not cost the rest.
+ */
+export type SkillImportResult =
+  | {
+      status: 'imported';
+      skill: Skill;
+      warnings: string[];
+      source: SkillImportRequest['source'];
+    }
+  | {
+      /** A skill already exists with this name — the UI offers "Replace", which is just
+       *  `skill:save({ ...candidate, id: existing.id })`; no re-pick, no `replace` flag. */
+      status: 'clash';
+      candidate: Pick<Skill, 'name' | 'description' | 'body'>;
+      existing: Skill;
+      source: SkillImportRequest['source'];
+      message: string;
+    }
+  | {
+      status: 'refused';
+      source: SkillImportRequest['source'];
+      reason: 'no-name' | 'too-large' | 'unreadable';
+      message: string;
+    };
+
+/** `skill:export`'s answer: every library skill named in the call that was actually written,
+ *  by name, under `dir/<name>/SKILL.md` — the CLI's own layout, so committing `dir` under a
+ *  project's `.claude/skills` makes each one a repo skill. */
+export interface SkillExportResult {
+  dir: string;
+  written: string[];
+}
+
 /** A `Task.skillRefs` entry: which kind, and the id/name that addresses it within that
  *  kind. See {@link formatSkillRef} / {@link parseSkillRef} for the serialised form a
  *  `Task` actually stores. */
