@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  boundOutputTail,
+  decideGateOutcome,
+  GATE_FAILURE_NOTE_TAIL_BYTES,
+  GATE_TIMELINE_TAIL_BYTES,
   isAgentStep,
   isGateStep,
   MAX_WORKFLOW_STEPS,
   validateWorkflow,
   type AgentStep,
+  type GateOutcome,
+  type GateRunResult,
   type GateStep,
   type WorkflowDoc,
   type WorkflowStep,
@@ -270,5 +276,128 @@ describe('isAgentStep / isGateStep', () => {
     const step: WorkflowStep = gateStep();
     expect(isGateStep(step)).toBe(true);
     expect(isAgentStep(step)).toBe(false);
+  });
+});
+
+const gateRunResult = (over: Partial<GateRunResult> = {}): GateRunResult => ({
+  exitCode: 1,
+  timedOut: false,
+  attemptsUsed: 0,
+  ...over,
+});
+
+describe('decideGateOutcome', () => {
+  it.each<[string, GateRunResult, GateOutcome]>([
+    [
+      'exit 0 with onFail passes',
+      gateRunResult({ exitCode: 0, onFail: { retryFrom: 'a1', maxAttempts: 3 } }),
+      { kind: 'pass' },
+    ],
+    ['exit 0 without onFail passes', gateRunResult({ exitCode: 0 }), { kind: 'pass' }],
+    [
+      'retryOn absent retries on any code',
+      gateRunResult({ exitCode: 7, onFail: { retryFrom: 'a1', maxAttempts: 3 } }),
+      { kind: 'retry', retryFrom: 'a1', attempt: 1, maxAttempts: 3 },
+    ],
+    [
+      'retryOn empty array retries on any code',
+      gateRunResult({ exitCode: 7, onFail: { retryFrom: 'a1', maxAttempts: 3, retryOn: [] } }),
+      { kind: 'retry', retryFrom: 'a1', attempt: 1, maxAttempts: 3 },
+    ],
+    [
+      'a listed exit code retries',
+      gateRunResult({
+        exitCode: 2,
+        onFail: { retryFrom: 'a1', maxAttempts: 3, retryOn: [1, 2, 3] },
+      }),
+      { kind: 'retry', retryFrom: 'a1', attempt: 1, maxAttempts: 3 },
+    ],
+    [
+      'a non-retryable exit code fails',
+      gateRunResult({
+        exitCode: 99,
+        onFail: { retryFrom: 'a1', maxAttempts: 3, retryOn: [1, 2, 3] },
+      }),
+      { kind: 'fail', reason: 'non-retryable-code' },
+    ],
+    [
+      'attempts exhausted (attemptsUsed === maxAttempts) fails',
+      gateRunResult({ exitCode: 1, attemptsUsed: 3, onFail: { retryFrom: 'a1', maxAttempts: 3 } }),
+      { kind: 'fail', reason: 'attempts-exhausted' },
+    ],
+    [
+      'the last allowed attempt (attemptsUsed === maxAttempts - 1) still retries',
+      gateRunResult({ exitCode: 1, attemptsUsed: 2, onFail: { retryFrom: 'a1', maxAttempts: 3 } }),
+      { kind: 'retry', retryFrom: 'a1', attempt: 3, maxAttempts: 3 },
+    ],
+    [
+      'a timeout fails even with an onFail that would otherwise retry',
+      gateRunResult({
+        exitCode: 1,
+        timedOut: true,
+        onFail: { retryFrom: 'a1', maxAttempts: 3 },
+      }),
+      { kind: 'fail', reason: 'timeout' },
+    ],
+    [
+      'a timeout fails even on exit 0',
+      gateRunResult({ exitCode: 0, timedOut: true }),
+      { kind: 'fail', reason: 'timeout' },
+    ],
+    [
+      'exitCode null fails as no-exit-code',
+      gateRunResult({ exitCode: null, onFail: { retryFrom: 'a1', maxAttempts: 3 } }),
+      { kind: 'fail', reason: 'no-exit-code' },
+    ],
+    [
+      'no onFail fails as no-on-fail',
+      gateRunResult({ exitCode: 1 }),
+      { kind: 'fail', reason: 'no-on-fail' },
+    ],
+  ])('%s', (_description, result, expected) => {
+    expect(decideGateOutcome(result)).toEqual(expected);
+  });
+});
+
+describe('boundOutputTail', () => {
+  it('leaves output under the limit unchanged', () => {
+    expect(boundOutputTail('short', 1024)).toBe('short');
+  });
+
+  it('leaves output exactly at the limit unchanged', () => {
+    const output = 'x'.repeat(10);
+    expect(boundOutputTail(output, 10)).toBe(output);
+  });
+
+  it('keeps the tail and a marker when over the limit, within maxBytes', () => {
+    const output = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join('\n');
+    const maxBytes = 512;
+    const result = boundOutputTail(output, maxBytes);
+
+    expect(result).not.toBe(output);
+    expect(result).toContain('bytes truncated');
+    expect(result.endsWith(output.slice(-20))).toBe(true);
+    expect(new TextEncoder().encode(result).length).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it('never splits a multibyte code point, for accented text', () => {
+    const output = 'é'.repeat(2000);
+    const result = boundOutputTail(output, 100);
+    expect(result).not.toContain('�');
+  });
+
+  it('never splits a multibyte code point, for emoji', () => {
+    const output = '🎉'.repeat(2000);
+    const result = boundOutputTail(output, 100);
+    expect(result).not.toContain('�');
+  });
+
+  it('returns an empty string when maxBytes is 0', () => {
+    expect(boundOutputTail('anything at all', 0)).toBe('');
+  });
+
+  it('defines the tail byte caps as 16384 and 8192', () => {
+    expect(GATE_TIMELINE_TAIL_BYTES).toBe(16384);
+    expect(GATE_FAILURE_NOTE_TAIL_BYTES).toBe(8192);
   });
 });
