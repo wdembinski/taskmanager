@@ -4070,10 +4070,19 @@ export class Scheduler {
     // incremental spend; the `result` event carries the run's total cost. Recorded here,
     // before the negotiation/settlement branches below, so no early-return can skip it —
     // and deliberately ABOVE the transcript write, which is now conditional.
-    if (event.kind === 'usage') {
-      this.recordUsage('task', run.projectId, run.taskId, runId, event);
-    } else if (event.kind === 'result') {
-      this.recordCost('task', run.projectId, run.taskId, runId, event.costUsd);
+    //
+    // Guarded like every other best-effort store write below: this runs on every chunk of
+    // a live session's event stream, so a transient SQLite failure (disk full, a locked
+    // file) must not escape as an unhandled rejection and pop the fatal "Unexpected error"
+    // dialog over a run that's otherwise healthy.
+    try {
+      if (event.kind === 'usage') {
+        this.recordUsage('task', run.projectId, run.taskId, runId, event);
+      } else if (event.kind === 'result') {
+        this.recordCost('task', run.projectId, run.taskId, runId, event.costUsd);
+      }
+    } catch (err) {
+      logMain('usage: could not record token accounting', err);
     }
 
     // Phase 6: persist every event to the task's history so its transcript is
@@ -4084,7 +4093,11 @@ export class Scheduler {
     // healthy rate-limit signals are dropped; `lastRateLimit` below still sees them,
     // because it reads the ungated observer stream.)
     if (shouldSurfaceEvent(event)) {
-      this.store.appendTaskEvent(run.projectId, run.taskId, runId, event);
+      try {
+        this.store.appendTaskEvent(run.projectId, run.taskId, runId, event);
+      } catch (err) {
+        logMain('transcript: could not append task event', err);
+      }
     }
 
     // Plan capture, fallback path (Phase 11). `decidePermission` normally sees the
