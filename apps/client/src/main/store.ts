@@ -62,6 +62,7 @@ import {
   isValidSkillName,
   parseSkillRef,
   SKILL_BODY_MAX,
+  type RepoSkillSummary,
   type Skill,
 } from '@shared/skills';
 import { validateWorkflow, type WorkflowDoc, type WorkflowStep } from '@shared/workflow';
@@ -322,6 +323,15 @@ interface ProjectRow {
   instructions: string | null;
   /** Hex colour for the board stripe; null for projects that predate the field. */
   color: string | null;
+  /**
+   * JSON array of `RepoSkillSummary`, or NULL for a project that predates the field or
+   * has never been scanned. The ONE writer is `setProjectRepoSkills`; optional on
+   * `ProjectRow` itself (rather than `string | null`) because every ordinary row
+   * construction — `projectToRow`, `addProject`'s insert, a cloud pull — deliberately
+   * leaves it out of the columns it writes, the same way `TaskRow.skillRefs` is absent
+   * from `updateCloudTaskStmt`.
+   */
+  repoSkills?: string | null;
   createdAt: number;
 }
 
@@ -372,6 +382,13 @@ export interface Store {
   setPlanAligned(id: string, aligned: boolean): void;
   /** Edit a project's name/plan/model/mode/write-back (Phase 8); returns the updated project. */
   updateProject(id: string, patch: ProjectPatch): Project | undefined;
+  /**
+   * Replace a project's `repoSkills` (F7.11) — the repo skills refresher's one writer.
+   * Writes only when the serialized list actually differs from what is already stored, so
+   * an unchanged re-scan never touches the row and never enqueues it in `cloud_outbox`.
+   * `undefined` for an unknown project id, exactly like `setTaskSkillRefs`.
+   */
+  setProjectRepoSkills(id: string, list: readonly RepoSkillSummary[]): Project | undefined;
   /**
    * Every task of a project, in order — **including archived ones**, deliberately.
    *
@@ -2574,6 +2591,14 @@ export function createStore(dbPath: string): Store {
     );
   }
 
+  // Migrate databases created before the repo-skills mirror (F7.11). NULL on every
+  // existing row — "never scanned" — reads back as `[]` via `rowToProject`, exactly like a
+  // project that genuinely has no `.claude/skills` yet; the refresher backfills a real list
+  // on its first pass after this upgrade, same as every project it has never seen before.
+  if (!projectColumns.some((c) => c.name === 'repoSkills')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN repoSkills TEXT`);
+  }
+
   /**
    * Fold the two per-integration poll intervals into the one shared `syncIntervalMinutes`.
    *
@@ -2622,6 +2647,10 @@ export function createStore(dbPath: string): Store {
   const deleteProject = db.prepare(`DELETE FROM projects WHERE id = ?`);
   const updateWriteBack = db.prepare(`UPDATE projects SET writeBackPlan = ? WHERE id = ?`);
   const updatePlanAligned = db.prepare(`UPDATE projects SET planAligned = ? WHERE id = ?`);
+  // The only writer of `repoSkills` — see `ProjectRow.repoSkills` and `setProjectRepoSkills`.
+  const setProjectRepoSkillsStmt = db.prepare(
+    `UPDATE projects SET repoSkills = @repoSkills WHERE id = @id`,
+  );
   const selectTasks = db.prepare(`SELECT * FROM tasks WHERE projectId = ? ORDER BY "order"`);
   // The Personal board's own reads. Three statements rather than one `selectTasks` filtered
   // in JS: the board read is the hottest query in the app (every sync, every card edit and
@@ -3629,8 +3658,22 @@ export function createStore(dbPath: string): Store {
       target: parseExecTarget(r.target),
       instructions: r.instructions ?? '',
       color: r.color ?? '',
+      // NULL (never scanned) and bad JSON both read back as `[]` — see `parseRepoSkills`.
+      repoSkills: parseRepoSkills(r.repoSkills),
       createdAt: r.createdAt,
     };
+  }
+
+  /** Read the `projects.repoSkills` column back (NULL/garbage → `[]`) — see
+   *  `ProjectRow.repoSkills`, whose one writer is `setProjectRepoSkills`. */
+  function parseRepoSkills(raw: string | null | undefined): RepoSkillSummary[] {
+    if (!raw) return [];
+    try {
+      const value = JSON.parse(raw) as unknown;
+      return Array.isArray(value) ? (value as RepoSkillSummary[]) : [];
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -3678,6 +3721,10 @@ export function createStore(dbPath: string): Store {
       instructions: project.instructions,
       color: project.color,
       createdAt: project.createdAt,
+      // `repoSkills` is deliberately absent — see `setProjectRepoSkills`, its one writer.
+      // A pulled `Project` may carry a DIFFERENT machine's scan of its own worktree, which
+      // has nothing to do with what this one would find on disk, so `upsertCloudProject`
+      // must never let it overwrite this row's own.
     };
   }
 
@@ -4583,8 +4630,16 @@ export function createStore(dbPath: string): Store {
         // overwrites this project's choice on a later app start.
         personal: input.personal ? 1 : 0,
         target: formatExecTarget(project.target),
+        // `buildProject` never sets this (a fresh project has nothing to have scanned yet),
+        // but the spread above still carries its TYPE (`RepoSkillSummary[] | undefined`) —
+        // override it back to the column's own shape so the row actually inserted is NULL,
+        // the same "never scanned" fact every other brand-new project starts from.
+        repoSkills: undefined,
       });
-      return project;
+      // `buildProject` never sets this field (nothing to have scanned yet); match what a
+      // `getProject` right after would read back — NULL via `parseRepoSkills` is `[]`, not
+      // `undefined` — rather than returning a project shaped differently from the row.
+      return { ...project, repoSkills: [] };
     },
 
     listProjects() {
@@ -4747,6 +4802,19 @@ export function createStore(dbPath: string): Store {
       }
       const row = selectProject.get(id) as ProjectRow | undefined;
       return row ? rowToProject(row) : undefined;
+    },
+
+    setProjectRepoSkills(id, list) {
+      const row = selectProject.get(id) as ProjectRow | undefined;
+      if (!row) return undefined;
+      const json = JSON.stringify(list);
+      // NULL (never scanned) and '[]' are the same fact — compare against the SAME fallback
+      // `rowToProject`/`parseRepoSkills` reads NULL as, so a project that has always had no
+      // repo skills never earns a write (and so never enqueues in `cloud_outbox`) just
+      // because a scan ran again and found nothing, same as before.
+      if ((row.repoSkills ?? '[]') === json) return rowToProject(row);
+      setProjectRepoSkillsStmt.run({ id, repoSkills: json });
+      return rowToProject({ ...row, repoSkills: json });
     },
 
     getTasks,

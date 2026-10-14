@@ -135,6 +135,11 @@ import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
 import { CloudSkillPusher } from './cloudSkillPusher';
 import {
+  refreshAllRepoSkills,
+  refreshRepoSkillsForProject,
+  type RepoSkillsRefresherDeps,
+} from './repoSkillsRefresher';
+import {
   addAgentProfile,
   listAgentProfiles,
   removeAgentProfile,
@@ -693,6 +698,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   );
   watcher.watchAll();
 
+  // The repo-skills half of the project mirror (F7.11, step 3): a plain filesystem sweep,
+  // not a network push, so there is nothing to `configure` the way `cloudSkillPusher` below
+  // needs — just these two functions, called on the same three occasions a skill push would
+  // be: boot, right after a project is added or edited, and alongside the pusher's own slow
+  // re-scan. Skipped entirely while the cloud mirror is off: nothing downstream reads
+  // `Project.repoSkills` until then, so scanning disk for it would be unpaid work every boot
+  // and poll.
+  const repoSkillsDeps: RepoSkillsRefresherDeps = {
+    setProjectRepoSkills: (id, list) => store.setProjectRepoSkills(id, list),
+  };
+  function refreshRepoSkillsIfCloudEnabled(projects: readonly Project[]): void {
+    if (!store.getSettings().cloud.enabled) return;
+    void refreshAllRepoSkills(repoSkillsDeps, projects);
+  }
+  function refreshProjectRepoSkillsIfCloudEnabled(project: Project): void {
+    if (!store.getSettings().cloud.enabled) return;
+    void refreshRepoSkillsForProject(repoSkillsDeps, project);
+  }
+  refreshRepoSkillsIfCloudEnabled(store.listProjects());
+
   // A successful `claude` login rewrites the credentials file, which is the one signal
   // that the gate can lift WITHOUT the human coming back to tell us — so the common path
   // is: banner appears, they press Sign in, they log in, work resumes on its own. Guarded
@@ -890,6 +915,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       throw new Error(`Not a usable model: ${input.planningModel}`);
     }
     const project = store.addProject(input);
+    refreshProjectRepoSkillsIfCloudEnabled(project);
     // Only a project with a plan file has anything to parse or watch. Asked as `hasPlan`
     // rather than as some notion of "kind", so any project shape that has no plan file
     // takes this path — nothing has to opt in by name.
@@ -949,7 +975,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     await retireRunStateIfTargetChanged(id, patch);
     const updated = store.updateProject(id, patch);
-    if (updated) watcher.watch(updated); // re-point the watcher if the plan path changed
+    if (updated) {
+      watcher.watch(updated); // re-point the watcher if the plan path changed
+      // The path or target may have just changed too — re-scan under whichever is current.
+      refreshProjectRepoSkillsIfCloudEnabled(updated);
+    }
     return updated ?? null;
   });
 
@@ -5614,9 +5644,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // `skill:save` handler already calls `skillsChanged()` for immediacy, but this is the
     // backstop for whatever reaches the store some other way. `scan()` makes no request at
     // all when nothing has changed, so riding this tick costs nothing extra on a quiet board.
+    //
+    // The repo-skills sweep rides along for the same reason: a `.claude/skills` directory
+    // can change on disk with no IPC call to hook (a `git pull`, an edit made outside the
+    // app), so something has to re-scan it on a clock rather than only on the two events
+    // this file can actually see.
     onSynced: () => {
       cloudToken.accepted();
       cloudSkillPusher.scan();
+      refreshRepoSkillsIfCloudEnabled(store.listProjects());
     },
     // What a browser names this desktop by, once it has more than one to choose between —
     // see `ClientInfo` on `@protocol/wire`. Built above rather than inline because this is
