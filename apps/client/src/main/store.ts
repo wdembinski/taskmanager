@@ -63,6 +63,7 @@ import {
   SKILL_BODY_MAX,
   type Skill,
 } from '@shared/skills';
+import { validateWorkflow, type WorkflowDoc, type WorkflowStep } from '@shared/workflow';
 import {
   type ActivityCursor,
   type ActivityDetail,
@@ -251,6 +252,14 @@ interface TaskRow {
   originAutomationId: string | null;
   /** JSON array of SkillRefs, NULL = none. See `Task.skillRefs`. */
   skillRefs: string | null;
+  /** The workflow step this card/step was instantiated from, as JSON; NULL on every
+   *  non-workflow task. See `Task.stepSpec`. */
+  stepSpec: string | null;
+  /** The workflow this card/step was instantiated from; NULL on every non-workflow task.
+   *  See `Task.workflowId`. */
+  workflowId: string | null;
+  /** Attempts a gate step has used; 0 by default. See `Task.gateAttempts`. */
+  gateAttempts: number;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -323,6 +332,15 @@ interface ProjectRow {
  */
 export type SaveSkillResult =
   { ok: true; skill: Skill } | { ok: false; reason: 'invalid-name' | 'too-large' | 'name-taken' };
+
+/**
+ * {@link Store.saveWorkflow}'s result: a successful upsert carries the workflow back,
+ * freshly re-read from the row, plus its `createdAt`/`updatedAt`; a refusal names
+ * `validateWorkflow`'s own issues rather than throwing.
+ */
+export type SaveWorkflowResult =
+  | { ok: true; workflow: WorkflowDoc; createdAt: number; updatedAt: number }
+  | { ok: false; reason: 'invalid'; issues: string[] };
 
 /**
  * The extra arguments a call must supply — none for a synchronous `fn`, and one nobody can
@@ -509,6 +527,12 @@ export interface Store {
    */
   setTaskSkillRefs(id: string, refs: readonly string[]): Task | undefined;
   /**
+   * Write a gate step's attempt counter — the one writer of `Task.gateAttempts`, mirroring
+   * `setTaskSkillRefs`. Clamped to an integer `>= 0`. Undefined for an unknown id, else the
+   * updated task.
+   */
+  setTaskGateAttempts(id: string, attempts: number): Task | undefined;
+  /**
    * Destroy every card archived before `cutoff`, exactly as `deleteTask` would — the retention
    * backstop, so a board that archives forever does not grow forever. Returns how many cards
    * went (steps are taken with their card and are not counted separately).
@@ -569,7 +593,16 @@ export interface Store {
    */
   addSubtask(
     parentId: string,
-    input: { title: string; description?: string | null; round?: number },
+    input: {
+      title: string;
+      description?: string | null;
+      round?: number;
+      /** The workflow step this step is instantiated from (F8.6); null/absent for a
+       *  hand-written step. */
+      stepSpec?: WorkflowStep | null;
+      /** The workflow it came from; null/absent for a hand-written step. */
+      workflowId?: string | null;
+    },
   ): Task | undefined;
   /** The card's newest planning round, or 0 when it has no steps yet. */
   maxSubtaskRound(parentId: string): number;
@@ -1139,6 +1172,26 @@ export interface Store {
    * something this method's job to clean up.
    */
   deleteSkill(id: string): boolean;
+  /** Every workflow (F8.4, `@shared/workflow`), ordered by name — the order a picker or list
+   *  shows them in. A row whose stored `doc` no longer validates is skipped rather than
+   *  thrown — the same posture `parseStepSpecColumn` takes on a single step. */
+  getWorkflows(): WorkflowDoc[];
+  /** One workflow by id, or `undefined` — unknown id, or a row whose `doc` no longer
+   *  validates. */
+  getWorkflow(id: string): WorkflowDoc | undefined;
+  /**
+   * Upsert by id. Runs `validateWorkflow` first and refuses rather than writing a document
+   * the engine is not willing to run. Keeps the original `createdAt` on every later save,
+   * and re-reads the row rather than trusting `doc` back, the same discipline `saveSkill`
+   * gets from `getSkill`.
+   */
+  saveWorkflow(doc: WorkflowDoc): SaveWorkflowResult;
+  /**
+   * Remove one by id — `true` if a row actually went. A card's `workflowId` is deliberately
+   * left in place: deleting the workflow never touches a card already applied from it — see
+   * `Task.workflowId`.
+   */
+  deleteWorkflow(id: string): boolean;
   /**
    * Reserve one firing's receipt: `INSERT OR IGNORE` on `UNIQUE(automationId,
    * occurrenceKey)`. Returns `true` if `run` landed, `false` if that occurrence already has
@@ -1418,6 +1471,14 @@ export function createStore(dbPath: string): Store {
       originAutomationId     TEXT,
       -- JSON array of SkillRefs (F7.4), NULL = none. Plain TEXT like labels/dependsOn.
       skillRefs              TEXT,
+      -- Workflows (F8.4, @shared/workflow): the step this card/step was instantiated from,
+      -- frozen at that moment, and which workflow it came from. NULL on every non-workflow
+      -- task — no pre-F8 row was ever a workflow step.
+      stepSpec               TEXT,
+      workflowId             TEXT,
+      -- Attempts a gate step has used. 0 is the truth for every row: no pre-F8 row was ever
+      -- a gate step, so there is nothing to have attempted.
+      gateAttempts           INTEGER NOT NULL DEFAULT 0,
       -- Same trigger-touched column as projects.updatedAt above, for the same reason.
       updatedAt              INTEGER
     );
@@ -1860,6 +1921,17 @@ export function createStore(dbPath: string): Store {
       createdAt   INTEGER NOT NULL,
       updatedAt   INTEGER NOT NULL
     );
+    -- Workflow documents (F8.4, @shared/workflow): a reusable, ordered recipe of steps a
+    -- card can be instantiated from. doc is the whole validated WorkflowDoc as JSON — like
+    -- automations.data, nothing here needs a promoted column to query by. New table,
+    -- nothing to migrate.
+    CREATE TABLE IF NOT EXISTS workflows (
+      id        TEXT PRIMARY KEY,
+      name      TEXT NOT NULL,
+      doc       TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
   `);
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
@@ -2284,6 +2356,12 @@ export function createStore(dbPath: string): Store {
     ['variantOf', 'TEXT'],
     ['variantLabel', 'TEXT'],
     ['pickedVariantId', 'TEXT'],
+    // Workflows (F8.4). NULL/0 on every pre-existing row is exactly true: no card was ever
+    // instantiated from a workflow step before this column existed, and no gate step has
+    // ever attempted anything.
+    ['stepSpec', 'TEXT'],
+    ['workflowId', 'TEXT'],
+    ['gateAttempts', 'INTEGER NOT NULL DEFAULT 0'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -2574,7 +2652,7 @@ export function createStore(dbPath: string): Store {
         landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId, originAutomationId,
-        skillRefs)
+        skillRefs, stepSpec, workflowId, gateAttempts)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -2596,7 +2674,7 @@ export function createStore(dbPath: string): Store {
         -- same bug wearing a different name.
         @ticketKey, @ticketNumber, @issueType, @epicTaskId, @milestoneId, @labels,
         @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId, @originAutomationId,
-        @skillRefs)`,
+        @skillRefs, @stepSpec, @workflowId, @gateAttempts)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   // Native tickets. No foreign key backs epicTaskId (see the tasks table above), so deleting
@@ -2621,6 +2699,10 @@ export function createStore(dbPath: string): Store {
   const pinImportStmt = db.prepare(`UPDATE tasks SET pinnedImport = 1 WHERE id = @id`);
   // The only writer of `skillRefs` — see `Task.skillRefs` and `setTaskSkillRefs`.
   const setTaskSkillRefsStmt = db.prepare(`UPDATE tasks SET skillRefs = @skillRefs WHERE id = @id`);
+  // The only writer of `gateAttempts` — see `Task.gateAttempts` and `setTaskGateAttempts`.
+  const setTaskGateAttemptsStmt = db.prepare(
+    `UPDATE tasks SET gateAttempts = @gateAttempts WHERE id = @id`,
+  );
   // The ids the retention sweep is allowed to destroy. Selected rather than deleted in one
   // statement so each goes out through the same `deleteTaskDeep` an explicit delete uses, and
   // takes its timeline and transcript with it — a bare DELETE would strand both.
@@ -3620,6 +3702,27 @@ export function createStore(dbPath: string): Store {
     return normalized.length > 0 ? normalized : null;
   }
 
+  /** The `stepSpec` column back to `Task.stepSpec`: NULL, unparseable JSON, and anything
+   *  that is not an object with a `kind` of `agent`/`gate` all read as `null` — never
+   *  throws, the same posture as `parseSkillRefsColumn`. */
+  function parseStepSpecColumn(raw: string | null): WorkflowStep | null {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        ((parsed as { kind?: unknown }).kind === 'agent' ||
+          (parsed as { kind?: unknown }).kind === 'gate')
+      ) {
+        return parsed as WorkflowStep;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Read a JSON object/array column back, or null when it is absent or unparseable.
    *
@@ -3730,6 +3833,9 @@ export function createStore(dbPath: string): Store {
       reporterId: task.reporterId ?? null,
       originAutomationId: task.originAutomationId ?? null,
       skillRefs: encodeSkillRefs(task.skillRefs),
+      stepSpec: task.stepSpec ? JSON.stringify(task.stepSpec) : null,
+      workflowId: task.workflowId ?? null,
+      gateAttempts: task.gateAttempts ?? 0,
     };
   }
 
@@ -3818,6 +3924,9 @@ export function createStore(dbPath: string): Store {
       reporterId: r.reporterId ?? null,
       originAutomationId: r.originAutomationId ?? null,
       skillRefs: parseSkillRefsColumn(r.skillRefs),
+      stepSpec: parseStepSpecColumn(r.stepSpec),
+      workflowId: r.workflowId ?? null,
+      gateAttempts: r.gateAttempts ?? 0,
     };
   }
 
@@ -4138,6 +4247,8 @@ export function createStore(dbPath: string): Store {
        originAutomationId = @originAutomationId
      WHERE id = @id`,
     // `skillRefs` is deliberately absent — see `setTaskSkillRefs`, its one writer.
+    // `stepSpec`/`workflowId`/`gateAttempts` are absent too — a step's spec is written once
+    // at instantiation, and the attempt counter has one writer, `setTaskGateAttempts`.
   );
   // See `upsertCloudTask`: keeps a project's ticket allocator ahead of any number a pulled
   // ticket already carries, since `ticketSeq` itself never travels on the wire.
@@ -4233,6 +4344,54 @@ export function createStore(dbPath: string): Store {
   function getSkill(id: string): Skill | undefined {
     const row = selectSkill.get(id) as SkillRow | undefined;
     return row ? rowToSkill(row) : undefined;
+  }
+
+  // Workflow documents (F8.4, @shared/workflow): a reusable recipe of steps, stored as one
+  // validated JSON blob — like `automations.data`, nothing here needs a promoted column to
+  // query by.
+  const selectWorkflows = db.prepare(`SELECT * FROM workflows ORDER BY name`);
+  const selectWorkflow = db.prepare(`SELECT * FROM workflows WHERE id = ?`);
+  const selectWorkflowCreatedAt = db.prepare(`SELECT createdAt FROM workflows WHERE id = ?`);
+  const upsertWorkflowStmt = db.prepare(
+    `INSERT INTO workflows (id, name, doc, createdAt, updatedAt)
+     VALUES (@id, @name, @doc, @createdAt, @updatedAt)
+     ON CONFLICT(id) DO UPDATE SET
+       name = @name, doc = @doc, updatedAt = @updatedAt`,
+  );
+  const deleteWorkflowStmt = db.prepare(`DELETE FROM workflows WHERE id = ?`);
+
+  interface WorkflowRow {
+    id: string;
+    name: string;
+    doc: string;
+    createdAt: number;
+    updatedAt: number;
+  }
+
+  /** A `workflows` row back to a `WorkflowDoc`, or `undefined` when `doc` is unparseable or
+   *  no longer validates — the same posture `parseStepSpecColumn` takes on a single step,
+   *  at the document's own grain. */
+  function rowToWorkflow(r: WorkflowRow): WorkflowDoc | undefined {
+    try {
+      const result = validateWorkflow(JSON.parse(r.doc) as unknown);
+      return result.ok ? result.doc : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function getWorkflows(): WorkflowDoc[] {
+    const docs: WorkflowDoc[] = [];
+    for (const row of selectWorkflows.all() as WorkflowRow[]) {
+      const doc = rowToWorkflow(row);
+      if (doc) docs.push(doc);
+    }
+    return docs;
+  }
+
+  function getWorkflow(id: string): WorkflowDoc | undefined {
+    const row = selectWorkflow.get(id) as WorkflowRow | undefined;
+    return row ? rowToWorkflow(row) : undefined;
   }
 
   interface AutomationRunRow {
@@ -4635,6 +4794,9 @@ export function createStore(dbPath: string): Store {
         // card already exists — stamping it happens through this method, not a re-insert.
         'originAutomationId',
         // `skillRefs` is deliberately absent — see `setTaskSkillRefs`, its one writer.
+        // `stepSpec`/`workflowId` are absent too: a step's spec is written once at
+        // instantiation and never patched. `gateAttempts` is absent for the same reason —
+        // see `setTaskGateAttempts`, its one writer.
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
@@ -4717,6 +4879,13 @@ export function createStore(dbPath: string): Store {
       return getTask(id);
     },
 
+    setTaskGateAttempts(id, attempts) {
+      if (!getTask(id)) return undefined;
+      const clamped = Math.max(0, Math.trunc(attempts));
+      setTaskGateAttemptsStmt.run({ id, gateAttempts: clamped });
+      return getTask(id);
+    },
+
     unarchiveTask(id) {
       if (!getTask(id)) return undefined;
       unarchiveTaskStmt.run({ id });
@@ -4754,6 +4923,10 @@ export function createStore(dbPath: string): Store {
         // `pinImport` writes that column and nothing else.
         //
         // `skillRefs` is absent too — see `setTaskSkillRefs`, its one writer.
+        //
+        // `stepSpec`/`workflowId`/`gateAttempts` are absent for the same reason: a tracker
+        // sync has no idea what workflow step a card came from, and must never clear it or
+        // reset a gate's attempt count mid-run.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
@@ -4830,6 +5003,10 @@ export function createStore(dbPath: string): Store {
         // everyone else — the "Add step…" form above all — joins the round already in
         // progress, because a step typed by hand belongs with the ones it is typed among.
         planRound: input.round ?? currentRound,
+        // The workflow this step was instantiated from (F8.6), or null for a hand-written
+        // one. A snapshot, not a live reference — see `Task.stepSpec`.
+        stepSpec: input.stepSpec ?? null,
+        workflowId: input.workflowId ?? null,
       };
       insertTask.run(taskToRow(task));
       return task;
@@ -5951,6 +6128,37 @@ export function createStore(dbPath: string): Store {
 
     deleteSkill(id) {
       return deleteSkillStmt.run(id).changes > 0;
+    },
+
+    getWorkflows,
+
+    getWorkflow,
+
+    saveWorkflow(doc) {
+      const result = validateWorkflow(doc);
+      if (!result.ok) return { ok: false, reason: 'invalid', issues: result.issues };
+      const validated = result.doc;
+      const existing = selectWorkflowCreatedAt.get(validated.id) as
+        { createdAt: number } | undefined;
+      const now = Date.now();
+      const createdAt = existing?.createdAt ?? now;
+      upsertWorkflowStmt.run({
+        id: validated.id,
+        name: validated.name,
+        doc: JSON.stringify(validated),
+        createdAt,
+        updatedAt: now,
+      });
+      return {
+        ok: true,
+        workflow: getWorkflow(validated.id) as WorkflowDoc,
+        createdAt,
+        updatedAt: now,
+      };
+    },
+
+    deleteWorkflow(id) {
+      return deleteWorkflowStmt.run(id).changes > 0;
     },
 
     reserveAutomationRun(run) {
