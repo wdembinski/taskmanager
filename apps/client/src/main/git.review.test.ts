@@ -3,7 +3,11 @@
  * repository — the same approach git.test.ts uses, since git is a system binary with no
  * Electron ABI split.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Every case here shells out to git several times in a temporary repository — the same
+// slow-subprocess cost git.test.ts and worktreeManager.test.ts carry an explicit timeout
+// for, and this file is seen crossing vitest's 5s default under a loaded parallel run too.
+vi.setConfig({ testTimeout: 30_000 });
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
