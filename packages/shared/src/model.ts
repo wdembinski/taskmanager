@@ -636,11 +636,14 @@ export type TicketLinkType =
 /**
  * Why a card was taken off the board — see {@link Task.archivedReason}.
  *
- * Each one names a question the TRACKER answered, because that is the rule both syncs
- * enforce: no card leaves the board unless it was asked about by key and answered
- * (`reconcileJiraTasks`, `reconcileGitHubIssues`). Lives here rather than beside either sync
- * so the Removed-cards list can spell them out to the human without the renderer importing
- * anything from main.
+ * Each tracker-sync reason names a question the TRACKER answered, because that is the rule
+ * both syncs enforce: no card leaves the board unless it was asked about by key and answered
+ * (`reconcileJiraTasks`, `reconcileGitHubIssues`). `'variant-discarded'` is the one exception —
+ * the question it answers ("which attempt wins?") is asked of the human, not a tracker, by
+ * `variants:pick` — but it belongs in the same enum: it is still the answer to "why is this
+ * row not on the board", which is all the Removed-cards list ever asks. Lives here rather than
+ * beside either sync so the Removed-cards list can spell them out to the human without the
+ * renderer importing anything from main.
  *
  * The vocabulary is deliberately tracker-NEUTRAL even though one of the values still says
  * "jira": these strings are written into the `archivedReason` column, so renaming one would
@@ -657,7 +660,18 @@ export type TaskArchiveReason =
    * Asked for by key, and the tracker does not have it: deleted, or invisible to this
    * token. Named for JIRA because JIRA had it first; it means "gone from the tracker".
    */
-  | 'gone-from-jira';
+  | 'gone-from-jira'
+  /**
+   * A losing variant, archived once the human picked a different one — the app's own
+   * answer, never a tracker's. See {@link Task.pickedVariantId}.
+   */
+  | 'variant-discarded';
+
+/**
+ * Which of the (at most three) parallel attempts a variant row is — see
+ * {@link Task.variantOf}. A label only; nothing about how a row runs depends on it.
+ */
+export type VariantLabel = 'A' | 'B' | 'C';
 
 /** One unit of work, parsed from a plan or added ad-hoc, owned by the app's DB. */
 export interface Task {
@@ -822,6 +836,36 @@ export interface Task {
    * Undefined on cards, which have no round of their own.
    */
   planRound?: number;
+
+  // --- Variants (F10 — N parallel attempts at one card). ---
+  /**
+   * The leader's id, for a **variant row** — one of the N hidden attempts a `×2`/`×3` run on
+   * a card creates. Null for every ordinary card, including the leader itself: with ×N the
+   * leader never runs on its own, it only ever holds the N variant rows underneath it.
+   *
+   * Set once, at creation, and never patched — the same discipline {@link Task.parentTaskId}
+   * already keeps for a step. Each variant row gets its OWN id, worktree, branch and session,
+   * so `RunRefusal 'already-running'` (`@shared/scheduler`) keeps meaning exactly what it
+   * means today: two agents never share a worktree, variant or not.
+   *
+   * Drives `isVariantRow`/`boardRows` in `@shared/board` — a variant row is delivered to the
+   * renderer (the compare view needs it) but is never drawn as a card of its own.
+   */
+  variantOf?: string | null;
+  /**
+   * Which of the N variants this row is. Null for every card that isn't a variant row
+   * (including the leader) — it is what the compare view's columns and the leader's status
+   * strip are keyed on, and nothing else.
+   */
+  variantLabel?: VariantLabel | null;
+  /**
+   * The **leader's own** field: which variant row won. Null before a pick, which means the
+   * leader has no work of its own yet — every "where is this card's work" question (inspect,
+   * merge, PR, auto-release) resolves through this id once it is set, the same owner-id
+   * indirection a step's chain already uses for its parent. Always null on a variant row
+   * itself; only the leader is ever picked FROM.
+   */
+  pickedVariantId?: string | null;
 
   // --- The card's own progress note (free text, yours alone). ---
   /**

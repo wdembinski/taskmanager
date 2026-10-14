@@ -62,6 +62,7 @@ import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDi
 import { CompactCardScreen } from '@tm/ui/board/CompactCardScreen';
 import type { CardSection } from '@tm/ui/layout/compactRoute';
 import { chainComponent } from '@tm/shared/taskChain';
+import { isVariantRow } from '@tm/shared/board';
 import {
   isManualStatus,
   ownsTickets,
@@ -338,7 +339,10 @@ export function BoardScreen({
    * round — chain the new card after. `MyTasks`'s own `parentCandidates`: every top-level
    * card on this board, from the mirrored rows this screen already draws.
    */
-  const parentCandidates = useMemo(() => boardTasks.filter((t) => !t.parentTaskId), [boardTasks]);
+  const parentCandidates = useMemo(
+    () => boardTasks.filter((t) => !t.parentTaskId && !isVariantRow(t)),
+    [boardTasks],
+  );
 
   /** The chain the focus toggle narrows the board to — `MyTasks`'s own `focusIds`. */
   const focusIds = useMemo(

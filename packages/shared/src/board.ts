@@ -68,6 +68,26 @@ export function isRunStatus(status: TaskStatus): boolean {
 }
 
 /**
+ * Whether a task is a **variant row** — one of the N hidden attempts a `×2`/`×3` run creates
+ * (F10), rather than the leader card the human actually filed. See {@link Task.variantOf}.
+ */
+export function isVariantRow(task: Pick<Task, 'variantOf'>): boolean {
+  return !!task.variantOf;
+}
+
+/**
+ * A task list with every variant row dropped, leader cards kept.
+ *
+ * Variant rows ARE delivered to the renderer — the compare view needs all N of them to draw
+ * its columns — so the drop happens here, at the selector every board-drawing call site
+ * reads, rather than at `getPersonalTasks`: a row filtered out at the store would never reach
+ * the one screen that has to show it.
+ */
+export function boardRows<T extends Pick<Task, 'variantOf'>>(tasks: readonly T[]): T[] {
+  return tasks.filter((t) => !isVariantRow(t));
+}
+
+/**
  * Whether this task's state belongs to the human alone — a top-level card of the Personal
  * board or a **native ticket**, the thing you drag between columns.
  *

@@ -57,6 +57,7 @@ import {
   type LinkGate,
   type TaskLink,
 } from '@shared/taskChain';
+import { isVariantRow } from '@shared/board';
 import { AddTaskDialog } from '@ui/AddTaskDialog';
 import {
   ArchivedCardsDialog,
@@ -623,7 +624,10 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
    * actually join.
    */
   const parentCandidates = useMemo(
-    () => (tasks ?? []).filter((t) => !t.parentTaskId && t.projectId === PERSONAL_PROJECT_ID),
+    () =>
+      (tasks ?? []).filter(
+        (t) => !t.parentTaskId && !isVariantRow(t) && t.projectId === PERSONAL_PROJECT_ID,
+      ),
     [tasks],
   );
 

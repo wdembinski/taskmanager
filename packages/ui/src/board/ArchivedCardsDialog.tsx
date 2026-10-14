@@ -40,7 +40,7 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import { ARCHIVE_RETENTION_DAYS } from '@tm/shared/board';
+import { ARCHIVE_RETENTION_DAYS, isVariantRow } from '@tm/shared/board';
 import type { Task, TaskArchiveReason } from '@tm/shared/model';
 import { trackerName } from '../tracker';
 
@@ -52,9 +52,13 @@ import { trackerName } from '../tracker';
  * archived in every sense the database cares about and belong to nothing the human removed: a
  * card of five steps would otherwise read as six removed cards, and five of the six would have
  * a Restore button that puts back something that is already back.
+ *
+ * A discarded variant row (F10) gets the same treatment, for the same reason: it is not a
+ * card the human removed, it is the losing half of a pick the human made on the LEADER, which
+ * stays wherever it is (on the board, or off it for a reason of its own).
  */
 export function archivedCards(rows: readonly Task[]): Task[] {
-  return rows.filter((t) => !t.parentTaskId);
+  return rows.filter((t) => !t.parentTaskId && !isVariantRow(t));
 }
 
 /**
@@ -76,6 +80,8 @@ export function archiveReasonText(
       return 'It was finished, kept past the query, and the retention window ran out.';
     case 'gone-from-jira':
       return `${tracker} no longer has the issue — deleted, or not visible to your token.`;
+    case 'variant-discarded':
+      return 'A variant discarded when another one was picked.';
     default:
       return 'Removed by an earlier version, which did not record why.';
   }

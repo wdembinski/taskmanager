@@ -314,6 +314,24 @@ describe('groupSubtasks', () => {
   it('handles an empty board', () => {
     expect(groupSubtasks([])).toEqual([]);
   });
+
+  // F10: a leader plus its hidden variant rows collapses to one card — the leader's own.
+  it('collapses a leader and its variant rows into one card, the leader’s own', () => {
+    const cards = groupSubtasks([
+      card('leader'),
+      card('a', { variantOf: 'leader', variantLabel: 'A' }),
+      card('b', { variantOf: 'leader', variantLabel: 'B' }),
+      card('c', { variantOf: 'leader', variantLabel: 'C' }),
+    ]);
+    expect(cards.map((c) => c.task.id)).toEqual(['leader']);
+  });
+
+  // Unlike an orphaned step (promoted above), a variant row whose leader is absent from this
+  // board stays hidden: it was never meant to be seen outside the compare view.
+  it('never promotes a variant row whose leader is absent', () => {
+    const cards = groupSubtasks([card('orphan-variant', { variantOf: 'gone', variantLabel: 'A' })]);
+    expect(cards).toEqual([]);
+  });
 });
 
 describe('focusCards — chain focus mode', () => {

@@ -6,6 +6,7 @@
 import type { BoardColumn, Task, TaskStatus } from '@tm/shared/model';
 import type { RunState } from '@tm/shared/board';
 import {
+  boardRows,
   chainNeedsAttention,
   columnForStatus,
   columnForTask,
@@ -93,14 +94,19 @@ export interface BoardCard {
  * travel with the card between columns. Steps are ordered by `order` (the sequence the
  * runner executes them in). A step whose parent isn't on this board is orphaned — it is
  * promoted to a top-level card rather than dropped, so it can never become invisible.
+ *
+ * Run through {@link boardRows} first, so a variant row (F10) never becomes a card of its
+ * own either — unlike an orphaned step, a variant row whose leader is missing stays hidden
+ * rather than being promoted, since it was never meant to be seen outside the compare view.
  */
 export function groupSubtasks(
   tasks: readonly Task[],
   mrsByTask: ReadonlyMap<string, MergeRequest[]> = new Map(),
 ): BoardCard[] {
-  const ids = new Set(tasks.map((t) => t.id));
+  const rows = boardRows(tasks);
+  const ids = new Set(rows.map((t) => t.id));
   const children = new Map<string, Task[]>();
-  for (const task of tasks) {
+  for (const task of rows) {
     const parentId = task.parentTaskId;
     if (!parentId || !ids.has(parentId)) continue;
     const list = children.get(parentId);
@@ -108,7 +114,7 @@ export function groupSubtasks(
     else children.set(parentId, [task]);
   }
   for (const list of children.values()) list.sort((a, b) => a.order - b.order);
-  return tasks
+  return rows
     .filter((t) => !t.parentTaskId || !ids.has(t.parentTaskId))
     .map((task) => ({
       task,
