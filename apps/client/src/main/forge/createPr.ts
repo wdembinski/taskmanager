@@ -15,6 +15,17 @@
  *   1. Resolve the card's branch and base — through `worktrees.inspect`, which READS what is
  *      on disk rather than building it, the same pair the Merge button falls back to after a
  *      restart.
+ *   1½. When asked to (`opts.commitLeftover`), commit whatever is sitting uncommitted in the
+ *      worktree before anything downstream looks at the branch — mirroring the safety commit
+ *      `integrate` already takes before it merges, for the identical reason: a run can finish
+ *      with edits still on disk, and a pull request opened without them would describe work
+ *      that was never actually sent. Skipped outright when a rebase is paused here
+ *      (`rebaseInProgress`) — committing mid-rebase would stage the conflict markers
+ *      themselves, exactly the trap `integrate`'s own ordering guards against. Only the
+ *      scheduler asks for this: it is the one caller that can finish a run with nothing
+ *      committed yet, where the human pressing **Create PR** has always done so against a
+ *      worktree whose tree is either already committed or is about to refuse with a clear
+ *      "nothing to open a pull request for" instead.
  *   2. Read `origin`, and work out which forge it belongs to (`remoteUrl.ts`).
  *   3. Check the remote: fetch `origin`'s current copy of `base` and, if it has moved since
  *      this worktree last saw it, rebase the branch onto its new tip before anything is
@@ -62,9 +73,11 @@ import {
 } from '@shared/commitMessage';
 import {
   branchCommitMessages,
+  commitAll,
   commitsAhead,
   hasCommits,
   pushBranch,
+  rebaseInProgress,
   remoteBranchSha,
   remoteUrl,
 } from '../git';
@@ -142,6 +155,7 @@ export interface OpenedPullRequest {
 export async function openPullRequest(
   deps: CreatePrDeps,
   taskId: string,
+  opts?: { commitLeftover?: boolean },
 ): Promise<OpenedPullRequest> {
   const task = deps.getTask(taskId);
   if (!task) throw new Error('That card no longer exists.');
@@ -191,6 +205,20 @@ export async function openPullRequest(
   }
 
   const host = hostFor(project.target);
+
+  // A write nobody asked for, the same as `resyncNote` below — so it goes on the timeline the
+  // same way. Skipped when a rebase is paused here: `commitAll` is `git add -A` and a commit,
+  // and run mid-rebase it would stage the conflict markers themselves into history.
+  if (opts?.commitLeftover && !(await rebaseInProgress(live.cwd, host))) {
+    const committed = await commitAll(live.cwd, prTitle(owner), host);
+    if (committed) {
+      deps.note(
+        project.id,
+        owner.id,
+        `Committed uncommitted work left on "${live.branch}" before opening a pull request for it.`,
+      );
+    }
+  }
 
   // Nothing to open a pull request FOR. Asked of the branch against its base rather than of
   // the worktree's tidiness: a branch with an uncommitted file has work on it, and a branch
