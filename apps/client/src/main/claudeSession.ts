@@ -78,6 +78,13 @@ export interface RunSessionOptions {
    * passes its own host and the session runs inside the distro instead.
    */
   host?: ExecHost;
+  /**
+   * The "Skills in force for this run" section (F7.6's `buildSkillsSection`), appended to
+   * the headless contract rather than sent as a separate file — one append-system-prompt-file
+   * is all the CLI takes, and the contract must always land regardless of whether this run
+   * has any skills attached. Omitted or empty means no skills section is added.
+   */
+  skillsSection?: string;
 }
 
 /**
@@ -348,6 +355,12 @@ function writeSessionMcpConfig(
  * deletes the file, but the CLI reads it from wherever IT runs (a WSL target sees the
  * Windows path through `/mnt`).
  *
+ * `extra` (F7.6's "Skills in force for this run" section) is appended after a blank line
+ * when non-empty, rather than written to a file of its own — the CLI only takes one
+ * `--append-system-prompt-file`, and the contract must land even for a run with no skills
+ * attached. Omitted or `''`, the file is exactly the contract's own bytes, unchanged from
+ * before skills existed.
+ *
  * Written per session rather than once at startup so its lifetime is the session's — no
  * shared file for concurrent runs to race, and nothing left behind if the app is killed
  * mid-run beyond one small file in the OS temp directory. Returns null if the write fails:
@@ -357,10 +370,12 @@ function writeSessionMcpConfig(
 function writeContractFile(
   sessionId: string,
   host: ExecHost,
+  extra?: string,
 ): { appPath: string; hostPath: string } | null {
   try {
     const appPath = join(tmpdir(), `claude-orch-contract-${sessionId}.md`);
-    writeFileSync(appPath, HEADLESS_TURN_CONTRACT, 'utf8');
+    const contents = extra ? `${HEADLESS_TURN_CONTRACT}\n\n${extra}` : HEADLESS_TURN_CONTRACT;
+    writeFileSync(appPath, contents, 'utf8');
     return { appPath, hostPath: host.toNative(appPath) };
   } catch {
     return null;
@@ -390,7 +405,7 @@ export function runClaudeSession(
   }
   // Every run gets the headless contract, gated or not: stranding yourself on a background
   // subagent has nothing to do with permissions.
-  const contract = writeContractFile(sessionId, host);
+  const contract = writeContractFile(sessionId, host, options.skillsSection);
   const args = buildClaudeArgs(
     req,
     sessionId,
