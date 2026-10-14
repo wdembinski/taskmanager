@@ -32,10 +32,13 @@ import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import type { Project, Task } from '@tm/shared/model';
 import type { JiraUserOption } from '@tm/shared/ipc';
+import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import { TRACKER_NAME, type TurnTracker } from './turns';
 import type { ChatAvailability } from '../taskChat';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from '../modelChoice';
 import { ModelField } from '../ModelField';
+import { TemplateMenu } from '../TemplateMenu';
+import { applyTemplateToComposer, templateVarsForTask } from '../templateInsert';
 import { MentionPicker } from './MentionPicker';
 import {
   findMentionQuery,
@@ -250,6 +253,26 @@ export function Composer({
     });
   }
 
+  /**
+   * Insert a picked template at the caret — through {@link applyTemplateToComposer} rather
+   * than a plain string splice, so a mention after the caret shifts with the inserted text
+   * instead of landing at the wrong offset.
+   */
+  function pickTemplate(template: PromptTemplate): void {
+    const el = textareaRef.current;
+    const selection = el ? { start: el.selectionStart, end: el.selectionEnd } : value.text.length;
+    const vars = templateVarsForTask(task, agentProject);
+    const { value: next, caret } = applyTemplateToComposer(value, selection, template, vars);
+    onChange(next);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node) {
+        node.focus();
+        node.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
   async function attach(): Promise<void> {
     if (!onPickAttachments) return;
     const picked = await onPickAttachments();
@@ -384,6 +407,7 @@ export function Composer({
               onClick={() => void attach()}
             />
           )}
+          <TemplateMenu surface="chat" onPick={pickTemplate} />
           <span className={styles.grow} />
         </div>
 
