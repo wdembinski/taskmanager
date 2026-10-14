@@ -518,6 +518,15 @@ export function describeEmptyOutcome(
   return null;
 }
 
+/**
+ * What starting one row of a ×N variant group (F10) did: a live run, a `RunOutcome`
+ * refusal/park, or `{ queued: true }` — held behind the project's own concurrency rather
+ * than refused outright, since another row of the SAME group (or any other task sharing
+ * the project) finishing is what starts it, not a human pressing anything again. See
+ * {@link Scheduler.startVariantRows}.
+ */
+export type VariantStartOutcome = RunOutcome | { queued: true };
+
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
   id: string;
@@ -1175,6 +1184,16 @@ export class Scheduler {
    */
   private readonly retryQueue = new Set<string>();
   /**
+   * Variant rows (F10) queued behind their project's own concurrency — the `×N` sibling of
+   * a project's ordinary pending queue. A row joins this set when `startVariantRows` finds
+   * no free slot for it; `pump` reads it back (unioned with the project's own tasks, see
+   * {@link Scheduler.pumpCandidates}) so a slot that frees up later — another row of the
+   * SAME group finishing, or anything else sharing the project — starts it. In-memory only,
+   * like {@link Scheduler.retryQueue}; {@link Scheduler.restoreVariantQueue} rebuilds it
+   * after a restart from the one durable fact, the row's own `pending` status.
+   */
+  private readonly variantQueue = new Set<string>();
+  /**
    * Failure context to inject into a task's NEXT run as an AI-assisted fix prompt,
    * keyed by task id. Set by the "AI fix & retry" resolution; consumed in `launch`.
    */
@@ -1794,6 +1813,44 @@ export class Scheduler {
         origin: opts.origin,
       }),
     };
+  }
+
+  /**
+   * Start every row of a ×N variant group (F10) — `task:startVariants`' whole job once
+   * the rows exist. Each row is its own card-shaped task with its own worktree, so this is
+   * simply `startTaskNow` called once per row — EXCEPT for the one thing a single Start
+   * never had to arbitrate: N rows arriving at once against a project whose concurrency is
+   * 1 or 2 shouldn't launch N sessions and let the project's own cap sort it out after the
+   * fact, it should admit as many as fit and queue the rest the way `pump`'s own loop
+   * would, one at a time.
+   *
+   * A usage limit or a dead sign-in is account-wide and holds every row regardless of
+   * concurrency, so in that case this is exactly N calls to `startTaskNow` — each row is
+   * parked in the gate individually, same as an ordinary Start would park one task. Outside
+   * a gate, a row that fits within the project's CURRENT running count starts now; the
+   * rest join {@link Scheduler.variantQueue} and mark the project active, so `pump` (via
+   * {@link Scheduler.pumpCandidates}) picks each up as a slot frees — including one freed
+   * by a sibling row of this same group finishing.
+   */
+  startVariantRows(rowIds: readonly string[]): VariantStartOutcome[] {
+    if (this.disposed) return rowIds.map(() => ({ refused: 'shutting-down' }));
+    if (this.limitGate.active || this.authGate.active) {
+      return rowIds.map((id) => this.startTaskNow(id));
+    }
+    return rowIds.map((id) => {
+      const row = this.store.getTask(id);
+      if (!row) return { refused: 'unknown-task' };
+      const project = this.runProjectFor(row);
+      if (!project) return { refused: 'no-project' };
+      const concurrency = Math.max(1, project.concurrency);
+      if (this.runningCount(project.id) < concurrency && !this.atGlobalCap()) {
+        return this.startTaskNow(id);
+      }
+      this.variantQueue.add(id);
+      this.activeProjects.add(project.id);
+      this.setState(project.id, 'running');
+      return { queued: true };
+    });
   }
 
   /**
@@ -2464,6 +2521,28 @@ export class Scheduler {
         ? { ...saved, parkedTaskIds: [...saved.parkedTaskIds, ...adopted] }
         : saved,
     );
+  }
+
+  /**
+   * Rebuild {@link Scheduler.variantQueue} after a restart (F10): `variantQueue` is
+   * in-memory only, so the group a running app was queueing is forgotten the moment it
+   * closes, while the ROWS themselves — still `pending` — sit on the board waiting for a
+   * slot that will now never come looking for them. Run after {@link
+   * Scheduler.reconcileInterruptedTasks} (which is what turns a row interrupted mid-run
+   * back to `pending` in the first place) and after {@link Scheduler.restoreLimitGate}, so
+   * a row the gate re-parked is not also re-queued here on top of it.
+   */
+  restoreVariantQueue(): void {
+    if (this.disposed) return;
+    for (const row of this.store.listVariantRows()) {
+      if (row.status !== 'pending') continue;
+      const project = this.runProjectFor(row);
+      if (!project) continue;
+      this.variantQueue.add(row.id);
+      this.activeProjects.add(project.id);
+      this.setState(project.id, 'running');
+    }
+    this.pumpAllActive();
   }
 
   /**
@@ -3197,6 +3276,7 @@ export class Scheduler {
     this.limitTextParks.clear();
     this.probingLimit.clear(); // a probe still in flight is abandoned, not waited for
     this.retryQueue.clear();
+    this.variantQueue.clear();
     this.fixNotes.clear();
     // In memory only, exactly as the two gates above: the recipes stay in the store, so the
     // next launch restores them and a parked release still comes back as a release.
@@ -3216,6 +3296,27 @@ export class Scheduler {
 
   // ---- internals ----------------------------------------------------------
 
+  /**
+   * This project's own pending tasks, unioned with any variant row (F10) queued behind
+   * its concurrency whose run resolves to it — `store.getTasks(projectId)` alone would
+   * miss every one of those, since a row is filed on its LEADER's board, not on the
+   * project it runs in. Prunes `variantQueue` of any id no longer `pending` (started,
+   * stopped, or discarded some other way) as it goes, so the set cannot grow stale rows
+   * that will never be picked up.
+   */
+  private pumpCandidates(projectId: string): Task[] {
+    const queued: Task[] = [];
+    for (const id of this.variantQueue) {
+      const row = this.store.getTask(id);
+      if (!row || row.status !== 'pending') {
+        this.variantQueue.delete(id);
+        continue;
+      }
+      if (this.runProjectFor(row)?.id === projectId) queued.push(row);
+    }
+    return [...this.store.getTasks(projectId), ...queued];
+  }
+
   /** Fill this project's free concurrency slots with its next pending tasks. */
   private pump(projectId: string): void {
     if (this.disposed || !this.activeProjects.has(projectId)) return;
@@ -3230,8 +3331,9 @@ export class Scheduler {
       // stops THIS project's loop without touching its queue — there is still a next
       // pending task, which is exactly what keeps the idle check below from firing.
       if (this.atGlobalCap()) break;
-      const next = selectNextPending(this.store.getTasks(projectId), this.inFlight);
+      const next = selectNextPending(this.pumpCandidates(projectId), this.inFlight);
       if (!next) break;
+      this.variantQueue.delete(next.id); // no-op unless `next` was a queued variant row
       this.startTask(project, next);
     }
     // If the queue has fully drained (nothing running, nothing left to start), the
@@ -3239,7 +3341,7 @@ export class Scheduler {
     if (
       this.activeProjects.has(projectId) &&
       this.runningCount(projectId) === 0 &&
-      selectNextPending(this.store.getTasks(projectId), this.inFlight) === null
+      selectNextPending(this.pumpCandidates(projectId), this.inFlight) === null
     ) {
       this.activeProjects.delete(projectId);
       this.setState(projectId, 'idle');

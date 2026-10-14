@@ -106,9 +106,17 @@ export function boardRows<T extends Pick<Task, 'variantOf'>>(tasks: readonly T[]
  * Keyed on `task.source` rather than on its project's `kind`, so this stays a pure function
  * of `Task` alone and every existing call site (none of which has a `Project` to hand)
  * compiles unchanged.
+ *
+ * `!task.variantOf` excludes a **variant row** (F10) for the same reason a step is
+ * excluded: it is delivered to the renderer (the compare view needs it) but is not a
+ * card of its own — the leader is the card, and only the leader's column is the human's.
  */
 export function isBoardCard(task: Task): boolean {
-  return (isPersonalBoard(task.projectId) || task.source === 'ticket') && !task.parentTaskId;
+  return (
+    (isPersonalBoard(task.projectId) || task.source === 'ticket') &&
+    !task.parentTaskId &&
+    !task.variantOf
+  );
 }
 
 /**

@@ -5939,6 +5939,219 @@ describe('Scheduler.startTaskNow — the reason a Start was refused', () => {
   });
 });
 
+describe('Scheduler.startVariantRows (F10)', () => {
+  /**
+   * Three variant rows already on the leader's board, each delegated to the same agent
+   * project — the shape `task:startVariants` hands the scheduler once its own rows exist.
+   * Modelled on `makeAgentScheduler` above (the agent-delegation store shape) plus the
+   * worktree fake from the plan-driven-subtasks `setup()` (also above), since one of the
+   * cases below asserts each row gets prepared its OWN worktree.
+   */
+  function makeVariantScheduler(
+    projectOverrides: Partial<Project> = {},
+    rowOverrides: Partial<Task>[] = [{}, {}, {}],
+  ) {
+    const personal = { id: 'personal', name: 'Personal', path: '', planPath: '', kind: 'plan' };
+    const agentProject = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repos/checkout',
+      planPath: '',
+      kind: 'agent',
+      defaultModel: 'sonnet',
+      planningModel: null,
+      defaultPermissionMode: 'acceptEdits',
+      concurrency: 2,
+      ...projectOverrides,
+    };
+    const leader = {
+      id: 'leader-1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the parser',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+    } as unknown as Task;
+    const labels = ['A', 'B', 'C'] as const;
+    const rows = rowOverrides.map(
+      (over, i) =>
+        ({
+          id: `row-${labels[i]}`,
+          projectId: 'personal',
+          phase: '',
+          title: leader.title,
+          status: 'pending',
+          sessionId: null,
+          order: i + 1,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          agentProjectId: 'agent-1',
+          variantOf: leader.id,
+          variantLabel: labels[i],
+          ...over,
+        }) as unknown as Task,
+    );
+    const byId = new Map<string, Task>([
+      [leader.id, leader],
+      ...rows.map((r) => [r.id, r] as const),
+    ]);
+    const store = {
+      getTask: (id: string) => byId.get(id),
+      getProject: (id: string) =>
+        id === 'agent-1' ? agentProject : id === 'personal' ? personal : undefined,
+      getTasks: (projectId: string) =>
+        [...byId.values()].filter((task) => task.projectId === projectId),
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      listTaskLinks: () => [],
+      listVariantRows: (leaderId?: string) =>
+        [...byId.values()].filter(
+          (task) => task.variantOf && (!leaderId || task.variantOf === leaderId),
+        ),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const task = byId.get(id);
+        if (!task) return undefined;
+        Object.assign(task, patch);
+        return task;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      saveParkedRuns: vi.fn(),
+      getSettings: () => ({
+        maxAutoRetries: 0,
+        limitJitterMs: 0,
+        concurrency: 1,
+        maxParallelSessions: 0,
+      }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+
+    /** Every row `prepare` was called for, and the owner/cwd it was given. */
+    const prepared: Array<{ taskId: string; owner: string; cwd: string }> = [];
+    const worktrees = {
+      prepare: (_p: Project, task: Task, owner: string = task.id) => {
+        prepared.push({ taskId: task.id, owner, cwd: `C:/wt/${owner}` });
+        return Promise.resolve({
+          mode: 'worktree',
+          cwd: `C:/wt/${owner}`,
+          branch: `orch/${owner}`,
+          base: 'main',
+        });
+      },
+      integrate: vi.fn(),
+      cleanup: vi.fn(),
+    } as unknown as WorktreeManager;
+
+    const start = vi.fn((_req: unknown, opts: { runId?: string }) => ({
+      runId: opts?.runId ?? 'r-new',
+    }));
+    const stop = vi.fn();
+    const sessions = { start, stop } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees,
+    );
+    return { scheduler, store, leader, rows, start, prepared };
+  }
+
+  /** Let `prepareAndLaunch`'s async worktree prep (and `onRunEvent`'s own pump) settle. */
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  /** Raise the usage-limit gate the way a `rate-limit` event from the CLI raises it. */
+  function engageLimit(scheduler: Scheduler): void {
+    (scheduler as unknown as { engageLimit: (e: unknown) => void }).engageLimit({
+      kind: 'rate-limit',
+      status: 'limited',
+      rateLimitType: 'rolling',
+      resetsAt: null,
+    });
+  }
+
+  it('starts rows up to the project’s concurrency and queues the rest, starting the queued one when a slot frees', async () => {
+    const { scheduler, rows, start } = makeVariantScheduler({ concurrency: 2 });
+
+    const outcomes = scheduler.startVariantRows(rows.map((r) => r.id));
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(2); // ×3 against concurrency 2
+    expect(outcomes[0]).toHaveProperty('runId');
+    expect(outcomes[1]).toHaveProperty('runId');
+    expect(outcomes[2]).toEqual({ queued: true });
+    expect(rows[2].status).toBe('pending'); // queued, not refused
+
+    // The first row's run exits — frees the slot the third row's queue entry was waiting on.
+    const firstRunId = (outcomes[0] as { runId: string }).runId;
+    await (
+      scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }
+    ).onRunEvent(firstRunId, { kind: 'exited', code: 1 });
+    await flush();
+
+    expect(start).toHaveBeenCalledTimes(3);
+  });
+
+  it('prepares each row its own worktree, keyed on its own task id', async () => {
+    const { scheduler, rows, prepared } = makeVariantScheduler({ concurrency: 3 });
+
+    scheduler.startVariantRows(rows.map((r) => r.id));
+    await flush();
+
+    expect(prepared).toHaveLength(3);
+    // Three distinct owners (= task ids, no `parentTaskId` to share one with) and three
+    // distinct cwd paths — one worktree per row, never one shared between them.
+    expect(new Set(prepared.map((p) => p.owner))).toEqual(new Set(rows.map((r) => r.id)));
+    expect(new Set(prepared.map((p) => p.cwd)).size).toBe(3);
+  });
+
+  it('parks every row behind an active limit gate instead of starting any of them', () => {
+    const { scheduler, rows, start } = makeVariantScheduler({ concurrency: 3 });
+    engageLimit(scheduler);
+
+    const outcomes = scheduler.startVariantRows(rows.map((r) => r.id));
+
+    expect(outcomes).toEqual([{ refused: 'limit' }, { refused: 'limit' }, { refused: 'limit' }]);
+    expect(start).not.toHaveBeenCalled();
+    for (const row of rows) {
+      expect(row.status).toBe('blocked-by-limit');
+      expect(scheduler.currentLimit()?.parkedTaskIds).toContain(row.id);
+    }
+  });
+
+  it('a limit that engages mid-run parks only the row that was actually running', async () => {
+    const { scheduler, rows, start } = makeVariantScheduler({ concurrency: 1 });
+
+    scheduler.startVariantRows(rows.map((r) => r.id));
+    await flush();
+    expect(start).toHaveBeenCalledTimes(1); // concurrency 1: only the first row started
+
+    engageLimit(scheduler);
+
+    expect(rows[0].status).toBe('blocked-by-limit');
+    expect(scheduler.currentLimit()?.parkedTaskIds).toEqual([rows[0].id]);
+    // The other two never started — they are sitting in `variantQueue`, not in a live run,
+    // so the account-wide gate (which only parks what is actually RUNNING) leaves them be.
+    expect(rows[1].status).toBe('pending');
+    expect(rows[2].status).toBe('pending');
+  });
+});
+
 /**
  * What a gate remembers about the run it parked — see `parkedRun.ts`.
  *
