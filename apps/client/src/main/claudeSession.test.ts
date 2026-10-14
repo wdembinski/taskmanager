@@ -443,6 +443,35 @@ describe('session isolation', () => {
     expect(readFileSync(path, 'utf8')).toBe(HEADLESS_TURN_CONTRACT);
   });
 
+  it('appends the skills section after the contract when skillsSection is set', () => {
+    const { host, argvs } = fakeHost();
+    runClaudeSession(request, () => undefined, {
+      host,
+      skillsSection: '## Skills in force for this run\n\nDo the thing skillfully.',
+    });
+
+    const path = argvs[0][argvs[0].indexOf('--append-system-prompt-file') + 1];
+    const contents = readFileSync(path, 'utf8');
+    expect(contents.startsWith(HEADLESS_TURN_CONTRACT)).toBe(true);
+    expect(contents).toContain('## Skills in force for this run');
+    expect(contents).toContain('Do the thing skillfully.');
+  });
+
+  it('still appends the skills section on a chat resume', () => {
+    const { host, argvs } = fakeHost();
+    runClaudeSession(request, () => undefined, {
+      host,
+      resumeSessionId: '11111111-2222-3333-4444-555555555555',
+      skillsSection: '## Skills in force for this run\n\nDo the thing skillfully.',
+    });
+
+    const path = argvs[0][argvs[0].indexOf('--append-system-prompt-file') + 1];
+    const contents = readFileSync(path, 'utf8');
+    expect(contents.startsWith(HEADLESS_TURN_CONTRACT)).toBe(true);
+    expect(contents).toContain('## Skills in force for this run');
+    expect(contents).toContain('Do the thing skillfully.');
+  });
+
   it('gives concurrent runs their own contract file, so neither can delete the other’s', () => {
     const { host, argvs } = fakeHost();
     runClaudeSession(request, () => undefined, { host });

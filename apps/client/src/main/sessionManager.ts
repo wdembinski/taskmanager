@@ -30,6 +30,8 @@ export interface StartOptions {
    * scheduler passes the host matching the project's configured target.
    */
   host?: ExecHost;
+  /** F7.6's "Skills in force for this run" section, appended to the headless contract. */
+  skillsSection?: string;
 }
 
 export class SessionManager {
@@ -49,7 +51,7 @@ export class SessionManager {
    * emit. `options.permission`, when set, gates the run's tools through the broker.
    */
   start(request: StartSessionRequest, options: StartOptions = {}): { runId: string } {
-    const { onEvent, permission, resumeSessionId, host } = options;
+    const { onEvent, permission, resumeSessionId, host, skillsSection } = options;
     const runId = options.runId ?? randomUUID();
     const handle = runClaudeSession(
       request,
@@ -69,7 +71,7 @@ export class SessionManager {
         // Once the process has exited, forget it so the map doesn't grow forever.
         if (event.kind === 'exited') this.runs.delete(runId);
       },
-      { runId, permission, resumeSessionId, host },
+      { runId, permission, resumeSessionId, host, skillsSection },
     );
     this.runs.set(runId, handle);
     return { runId };
