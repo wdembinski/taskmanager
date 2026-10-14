@@ -4,6 +4,7 @@ import {
   EMPTY_ISSUE_BROWSER,
   editDraft,
   forgetIssueDraft,
+  isPromptUntouched,
   issueDraftKey,
   issueQueryFor,
   loadStarted,
@@ -149,6 +150,24 @@ describe('drafts', () => {
 
     expect(prefillPrompt(i)).toBe(`A-1\n${i.url}`);
     expect(prefillPrompt(i)).not.toContain(i.title);
+  });
+
+  it('isPromptUntouched is true for a fresh issue with no draft', () => {
+    const i = issue('A-1');
+    expect(isPromptUntouched(EMPTY_ISSUE_BROWSER, i)).toBe(true);
+  });
+
+  it('isPromptUntouched is false once the human edits the prompt', () => {
+    const i = issue('A-1');
+    const edited = editDraft(EMPTY_ISSUE_BROWSER, i, 'please pick this up');
+    expect(isPromptUntouched(edited, i)).toBe(false);
+  });
+
+  it('isPromptUntouched is true again once an edit reverts back to the prefill', () => {
+    const i = issue('A-1');
+    const edited = editDraft(EMPTY_ISSUE_BROWSER, i, 'please pick this up');
+    const reverted = editDraft(edited, i, prefillPrompt(i));
+    expect(isPromptUntouched(reverted, i)).toBe(true);
   });
 
   it('forgets a draft after a hand-off', () => {

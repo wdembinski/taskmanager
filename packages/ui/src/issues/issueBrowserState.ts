@@ -224,6 +224,15 @@ export function promptFor(s: IssueBrowserState, issue: IssueSummary): string {
 }
 
 /**
+ * Whether `issue`'s hand-off prompt is still exactly the prefill — no draft stored, because
+ * the human never typed, or typed and then reverted back to it (see `editDraft`). The template
+ * menu uses this to decide whether to insert at the caret or append below the reference.
+ */
+export function isPromptUntouched(s: IssueBrowserState, issue: IssueSummary): boolean {
+  return s.drafts[issueDraftKey(issue)] === undefined;
+}
+
+/**
  * The human edited the hand-off prompt for `issue`. Stores `text` as a draft — unless it is
  * exactly the untouched prefill, in which case any existing draft is removed instead: typing
  * and then reverting is "nothing typed", not a draft worth keeping. A no-op (nothing to change

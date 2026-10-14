@@ -75,6 +75,59 @@ describe('insertTemplate', () => {
   it('clamps a negative caret to the start', () => {
     expect(insertTemplate('abc', -5, 'x')).toEqual({ text: 'xabc', caret: 1 });
   });
+
+  it('honours the caret/range behaviour when untouched is false', () => {
+    expect(insertTemplate('ac', 1, 'b', false)).toEqual({ text: 'abc', caret: 2 });
+    expect(insertTemplate('hello world', { start: 6, end: 11 }, 'there', false)).toEqual({
+      text: 'hello there',
+      caret: 11,
+    });
+  });
+
+  it('appends below an untouched reference regardless of the caret', () => {
+    const text = 'A-1\nhttps://example.test/A-1';
+    expect(insertTemplate(text, 0, 'Do the thing', true)).toEqual({
+      text: 'A-1\nhttps://example.test/A-1\n\nDo the thing',
+      caret: 'A-1\nhttps://example.test/A-1\n\nDo the thing'.length,
+    });
+    expect(insertTemplate(text, 2, 'Do the thing', true)).toEqual({
+      text: 'A-1\nhttps://example.test/A-1\n\nDo the thing',
+      caret: 'A-1\nhttps://example.test/A-1\n\nDo the thing'.length,
+    });
+  });
+
+  it('does not double a blank line already trailing the untouched reference', () => {
+    expect(insertTemplate('KEY\nurl\n', 0, 'rendered', true)).toEqual({
+      text: 'KEY\nurl\n\nrendered',
+      caret: 'KEY\nurl\n\nrendered'.length,
+    });
+  });
+
+  it('ignores a selection range when untouched', () => {
+    expect(insertTemplate('A-1\nurl', { start: 0, end: 3 }, 'rendered', true)).toEqual({
+      text: 'A-1\nurl\n\nrendered',
+      caret: 'A-1\nurl\n\nrendered'.length,
+    });
+  });
+
+  it('returns rendered outright for empty text, untouched false', () => {
+    expect(insertTemplate('', 0, 'rendered', false)).toEqual({ text: 'rendered', caret: 8 });
+  });
+
+  it('returns rendered outright for empty text, untouched true', () => {
+    expect(insertTemplate('', 0, 'rendered', true)).toEqual({ text: 'rendered', caret: 8 });
+  });
+
+  it('treats whitespace-only text as empty, regardless of untouched', () => {
+    expect(insertTemplate('   \n  ', 3, 'rendered', false)).toEqual({
+      text: 'rendered',
+      caret: 8,
+    });
+    expect(insertTemplate('   \n  ', 3, 'rendered', true)).toEqual({
+      text: 'rendered',
+      caret: 8,
+    });
+  });
 });
 
 describe('templatesFor', () => {

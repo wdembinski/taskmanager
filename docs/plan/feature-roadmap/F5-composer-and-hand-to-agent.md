@@ -316,10 +316,13 @@ mount. Three decisions settled here rather than re-derived by step 3:
 
 ### F5 · Phase 3 — Templates and triggers (after F7 and F1)
 
-- [ ] F5.11 Add a prompt template insert menu to the composer and the hand-off panel
+- [x] F5.11 Add a prompt template insert menu to the composer and the hand-off panel
 
   - Requires F7's template store. Menu inserts at the caret; into an untouched pre-filled box it appends below the reference rather than above it.
   - Acceptance: pure `insertTemplate(text, caret, template, untouched)` tested for caret, untouched-append and empty cases. Gates green.
+  - The composer's own menu shipped with F7.10, under "add-task"; this ticket adds the
+    hand-off panel's (`IssueDetail`'s Prompt box, surface `assign` — a hand-off is an
+    assign-and-start) plus the untouched-append rule `insertTemplate` now applies on both.
 - [x] F5.12 Add an optional attach a trigger section to the composer
 
   - Requires F1's trigger model. "Run on a schedule / when …" attaches an F1 trigger to the new card instead of (or as well as) starting now.
