@@ -27,6 +27,7 @@ import {
   listBranches,
   mergeBase,
   mergeFfOnly,
+  parsePorcelainPaths,
   pushBranch,
   rebasingBranch,
   rebaseOnto,
@@ -34,6 +35,7 @@ import {
   remoteBranchSha,
   remoteUrl,
   removeWorktree,
+  uncommittedPaths,
   upstreamOf,
 } from './git';
 
@@ -72,6 +74,22 @@ describe('git helpers', () => {
     expect(await isClean(repo)).toBe(true);
     writeFileSync(join(repo, 'a.txt'), 'changed\n');
     expect(await isClean(repo)).toBe(false);
+  });
+
+  it('names uncommitted paths that isClean (untracked ignored) would miss', async () => {
+    expect(await uncommittedPaths(repo)).toEqual([]);
+    writeFileSync(join(repo, 'a.txt'), 'changed\n'); // tracked, modified
+    writeFileSync(join(repo, 'untracked.txt'), 'new\n'); // never added
+    expect(await isClean(repo)).toBe(false);
+    expect(await uncommittedPaths(repo)).toEqual(
+      expect.arrayContaining(['a.txt', 'untracked.txt']),
+    );
+
+    // Staging doesn't change the answer — staged, unstaged, and untracked are all "uncommitted".
+    await git(repo, ['add', '-A']);
+    expect(await uncommittedPaths(repo)).toEqual(
+      expect.arrayContaining(['a.txt', 'untracked.txt']),
+    );
   });
 
   it('adds a worktree on a new branch, commits there, and fast-forwards base', async () => {
@@ -699,6 +717,25 @@ describe('git helpers — fetching a ref and pushing with a lease', () => {
 
       expect(res.code).not.toBe(0);
     });
+  });
+});
+
+describe('parsePorcelainPaths', () => {
+  it('reads the path past the two-letter status code and the space', () => {
+    expect(parsePorcelainPaths(' M a.txt\n?? b.txt\nA  c.txt\n')).toEqual([
+      'a.txt',
+      'b.txt',
+      'c.txt',
+    ]);
+  });
+
+  it('keeps only the new name of a rename, not the arrow or the old one', () => {
+    expect(parsePorcelainPaths('R  old.txt -> new.txt\n')).toEqual(['new.txt']);
+  });
+
+  it('is empty for an empty or blank-only status', () => {
+    expect(parsePorcelainPaths('')).toEqual([]);
+    expect(parsePorcelainPaths('\n\n')).toEqual([]);
   });
 });
 

@@ -87,6 +87,19 @@
  *     rebase ever ran. The branch still lands, rebased onto origin's fresh tip, carrying only
  *     its own commit — never the one local base picked up on its own — and the pull request's
  *     body names only that one commit too.
+ *  16. **`commitLeftover` commits a run's own leftover edits, then opens the PR.** A branch
+ *     with no commits of its own yet — sitting exactly on base — but a file left uncommitted
+ *     in the worktree, the shape a finished run leaves behind (F7.2's own bug). Asked with
+ *     `opts.commitLeftover` (the scheduler's own call, never the button's), `openPullRequest`
+ *     commits that file before `hasCommits`/`commitsAhead` ever look at the branch, notes the
+ *     commit on the card's timeline, then pushes and opens the pull request exactly as check 1
+ *     above does — carrying the file it just committed.
+ *  17. **The same leftover work, without the flag, refuses by naming it — and touches nothing.**
+ *     The button's own call (no `commitLeftover`) against the identical worktree: no commit is
+ *     made, so `commitsAhead` reads 0 and the refusal from check 8's sibling fires — now naming
+ *     the uncommitted file instead of guessing "merged, or nothing was ever written". Nothing
+ *     is pushed, no pull request is opened, and the branch's `HEAD` and worktree are exactly
+ *     what they were before the call.
  *
  * ## Prove it can fail
  *
@@ -142,6 +155,13 @@
  * when the best-effort `updateLocalBase` call errors, instead of swallowing it): the whole
  * scenario goes red with "could not rebase ... fatal: Not possible to fast-forward" — this is
  * the exact live bug, reproduced.
+ *
+ * For check 16, revert `createPr.ts`'s `commitLeftover` block to do nothing (or just delete the
+ * `commitAll` call inside it): the leftover file is never committed, so `hasCommits` still
+ * answers `true` off the repo's own initial commit but `commitsAhead` reads 0, and the call
+ * that check 16 expects to open a pull request throws the same "uncommitted changes" refusal
+ * check 17 is about instead — exactly the live bug this step exists to close, reproduced on
+ * demand. Put the line back and both checks pass again.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
@@ -1102,6 +1122,117 @@ check(
 check(
   'local base was left exactly where it was — it can never be fast-forwarded to origin again',
   git(divergedRepo, 'rev-parse', divergedBase).stdout.trim() === divergedLocalBase,
+);
+
+// ── 16 & 17: a run's own leftover edits — committed by the scheduler's flag, refused by the
+//            button's absence of it — on the IDENTICAL worktree, one call after the other ──
+// A branch that sits exactly on base (no commits of its own) with one file left uncommitted —
+// the shape F7.2's own run finished in. 17 runs first, against the dirty worktree exactly as
+// the run left it; 16 reuses the very same leftover file a moment later, so the commit it
+// proves is the one the refusal just above named.
+const leftoverRepo = join(work, 'leftover-repo');
+const leftoverOrigin = join(work, 'leftover-origin.git');
+git(work, 'init', leftoverRepo);
+git(leftoverRepo, 'config', 'user.email', 'verify@example.com');
+git(leftoverRepo, 'config', 'user.name', 'Verify');
+git(leftoverRepo, 'config', 'commit.gpgsign', 'false');
+writeFileSync(join(leftoverRepo, 'README.md'), '# leftover\n');
+git(leftoverRepo, 'add', '-A');
+git(leftoverRepo, 'commit', '--no-verify', '-m', 'initial');
+const leftoverBase = git(leftoverRepo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+git(work, 'init', '--bare', leftoverOrigin);
+git(leftoverRepo, 'push', leftoverOrigin, leftoverBase);
+
+const LEFTOVER_BRANCH = 'feat/leftover-work';
+git(leftoverRepo, 'checkout', '-b', LEFTOVER_BRANCH);
+// No commit of its own — the branch is still exactly at base. The only sign any work happened
+// is this file, sitting untracked in the worktree.
+writeFileSync(join(leftoverRepo, 'leftover.ts'), 'export const leftover = true;\n');
+
+git(leftoverRepo, 'remote', 'add', 'origin', 'https://github.com/acme/leftover.git');
+writeFileSync(
+  gitConfig,
+  readFileSync(gitConfig, 'utf8') +
+    `[url "file://${leftoverOrigin.replace(/\\/g, '/')}"]\n` +
+    `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/leftover.git\n`,
+  'utf8',
+);
+const leftoverProject = store.addProject({
+  path: leftoverRepo,
+  name: 'Leftover',
+  kind: 'agent',
+  baseBranch: leftoverBase,
+});
+const leftoverCard = store.createTask('personal', { title: 'Leave the leftover work uncommitted' });
+store.updateTask(leftoverCard.id, {
+  agentProjectId: leftoverProject.id,
+  agentBranch: LEFTOVER_BRANCH,
+});
+const leftoverInspect = async () => ({
+  cwd: leftoverRepo,
+  branch: LEFTOVER_BRANCH,
+  base: leftoverBase,
+});
+
+// ── 17: without the flag, the button refuses by naming the leftover file ────────────────
+const headBeforeRefusal = git(leftoverRepo, 'rev-parse', 'HEAD').stdout.trim();
+const postsBeforeLeftover = calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length;
+
+const leftoverRefusal = await openPullRequest(
+  { ...deps, inspect: leftoverInspect },
+  leftoverCard.id,
+).then(
+  () => null,
+  (e) => String(e?.message ?? e),
+);
+check(
+  'without commitLeftover, leftover work refuses, naming the uncommitted file',
+  Boolean(
+    leftoverRefusal &&
+      /uncommitted changes/.test(leftoverRefusal) &&
+      leftoverRefusal.includes('leftover.ts'),
+  ),
+  leftoverRefusal ?? '(it did not refuse)',
+);
+check(
+  'and the worktree is left exactly as it was — no commit, the file still sitting untracked',
+  git(leftoverRepo, 'rev-parse', 'HEAD').stdout.trim() === headBeforeRefusal &&
+    git(leftoverRepo, 'status', '--porcelain').stdout.includes('leftover.ts'),
+  `HEAD ${git(leftoverRepo, 'rev-parse', 'HEAD').stdout.trim()} (was ${headBeforeRefusal}); ` +
+    `status: ${git(leftoverRepo, 'status', '--porcelain').stdout.trim()}`,
+);
+check(
+  'nothing was pushed or posted for it',
+  git(leftoverOrigin, 'rev-parse', '--verify', '--quiet', `refs/heads/${LEFTOVER_BRANCH}`).code !==
+    0 && calls.filter((c) => (c.init.method ?? 'GET') === 'POST').length === postsBeforeLeftover,
+);
+
+// ── 16: WITH the flag, the same leftover file is committed, pushed and opens the PR ─────
+const leftoverOpened = await openPullRequest(
+  { ...deps, inspect: leftoverInspect },
+  leftoverCard.id,
+  { commitLeftover: true },
+);
+check(
+  'with commitLeftover, the same leftover work opens a pull request',
+  leftoverOpened.existed === false,
+  JSON.stringify(leftoverOpened),
+);
+const leftoverLanded = git(leftoverOrigin, 'rev-parse', `refs/heads/${LEFTOVER_BRANCH}`);
+check(
+  'carrying a commit for the leftover file, pushed to the bare origin',
+  leftoverLanded.code === 0 &&
+    git(leftoverOrigin, 'cat-file', '-e', `${leftoverLanded.stdout.trim()}:leftover.ts`).code === 0,
+  leftoverLanded.stderr.trim() || leftoverLanded.stdout.trim(),
+);
+check(
+  'and the timeline note says the leftover work was committed before the pull request opened',
+  notes.some((n) => n.includes('Committed uncommitted work') && n.includes(LEFTOVER_BRANCH)),
+  notes.join(' | '),
+);
+check(
+  'and the worktree is clean afterwards — nothing left dangling',
+  git(leftoverRepo, 'status', '--porcelain').stdout.trim() === '',
 );
 
 store.close();

@@ -15,6 +15,17 @@
  *   1. Resolve the card's branch and base — through `worktrees.inspect`, which READS what is
  *      on disk rather than building it, the same pair the Merge button falls back to after a
  *      restart.
+ *   1½. When asked to (`opts.commitLeftover`), commit whatever is sitting uncommitted in the
+ *      worktree before anything downstream looks at the branch — mirroring the safety commit
+ *      `integrate` already takes before it merges, for the identical reason: a run can finish
+ *      with edits still on disk, and a pull request opened without them would describe work
+ *      that was never actually sent. Skipped outright when a rebase is paused here
+ *      (`rebaseInProgress`) — committing mid-rebase would stage the conflict markers
+ *      themselves, exactly the trap `integrate`'s own ordering guards against. Only the
+ *      scheduler asks for this: it is the one caller that can finish a run with nothing
+ *      committed yet, where the human pressing **Create PR** has always done so against a
+ *      worktree whose tree is either already committed or is about to refuse with a clear
+ *      "nothing to open a pull request for" instead.
  *   2. Read `origin`, and work out which forge it belongs to (`remoteUrl.ts`).
  *   3. Check the remote: fetch `origin`'s current copy of `base` and, if it has moved since
  *      this worktree last saw it, rebase the branch onto its new tip before anything is
@@ -62,11 +73,14 @@ import {
 } from '@shared/commitMessage';
 import {
   branchCommitMessages,
+  commitAll,
   commitsAhead,
   hasCommits,
   pushBranch,
+  rebaseInProgress,
   remoteBranchSha,
   remoteUrl,
+  uncommittedPaths,
 } from '../git';
 import { hostFor, type ExecHost } from '../exec';
 import { GitHubClient } from '../github/githubClient';
@@ -142,6 +156,7 @@ export interface OpenedPullRequest {
 export async function openPullRequest(
   deps: CreatePrDeps,
   taskId: string,
+  opts?: { commitLeftover?: boolean },
 ): Promise<OpenedPullRequest> {
   const task = deps.getTask(taskId);
   if (!task) throw new Error('That card no longer exists.');
@@ -192,13 +207,30 @@ export async function openPullRequest(
 
   const host = hostFor(project.target);
 
+  // A write nobody asked for, the same as `resyncNote` below — so it goes on the timeline the
+  // same way. Skipped when a rebase is paused here: `commitAll` is `git add -A` and a commit,
+  // and run mid-rebase it would stage the conflict markers themselves into history.
+  if (opts?.commitLeftover && !(await rebaseInProgress(live.cwd, host))) {
+    const committed = await commitAll(live.cwd, prTitle(owner), host);
+    if (committed) {
+      deps.note(
+        project.id,
+        owner.id,
+        `Committed uncommitted work left on "${live.branch}" before opening a pull request for it.`,
+      );
+    }
+  }
+
   // Nothing to open a pull request FOR. Asked of the branch against its base rather than of
   // the worktree's tidiness: a branch with an uncommitted file has work on it, and a branch
   // whose commits are all in base already has none — and only the second is a refusal.
   if (!(await hasCommits(live.cwd, host))) {
     const open = reportOpen();
     if (open) return open;
-    throw new Error(
+    throw await nothingCommittedError(
+      live.cwd,
+      live.branch,
+      host,
       `Nothing has been committed on "${live.branch}" yet, so there is nothing to open a pull request for.`,
     );
   }
@@ -208,7 +240,10 @@ export async function openPullRequest(
     // asked twice — the pull request carries everything the branch has. Report it.
     const open = reportOpen();
     if (open) return open;
-    throw new Error(
+    throw await nothingCommittedError(
+      live.cwd,
+      live.branch,
+      host,
       `"${live.branch}" has no commits that ${live.base} does not already have — it has ` +
         `been merged, or nothing was ever written to it. There is nothing to open a pull ` +
         `request for.`,
@@ -432,6 +467,28 @@ async function refreshDescription(
         `${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/**
+ * The refusal for a branch `commitsAhead`/`hasCommits` found nothing to open a pull request
+ * for — naming whichever is actually true. "Merged, or nothing was ever written" is only an
+ * honest answer when the worktree itself is clean; a run that finished with edits still on
+ * disk (`a-refusal-that-named-the-wrong-wall`'s own case, F7.2) left real work sitting right
+ * there, and the generic sentence sends a human looking for a merge that never happened
+ * instead of telling them to just commit it.
+ */
+async function nothingCommittedError(
+  cwd: string,
+  branch: string,
+  host: ExecHost | undefined,
+  genericMessage: string,
+): Promise<Error> {
+  const dirty = await uncommittedPaths(cwd, host);
+  if (dirty.length === 0) return new Error(genericMessage);
+  return new Error(
+    `Nothing is committed on "${branch}" yet, but its worktree has uncommitted changes ` +
+      `(${dirty.join(', ')}). Commit them, then press this again.`,
+  );
 }
 
 /** The card's open merge request, if it has one. A settled one is history, not a blocker. */

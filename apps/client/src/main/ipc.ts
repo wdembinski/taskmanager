@@ -2089,7 +2089,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // The scheduler opens the same PR, through the same function, when a card finishes with
   // "Open a PR when finished" on — so it is handed the deps rather than growing its own way
   // in. Set here because only this closure can read a secret out of `safeStorage`.
-  scheduler.setPullRequestOpener((taskId) => openPullRequest(createPrDeps(), taskId));
+  scheduler.setPullRequestOpener((taskId) =>
+    openPullRequest(createPrDeps(), taskId, { commitLeftover: true }),
+  );
 
   /**
    * Deps for the PR/MR watcher (`forge/prWatcher.ts`) — same shape, same reasons, as

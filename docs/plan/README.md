@@ -6466,6 +6466,84 @@ does not itself touch `attention_items`, so the old row sits there unless someon
 
 ---
 
+## Fix — a task's finished work is uncommitted and the PR button refuses it
+
+**Goal.** Record, read-only against the live app, why "F2.7 task cannot create PR and fails"
+names the wrong card — so the next step changes the one line that is actually broken instead
+of re-deriving this diagnosis.
+
+### What is proven, read-only
+
+F2.7 itself (`e8335a04…`, "Record gate parks and resumes plus attention and merge and release
+events") is `done`. PR #110 for `feat/f2-7-record-gate-parks-and-resumes-plus` merged; the
+diverged-`development` bug it used to hit is the one the previous section already closed. It
+has no row in `attention_items`.
+
+`orchestrator.db`'s `attention_items` holds exactly one row (queried read-only via
+`ELECTRON_RUN_AS_NODE=1 electron.exe -e` against a `better-sqlite3` handle opened
+`{ readonly: true }`, the app never launched):
+
+    kind: "task-failed"
+    taskId: "2e473ec2…" → task "Verify and commit", status "waiting-input"
+    branch: "feat/f7-2-build-the-skills-in-force-system"
+    createdAt: 1791910172897  (2026-10-13T16:49:32.897Z)
+    prompt: The work is finished on "feat/f7-2-build-the-skills-in-force-system", but the
+      pull request could not be opened: "feat/f7-2-build-the-skills-in-force-system" has no
+      commits that development does not already have — it has been merged, or nothing was
+      ever written to it. There is nothing to open a pull request for. Nothing was merged
+      and the branch is untouched.
+
+That is F7.2 (`5fe9053a…`, "Build the skills-in-force system prompt section with a size
+budget"), task status `in-progress`, parked three minutes before this ticket was filed. Its
+worktree (`…/worktrees/a87aa50a…/5fe9053a…`) still exists; read directly, not via the app:
+
+    git status --short   → ?? apps/client/src/main/skillsPrompt.ts
+                            ?? apps/client/src/main/skillsPrompt.test.ts
+    git rev-list --count development..HEAD → 0
+
+Both files are the real output of this plan's own step 1, "Implement the skills prompt
+section builder" — written, correctly left uncommitted (committing is step 2's job), and
+never committed because step 2, "Verify and commit", ended its turn on a background build and
+a `Monitor` call without waiting for either to resolve. The CLI settled that turn as
+`success: true, end_turn`; nothing after it ran. Same failure class as
+`headless-turn-has-no-next-turn`, through `Monitor`/a background `Bash` call instead of a
+background subagent.
+
+### The asymmetry that turns a stall into a wrong refusal
+
+`landWork` (`scheduler.ts:5462`) → `openPullRequestFor` (`:6842`) → `openPullRequest`
+(`forge/createPr.ts:142`) ran once the chain's last step settled. Tracing the refusal:
+
+- `hasCommits` (`git.ts:86-89`) is `git rev-parse --verify HEAD`, true for any checked-out
+  branch regardless of whether it has a commit of its own — so it can never catch "nothing
+  committed on *this* branch yet," only "this is an unborn repo." It passed.
+- `commitsAhead(cwd, base, branch)` (`createPr.ts:205`) returned `0`, so `createPr.ts:211-215`
+  threw the "has no commits that development does not already have — it has been merged, or
+  nothing was ever written to it" message quoted above. Both named causes are wrong: the
+  branch was neither merged nor empty of work — the work is sitting in the worktree,
+  uncommitted, which this check has no way to see.
+
+Contrast `WorktreeManager.integrate` (`worktreeManager.ts:791-794`), the merge path for the
+same kind of card: it calls `commitAll` (a safety `git add -A` + commit) *before* asking
+`commitsAhead`, specifically so "a run that left work uncommitted has something to land."
+`createPr.ts` never calls `commitAll` anywhere on this path. The result: a card that leaves
+work uncommitted merges fine through the button next to this one, but cannot get a PR through
+this one — and the error it gets instead blames a wall ("merged, or nothing written") that
+isn't the one it hit.
+
+### Net
+
+Two separate defects, not one: (1) the PR path lacks `integrate`'s safety commit, so any
+card whose last step leaves work uncommitted parks here instead of opening a PR; (2) the
+park's wording, inherited from `commitsAhead === 0`, names causes that are never true when
+the real cause is "nothing was committed on this branch," making the next human's diagnosis
+start from a false premise. Nothing here touches code. Step 2 of this plan gives
+`openPullRequest` the same safety commit `integrate` already has; step 3 makes the refusal
+name uncommitted work when that's what `git status` actually shows; step 4 closes the
+`Monitor`/background-wait gap that left this card's own work stranded in the first place.
+
+---
+
 ## Conventions for every phase
 
 - **Contract first.** New data crossing the UI↔engine boundary gets its types in
