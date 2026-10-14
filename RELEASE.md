@@ -159,6 +159,16 @@ fetching and rebasing a release commit under a tag is not an unattended operatio
 > `GITHUB_TOKEN` do not trigger workflows, and `gates` skips itself when the head commit is a
 > `chore(release):`. `development`'s branch protection, if any, has to let that bot push —
 > see [`docs/11`](docs/11-ci-cd-pipeline.md#one-time-repository-settings).
+>
+> One rejection it does not stop for: a plain merge to `development` landing between this
+> job's checkout and this step, which the push reports as non-fast-forward (and which can
+> leave a dangling, harmless tag behind — `--follow-tags` pushes the tag and the branch as
+> two separate ref updates, and only the branch one is rejected). That merge is not this
+> workflow's own push, so it triggered its own queued run (same concurrency group), which
+> will compute the version from the now-current `development` and release in this run's
+> place. Rebasing and retrying here instead would risk publishing a version that does not
+> account for the commit that won the race, so CI recognizes this specific rejection and
+> stands down — the run finishes green with nothing released, by design, same as §0.
 
 ## 4. Draft the GitHub release
 

@@ -121,6 +121,9 @@ jobs:
       # `chore(release):` commit rather than finding it in the work commit. `promote` needs
       # to know: that commit is the one nothing downstream can see (see its last step).
       needsCommit: ${{ steps.next.outputs.needsCommit }}
+      # 'true' when a concurrent merge to development won the race in "Tag and push" below —
+      # see that step's comment. Every later job treats this exactly like release == 'false'.
+      raced: ${{ steps.push.outputs.raced }}
 
     steps:
       # RELEASE.md rule 5: only the integration branch is releasable. `push` can only be
@@ -217,6 +220,7 @@ jobs:
       # version newer than every existing tag, so this cannot collide — the guard is there so
       # that a re-run after a failed push is a no-op rather than an error.
       - name: Tag and push
+        id: push
         if: steps.decide.outputs.release == 'true'
         env:
           TAG: ${{ steps.next.outputs.tag }}
@@ -232,7 +236,30 @@ jobs:
           # --follow-tags pushes the annotated tag along with the branch, in one round trip,
           # so the branch is never briefly ahead of the tag that names it. This push is made
           # with GITHUB_TOKEN and therefore does not re-trigger this workflow — see the header.
-          git push --follow-tags origin development
+          #
+          # A normal merge to development — unlike this workflow's own push above, which
+          # never re-triggers anything — races this step whenever it lands between this job's
+          # checkout and here: GitHub rejects our branch update as non-fast-forward, though
+          # (seen in practice, e.g. the dangling v0.164.0 tag) the tag half of --follow-tags
+          # can still go through. That merge triggered its own run of this same workflow,
+          # queued behind this one by the concurrency group at the top of this file; once its
+          # turn comes it computes the version from the now-current development, the one this
+          # run's stale $TAG cannot account for. Retrying here with a fetch-and-rebase would
+          # risk publishing a version that silently ignores the commit that won the race — so
+          # instead this run stands down and lets that queued run release in its place. A
+          # dangling tag left behind by this is expected and harmless (see docs/11).
+          if git push --follow-tags origin development 2>push.err; then
+            cat push.err >&2
+            echo "raced=false" >> "$GITHUB_OUTPUT"
+          else
+            cat push.err >&2
+            if grep -Eq '\[rejected\].*(non-fast-forward|fetch first)' push.err; then
+              echo "::notice::development moved under this run while tagging $TAG — a concurrent merge won the race. Standing down; its own queued run will release instead."
+              echo "raced=true" >> "$GITHUB_OUTPUT"
+            else
+              exit 1
+            fi
+          fi
 
       # §4. The release must exist as a DRAFT before packaging, because that is what
       # `gh release upload` in the windows job below uploads into (its own comment explains
@@ -240,7 +267,7 @@ jobs:
       # specifically, because `gh release upload` can write to a published release too — the
       # draft is what keeps a half-built version off the update feed until `promote` says so.
       - name: Draft the GitHub release
-        if: steps.decide.outputs.release == 'true' && steps.decide.outputs.draftExists != 'true'
+        if: steps.decide.outputs.release == 'true' && steps.decide.outputs.draftExists != 'true' && steps.push.outputs.raced != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.next.outputs.tag }}
@@ -249,7 +276,7 @@ jobs:
   # ── §5 Windows ─────────────────────────────────────────────────────────────
   windows:
     needs: version
-    if: needs.version.outputs.release == 'true'
+    if: needs.version.outputs.release == 'true' && needs.version.outputs.raced != 'true'
     runs-on: windows-latest
 
     steps:
@@ -377,7 +404,7 @@ jobs:
   # needs it to succeed like every other job — see its own comment.
   linux:
     needs: version
-    if: needs.version.outputs.release == 'true'
+    if: needs.version.outputs.release == 'true' && needs.version.outputs.raced != 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -464,7 +491,7 @@ jobs:
   # order, this comment just says why it matters.
   promote:
     needs: [version, windows, linux]
-    if: needs.version.outputs.release == 'true'
+    if: needs.version.outputs.release == 'true' && needs.version.outputs.raced != 'true'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
