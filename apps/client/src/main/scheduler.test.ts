@@ -7786,3 +7786,179 @@ describe('Scheduler — activity log (F2.6)', () => {
     expect(task.status).toBe('in-progress');
   });
 });
+
+describe('Scheduler: skills in force (F7.6)', () => {
+  /** A library skill, shaped exactly as `store.getSkill` returns one. */
+  const skill = (id: string, name: string, body: string) => ({
+    id,
+    name,
+    description: `${name} description`,
+    body,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+
+  /**
+   * A card (optionally with steps), wired to a fake library of skills by id — no worktree
+   * manager, so every run lands on the synchronous shared-dir `launch` path and `start` can
+   * be asserted on right after `runTask`/`chatWithAgent` returns.
+   */
+  function makeSkillsScheduler(
+    cardOverrides: Partial<Task> = {},
+    opts: {
+      steps?: Array<Partial<Task>>;
+      skills?: ReturnType<typeof skill>[];
+    } = {},
+  ) {
+    const card = {
+      id: 'c1',
+      projectId: 'p',
+      phase: '',
+      title: 'Card',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      ...cardOverrides,
+    } as Task;
+    const steps = (opts.steps ?? []).map(
+      (s, i) =>
+        ({
+          id: `s${i + 1}`,
+          projectId: 'p',
+          phase: '',
+          title: `Step ${i + 1}`,
+          status: 'pending',
+          sessionId: null,
+          order: i + 1,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          parentTaskId: card.id,
+          ...s,
+        }) as Task,
+    );
+    const all = [card, ...steps];
+    const project = {
+      id: 'p',
+      name: 'Project',
+      path: 'C:/repo',
+      planPath: '',
+      kind: 'plan',
+      concurrency: 1,
+      useWorktrees: false,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'default',
+    } as unknown as Project;
+    const skillsById = new Map((opts.skills ?? []).map((s) => [s.id, s]));
+    const notes: string[] = [];
+    const store = {
+      getTask: (id: string) => all.find((t) => t.id === id),
+      getTasks: () => all,
+      getProject: () => project,
+      getSubtasks: (parentId: string) => steps.filter((s) => s.parentTaskId === parentId),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = all.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      addChatMessage: vi.fn(),
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
+      getTaskActivity: () => [],
+      appendTaskEvent: (_p: string, _t: string, _r: string, event: { text?: string }) => {
+        notes.push(event.text ?? '');
+      },
+      getSkill: (id: string) => skillsById.get(id),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'r1' }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    return { scheduler, start, notes, card, steps, project };
+  }
+
+  it('carries a library skill’s body in the skillsSection and notes it in force', () => {
+    const { scheduler, start, notes } = makeSkillsScheduler(
+      { skillRefs: ['lib:tdd'] },
+      { skills: [skill('tdd', 'TDD', 'Write the test first, then the code.')] },
+    );
+    scheduler.runTask('c1');
+
+    const opts = start.mock.calls[0][1] as { skillsSection?: string };
+    expect(opts.skillsSection).toContain('### TDD');
+    expect(opts.skillsSection).toContain('Write the test first, then the code.');
+    expect(notes.some((n) => n.includes('Skills in force for this run: TDD'))).toBe(true);
+  });
+
+  it('a step inherits the card’s skill and adds its own', () => {
+    const { scheduler, start } = makeSkillsScheduler(
+      { skillRefs: ['lib:tdd'] },
+      {
+        steps: [{ skillRefs: ['lib:security'] }],
+        skills: [
+          skill('tdd', 'TDD', 'Write the test first, then the code.'),
+          skill('security', 'Security review', 'Check every input for injection.'),
+        ],
+      },
+    );
+    scheduler.runTask('s1');
+
+    const opts = start.mock.calls[0][1] as { skillsSection?: string };
+    expect(opts.skillsSection).toContain('Write the test first, then the code.');
+    expect(opts.skillsSection).toContain('Check every input for injection.');
+  });
+
+  it('notes a dangling ref and still starts the run', () => {
+    const { scheduler, start, notes } = makeSkillsScheduler({ skillRefs: ['lib:gone'] });
+    scheduler.runTask('c1');
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(notes.some((n) => n.includes('`lib:gone` no longer exists'))).toBe(true);
+  });
+
+  it('a chatWithAgent resume also carries the section and writes the note', () => {
+    const { scheduler, start, notes } = makeSkillsScheduler(
+      { status: 'in-progress', sessionId: 'sess-1', skillRefs: ['lib:tdd'] },
+      { skills: [skill('tdd', 'TDD', 'Write the test first, then the code.')] },
+    );
+    const result = scheduler.chatWithAgent('c1', 'still there?');
+
+    expect(result.status).toBe('resumed');
+    const opts = start.mock.calls[0][1] as { skillsSection?: string };
+    expect(opts.skillsSection).toContain('Write the test first, then the code.');
+    expect(notes.some((n) => n.includes('Skills in force for this run: TDD'))).toBe(true);
+  });
+
+  it('a release run carries no skills section', () => {
+    const { scheduler, start, notes, project, card } = makeSkillsScheduler(
+      { skillRefs: ['lib:tdd'] },
+      { skills: [skill('tdd', 'TDD', 'Write the test first, then the code.')] },
+    );
+    (
+      scheduler as unknown as {
+        startTask: (
+          p: Project,
+          t: Task,
+          o: { releaseSeed?: boolean; chatPrompt?: string },
+        ) => string;
+      }
+    ).startTask(project, card, { releaseSeed: true, chatPrompt: 'Release now.' });
+
+    const opts = start.mock.calls[0][1] as { skillsSection?: string };
+    expect(opts.skillsSection).toBeUndefined();
+    expect(notes).toEqual([]);
+  });
+
+  it('no refs means no skillsSection and no note', () => {
+    const { scheduler, start, notes } = makeSkillsScheduler();
+    scheduler.runTask('c1');
+
+    const opts = start.mock.calls[0][1] as { skillsSection?: string };
+    expect(opts.skillsSection).toBeFalsy();
+    expect(notes).toEqual([]);
+  });
+});

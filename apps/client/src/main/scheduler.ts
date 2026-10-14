@@ -143,9 +143,13 @@ import {
   type PlanStep,
 } from './planToSubtasks';
 import type { SessionManager } from './sessionManager';
-import { hostFor } from './exec';
+import { hostFor, type ExecHost } from './exec';
 import { changedInBranch } from './git';
 import { appPlanPath, appProjectFile, planRelPath } from './projectPaths';
+import { readRepoSkill, type RepoSkill } from './repoSkills';
+import { resolveRunSkills, runSkillRefs, skillsTimelineNote } from './runSkills';
+import { buildSkillsSection } from './skillsPrompt';
+import { parseSkillRef } from '@shared/skills';
 import type { Store } from './store';
 import { taskBranch } from './worktreeManager';
 import type {
@@ -3362,13 +3366,25 @@ export class Scheduler {
       // chain's own integration just deleted. A release run wants the same directory for a
       // stronger reason: releasing from an isolated worktree would tag and publish a
       // branch instead of the integration branch the work landed on.
-      this.launch(project, task, run, { mode: 'shared', cwd: project.path });
+      const prep: LaunchTarget = { mode: 'shared', cwd: project.path };
+      // A release run's skills are never resolved (`launch` skips them outright), so
+      // reading them here would only spend a worktree read nobody is going to use.
+      if (!run.releaseSeed && this.hasRepoSkillRefs(task)) {
+        void this.launchAfterRepoSkills(project, task, run, prep);
+      } else {
+        this.launch(project, task, run, prep);
+      }
     } else if (this.worktrees) {
       // Async: prepare (or reuse) the task's worktree, then start the session in it.
       void this.prepareAndLaunch(project, task, run);
     } else {
       // No worktree manager (unit tests / degenerate setups): run in the shared dir.
-      this.launch(project, task, run, { mode: 'shared', cwd: project.path });
+      const prep: LaunchTarget = { mode: 'shared', cwd: project.path };
+      if (this.hasRepoSkillRefs(task)) {
+        void this.launchAfterRepoSkills(project, task, run, prep);
+      } else {
+        this.launch(project, task, run, prep);
+      }
     }
     return runId;
   }
@@ -3411,6 +3427,12 @@ export class Scheduler {
         ? { mode: 'failed', reason: `Worktree preparation error: ${(err as Error).message ?? err}` }
         : { mode: 'shared', cwd: project.path };
     }
+    // Read before the disposed/settled checks below, so a Stop landing during the read
+    // still releases the slot instead of leaving it held behind an awaited file read.
+    const repoSkills =
+      prep.mode !== 'failed' && this.hasRepoSkillRefs(task)
+        ? await this.readRunRepoSkills(task, prep.cwd, hostFor(project.target))
+        : new Map<string, RepoSkill | null>();
     if (this.disposed) return;
     // Stopped / parked by a usage limit while we were preparing: don't start it, and
     // free the reserved slot so the queue isn't stuck (the imminent `exited` that
@@ -3443,7 +3465,80 @@ export class Scheduler {
     if (prep.mode === 'worktree' && prep.note) {
       this.noteRun(run.projectId, run.taskId, run.runId, prep.note);
     }
-    this.launch(project, task, run, prep, comments);
+    this.launch(project, task, run, prep, comments, repoSkills);
+  }
+
+  /**
+   * The detour a sync shared-dir launch (`startTask`'s review/release and no-worktrees
+   * branches) takes when its task carries a `repo:` ref: the read has to happen before the
+   * session starts, so this awaits it and then re-checks the same disposed/settled/still-
+   * reserved conditions {@link prepareAndLaunch} does before ever touching the process — a
+   * Stop landing during the read must still release the slot rather than spawn a session
+   * nobody wants.
+   */
+  private async launchAfterRepoSkills(
+    project: Project,
+    task: Task,
+    run: Run,
+    prep: LaunchTarget,
+    comments: BoundedHistory<AgentPromptComment> = NO_COMMENTS,
+  ): Promise<void> {
+    const repoSkills = await this.readRunRepoSkills(task, prep.cwd, hostFor(project.target));
+    if (this.disposed) return;
+    if (run.settled || !this.runs.has(run.runId)) {
+      this.runs.delete(run.runId);
+      this.inFlight.delete(run.taskId);
+      this.pumpAllActive();
+      return;
+    }
+    this.launch(project, task, run, prep, comments, repoSkills);
+  }
+
+  /**
+   * Which tasks carry a run's skill refs (F7.6): a step's own plus its parent card's, card
+   * first — `runSkillRefs`' own ordering. A card with no parent is both card and run, so it
+   * is handed back as the card with no step at all.
+   */
+  private skillsFor(task: Task): { card: Task; step: Task | null } {
+    if (!task.parentTaskId) return { card: task, step: null };
+    return { card: this.store.getTask(task.parentTaskId) ?? task, step: task };
+  }
+
+  /**
+   * Whether this run's card/step carry any `repo:` ref at all — decides whether the two
+   * sync shared-dir launch sites in `startTask`, and {@link prepareAndLaunch}, need to
+   * detour through a worktree read before starting the session, or can launch exactly as
+   * before (so existing scheduler tests' timing is unchanged for the ordinary no-skills run).
+   */
+  private hasRepoSkillRefs(task: Task): boolean {
+    const { card, step } = this.skillsFor(task);
+    return runSkillRefs(card, step ?? { skillRefs: null }).some(
+      (ref) => parseSkillRef(ref)?.kind === 'repo',
+    );
+  }
+
+  /**
+   * Every `repo:` ref a run's card and step carry, read fresh from `cwd` — the worktree, so
+   * a skill edited on the branch is the one a run sees, not whatever base still has. Read in
+   * parallel, since one slow or missing `SKILL.md` must not hold up the rest.
+   */
+  private async readRunRepoSkills(
+    task: Task,
+    cwd: string,
+    host: ExecHost,
+  ): Promise<Map<string, RepoSkill | null>> {
+    const { card, step } = this.skillsFor(task);
+    const names = runSkillRefs(card, step ?? { skillRefs: null })
+      .map((ref) => parseSkillRef(ref))
+      .filter((parsed): parsed is { kind: 'repo'; name: string } => parsed?.kind === 'repo')
+      .map((parsed) => parsed.name);
+    const entries = await Promise.all(
+      names.map(async (name): Promise<[string, RepoSkill | null]> => [
+        name,
+        await readRepoSkill(cwd, name, host),
+      ]),
+    );
+    return new Map(entries);
   }
 
   /**
@@ -3692,6 +3787,9 @@ export class Scheduler {
     run: Run,
     prep: LaunchTarget,
     comments: BoundedHistory<AgentPromptComment> = NO_COMMENTS,
+    /** F7.6's `repo:` refs, already read from the worktree by the caller — see
+     *  {@link readRunRepoSkills}. Empty for a run whose task carries none. */
+    repoSkills: Map<string, RepoSkill | null> = new Map(),
   ): void {
     // A release run is deliberately a FRESH conversation. The card's saved session was
     // recorded against the worktree it ran in — a directory integration has just deleted —
@@ -3758,6 +3856,21 @@ export class Scheduler {
       autoCompactPercent,
       subagentModel,
     };
+    // F7.6: resolve the run's skills into the "Skills in force" prompt section and note
+    // which ones actually made it — at every spawn, since chat and resume both come
+    // through here. Skipped for a release run: it is the tool's own run, governed by
+    // `RELEASE.md`, not the card's work, so the card's skills have nothing to say about it.
+    let skillsSection: string | undefined;
+    if (!run.releaseSeed) {
+      const { card, step } = this.skillsFor(task);
+      const resolvedSkills = resolveRunSkills(card, step ?? { skillRefs: null }, {
+        library: (id) => this.store.getSkill(id),
+        repo: (name) => repoSkills.get(name),
+      });
+      skillsSection = buildSkillsSection(resolvedSkills.resolved);
+      const note = skillsTimelineNote(resolvedSkills);
+      if (note) this.noteRun(run.projectId, run.taskId, run.runId, note);
+    }
     this.recordRunStarted(run, task);
     this.sessions.start(request, {
       runId: run.runId, // use the reserved id so events and bookkeeping line up
@@ -3768,6 +3881,7 @@ export class Scheduler {
       resumeSessionId,
       // Run where the project says to — the local machine unless it targets WSL.
       host: hostFor(project.target),
+      skillsSection,
     });
   }
 
