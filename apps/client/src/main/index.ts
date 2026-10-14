@@ -314,6 +314,7 @@ app.on('before-quit', () => {
           // Before `store`, like every other cloud timer: a pass that woke up between files
           // would otherwise read a closed database.
           { name: 'cloudAttachments', run: () => live.cloudAttachments.dispose() },
+          { name: 'cloudSkillPusher', run: () => live.cloudSkillPusher.dispose() },
           { name: 'focusTracker', run: () => live.focusTracker.dispose() },
           { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
           { name: 'watcher', run: () => live.watcher.dispose() },

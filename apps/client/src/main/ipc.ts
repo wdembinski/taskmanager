@@ -133,6 +133,7 @@ import { applyCloudCommand, type CloudCommandOutcome } from './cloudCommands';
 import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
+import { CloudSkillPusher } from './cloudSkillPusher';
 import {
   addAgentProfile,
   listAgentProfiles,
@@ -392,6 +393,15 @@ export interface Engine {
   /** Pushes attachment BYTES to the cloud so a browser can preview them — its own pass,
    *  holding a timer between files, so it is disposed on quit like every other one. */
   cloudAttachments: CloudAttachmentUploader;
+  /** Pushes library skills to the cloud mirror (F7.11) — changed-only, its own bounded
+   *  endpoint rather than `SyncRequest.deltas`. No timer of its own; see where it is scanned
+   *  in this function for why. */
+  cloudSkillPusher: CloudSkillPusher;
+  /** Hint `cloudSkillPusher` that a skill changed, for a future `skill:save`/`skill:delete`
+   *  handler to call for immediacy — `scan()` itself already runs on boot and on every
+   *  `cloudPoller` tick, so this just brings a push forward rather than being the only way
+   *  one happens. */
+  skillsChanged: () => void;
   /** The `BrowserWindow` focus/idle signal `cloudPoller` polls on — its listeners outlive
    * the window's own close handlers, so it is disposed alongside every other timer. */
   focusTracker: FocusTracker;
@@ -420,6 +430,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // the access token — is declared far below them. `configure(...)` supplies those beside
   // `cloudPoller`, and until then every `scan()` is a no-op.
   const cloudAttachments = new CloudAttachmentUploader();
+
+  // The cloud's copy of the skill library (F7.11), inert for the same reason: configured
+  // below once the store and the token getter exist, and scanned by `ipc.ts` itself rather
+  // than on its own timer — see where it is configured for the schedule.
+  const cloudSkillPusher = new CloudSkillPusher();
 
   // Small helper: push an event to the UI unless the window is gone.
   //
@@ -5556,6 +5571,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
   cloudAttachments.scan();
 
+  // The skill library's half of the same mirror. Configured here for the same reason, and
+  // scanned once for the boot backfill: a skill made or edited before this build (or while
+  // the cloud was off) has no way to know it should push until something asks.
+  cloudSkillPusher.configure({
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    listSkills: () => store.getSkills(),
+    onAuthRejected: () => cloudToken.invalidate(),
+  });
+  cloudSkillPusher.scan();
+
+  // F7.7's future `skill:save`/`skill:delete` handlers call this so an edit reaches the
+  // cloud without waiting for `cloudPoller`'s own tick below — `scan()` is cheap (no request
+  // when nothing actually changed), so calling it eagerly here costs nothing today.
+  function skillsChanged(): void {
+    cloudSkillPusher.scan();
+  }
+
   // The cloud mirror's own poller — same `trackSync` wrapping as JIRA/GitLab above, so the
   // status bar's ring reacts to it identically, but its own seconds-scale, self-scheduling
   // timer rather than a slot on `syncPoller`'s shared one. See `cloudPoller.ts`'s header for
@@ -5576,7 +5609,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     describeMissingToken: () => cloudToken.explain(),
     // With no refresh cycle any more, a successful tick is the only signal that a pasted
     // token actually works — the Settings pane's "confirmed Ns ago" is driven from it.
-    onSynced: () => cloudToken.accepted(),
+    //
+    // Doubling as the skill pusher's own slow re-scan: a skill edited through a future
+    // `skill:save` handler already calls `skillsChanged()` for immediacy, but this is the
+    // backstop for whatever reaches the store some other way. `scan()` makes no request at
+    // all when nothing has changed, so riding this tick costs nothing extra on a quiet board.
+    onSynced: () => {
+      cloudToken.accepted();
+      cloudSkillPusher.scan();
+    },
     // What a browser names this desktop by, once it has more than one to choose between —
     // see `ClientInfo` on `@protocol/wire`. Built above rather than inline because this is
     // the only side of `cloudPoller.ts` that is allowed to touch Electron and the connection
@@ -5651,6 +5692,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     assignmentPoller,
     cloudEvents,
     cloudAttachments,
+    cloudSkillPusher,
+    skillsChanged,
     focusTracker,
     claudeUsagePoller,
     updater,
