@@ -85,6 +85,7 @@ import { createAutomationHandlers } from './automationHandlers';
 import type { Automation } from '@shared/automation';
 import {
   isBlockedishStatus,
+  linearCategory,
   resolveGitHubColumn,
   resolveLinearColumn,
 } from '@shared/statusResolve';
@@ -199,7 +200,7 @@ import {
   issuesToRecheck as linearIssuesToRecheck,
   reconcileLinearIssues,
 } from './linear/linearSync';
-import type { LinearWorkflowState } from './linear/linearMove';
+import { resolveLinearMove, shouldLearnState, type LinearWorkflowState } from './linear/linearMove';
 import {
   forgeName,
   mrIsSettled,
@@ -4735,6 +4736,69 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   };
 
   /**
+   * Remember that a Linear workflow STATE means the column the user just dropped a card
+   * into. `learnStatusColumn`/`learnLabelColumn` above, a tracker over each — same reason,
+   * same shape: the decision of whether the drag taught us anything is `shouldLearnState`'s,
+   * in `linear/linearMove.ts` where it is testable; this is only the trim, the guard and the
+   * write.
+   */
+  const learnStateColumn = (
+    stateName: string,
+    stateType: LinearWorkflowState['type'],
+    column: BoardColumn,
+  ): void => {
+    const name = stateName.trim();
+    const settings = store.getSettings();
+    const { linear } = settings;
+    if (!shouldLearnState(name, stateType, column, linear)) return;
+    const next: AppSettings = {
+      ...settings,
+      linear: {
+        ...linear,
+        learnedStateColumns: { ...linear.learnedStateColumns, [name]: column },
+      },
+    };
+    store.saveSettings(next);
+    send('settings:changed', next);
+  };
+
+  /**
+   * Write a card's move back to Linear — `moveGitHubIssue`, a tracker over, under the same
+   * contract: called BEFORE any local write, and it **throws** rather than returning a
+   * failure, so `task:move` rejects and the optimistic move in the UI rolls back.
+   *
+   * BLOCKED and a no-op never reach here with a `target` — `resolveLinearMove` already read
+   * those as local-only — but a team with no state for the dropped column still throws via
+   * `refusal`, same as JIRA's "no transition means this column" error above.
+   */
+  const moveLinearIssue = async (task: Task, toColumn: BoardColumn): Promise<TransitionOutcome> => {
+    const { linear } = store.getSettings();
+    if (!linear.enabled || !task.externalId) return { applied: false, patch: {} };
+
+    // Cached per team (`task.phase`, for a Linear card) the same way `linear:states` caches
+    // it — see `linearStatesCache` above, cleared on every sync so a state a team adds
+    // mid-session is not invisible until restart.
+    let states = linearStatesCache.get(task.phase);
+    if (!states) {
+      states = await buildLinearClient().listTeamStates(task.phase);
+      linearStatesCache.set(task.phase, states);
+    }
+
+    const resolution = resolveLinearMove(task, toColumn, { teamKey: task.phase, states }, linear);
+    if (resolution.refusal) throw new Error(resolution.refusal);
+    if (!resolution.target) return { applied: false, patch: {} };
+
+    const { state } = resolution.target;
+    await buildLinearClient().updateIssueState(task.externalId, state.id);
+    learnStateColumn(state.name, state.type, toColumn);
+
+    return {
+      applied: true,
+      patch: { externalStatus: state.name, externalStatusCategory: linearCategory(state.type) },
+    };
+  };
+
+  /**
    * The forge write one drop needs, whichever forge the card came from, or null when it came
    * from neither. One place, so the two controls that move a card — the board's drag and the
    * detail pane's dropdown — cannot drift into supporting different trackers.
@@ -4742,7 +4806,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * Each resolver answers only its own half: the local half (`resolveMove`) is shared and is
    * already in hand by the time this is called, and the GitHub resolver's `target` is the one
    * fact it adds — which column the ISSUE has to be made to say, or null for a card GitHub has
-   * never heard of.
+   * never heard of. Linear's own resolver (`resolveLinearMove`) lives inside `moveLinearIssue`
+   * instead, since unlike GitHub's it can also refuse the move outright.
    */
   const writeMoveToForge = async (
     task: Task,
@@ -4750,6 +4815,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     toColumn: BoardColumn,
   ): Promise<TransitionOutcome | null> => {
     if (move.jiraTransition) return transitionIssue(task, move.jiraTransition, toColumn);
+    if (task.externalSource === 'linear') return moveLinearIssue(task, toColumn);
     const target = resolveGitHubMove(task, toColumn).target;
     return target ? moveGitHubIssue(task, target) : null;
   };
