@@ -98,6 +98,10 @@ describe('the channels that DO relay', () => {
     'task:diffSummary',
     'task:diffFile',
     'task:diffImage',
+    'review:list',
+    'review:add',
+    'review:update',
+    'review:delete',
   ];
 
   for (const channel of MUST_RELAY) {

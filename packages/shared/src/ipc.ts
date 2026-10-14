@@ -69,7 +69,17 @@ import type { AttentionAnswer, AttentionItem } from './attention';
 import type { AuthState } from './auth';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
-import type { DiffFileResult, DiffImageResult, DiffSummaryResult } from './review';
+import type {
+  DiffFileResult,
+  DiffImageResult,
+  DiffSummaryResult,
+  ReviewAddResult,
+  ReviewComment,
+  ReviewCommentInput,
+  ReviewCommentPatch,
+  ReviewDeleteResult,
+  ReviewUpdateResult,
+} from './review';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { TicketLinkResult } from './ticketLinks';
 import type { AppSettings, LinearStateType } from './settings';
@@ -772,6 +782,25 @@ export interface IpcApi {
    * `DIFF_IMAGE_MAX_BYTES` comes back `tooLarge` instead. `stale` as for `task:diffFile`.
    */
   'task:diffImage': (taskId: string, diffId: string, path: string) => Promise<DiffImageResult>;
+  /** Every draft and sent comment on a card's review, in no particular order. */
+  'review:list': (taskId: string) => Promise<ReviewComment[]>;
+  /**
+   * Add one review comment, anchored to a line (or range, via `start`) in `diffId`. `stale`
+   * when the worktree has moved on since `diffId`, same as `task:diffFile`.
+   */
+  'review:add': (input: ReviewCommentInput) => Promise<ReviewAddResult>;
+  /**
+   * Edit a draft comment's body, its anchor, or both. Refused `sent` once the comment has
+   * gone out in a review message — it is no longer a draft to edit — or `stale` when an
+   * anchor move names a `diffId` the worktree has moved on since.
+   */
+  'review:update': (
+    taskId: string,
+    id: string,
+    patch: ReviewCommentPatch,
+  ) => Promise<ReviewUpdateResult>;
+  /** Remove a draft comment. Refused `sent` once it has gone out in a review message. */
+  'review:delete': (taskId: string, id: string) => Promise<ReviewDeleteResult>;
 
   /**
    * Delegate a My Tasks card to an agent: persist the assignment (agent project +
