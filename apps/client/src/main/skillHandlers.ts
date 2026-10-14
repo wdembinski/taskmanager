@@ -161,7 +161,9 @@ function importSkillText(
       status: 'refused',
       source: ctx.source,
       reason: 'unreadable',
-      message: `Could not import "${parsed.name}".`,
+      // Never word a main-process string as the keyword import followed by a quote: electron-vite
+      // mistakes it for an import statement and injects its shim into it (scripts/check-esm-shim.mjs).
+      message: `Could not save the imported skill "${parsed.name}".`,
     };
   }
   return { status: 'imported', skill: saved.skill, warnings: parsed.warnings, source: ctx.source };
