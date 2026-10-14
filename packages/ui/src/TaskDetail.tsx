@@ -59,6 +59,7 @@ import { draftKey, useDraft } from './drafts';
 import type { CardSection } from './layout/compactRoute';
 import { MergeRequests } from './MergeRequests';
 import { PaneLoading } from './PaneLoading';
+import { ReviewPane } from './review/ReviewPane';
 import { TaskChain } from './TaskChain';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
@@ -1157,18 +1158,21 @@ export function TaskDetail({
   );
 
   const changesContent = !isStep && (
-    <MergeRequests
-      mergeRequests={mergeRequests}
-      onMarkRead={(id) => void transport.invoke('mr:markRead', id)}
-      onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
-      onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
-      onRebase={(id) => void transport.invoke('mr:rebase', id)}
-      onMerge={(id, message) => transport.invoke('mr:merge', id, { message })}
-      onLoadMergeProposal={(id) => transport.invoke('mr:mergeProposal', id)}
-      afterMergePipeline={afterMergePipeline}
-      mrRebaseButton={mrRebaseButton}
-      mrMergeButton={mrMergeButton}
-    />
+    <>
+      <ReviewPane taskId={task.id} />
+      <MergeRequests
+        mergeRequests={mergeRequests}
+        onMarkRead={(id) => void transport.invoke('mr:markRead', id)}
+        onMarkEventsSeen={(id) => void transport.invoke('mr:markEventsSeen', id)}
+        onRename={(id, name) => void transport.invoke('mr:setMergeRequestName', id, name)}
+        onRebase={(id) => void transport.invoke('mr:rebase', id)}
+        onMerge={(id, message) => transport.invoke('mr:merge', id, { message })}
+        onLoadMergeProposal={(id) => transport.invoke('mr:mergeProposal', id)}
+        afterMergePipeline={afterMergePipeline}
+        mrRebaseButton={mrRebaseButton}
+        mrMergeButton={mrMergeButton}
+      />
+    </>
   );
 
   // A single section (the compact card screen's own tab) replaces both the band and the
