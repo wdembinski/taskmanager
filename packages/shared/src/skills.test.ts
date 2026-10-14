@@ -6,6 +6,8 @@ import {
   parseSkillRef,
   serializeSkillMarkdown,
   skillNameFromFileName,
+  skillBodyBytes,
+  skillTooLargeMessage,
   SKILL_BODY_MAX,
   type SkillRef,
 } from './skills';
@@ -13,6 +15,30 @@ import {
 describe('SKILL_BODY_MAX', () => {
   it('is 64 KiB', () => {
     expect(SKILL_BODY_MAX).toBe(65536);
+  });
+});
+
+describe('skillBodyBytes', () => {
+  it('counts ASCII text as one byte per character', () => {
+    expect(skillBodyBytes('abc')).toBe(3);
+    expect(skillBodyBytes('')).toBe(0);
+  });
+
+  it('counts a multibyte character in bytes, not UTF-16 code units', () => {
+    // U+4E2D ("中") is 3 bytes in UTF-8 but one UTF-16 code unit — `.length` would read 1.
+    expect(skillBodyBytes('中')).toBe(3);
+    expect('中'.length).toBe(1);
+  });
+});
+
+describe('skillTooLargeMessage', () => {
+  it('names both the rounded-up size and the cap, in KiB', () => {
+    expect(skillTooLargeMessage(SKILL_BODY_MAX + 1)).toBe('too large to sync (65 KiB > 64 KiB)');
+  });
+
+  it('never rounds down to the cap itself, even one byte over', () => {
+    const message = skillTooLargeMessage(SKILL_BODY_MAX + 1);
+    expect(message).not.toContain('64 KiB > 64 KiB');
   });
 });
 

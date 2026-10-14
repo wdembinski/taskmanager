@@ -29,6 +29,7 @@ import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
 import { PersonalAccessToken } from '../entities/personalAccessToken.entity';
 import { SettingsMirror } from '../entities/settingsMirror.entity';
+import { SkillMirror } from '../entities/skillMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
@@ -53,6 +54,7 @@ export const AppDataSource = new DataSource({
     PersonalAccessToken,
     ProjectMirror,
     SettingsMirror,
+    SkillMirror,
     TaskMirror,
     Tombstone,
   ],
