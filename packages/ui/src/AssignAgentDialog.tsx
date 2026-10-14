@@ -39,6 +39,7 @@ import {
   MessageBarBody,
   Option,
   Textarea,
+  ToggleButton,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
@@ -50,6 +51,7 @@ import type { Project, Task } from '@tm/shared/model';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
 import { ModelField } from './ModelField';
 import { PlanningModelField } from './PlanningModelField';
+import { variantCountNote, type AssignCount } from './variantCount';
 import {
   BRANCH_TYPES,
   buildBranchName,
@@ -120,6 +122,8 @@ const useStyles = makeStyles({
   /** The Instructions textarea plus its template menu, side by side. */
   notesRow: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
   notesArea: { flex: 1, minWidth: 0 },
+  /** The ×1 ×2 ×3 segmented control and its "≈ N sessions" note, in one row. */
+  countRow: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' },
 });
 
 export interface AssignAgentDialogProps {
@@ -156,6 +160,9 @@ export function AssignAgentDialog({
   // project's. See the seeding below.
   const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
   const [mode, setMode] = useState<PermissionMode>('acceptEdits');
+  // ×1 is Assign agent as it always was; ×2/×3 start a variant group instead — see
+  // `variantCountNote`. Reset on open, same as every other field below.
+  const [count, setCount] = useState<AssignCount>(1);
   const [notes, setNotes] = useState('');
   // The branch, and the Conventional Commits type it is proposed from. `branchTouched`
   // is what stops re-proposing over a name the human has edited.
@@ -178,6 +185,7 @@ export function AssignAgentDialog({
     if (!card) return;
     setError(null);
     setNotes('');
+    setCount(1);
     const resolved = seedAssignProject(card, projects);
     setProjectId(resolved?.id ?? '');
     // The card's own model ONLY: reading the project's in as a seed made a fresh assignment
@@ -263,23 +271,58 @@ export function AssignAgentDialog({
     });
   }
 
+  /** The delegation itself — agent project, model/mode overrides, instructions, branch. */
+  function buildAssignInput(): {
+    agentProjectId: string;
+    mode: PermissionMode;
+    model: ClaudeModel | undefined;
+    planningModel: ClaudeModel | undefined;
+    notes: string | undefined;
+    branch: string | undefined;
+  } {
+    return {
+      agentProjectId: projectId,
+      mode,
+      // Omitted rather than null: `task:assignAgent` maps a missing model to null, which
+      // is the same "follow the project" this dialog means by it.
+      model: model ?? undefined,
+      planningModel: planningModel ?? undefined,
+      notes: notes.trim() || undefined,
+      branch: branch.trim() || undefined,
+    };
+  }
+
   async function assign(start: boolean): Promise<void> {
     if (!task || !projectId) return;
     setBusy(true);
     setError(null);
     try {
       const updated = await transport.invoke('task:assignAgent', task.id, {
-        agentProjectId: projectId,
-        mode,
-        // Omitted rather than null: `task:assignAgent` maps a missing model to null, which
-        // is the same "follow the project" this dialog means by it.
-        model: model ?? undefined,
-        planningModel: planningModel ?? undefined,
-        notes: notes.trim() || undefined,
-        branch: branch.trim() || undefined,
+        ...buildAssignInput(),
         start,
       });
       onAssigned(updated);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** ×2/×3: fan the same delegation out over `count` hidden rows instead of the card. */
+  async function startVariants(): Promise<void> {
+    if (!task || !projectId || count === 1) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await transport.invoke(
+        'task:startVariants',
+        task.id,
+        count,
+        buildAssignInput(),
+      );
+      onAssigned(result.leader);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -361,6 +404,31 @@ export function AssignAgentDialog({
                         </Option>
                       ))}
                     </Dropdown>
+                  </Field>
+
+                  {/* ×1 is Assign agent exactly as it always was. ×2/×3 start a variant
+                      group instead — N hidden rows running the same card, compared once
+                      they finish — so the secondary Assign button below is disabled for
+                      those two: a variant group always starts immediately. */}
+                  <Field label="How many attempts">
+                    <div className={styles.countRow}>
+                      {([1, 2, 3] as const).map((n) => (
+                        <ToggleButton
+                          key={n}
+                          size="small"
+                          appearance="subtle"
+                          checked={count === n}
+                          onClick={() => setCount(n)}
+                        >
+                          ×{n}
+                        </ToggleButton>
+                      ))}
+                      {variantCountNote(count, selected?.concurrency ?? 1) && (
+                        <Body1 className={styles.hint}>
+                          {variantCountNote(count, selected?.concurrency ?? 1)}
+                        </Body1>
+                      )}
+                    </div>
                   </Field>
 
                   {/* Same pair, and the same reason for no hints inside the row, as the
@@ -474,17 +542,20 @@ export function AssignAgentDialog({
             <Button
               appearance="secondary"
               onClick={() => void assign(false)}
-              disabled={busy || !projectId || branchError !== null}
+              // A variant group always starts right away — there is no card left idle to
+              // talk to first, only N rows about to run — so ×2/×3 disable this button
+              // rather than offer a no-start path nothing downstream can act on.
+              disabled={busy || !projectId || branchError !== null || count !== 1}
               title="Set the agent up on this card without starting it."
             >
               Assign
             </Button>
             <Button
               appearance="primary"
-              onClick={() => void assign(true)}
+              onClick={() => void (count === 1 ? assign(true) : startVariants())}
               disabled={busy || !projectId || branchError !== null}
             >
-              {busy ? 'Starting…' : 'Assign & start'}
+              {busy ? 'Starting…' : count === 1 ? 'Assign & start' : `Start ${count} variants`}
             </Button>
           </DialogActions>
         </DialogBody>

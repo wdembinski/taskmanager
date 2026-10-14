@@ -738,6 +738,14 @@ describe('isBoardCard', () => {
       isBoardCard(task({ projectId: 'tickets-1', source: 'ticket', parentTaskId: 'c1' })),
     ).toBe(false);
   });
+
+  // A variant row (F10) is delivered to the renderer for the compare view, but it is not
+  // a card of its own — the leader is, and only the leader's column belongs to the human.
+  it('is false for a variant row, even one filed on the Personal board', () => {
+    expect(isBoardCard(task({ projectId: PERSONAL_PROJECT_ID, variantOf: 'leader-1' }))).toBe(
+      false,
+    );
+  });
 });
 
 describe('isVariantRow', () => {

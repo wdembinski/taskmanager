@@ -65,6 +65,7 @@ import type { IssuePage, IssueProviderId, IssueQuery } from './issues';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
+import type { VariantCount } from './variants';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { AuthState } from './auth';
 import type { LimitState } from './limit';
@@ -845,6 +846,24 @@ export interface IpcApi {
    * way, so a caller that catches still has the card.
    */
   'task:resumeAgent': (taskId: string) => Promise<Task>;
+  /**
+   * Start a ×2/×3 variant group on a card (F10): the same delegation `task:assignAgent`
+   * carries out — project/model/mode, instructions on the timeline, the attachments copied
+   * across — but fanned out over `count` hidden rows instead of running the card itself.
+   * Each row gets its own id, worktree, branch and session, so `RunRefusal
+   * 'already-running'` keeps meaning exactly what it means today. Rejects the same way
+   * `task:assignAgent` does if the card cannot run at all, or if it cannot lead a group
+   * (already a variant row, a step, mid-run, or filed nowhere runnable).
+   *
+   * A usage limit is NOT one of those: as with `task:assignAgent`, the group sticks and
+   * the engine parks whichever rows a gate is holding, so this resolves with the leader and
+   * its rows (one or more carrying `blocked-by-limit`) rather than throwing.
+   */
+  'task:startVariants': (
+    leaderId: string,
+    count: VariantCount,
+    input: AssignAgentInput,
+  ) => Promise<{ leader: Task; rows: Task[] }>;
   /**
    * Say something to the agent working this card (Phase 12) — the card's half of a
    * conversation, not an answer to a question it asked. The message is recorded on the

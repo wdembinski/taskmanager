@@ -47,6 +47,7 @@ import {
   uniqueTicketPrefix,
 } from '@shared/ticketKey';
 import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
+import type { VariantRowDraft } from '@shared/variants';
 import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
@@ -578,6 +579,19 @@ export interface Store {
       projectTagId?: string | null;
     },
   ): Task | undefined;
+  /**
+   * Create one row of a ×N variant group (F10): a `buildAdhocTask`-shaped card on the
+   * LEADER's board, carrying `draft`'s title/description/agent settings and `branch` as
+   * its `agentBranch` — the same value every row of the group gets, so an unset one falls
+   * back (via `taskBranch`) to the row's OWN id rather than colliding on the leader's.
+   * `projectTagId` follows `leader.projectTagId ?? draft.agentProjectId`, the same rule
+   * `assignAgentToTask` applies to an ordinary delegation. Never drawn as a card of its
+   * own — `isBoardCard` excludes a row with `variantOf` set (`@shared/board`) — but
+   * delivered to the renderer, which the compare view needs.
+   */
+  createVariantRow(leader: Task, draft: VariantRowDraft, branch: string | null): Task;
+  /** Every live (non-archived) variant row — one leader's, or every leader's when omitted. */
+  listVariantRows(leaderId?: string): Task[];
   /** A card's steps, in execution order (empty for a card with no subtasks). */
   getSubtasks(parentId: string): Task[];
   /**
@@ -2712,6 +2726,15 @@ export function createStore(dbPath: string): Store {
   // would report four removals for one card and then delete three rows that were already gone.
   const selectArchivedBefore = db.prepare(
     `SELECT id FROM tasks WHERE archivedAt IS NOT NULL AND archivedAt < ? AND parentTaskId IS NULL`,
+  );
+  // Variant rows (F10) — live ones only, for `listVariantRows`. A discarded (archived) row
+  // is not queued or counted by the scheduler, so it is excluded the same way every other
+  // board read excludes one.
+  const selectVariantRowsForLeader = db.prepare(
+    `SELECT * FROM tasks WHERE variantOf = ? AND archivedAt IS NULL ORDER BY "order"`,
+  );
+  const selectAllVariantRows = db.prepare(
+    `SELECT * FROM tasks WHERE variantOf IS NOT NULL AND archivedAt IS NULL ORDER BY "order"`,
   );
   const selectSubtasks = db.prepare(
     `SELECT * FROM tasks WHERE parentTaskId = ? ORDER BY "order", rowid`,
@@ -4956,6 +4979,32 @@ export function createStore(dbPath: string): Store {
       const task = buildAdhocTask(projectId, order, title, input);
       insertTask.run(taskToRow(task));
       return task;
+    },
+
+    createVariantRow(leader, draft, branch) {
+      const order = (nextOrder.get(leader.projectId) as { next: number }).next;
+      const task: Task = {
+        ...buildAdhocTask(leader.projectId, order, draft.title, {
+          description: draft.description,
+          projectTagId: leader.projectTagId ?? draft.agentProjectId,
+        }),
+        variantOf: draft.variantOf,
+        variantLabel: draft.variantLabel,
+        agentProjectId: draft.agentProjectId,
+        agentMode: draft.agentMode,
+        agentModel: draft.agentModel,
+        agentPlanningModel: draft.agentPlanningModel,
+        agentBranch: branch,
+      };
+      insertTask.run(taskToRow(task));
+      return task;
+    },
+
+    listVariantRows(leaderId) {
+      if (leaderId) {
+        return (selectVariantRowsForLeader.all(leaderId) as TaskRow[]).map(rowToTask);
+      }
+      return (selectAllVariantRows.all() as TaskRow[]).map(rowToTask);
     },
 
     getSubtasks(parentId) {

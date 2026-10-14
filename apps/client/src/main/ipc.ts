@@ -256,6 +256,7 @@ import { AutomationClock } from './automationClock';
 import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
+import { canStartVariants, planVariants, VARIANT_REFUSAL_MESSAGE } from '@shared/variants';
 import { createActivityRecorder } from './activityRecorder';
 import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
@@ -725,6 +726,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       scheduler.restoreParkedRuns();
       scheduler.restoreAuthGate();
       scheduler.restoreLimitGate();
+      // F10: re-enqueue any variant row still `pending` behind its project's concurrency —
+      // `variantQueue` is in-memory only and does not survive the restart that just happened.
+      scheduler.restoreVariantQueue();
     });
 
   /**
@@ -1248,6 +1252,76 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     }
     return task;
   });
+
+  /**
+   * Start a ×N variant group on a card (F10) — the same delegation `task:assignAgent`
+   * carries out, fanned out over `count` hidden rows instead of the card itself. Shares
+   * `assignAgentToTask`'s own checks (a repo behind the project, a usable model either
+   * side, a branch name git will accept) rather than calling it: a variant row is never
+   * the card the human filed, so there is nothing here for `assignAgentToTask` to patch.
+   */
+  handle('task:startVariants', async (leaderId, count, input) => {
+    const leader = store.getTask(leaderId);
+    const eligible = canStartVariants(leader, input);
+    if ('refused' in eligible) throw new Error(VARIANT_REFUSAL_MESSAGE[eligible.refused]);
+    if (!leader) throw new Error('Task not found.');
+
+    const target = store.getProject(input.agentProjectId);
+    if (!target || !hasRepo(target)) {
+      throw new Error('Pick an agent project to delegate this task to.', { cause: 'no-project' });
+    }
+    if (input.model !== undefined && !isUsableModel(input.model)) {
+      throw new Error(`Not a usable model: ${input.model}`);
+    }
+    if (input.planningModel !== undefined && !isUsableModel(input.planningModel)) {
+      throw new Error(`Not a usable model: ${input.planningModel}`);
+    }
+    const branch = input.branch?.trim() || null;
+    if (branch) {
+      const branchCheck = validateBranchName(branch);
+      if (!branchCheck.ok) throw new Error(`That branch name won't work: ${branchCheck.reason}.`);
+    }
+
+    const drafts = planVariants(
+      { ...leader, description: leader.externalDescription },
+      count,
+      input,
+      store.attachmentsForTask(leader.id),
+    );
+    const rowIds: string[] = [];
+    for (const draft of drafts) {
+      const row = store.createVariantRow(leader, draft, branch);
+      if (draft.notes) store.addComment(row.projectId, row.id, draft.notes);
+      if (draft.attachmentNames.length > 0) {
+        const paths = draft.attachmentNames.map((name) =>
+          attachmentFile(userData, leader.id, name),
+        );
+        await addAttachments(store, userData, row.id, paths);
+      }
+      rowIds.push(row.id);
+    }
+    store.addComment(
+      leader.projectId,
+      leader.id,
+      `Started ${count} variants — ${drafts.map((d) => d.variantLabel).join(', ')}.`,
+    );
+
+    const outcomes = scheduler.startVariantRows(rowIds);
+    for (const outcome of outcomes) {
+      if ('refused' in outcome && !isReportablePark(outcome.refused)) {
+        throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
+      }
+    }
+    send('project:tasksChanged', {
+      projectId: leader.projectId,
+      tasks: store.getTasks(leader.projectId),
+    });
+    return {
+      leader: store.getTask(leaderId) as Task,
+      rows: rowIds.map((id) => store.getTask(id) as Task),
+    };
+  });
+
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note, opts) => scheduler.replanCard(taskId, note, opts));
   handle('task:create', async (projectId, input) => {
