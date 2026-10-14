@@ -58,12 +58,15 @@ import {
   type BranchType,
 } from '@tm/shared/branchName';
 import { seedAssignProject } from '@tm/shared/agentProjects';
+import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import {
   modeForPickedProject,
   NO_AGENT_PROJECTS_MESSAGE,
   PERMISSION_MODES,
   seedPermissionMode,
 } from './agentPickers';
+import { TemplateMenu } from './TemplateMenu';
+import { applyTemplateToText, templateVarsForTask } from './templateInsert';
 import { useTransport } from './transport';
 
 const useStyles = makeStyles({
@@ -114,6 +117,9 @@ const useStyles = makeStyles({
   dropdown: { minWidth: 0, width: '100%' },
   hint: { color: tokens.colorNeutralForeground3 },
   ticket: { color: tokens.colorNeutralForeground2 },
+  /** The Instructions textarea plus its template menu, side by side. */
+  notesRow: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
+  notesArea: { flex: 1, minWidth: 0 },
 });
 
 export interface AssignAgentDialogProps {
@@ -159,6 +165,8 @@ export function AssignAgentDialog({
   const [prefix, setPrefix] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The Instructions textarea, so a template can land where the caret actually is. */
+  const notesRef = useRef<HTMLTextAreaElement>(null);
 
   // Seed once per opening — keyed on the card, not the task object, so a background
   // JIRA sync replacing it can't wipe what the user is halfway through typing.
@@ -236,6 +244,23 @@ export function AssignAgentDialog({
   function pickProject(id: string): void {
     setProjectId(id);
     setMode((current) => modeForPickedProject(agentProjects, id, current));
+  }
+
+  /** Insert a picked template into Instructions at the caret, replacing any selection. */
+  function pickTemplate(template: PromptTemplate): void {
+    if (!task) return;
+    const el = notesRef.current;
+    const selection = el ? { start: el.selectionStart, end: el.selectionEnd } : notes.length;
+    const vars = templateVarsForTask(task, selected);
+    const { text, caret } = applyTemplateToText(notes, selection, template, vars);
+    setNotes(text);
+    requestAnimationFrame(() => {
+      const node = notesRef.current;
+      if (node) {
+        node.focus();
+        node.setSelectionRange(caret, caret);
+      }
+    });
   }
 
   async function assign(start: boolean): Promise<void> {
@@ -418,12 +443,17 @@ export function AssignAgentDialog({
                     label="Instructions (optional)"
                     hint="Added to the task's timeline and handed to the agent with the ticket."
                   >
-                    <Textarea
-                      value={notes}
-                      resize="vertical"
-                      onChange={(_e, d) => setNotes(d.value)}
-                      placeholder="Anything the ticket doesn't say — where to start, what to avoid…"
-                    />
+                    <div className={styles.notesRow}>
+                      <Textarea
+                        className={styles.notesArea}
+                        value={notes}
+                        resize="vertical"
+                        textarea={{ ref: notesRef }}
+                        onChange={(_e, d) => setNotes(d.value)}
+                        placeholder="Anything the ticket doesn't say — where to start, what to avoid…"
+                      />
+                      {task && <TemplateMenu surface="assign" onPick={pickTemplate} />}
+                    </div>
                   </Field>
 
                   <Body1 className={styles.hint}>

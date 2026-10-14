@@ -85,6 +85,7 @@ import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/sha
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
 import { isEpic } from '@tm/shared/tickets';
 import { LINK_GATE_LABEL } from '@tm/shared/taskChain';
+import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import {
   DEFAULT_PERMISSION_MODE,
   modeForPickedProject,
@@ -106,6 +107,8 @@ import {
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
 import { ModelField } from './ModelField';
 import { TicketTypeFields } from './projects/TicketTypeFields';
+import { TemplateMenu } from './TemplateMenu';
+import { applyTemplateToText, templateVarsForNewTask } from './templateInsert';
 import { useTransport } from './transport';
 
 /** The task types offered in the picker, with their display labels. */
@@ -157,6 +160,9 @@ const useStyles = makeStyles({
   },
   row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
   hint: { color: tokens.colorNeutralForeground3 },
+  /** The description textarea plus its template menu, side by side. */
+  descRow: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
+  descArea: { flex: 1, minWidth: 0 },
   /** `TicketTypeFields`' two pickers, side by side — same layout as `TicketDrawer`'s. */
   fieldsRow: { display: 'flex', gap: '12px' },
   fieldsCell: { flex: 1, minWidth: 0 },
@@ -812,6 +818,26 @@ export function AddTaskDialog({
     });
   }
 
+  /**
+   * Insert a picked template at the caret, replacing any selection — same caret-restore
+   * dance as {@link insertRefs}, since a template can land anywhere in the brief, not only
+   * at the end.
+   */
+  function pickTemplate(template: PromptTemplate): void {
+    const el = textareaRef.current;
+    const selection = el ? { start: el.selectionStart, end: el.selectionEnd } : description.length;
+    const vars = templateVarsForNewTask({ title, projectName: selectedBoard?.name ?? 'Personal' });
+    const { text, caret } = applyTemplateToText(description, selection, template, vars);
+    setDescription(text);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node) {
+        node.focus();
+        node.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
   /** Take paths on, and cite whatever was actually new — attaching writes the `@name` for you. */
   function stage(paths: string[]): void {
     const next = stageAttachments(staged, paths);
@@ -1047,16 +1073,22 @@ export function AddTaskDialog({
                       : 'What this card is, and what done means. The agent’s prompt quotes it.'
                 }
               >
-                <Textarea
-                  value={description}
-                  resize="vertical"
-                  textarea={{ ref: textareaRef }}
-                  onChange={(_e, d) => setDescription(d.value)}
-                  // Only when files can be staged at all — a browser has no path for a
-                  // pasted file to resolve to, and keeps its own native paste here instead.
-                  onPaste={filesEnabled ? onDescriptionPaste : undefined}
-                  placeholder={isStep ? 'What this step must deliver…' : 'What this card is about…'}
-                />
+                <div className={styles.descRow}>
+                  <Textarea
+                    className={styles.descArea}
+                    value={description}
+                    resize="vertical"
+                    textarea={{ ref: textareaRef }}
+                    onChange={(_e, d) => setDescription(d.value)}
+                    // Only when files can be staged at all — a browser has no path for a
+                    // pasted file to resolve to, and keeps its own native paste here instead.
+                    onPaste={filesEnabled ? onDescriptionPaste : undefined}
+                    placeholder={
+                      isStep ? 'What this step must deliver…' : 'What this card is about…'
+                    }
+                  />
+                  <TemplateMenu surface="add-task" onPick={pickTemplate} />
+                </div>
               </Field>
               {/* The files the work is ABOUT, picked while the brief is being written rather
                   than afterwards in a pane — the screenshot is on the clipboard at the moment
