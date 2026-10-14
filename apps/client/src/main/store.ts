@@ -57,6 +57,13 @@ import type {
   FiringKind,
 } from '@shared/automation';
 import {
+  formatSkillRef,
+  isValidSkillName,
+  parseSkillRef,
+  SKILL_BODY_MAX,
+  type Skill,
+} from '@shared/skills';
+import {
   type ActivityCursor,
   type ActivityDetail,
   type ActivityPage,
@@ -235,6 +242,8 @@ interface TaskRow {
   /** The automation that created or started this card; NULL = a human started it. See
    *  `Task.originAutomationId`. */
   originAutomationId: string | null;
+  /** JSON array of SkillRefs, NULL = none. See `Task.skillRefs`. */
+  skillRefs: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -298,6 +307,15 @@ interface ProjectRow {
   color: string | null;
   createdAt: number;
 }
+
+/**
+ * {@link Store.saveSkill}'s result: a successful upsert carries the skill back, freshly
+ * re-read from the row; a refusal names which precondition failed rather than throwing, so
+ * an editor can show it next to the field that caused it. Main-process only for now — F7.7
+ * can promote it to `@shared/skills` if the IPC layer ends up needing the same shape.
+ */
+export type SaveSkillResult =
+  { ok: true; skill: Skill } | { ok: false; reason: 'invalid-name' | 'too-large' | 'name-taken' };
 
 /**
  * The extra arguments a call must supply — none for a synchronous `fn`, and one nobody can
@@ -473,6 +491,12 @@ export interface Store {
    * unknown.
    */
   pinImport(id: string): Task | undefined;
+  /**
+   * Write a card or step's skill refs, normalising each through `parseSkillRef`/
+   * `formatSkillRef` and de-duplicating — the one writer of `Task.skillRefs`. Undefined for
+   * an unknown id, else the updated task.
+   */
+  setTaskSkillRefs(id: string, refs: readonly string[]): Task | undefined;
   /**
    * Destroy every card archived before `cutoff`, exactly as `deleteTask` would — the retention
    * backstop, so a board that archives forever does not grow forever. Returns how many cards
@@ -1077,6 +1101,27 @@ export interface Store {
    * the rule that fired them, with no way back to it.
    */
   deleteAutomation(id: string): void;
+  /** Every library skill (F7.4, `@shared/skills`), ordered by name — the order a picker or
+   *  list shows them in. */
+  getSkills(): Skill[];
+  /** One library skill by id, or `undefined` — `Task.skillRefs`' own lookup when it resolves
+   *  a `lib:<id>` ref. */
+  getSkill(id: string): Skill | undefined;
+  /**
+   * Upsert by id. Refuses rather than writing a row that would violate one of the
+   * invariants `@shared/skills` and the server's `/v1/skills` both enforce: an invalid
+   * `name`, a `body` over {@link SKILL_BODY_MAX}, or a `name` another id already owns.
+   * `createdAt` is kept from the first insert on every later save. Success re-reads the row
+   * rather than trusting `skill` back, the same discipline `pinImport`'s callers get from
+   * `getTask`.
+   */
+  saveSkill(skill: Skill): SaveSkillResult;
+  /**
+   * Remove one by id — `true` if a row actually went. A card's `skillRefs` are deliberately
+   * left in place: a dangling `lib:<id>` ref is a resolver's "not found" to show, not
+   * something this method's job to clean up.
+   */
+  deleteSkill(id: string): boolean;
   /**
    * Reserve one firing's receipt: `INSERT OR IGNORE` on `UNIQUE(automationId,
    * occurrenceKey)`. Returns `true` if `run` landed, `false` if that occurrence already has
@@ -1347,6 +1392,8 @@ export function createStore(dbPath: string): Store {
       -- started it. Plain TEXT with no foreign key, exactly as parentTaskId/epicTaskId
       -- already are, and never cleared once set — see Task.originAutomationId.
       originAutomationId     TEXT,
+      -- JSON array of SkillRefs (F7.4), NULL = none. Plain TEXT like labels/dependsOn.
+      skillRefs              TEXT,
       -- Same trigger-touched column as projects.updatedAt above, for the same reason.
       updatedAt              INTEGER
     );
@@ -1778,6 +1825,17 @@ export function createStore(dbPath: string): Store {
       sentAt    INTEGER           -- NULL = draft
     );
     CREATE INDEX IF NOT EXISTS idx_review_comments_task ON review_comments(taskId, createdAt);
+    -- Library skills (F7.4, @shared/skills): a reusable playbook this app owns end to end,
+    -- synced through its own endpoint rather than riding SyncRequest. New table, nothing to
+    -- migrate.
+    CREATE TABLE IF NOT EXISTS skills (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL,
+      body        TEXT NOT NULL,
+      createdAt   INTEGER NOT NULL,
+      updatedAt   INTEGER NOT NULL
+    );
   `);
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
@@ -2193,6 +2251,9 @@ export function createStore(dbPath: string): Store {
     // ran before this column existed, so a guess would credit one for a card it never
     // touched.
     ['originAutomationId', 'TEXT'],
+    // NULL on every pre-existing row = no skills attached, which is exactly true: nothing
+    // could attach one before this column existed.
+    ['skillRefs', 'TEXT'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -2481,7 +2542,8 @@ export function createStore(dbPath: string): Store {
         projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
         agentPlan, agentBranch, planRound, landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
-        storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId, originAutomationId)
+        storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId, originAutomationId,
+        skillRefs)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -2501,7 +2563,8 @@ export function createStore(dbPath: string): Store {
         -- that lost its epic or its due date between the form and the row would be the
         -- same bug wearing a different name.
         @ticketKey, @ticketNumber, @issueType, @epicTaskId, @milestoneId, @labels,
-        @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId, @originAutomationId)`,
+        @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId, @originAutomationId,
+        @skillRefs)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   // Native tickets. No foreign key backs epicTaskId (see the tasks table above), so deleting
@@ -2524,6 +2587,8 @@ export function createStore(dbPath: string): Store {
   );
   // One column, written by id, and never cleared — see `Task.pinnedImport`.
   const pinImportStmt = db.prepare(`UPDATE tasks SET pinnedImport = 1 WHERE id = @id`);
+  // The only writer of `skillRefs` — see `Task.skillRefs` and `setTaskSkillRefs`.
+  const setTaskSkillRefsStmt = db.prepare(`UPDATE tasks SET skillRefs = @skillRefs WHERE id = @id`);
   // The ids the retention sweep is allowed to destroy. Selected rather than deleted in one
   // statement so each goes out through the same `deleteTaskDeep` an explicit delete uses, and
   // takes its timeline and transcript with it — a bare DELETE would strand both.
@@ -3491,6 +3556,39 @@ export function createStore(dbPath: string): Store {
   }
 
   /**
+   * `refs`, kept only where `parseSkillRef` accepts them, re-formatted to the canonical
+   * `formatSkillRef` form and de-duplicated preserving first-seen order — what every write
+   * through `setTaskSkillRefs` normalises to before it reaches the column.
+   */
+  function normalizeSkillRefs(refs: readonly string[] | null | undefined): string[] {
+    if (!refs) return [];
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const raw of refs) {
+      const parsed = parseSkillRef(raw);
+      if (!parsed) continue;
+      const formatted = formatSkillRef(parsed);
+      if (seen.has(formatted)) continue;
+      seen.add(formatted);
+      result.push(formatted);
+    }
+    return result;
+  }
+
+  /** `Task.skillRefs` → the `skillRefs` column: normalised, empty reads back as NULL. */
+  function encodeSkillRefs(refs: readonly string[] | null | undefined): string | null {
+    const normalized = normalizeSkillRefs(refs);
+    return normalized.length > 0 ? JSON.stringify(normalized) : null;
+  }
+
+  /** The `skillRefs` column back to `Task.skillRefs`: NULL, unparseable JSON, and an
+   *  empty/all-invalid array all read as `null` — "none attached" either way. */
+  function parseSkillRefsColumn(raw: string | null): string[] | null {
+    const normalized = normalizeSkillRefs(parseStringArray(raw));
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  /**
    * Read a JSON object/array column back, or null when it is absent or unparseable.
    *
    * The caller decides what a missing value means: an inbox item with no `questions`
@@ -3596,6 +3694,7 @@ export function createStore(dbPath: string): Store {
       assigneeId: task.assigneeId ?? null,
       reporterId: task.reporterId ?? null,
       originAutomationId: task.originAutomationId ?? null,
+      skillRefs: encodeSkillRefs(task.skillRefs),
     };
   }
 
@@ -3680,6 +3779,7 @@ export function createStore(dbPath: string): Store {
       assigneeId: r.assigneeId ?? null,
       reporterId: r.reporterId ?? null,
       originAutomationId: r.originAutomationId ?? null,
+      skillRefs: parseSkillRefsColumn(r.skillRefs),
     };
   }
 
@@ -3997,6 +4097,7 @@ export function createStore(dbPath: string): Store {
        startAt = @startAt, dueAt = @dueAt, assigneeId = @assigneeId, reporterId = @reporterId,
        originAutomationId = @originAutomationId
      WHERE id = @id`,
+    // `skillRefs` is deliberately absent — see `setTaskSkillRefs`, its one writer.
   );
   // See `upsertCloudTask`: keeps a project's ticket allocator ahead of any number a pulled
   // ticket already carries, since `ticketSeq` itself never travels on the wire.
@@ -4050,6 +4151,49 @@ export function createStore(dbPath: string): Store {
     deleteAutomationStmt.run(id);
     deleteAutomationRunsForAutomation.run(id);
   });
+
+  // Library skills (F7.4, @shared/skills). Unlike automations, a skill's fields ARE its own
+  // columns rather than one JSON blob — nothing here needs a promoted column to query by, so
+  // there is nothing to keep in sync with a blob the way `enabled`/`nextRunAt` have to be.
+  const selectSkills = db.prepare(`SELECT * FROM skills ORDER BY name`);
+  const selectSkill = db.prepare(`SELECT * FROM skills WHERE id = ?`);
+  const selectSkillIdByName = db.prepare(`SELECT id FROM skills WHERE name = ?`);
+  const upsertSkillStmt = db.prepare(
+    `INSERT INTO skills (id, name, description, body, createdAt, updatedAt)
+     VALUES (@id, @name, @description, @body, @createdAt, @updatedAt)
+     ON CONFLICT(id) DO UPDATE SET
+       name = @name, description = @description, body = @body, updatedAt = @updatedAt`,
+  );
+  const deleteSkillStmt = db.prepare(`DELETE FROM skills WHERE id = ?`);
+
+  interface SkillRow {
+    id: string;
+    name: string;
+    description: string;
+    body: string;
+    createdAt: number;
+    updatedAt: number;
+  }
+
+  function rowToSkill(r: SkillRow): Skill {
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      body: r.body,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+    };
+  }
+
+  function getSkills(): Skill[] {
+    return (selectSkills.all() as SkillRow[]).map(rowToSkill);
+  }
+
+  function getSkill(id: string): Skill | undefined {
+    const row = selectSkill.get(id) as SkillRow | undefined;
+    return row ? rowToSkill(row) : undefined;
+  }
 
   interface AutomationRunRow {
     id: string;
@@ -4447,6 +4591,7 @@ export function createStore(dbPath: string): Store {
         // claims the card. Patchable rather than insert-only because a tracker firing's
         // card already exists — stamping it happens through this method, not a re-insert.
         'originAutomationId',
+        // `skillRefs` is deliberately absent — see `setTaskSkillRefs`, its one writer.
       ] as const;
       for (const col of columns) {
         const value = (patch as Record<string, unknown>)[col];
@@ -4523,6 +4668,12 @@ export function createStore(dbPath: string): Store {
       return getTask(id);
     },
 
+    setTaskSkillRefs(id, refs) {
+      if (!getTask(id)) return undefined;
+      setTaskSkillRefsStmt.run({ id, skillRefs: encodeSkillRefs(refs) });
+      return getTask(id);
+    },
+
     unarchiveTask(id) {
       if (!getTask(id)) return undefined;
       unarchiveTaskStmt.run({ id });
@@ -4558,6 +4709,8 @@ export function createStore(dbPath: string): Store {
         // `issues:import`, and a sync refresh of an already-pinned card must never clear it —
         // that would hand the card straight back to left-query archival the very next poll.
         // `pinImport` writes that column and nothing else.
+        //
+        // `skillRefs` is absent too — see `setTaskSkillRefs`, its one writer.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
@@ -5735,6 +5888,25 @@ export function createStore(dbPath: string): Store {
 
     deleteAutomation(id) {
       deleteAutomationTx(id);
+    },
+
+    getSkills,
+
+    getSkill,
+
+    saveSkill(skill) {
+      if (!isValidSkillName(skill.name)) return { ok: false, reason: 'invalid-name' };
+      if (Buffer.byteLength(skill.body, 'utf8') > SKILL_BODY_MAX) {
+        return { ok: false, reason: 'too-large' };
+      }
+      const ownedBy = selectSkillIdByName.get(skill.name) as { id: string } | undefined;
+      if (ownedBy && ownedBy.id !== skill.id) return { ok: false, reason: 'name-taken' };
+      upsertSkillStmt.run(skill);
+      return { ok: true, skill: getSkill(skill.id) as Skill };
+    },
+
+    deleteSkill(id) {
+      return deleteSkillStmt.run(id).changes > 0;
     },
 
     reserveAutomationRun(run) {
