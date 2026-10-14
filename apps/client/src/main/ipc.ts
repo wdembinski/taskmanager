@@ -83,7 +83,11 @@ import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
 import { createAutomationHandlers } from './automationHandlers';
 import type { Automation } from '@shared/automation';
-import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
+import {
+  isBlockedishStatus,
+  resolveGitHubColumn,
+  resolveLinearColumn,
+} from '@shared/statusResolve';
 import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
@@ -195,6 +199,7 @@ import {
   issuesToRecheck as linearIssuesToRecheck,
   reconcileLinearIssues,
 } from './linear/linearSync';
+import type { LinearWorkflowState } from './linear/linearMove';
 import {
   forgeName,
   mrIsSettled,
@@ -1988,6 +1993,141 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     if (!cipher) throw new Error('No Linear API key saved — add one in Settings.');
     return new LinearClient({ apiKey: decryptSecret(cipher, 'Linear') });
   };
+
+  /**
+   * The key's own identity, cached in memory only — unlike JIRA/GitHub's `app_state`-backed
+   * identity caches, a Linear API key has no base URL to key the cache by, so "the key
+   * changed" is the only invalidation that matters, and `linear:setCredentials`/
+   * `linear:clearCredentials` below already drop it on that.
+   */
+  let linearViewer: { id: string; name: string } | null = null;
+
+  /** Fetch the viewer on demand when the cache is empty. Fails soft to null. */
+  const linearViewerFor = async (
+    client: LinearClient,
+  ): Promise<{ id: string; name: string } | null> => {
+    if (linearViewer) return linearViewer;
+    try {
+      const viewer = await client.getViewer();
+      linearViewer = { id: viewer.id, name: viewer.displayName };
+      return linearViewer;
+    } catch (e) {
+      logMain('Linear viewer lookup failed', e);
+      return null;
+    }
+  };
+
+  /**
+   * One team's workflow states, cached per team key — see `syncLinear` below, which clears
+   * this on every sync so a state a team adds mid-session is picked up on the next one
+   * rather than staying invisible until restart.
+   */
+  const linearStatesCache = new Map<string, LinearWorkflowState[]>();
+
+  handle('linear:getConfigStatus', async () => {
+    const { linear } = store.getSettings();
+    return {
+      enabled: linear.enabled,
+      hasToken: store.loadLinearApiKey() !== null,
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      plainTextStorage: usesPlainTextStorage(),
+      // Linear has one auth mode and one fixed endpoint; 'server' is the honest answer here
+      // too, for the same reason it is for GitLab/GitHub above.
+      deployment: 'server' as const,
+      baseUrl: 'https://api.linear.app/graphql',
+    };
+  });
+
+  handle('linear:setCredentials', async (apiKey) => {
+    if (!apiKey.trim()) {
+      store.clearLinearApiKey();
+      // A changed key means a changed identity and possibly a changed workspace — neither
+      // cache is trustworthy against whatever comes next.
+      linearViewer = null;
+      linearStatesCache.clear();
+      return { ok: true, message: 'API key cleared.' };
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+      return {
+        ok: false,
+        message: 'OS secure storage is unavailable, so the API key was not saved.',
+      };
+    }
+    // Same paste hygiene as the JIRA/GitLab/GitHub tokens above.
+    const noise = tokenHadNoise(apiKey);
+    store.saveLinearApiKey(safeStorage.encryptString(sanitizeToken(apiKey)).toString('base64'));
+    linearViewer = null;
+    linearStatesCache.clear();
+    return {
+      ok: true,
+      message: usesPlainTextStorage()
+        ? 'API key saved — but this machine has no keyring, so it is only obfuscated on disk.'
+        : noise
+          ? 'API key saved — whitespace came with the paste and was stripped.'
+          : 'API key saved.',
+    };
+  });
+
+  handle('linear:clearCredentials', async () => {
+    store.clearLinearApiKey();
+    linearViewer = null;
+    linearStatesCache.clear();
+  });
+
+  handle('linear:testConnection', async () => {
+    try {
+      const viewer = await buildLinearClient().getViewer();
+      // The test is also the cheapest possible moment to learn who you are — see the GitHub
+      // test connection handler's own note on why that's worth caching rather than re-asking.
+      linearViewer = { id: viewer.id, name: viewer.displayName };
+      return {
+        ok: true,
+        displayName: viewer.displayName,
+        message: `Connected as ${viewer.displayName}.`,
+      };
+    } catch (e) {
+      logMain('Linear test connection failed', e);
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  handle('linear:teams', async () => {
+    const { linear } = store.getSettings();
+    if (!linear.enabled) return { teams: [], error: 'Linear is switched off.' };
+    try {
+      const teams = await buildLinearClient().listTeams();
+      return { teams, error: null };
+    } catch (e) {
+      logMain('Linear team list failed', e);
+      return { teams: [], error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  handle('linear:states', async (teamKey) => {
+    const { linear } = store.getSettings();
+    if (!linear.enabled) return { states: [], error: 'Linear is switched off.' };
+    try {
+      let states = linearStatesCache.get(teamKey);
+      if (!states) {
+        states = await buildLinearClient().listTeamStates(teamKey);
+        linearStatesCache.set(teamKey, states);
+      }
+      return {
+        states: states.map((s) => ({
+          id: s.id,
+          name: s.name,
+          type: s.type,
+          position: s.position,
+          // WITHOUT an override, the same contract `jira:statuses`' `category` keeps.
+          column: resolveLinearColumn(s.name, s.type).column,
+        })),
+        error: null,
+      };
+    } catch (e) {
+      logMain('Linear state list failed', e);
+      return { states: [], error: e instanceof Error ? e.message : String(e) };
+    }
+  });
 
   handle('github:getConfigStatus', async () => {
     const { github } = store.getSettings();
@@ -4207,6 +4347,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     const { linear, features } = store.getSettings();
     if (!linear.enabled) return store.getPersonalTasks();
     const client = buildLinearClient();
+    // A team's workflow states rarely change, but a stale set would silently outlive this
+    // app run otherwise — `linear:states` repopulates it, lazily, team by team.
+    linearStatesCache.clear();
+    // Who the key belongs to, so your own comments sit on your side of the pane below —
+    // see `githubIdentity`'s own note on why that's worth a call here.
+    const viewer = await linearViewerFor(client);
 
     const filterResult = buildIssueFilter(linear);
     if (!filterResult.ok) throw new Error(filterResult.error);
@@ -4278,6 +4424,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       overrides: linear.stateColumnOverrides,
       learned: linear.learnedStateColumns,
       comments,
+      // So answering a ticket in Linear's own UI never lights your own card.
+      isMine: viewer ? (c) => c.user?.id === viewer.id : undefined,
       rechecked,
       recheckedIds,
       truncated,
@@ -4306,6 +4454,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
     return tasks;
   };
+
+  handle('linear:sync', async () => {
+    try {
+      return await trackSync('linear', syncLinear);
+    } catch (e) {
+      logMain('Linear sync failed', e);
+      throw new Error(e instanceof Error ? e.message : String(e));
+    }
+  });
 
   /**
    * `syncJira`, with the diagnosis attached to whatever it throws — so the board's error
@@ -4676,6 +4833,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
         .sort((a, b) => a.createdAt - b.createdAt)
         .map(({ author, body }) => ({ author, body }));
     }
+    if (task.externalSource === 'linear' && settings.linear.enabled && task.externalId) {
+      const comments = await buildLinearClient().fetchComments(task.externalId);
+      return comments
+        .map((c) => ({
+          author: c.user?.displayName ?? c.user?.name ?? 'Linear',
+          body: c.body.replace(/\s+$/, ''),
+          createdAt: Date.parse(c.createdAt) || 0,
+        }))
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map(({ author, body }) => ({ author, body }));
+    }
     return [];
   });
 
@@ -4816,10 +4984,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
    * markers, and "opening a card clears its unread border" is the same statement for a GitHub
    * issue as for a JIRA ticket.
    *
-   * One implementation behind two channel names. `jira:markRead` keeps its name because the
-   * renderer's contract already has it and what it does never was tracker-specific;
-   * `github:markRead` exists so a GitHub pane need not call the other tracker's channel. A
-   * second *implementation* is what would eventually let them disagree.
+   * One implementation behind three channel names. `jira:markRead` keeps its name because
+   * the renderer's contract already has it and what it does never was tracker-specific;
+   * `github:markRead`/`linear:markRead` exist so a GitHub or Linear pane need not call a
+   * channel named for a different tracker. A second *implementation* is what would
+   * eventually let them disagree.
    */
   const markCommentsRead = async (taskId: string): Promise<Task> => {
     const task = store.getTask(taskId);
@@ -4834,6 +5003,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
 
   handle('jira:markRead', (taskId) => markCommentsRead(taskId));
   handle('github:markRead', (taskId) => markCommentsRead(taskId));
+  handle('linear:markRead', (taskId) => markCommentsRead(taskId));
 
   /**
    * The issue behind a GitHub card, or null when this card is not one.
@@ -4948,6 +5118,66 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     );
     // Bump both markers so our own comment never lights the unread border.
     const at = Date.parse(created?.created_at ?? '') || Date.now();
+    const updated = store.updateTask(taskId, { latestCommentAt: at, lastReadCommentAt: at });
+    if (updated) send('task:changed', { task: updated, runId: null });
+  });
+
+  handle('linear:fetchComments', async (taskId) => {
+    const task = store.getTask(taskId);
+    if (!task || task.externalSource !== 'linear' || !task.externalId) return [];
+    const client = buildLinearClient();
+    // Who the key belongs to, so your own comments sit on your side of the pane. Unknown
+    // identity → every comment reads as someone else's, deliberately — same rule as GitHub's.
+    const viewer = await linearViewerFor(client);
+    const comments = await client.fetchComments(task.externalId);
+    // No attachment pass, same reason as GitHub: a Linear comment's body is Markdown, and an
+    // uploaded file is a link inside it already.
+    const entries = comments.map((c) => ({
+      kind: 'linear-comment' as const,
+      id: c.id,
+      author: c.user?.displayName ?? c.user?.name ?? 'Linear',
+      body: c.body.replace(/\s+$/, ''),
+      createdAt: Date.parse(c.createdAt) || 0,
+      mine: viewer != null && c.user?.id === viewer.id,
+    }));
+    // Keep the unread marker honest with freshly-fetched comments — OTHER people's only, for
+    // the reason `jira:fetchComments`/`github:fetchComments` give: folding your own back in
+    // would undo `markRead` the instant the pane opened.
+    const latest = entries
+      .filter((e) => !e.mine)
+      .reduce((m, e) => Math.max(m, e.createdAt), task.latestCommentAt ?? 0);
+    if (latest && latest !== task.latestCommentAt) {
+      store.updateTask(taskId, { latestCommentAt: latest });
+    }
+    return entries;
+  });
+
+  handle('linear:addComment', async (taskId, draft) => {
+    const task = store.getTask(taskId);
+    if (!task || task.externalSource !== 'linear' || !task.externalId) {
+      throw new Error('This task is not linked to a Linear issue.');
+    }
+    // Trailing whitespace only — same reason as the JIRA/GitHub handlers: a mention range is
+    // an offset into this exact string, and the front has to stay put.
+    //
+    // Mentions themselves go in as plain text and are otherwise ignored: Linear's comment
+    // body is Markdown with no `@login`-style syntax we can build without risking a link to
+    // the wrong person, unlike GitHub's `@login`. Whatever the composer typed at that range
+    // is posted exactly as written.
+    const text = draft.text.replace(/\s+$/, '');
+    if (draft.attachmentPaths?.length) {
+      // Refused, not ignored — same reason as GitHub: uploading a file needs a signed URL
+      // from a mutation this channel does not make, and posting the words while quietly
+      // dropping the file is the failure the human would find out about last.
+      throw new Error(
+        'Linear has no API for attaching files to an issue from here — attach it in Linear, ' +
+          'or link to it from the comment.',
+      );
+    }
+    if (!text) throw new Error('A comment needs some text.');
+    const created = await buildLinearClient().createComment(task.externalId, text);
+    // Bump both markers so our own comment never lights the unread border.
+    const at = Date.parse(created.createdAt) || Date.now();
     const updated = store.updateTask(taskId, { latestCommentAt: at, lastReadCommentAt: at });
     if (updated) send('task:changed', { task: updated, runId: null });
   });
