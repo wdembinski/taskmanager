@@ -213,3 +213,90 @@ export function validateWorkflow(input: unknown): ValidateWorkflowResult {
   if (issues.length > 0) return { ok: false, issues };
   return { ok: true, doc: input as unknown as WorkflowDoc };
 }
+
+/** How many bytes of a gate's timeline output to keep — enough to show the failing
+ *  tail without storing an unbounded log for a command that ran for hours. */
+export const GATE_TIMELINE_TAIL_BYTES = 16 * 1024;
+
+/** How many bytes of a gate's failure note to keep — the timeline keeps more context,
+ *  but a note is a short summary and doesn't need as much room. */
+export const GATE_FAILURE_NOTE_TAIL_BYTES = 8 * 1024;
+
+/** What a gate's run produced, as input to `decideGateOutcome`. */
+export interface GateRunResult {
+  /** The command's exit code; `null` means it never got one — killed or a spawn error. */
+  exitCode: number | null;
+  timedOut: boolean;
+  /** Retries already spent on this gate (`Task.gateAttempts`), before this run. */
+  attemptsUsed: number;
+  onFail?: GateOnFail;
+}
+
+/** Why a gate's outcome is `fail`, for a message that doesn't have to re-derive it. */
+export type GateFailReason =
+  'no-on-fail' | 'timeout' | 'no-exit-code' | 'non-retryable-code' | 'attempts-exhausted';
+
+export type GateOutcome =
+  | { kind: 'pass' }
+  | { kind: 'retry'; retryFrom: string; attempt: number; maxAttempts: number }
+  | { kind: 'fail'; reason: GateFailReason };
+
+/**
+ * Decide what a gate's run means for the workflow, as a pure function of the run's
+ * result — the engine owns running the command and acting on the outcome, this just
+ * names it. Checks are ordered: a timeout is non-retryable even on exit 0 (it's an
+ * infrastructure fact, not a command result), then pass, then the ways a retry can be
+ * refused.
+ */
+export function decideGateOutcome(r: GateRunResult): GateOutcome {
+  if (r.timedOut) return { kind: 'fail', reason: 'timeout' };
+  if (r.exitCode === 0) return { kind: 'pass' };
+  if (r.exitCode === null) return { kind: 'fail', reason: 'no-exit-code' };
+
+  const onFail = r.onFail;
+  if (!onFail) return { kind: 'fail', reason: 'no-on-fail' };
+
+  if (onFail.retryOn && onFail.retryOn.length > 0 && !onFail.retryOn.includes(r.exitCode)) {
+    return { kind: 'fail', reason: 'non-retryable-code' };
+  }
+
+  if (r.attemptsUsed >= onFail.maxAttempts) {
+    return { kind: 'fail', reason: 'attempts-exhausted' };
+  }
+
+  return {
+    kind: 'retry',
+    retryFrom: onFail.retryFrom,
+    attempt: r.attemptsUsed + 1,
+    maxAttempts: onFail.maxAttempts,
+  };
+}
+
+/** A UTF-8 continuation byte — the top two bits are `10`. */
+function isUtf8ContinuationByte(byte: number): boolean {
+  return (byte & 0b1100_0000) === 0b1000_0000;
+}
+
+/**
+ * Keep only the last `maxBytes` of `output`'s UTF-8 encoding, so a gate's stored
+ * timeline or failure note can't grow without bound. Returns `output` unchanged if it
+ * already fits. Otherwise prefixes a `…[N bytes truncated]\n` marker (counted against
+ * `maxBytes` itself) and trims forward from the cut point past any split code point,
+ * so the kept text always decodes cleanly.
+ */
+export function boundOutputTail(output: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+
+  const encoded = new TextEncoder().encode(output);
+  if (encoded.length <= maxBytes) return output;
+
+  const markerFor = (truncatedBytes: number): string => `…[${truncatedBytes} bytes truncated]\n`;
+
+  const estimatedMarkerBytes = new TextEncoder().encode(markerFor(encoded.length)).length;
+  let cut = encoded.length - Math.max(0, maxBytes - estimatedMarkerBytes);
+  while (cut < encoded.length && isUtf8ContinuationByte(encoded[cut])) {
+    cut += 1;
+  }
+
+  return markerFor(cut) + new TextDecoder().decode(encoded.subarray(cut));
+}
