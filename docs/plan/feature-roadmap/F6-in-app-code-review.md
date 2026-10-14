@@ -371,3 +371,28 @@ to send rather than deliver an empty message.
 
   - A `scripts/verify-review.mjs` scenario with a temp repo, a card with commits and uncommitted edits, a diff summary, file reads, two comments, send, and an assertion on the stub session's input. Add a "Reviewing changes" section to `docs/03-how-orchestration-works.md`.
   - Acceptance: prove the script can fail by mutation (memory *headless-scenario-harness-traps*); all three gates green, run with `--force` (memory *a-cached-gate-is-not-a-gate*).
+
+## F6.5 — the critical files, walked on the finished tip (`10bb94b`)
+
+F6.5's own step names six files/areas: the new patch-reading helpers in `git.ts`, the
+`encoding` option on `ExecOptions` and its two hosts, the new integration test, and
+`packages/shared/src/review.ts` read only. All six were re-opened on `10bb94b` — the tip of
+steps 1-3 — and `pnpm format:check`, `pnpm typecheck --force`, `pnpm build --force` and
+`pnpm test` were all re-run there, rather than trusted from whatever earlier step last
+measured them on this same commit.
+
+| File | What it had to end up as | On `10bb94b` |
+| --- | --- | --- |
+| `apps/client/src/main/git.ts` | `diffNameStatus`, `diffWorkingTree`, `diffFilePatch`, `showBlob`, `blobSize`, `readWorkingFile`, plus the pure `parseNameStatusZ`/`parseNumstatZ`, reusing `git`/`splitZ`/`mergeBase`/`listUntracked` rather than re-deriving any of them | ✅ the six exported at :682, :721, :757, :787, :806, :825; the two pure parsers at :593/:620; `diffNameStatus` calls `git()` directly (:690-691), `diffWorkingTree` calls the existing `listUntracked` (:727), and the test's merge-base case calls the existing `mergeBase` (:1079) — none of the four reused helpers changed shape |
+| `apps/client/src/main/exec/types.ts` | `ExecOptions` gains an optional `encoding: 'utf8' \| 'latin1'` | ✅ at :65, documented against `showBlob`'s binary read |
+| `apps/client/src/main/exec/localHost.ts` | `execFileAsync` passes `encoding` through, omitted when absent so the ordinary call is byte-for-byte untouched | ✅ :49, `...(opts.encoding ? { encoding: opts.encoding } : {})` |
+| `apps/client/src/main/exec/wslHost.ts` | `execFile`'s `encoding` defaults to `'utf8'`, overridden when the caller asks for `'latin1'` | ✅ :185, `encoding: opts.encoding ?? 'utf8'` |
+| `apps/client/src/main/git.review.test.ts` | new — a real temp-repo integration test covering a commit-only diff, an uncommitted edit, an untracked file, a rename and a binary image round-trip | ✅ 261 lines, 12 cases across seven `describe` blocks; `vi.setConfig({ testTimeout: 30_000 })` at :10 keeps it clear of vitest's 5s default under a loaded run |
+| `packages/shared/src/review.ts` | read only — `DiffFileStatus` and `parsePatch` unchanged | ✅ untouched; `DiffFileStatus` at :22, `parsePatch` at :375 — the test's `parsePatch(patch ?? '')` calls (:95, :149, :179) and `git.ts`'s own `fileStatusOf` (:656) both still agree with its five-member union |
+
+**The gates, forced, on `10bb94b`.** `pnpm format:check`: clean. `pnpm typecheck --force`:
+9/9, 0 cached. `pnpm build --force`: 6/6, 0 cached. `pnpm test`: 293 test files passed (1
+skipped), 5344 tests passed (11 skipped) — including `git.review.test.ts`'s own 12.
+
+No file named above needed a code change here. Steps 1-3 already left every one of them in
+exactly the shape this ticket asked for; this step is the proof.

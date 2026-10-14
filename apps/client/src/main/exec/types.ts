@@ -56,6 +56,13 @@ export interface ExecOptions {
    * variables do NOT cross the Windows→Linux boundary by themselves.
    */
   env?: Record<string, string>;
+  /**
+   * Decode captured output as this encoding instead of UTF-8. Exists for binary blobs —
+   * `git cat-file blob` can hand back arbitrary bytes that are not valid UTF-8, and
+   * `'latin1'` is the one encoding that round-trips every byte value 1:1 back into a
+   * `Buffer` (see `git.ts`'s `showBlob`).
+   */
+  encoding?: 'utf8' | 'latin1';
 }
 
 /**

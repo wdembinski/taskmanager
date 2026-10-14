@@ -179,9 +179,10 @@ export class WslExecHost implements ExecHost {
           windowsHide: true,
           timeout: opts.timeoutMs,
           maxBuffer: opts.maxBuffer,
-          // Command output is UTF-8. It is never sniffed for UTF-16, because
-          // `git -z` output can legitimately carry a NUL in the second byte.
-          encoding: 'utf8',
+          // Command output is UTF-8 unless the caller asks for `latin1` (binary blobs).
+          // It is never sniffed for UTF-16, because `git -z` output can legitimately
+          // carry a NUL in the second byte.
+          encoding: opts.encoding ?? 'utf8',
         },
         (err, stdout, stderr) => {
           const e = err as { code?: number | string } | null;

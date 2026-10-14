@@ -44,6 +44,9 @@ export class LocalExecHost implements ExecHost {
         // world with no PATH. Omitted entirely when there is nothing to add, so the
         // ordinary case is byte-for-byte what it was.
         ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+        // Omitted entirely unless asked, so the ordinary call still gets Node's own
+        // UTF-8 default byte-for-byte.
+        ...(opts.encoding ? { encoding: opts.encoding } : {}),
       });
       return { code: 0, stdout, stderr };
     } catch (err) {
