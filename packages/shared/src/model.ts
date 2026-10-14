@@ -13,6 +13,7 @@
 import type { AdfBlock, CommentAttachment } from './adf';
 import type { ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode, SessionEvent } from './session';
+import type { WorkflowStep } from './workflow';
 
 /**
  * Lifecycle of a single task. Two overlapping worlds share one field:
@@ -744,6 +745,22 @@ export interface Task {
    * Null or empty means none attached. Written only through `setTaskSkillRefs`.
    */
   skillRefs?: string[] | null;
+  /**
+   * The workflow step this card or step was instantiated from, frozen at that moment
+   * (`@shared/workflow`'s `WorkflowStep`) — a snapshot, not a live reference, so editing the
+   * workflow afterwards never changes a card already applied from it. Null on every
+   * non-workflow task.
+   */
+  stepSpec?: WorkflowStep | null;
+  /**
+   * The workflow this card or step was instantiated from — a reference only, for display and
+   * grouping. Null on every non-workflow task. Deleting the workflow never touches the card:
+   * editing a workflow never changes applied cards.
+   */
+  workflowId?: string | null;
+  /** How many times a gate step has attempted its command. 0 by default; irrelevant for a
+   *  card whose `stepSpec` is not a gate. */
+  gateAttempts?: number;
   /** Ordering within the project (phase order, then position in the plan). */
   order: number;
   /**
