@@ -304,7 +304,9 @@ describe('LinearClient — mutations', () => {
 describe('LinearClient#getViewer', () => {
   it('round-trips the viewer query', async () => {
     const viewer = { id: UUID1, name: 'ada', displayName: 'Ada' };
-    const fetchImpl = vi.fn(async () => jsonResponse(200, { data: { viewer } }));
+    const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+      jsonResponse(200, { data: { viewer } }),
+    );
 
     const result = await client(fetchImpl).getViewer();
 
@@ -317,7 +319,9 @@ describe('LinearClient#getViewer', () => {
 describe('LinearClient#listTeams', () => {
   it('round-trips the teams query', async () => {
     const teams = [{ id: UUID1, key: 'ENG', name: 'Engineering' }];
-    const fetchImpl = vi.fn(async () => jsonResponse(200, { data: { teams: { nodes: teams } } }));
+    const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+      jsonResponse(200, { data: { teams: { nodes: teams } } }),
+    );
 
     const result = await client(fetchImpl).listTeams();
 
@@ -330,7 +334,9 @@ describe('LinearClient#listTeams', () => {
 describe('LinearClient#listTeamStates', () => {
   it('round-trips the team states query, passing the key as a variable', async () => {
     const nodes = [{ id: UUID1, name: 'Todo', type: 'unstarted', position: 0 }];
-    const fetchImpl = vi.fn(async () => jsonResponse(200, { data: { workflowStates: { nodes } } }));
+    const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+      jsonResponse(200, { data: { workflowStates: { nodes } } }),
+    );
 
     const result = await client(fetchImpl).listTeamStates('ENG');
 
