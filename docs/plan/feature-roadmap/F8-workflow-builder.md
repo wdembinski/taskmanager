@@ -213,7 +213,7 @@ command".
   - `store.ts`: `CREATE TABLE workflows`; `ALTER TABLE tasks ADD` `step_spec`, `workflow_id`, `gate_attempts`; CRUD.
   - Acceptance: `scripts/verify-workflow-migration.mjs` (drop-column + `ELECTRON_RUN_AS_NODE` recipe) proves fresh and upgraded DBs, and fails when an ALTER is removed.
 
-- [ ] F8.5 Run a gate command in the card's worktree through the exec host @needs: F8.2 Decide gate outcomes with a pure function covering every branch
+- [x] F8.5 Run a gate command in the card's worktree through the exec host @needs: F8.2 Decide gate outcomes with a pure function covering every branch
 
   - `apps/client/src/main/gateRunner.ts`: shell per target, cwd existence check, timeout with `terminate()`, bounded tail, typed result.
   - Acceptance: `gateRunner.test.ts` with a fake `ExecHost`: exit codes, timeout kills, missing cwd, spawn error — each returns a result, none throws.
