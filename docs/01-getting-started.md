@@ -70,6 +70,38 @@ project.)
 
 ---
 
+## Connect Linear (optional)
+
+Linear is where cards can come from, mirrored from whichever teams you name.
+
+1. In Linear, create a personal API key: **Settings → Security & access → Personal
+   API keys**.
+2. In the **desktop** app, go to **Settings → Linear**: turn on **Enable Linear**,
+   paste the key into **API key**, click **Save**, then **Save key**. The key is
+   stored encrypted on that machine and is never mirrored anywhere else — the web
+   app's Linear tab is read-only and tells you to set the key on the desktop
+   instead. Click **Test connection** to confirm it works.
+3. Click **Load teams** and check the teams to mirror, then pick **Which issues**
+   (assigned to you, or anyone on the team) and **Which state types to mirror**.
+   Each team's **column → state** table fills in on its own as you drag cards
+   between columns — a move teaches it the mapping. **Blocked** always stays
+   local; dragging a card there never writes anything back to Linear.
+4. No key handy? `pnpm --filter client verify:linear` runs the whole sync against
+   a fake Linear server, so you can check the integration without a real
+   workspace.
+
+> ⚠️ **Still owed: a live end-to-end pass with a real key.** Everything above has
+> only been proven against the fake server in `verify-linear.mjs`, never a real
+> Linear workspace. Still to confirm by hand: a revoked/invalid real key
+> surfacing as Linear's own HTTP 400 `AUTHENTICATION_ERROR`; adopting real
+> issues; a drag on the board sending a real `issueUpdate`; moving a card
+> between teams without losing it; Done retention and re-read against a real
+> workspace; the rate-limit back-off showing up in the status bar; comments and
+> mark-read; and the web app's read-only Linear tab plus its card mirror. This
+> needs a human at the keyboard — agents never launch the app.
+
+---
+
 ## Where things are
 
 ```
