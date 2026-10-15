@@ -249,13 +249,13 @@ duplicate, because it states the same fact twice; a directed type's reverse (`B 
 
 ---
 
-## The JIRA and GitHub isolation guarantee
+## The JIRA, GitHub and Linear isolation guarantee
 
-`Task['source']` gained `'ticket'` as its own value, structurally distinct from `'jira'` and
-`'github'`. This matters because both reconcilers filter on `source` in **both** directions —
-adopting an external issue and archiving one that disappeared upstream both start by asking
-"is this row mine?" — and a native ticket answers "no" to each of them by construction, not by
-a convention either sync module has to remember to honour:
+`Task['source']` gained `'ticket'` as its own value, structurally distinct from `'jira'`,
+`'github'` **and `'linear'`**. This matters because all three reconcilers filter on `source` in
+**both** directions — adopting an external issue and archiving one that disappeared upstream
+both start by asking "is this row mine?" — and a native ticket answers "no" to each of them by
+construction, not by a convention either sync module has to remember to honour:
 
 - **JIRA** — `jiraSync.ts` filters `t.source === 'jira'` (or `task.source !== 'jira'` as the
   early-exit) at five separate points:
@@ -269,18 +269,29 @@ a convention either sync module has to remember to honour:
   [`:376`](../apps/client/src/main/github/githubIssueSync.ts),
   [`:466`](../apps/client/src/main/github/githubIssueSync.ts),
   [`:517`](../apps/client/src/main/github/githubIssueSync.ts).
+- **Linear** — `linearSync.ts` does the same, on `source === 'linear'`, at
+  [`:281`](../apps/client/src/main/linear/linearSync.ts),
+  [`:303`](../apps/client/src/main/linear/linearSync.ts),
+  [`:361`](../apps/client/src/main/linear/linearSync.ts),
+  [`:387`](../apps/client/src/main/linear/linearSync.ts) — and keys every one of them on the
+  card's **UUID**, not its display key, so a look-alike identifier cannot pull a native ticket
+  into the sync either.
 
-These are **two independent facts**, not one guarantee that happens to apply twice — they are
-two different modules, each with its own filter, each of which would need its own bug to ever
-adopt, rewrite or archive a native ticket. `verify-tickets.mjs` §9 proves both: a JIRA-sourced
-row and a GitHub-sourced row can each wear a native ticket's key text as their own
-`externalKey` — a look-alike, not a merge — and the native ticket itself, read back afterwards,
-is untouched by either.
+These are **three independent facts**, not one guarantee that happens to apply three times —
+they are three different modules, each with its own filter, each of which would need its own
+bug to ever adopt, rewrite or archive a native ticket. `verify-tickets.mjs` §9 proves it for
+JIRA and GitHub: a JIRA-sourced row and a GitHub-sourced row can each wear a native ticket's key
+text as their own `externalKey` — a look-alike, not a merge — and the native ticket itself,
+read back afterwards, is untouched by either. The Linear fact is proven the same way, in
+`linearSync.test.ts`'s "never touches a card from another source" — which includes a
+`source: 'ticket'` row among the others left alone — and its UUID-collision case, where a
+non-Linear row's id/externalId is made to collide with a UUID Linear is asked about, and is
+still left untouched.
 
 **GitLab has no issue reconciler**, and that is a structural fact rather than an oversight to
 fix: `gitlab/gitlabSync.ts` exists, but it syncs *merge requests* into `merge_requests`, a
 table a ticket never touches. There is no `gitlabIssueSync.ts` — GitLab issues were never
-mirrored onto `tasks` at all, so there is no third filter to write, because there is no third
+mirrored onto `tasks` at all, so there is no fourth filter to write, because there is no fourth
 reconciler for a native ticket to be structurally isolated from in the first place.
 
 ---
