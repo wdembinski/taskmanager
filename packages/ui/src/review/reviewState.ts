@@ -52,6 +52,14 @@ export interface CommentAnchor {
   line: number;
 }
 
+/** A tap-selected line or line range, before a comment is started on it. Same `anchor`/`start`
+ * shape and rendered-order rule as {@link CommentEditor} — `start` is always the earlier line. */
+export interface LineSelection {
+  path: string;
+  anchor: { side: DiffSide; line: number };
+  start?: { side: DiffSide; line: number };
+}
+
 /** `start`/`anchor` are ordered by rendered position: `start` is always the earlier line. */
 export interface CommentEditor {
   path: string;
@@ -79,6 +87,8 @@ export interface ReviewState {
   files: Readonly<Record<string, FileLoad>>;
   /** The last plain-clicked line, which Shift-click extends from. */
   rangeAnchor: CommentAnchor | null;
+  /** The tap-selected line or range (compact mode), before a comment is started on it. */
+  selection: LineSelection | null;
   editor: CommentEditor | null;
   /** Every draft and sent comment on this card's review, in no particular order. */
   comments: readonly ReviewComment[];
@@ -101,6 +111,7 @@ export const EMPTY_REVIEW: ReviewState = {
   expanded: [],
   files: {},
   rangeAnchor: null,
+  selection: null,
   editor: null,
   comments: [],
   commentsSeq: 0,
@@ -136,7 +147,9 @@ export function summaryLoadStarted(
  * the expanded ones are fetched again, `expanded`/`selectedPath` are pruned to paths still in
  * the summary, `staleDiffId` clears, and the editor is kept with `outdated: true` even when its
  * path vanished. A non-ok result (landed/conflicted/no-branch) clears `files`, `expanded`, the
- * selection and the anchor — the editor stays, since its draft text is the human's.
+ * selection and the anchor — the editor stays, since its draft text is the human's. `selection`
+ * clears whenever `diffId` changes or the result is non-ok, same reason as `files` resetting —
+ * line numbers from the old diff don't mean the same thing any more.
  */
 export function summaryArrived(
   s: ReviewState,
@@ -155,6 +168,7 @@ export function summaryArrived(
       expanded: [],
       selectedPath: null,
       rangeAnchor: null,
+      selection: null,
     };
   }
   const diffId = result.summary.diffId;
@@ -169,6 +183,7 @@ export function summaryArrived(
     files: {},
     expanded: s.expanded.filter((p) => paths.has(p)),
     selectedPath: s.selectedPath !== null && paths.has(s.selectedPath) ? s.selectedPath : null,
+    selection: null,
     editor: s.editor === null ? null : { ...s.editor, outdated: true },
   };
 }
@@ -290,17 +305,32 @@ export function renderedIndex(file: DiffFile, side: DiffSide, line: number): num
   return null;
 }
 
+/**
+ * Orders `a` and `b` by rendered position in `path`'s loaded file — the earlier one first. Old
+ * and new line numbers do not compare across a unified diff, so this is the only way to know
+ * which of two endpoints comes first on screen. Falls back to `a` first when the file is not
+ * loaded or either endpoint is not in any loaded hunk.
+ */
+function orderEndpoints<T extends { side: DiffSide; line: number }>(
+  s: ReviewState,
+  path: string,
+  a: T,
+  b: T,
+): [T, T] {
+  const load = s.files[path];
+  const file = load?.status === 'loaded' ? load.file : null;
+  const aIdx = file === null ? null : renderedIndex(file, a.side, a.line);
+  const bIdx = file === null ? null : renderedIndex(file, b.side, b.line);
+  const aFirst = aIdx !== null && bIdx !== null ? aIdx <= bIdx : true;
+  return aFirst ? [a, b] : [b, a];
+}
+
 function openRange(
   s: ReviewState,
   anchor: CommentAnchor,
   clicked: { path: string; side: DiffSide; line: number },
 ): ReviewState {
-  const load = s.files[clicked.path];
-  const file = load?.status === 'loaded' ? load.file : null;
-  const anchorIdx = file === null ? null : renderedIndex(file, anchor.side, anchor.line);
-  const clickedIdx = file === null ? null : renderedIndex(file, clicked.side, clicked.line);
-  const anchorFirst = anchorIdx !== null && clickedIdx !== null ? anchorIdx <= clickedIdx : true;
-  const [start, end] = anchorFirst ? [anchor, clicked] : [clicked, anchor];
+  const [start, end] = orderEndpoints(s, clicked.path, anchor, clicked);
   return {
     ...s,
     rangeAnchor: anchor,
@@ -337,6 +367,68 @@ export function clickLine(
     ...s,
     rangeAnchor: { path, side, line },
     editor: { path, anchor: { side, line }, draft: '', outdated: false, saving: false },
+  };
+}
+
+/**
+ * A tap on a gutter line (compact mode's stand-in for click/Shift-click, which touch has no
+ * modifier key for). Refused (same object) while the editor already holds a draft, the same
+ * rule as {@link clickLine} — a tap elsewhere must never silently drop what the human already
+ * typed. With no selection, or a single selection on another path, the tap starts a new single
+ * selection. Tapping the same line again as a single selection cancels it. Tapping a different
+ * line in the same file extends it into a range, ordered by rendered position regardless of
+ * which end was tapped first. Any tap while a range is already selected starts a new single
+ * selection at the tapped line instead of extending further.
+ */
+export function tapLine(
+  s: ReviewState,
+  tap: { path: string; side: DiffSide; line: number },
+): ReviewState {
+  if (s.editor !== null) return s;
+  const sel = s.selection;
+  if (sel !== null && sel.start === undefined && sel.path === tap.path) {
+    if (sel.anchor.side === tap.side && sel.anchor.line === tap.line) {
+      return { ...s, selection: null };
+    }
+    const [start, end] = orderEndpoints(s, tap.path, sel.anchor, tap);
+    return {
+      ...s,
+      selection: {
+        path: tap.path,
+        anchor: { side: end.side, line: end.line },
+        start: { side: start.side, line: start.line },
+      },
+    };
+  }
+  return { ...s, selection: { path: tap.path, anchor: { side: tap.side, line: tap.line } } };
+}
+
+/** Clears the tap selection. Same object when there is already none. */
+export function cancelSelection(s: ReviewState): ReviewState {
+  if (s.selection === null) return s;
+  return { ...s, selection: null };
+}
+
+/**
+ * Starts a comment from the current tap selection — the same editor shape `openRange`/`clickLine`
+ * build, with `start` set only for a range — and clears `selection`. Refused (same object) when
+ * there is no selection, the editor is already open, or `canComment(s)` is false.
+ */
+export function commentOnSelection(s: ReviewState): ReviewState {
+  if (s.selection === null || s.editor !== null || !canComment(s)) return s;
+  const sel = s.selection;
+  return {
+    ...s,
+    rangeAnchor: { path: sel.path, side: sel.anchor.side, line: sel.anchor.line },
+    selection: null,
+    editor: {
+      path: sel.path,
+      anchor: sel.anchor,
+      start: sel.start,
+      draft: '',
+      outdated: false,
+      saving: false,
+    },
   };
 }
 
@@ -553,14 +645,18 @@ export function filesToLoad(s: ReviewState): readonly string[] {
 }
 
 /**
- * The rendered `DiffLine`s `editor`'s excerpt covers, in `file`. Flattening the hunks first
- * means slicing between two rendered indices never invents a line for an unloaded gap between
- * hunks — it simply is not in the flattened array to begin with.
+ * The rendered `DiffLine`s `range`'s excerpt covers, in `file` — `range` is a `CommentEditor` or
+ * a `LineSelection`, since both share the same `anchor`/`start` shape. Flattening the hunks
+ * first means slicing between two rendered indices never invents a line for an unloaded gap
+ * between hunks — it simply is not in the flattened array to begin with.
  */
-export function rangeLines(file: DiffFile, editor: CommentEditor): readonly DiffLine[] {
-  const start = editor.start ?? editor.anchor;
+export function rangeLines(
+  file: DiffFile,
+  range: Pick<CommentEditor, 'anchor' | 'start'>,
+): readonly DiffLine[] {
+  const start = range.start ?? range.anchor;
   const startIdx = renderedIndex(file, start.side, start.line);
-  const endIdx = renderedIndex(file, editor.anchor.side, editor.anchor.line);
+  const endIdx = renderedIndex(file, range.anchor.side, range.anchor.line);
   if (startIdx === null || endIdx === null) return [];
   return flattenLines(file).slice(startIdx, endIdx + 1);
 }

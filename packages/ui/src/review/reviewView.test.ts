@@ -8,6 +8,7 @@ import {
   fetchablePaths,
   fileLoadNotice,
   pairWordDiffs,
+  selectionLabel,
   statusLetter,
   summaryTotals,
   type FileTreeDir,
@@ -274,5 +275,29 @@ describe('fileLoadNotice', () => {
     expect(notice).toBe(
       'This file is too large to send to the browser (5,000,000 bytes) — open it on the desktop.',
     );
+  });
+});
+
+describe('selectionLabel', () => {
+  it('labels a single line', () => {
+    expect(selectionLabel({ path: 'a.ts', anchor: { side: 'new', line: 12 } })).toBe('Line 12');
+  });
+
+  it('labels a same-side range without naming the side', () => {
+    const selection = {
+      path: 'a.ts',
+      start: { side: 'new' as const, line: 10 },
+      anchor: { side: 'new' as const, line: 14 },
+    };
+    expect(selectionLabel(selection)).toBe('Lines 10–14');
+  });
+
+  it('names the side for each end of a range that spans old and new', () => {
+    const selection = {
+      path: 'a.ts',
+      start: { side: 'old' as const, line: 10 },
+      anchor: { side: 'new' as const, line: 14 },
+    };
+    expect(selectionLabel(selection)).toBe('Lines 10 (old)–14 (new)');
   });
 });

@@ -13,9 +13,11 @@ import {
   EMPTY_REVIEW,
   canComment,
   canSend,
+  cancelSelection,
   clickLine,
   closeEditor,
   commentDeleted,
+  commentOnSelection,
   commentSaved,
   commentsArrived,
   commentsAt,
@@ -38,6 +40,7 @@ import {
   summaryArrived,
   summaryFailed,
   summaryLoadStarted,
+  tapLine,
   toggleExpanded,
   unsentCount,
   type ReviewState,
@@ -769,5 +772,153 @@ describe('isCollapsedByDefault', () => {
 
   it('keeps a small file expanded', () => {
     expect(isCollapsedByDefault(entry('small.ts', { additions: 1, deletions: 1 }))).toBe(false);
+  });
+});
+
+describe('tap selection', () => {
+  it('starts a single selection on the tapped line', () => {
+    const state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+
+    expect(state.selection).toEqual({ path: 'a.ts', anchor: { side: 'new', line: 2 } });
+  });
+
+  it('forms a range ordered by rendered position, tapping the later line first', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 10 });
+    state = tapLine(state, { path: 'a.ts', side: 'new', line: 2 });
+
+    expect(state.selection).toEqual({
+      path: 'a.ts',
+      start: { side: 'new', line: 2 },
+      anchor: { side: 'new', line: 10 },
+    });
+  });
+
+  it('forms the same ordered range tapping the earlier line first', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+    state = tapLine(state, { path: 'a.ts', side: 'new', line: 10 });
+
+    expect(state.selection).toEqual({
+      path: 'a.ts',
+      start: { side: 'new', line: 2 },
+      anchor: { side: 'new', line: 10 },
+    });
+  });
+
+  it('orders across old/new sides by rendered position, not line number', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 12 });
+    state = tapLine(state, { path: 'a.ts', side: 'old', line: 1 });
+
+    expect(state.selection).toEqual({
+      path: 'a.ts',
+      start: { side: 'old', line: 1 },
+      anchor: { side: 'new', line: 12 },
+    });
+  });
+
+  it('cancels a single selection by tapping the same line again', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+    state = tapLine(state, { path: 'a.ts', side: 'new', line: 2 });
+
+    expect(state.selection).toBeNull();
+  });
+
+  it('cancels via cancelSelection, a no-op when there is already none', () => {
+    const selected = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+
+    const cancelled = cancelSelection(selected);
+    expect(cancelled.selection).toBeNull();
+
+    expect(cancelSelection(cancelled)).toBe(cancelled);
+  });
+
+  it('restarts the selection when tapping another file', () => {
+    let state = summaryLoaded('d1', ['a.ts', 'other.ts']);
+    state = tapLine(state, { path: 'a.ts', side: 'new', line: 2 });
+
+    state = tapLine(state, { path: 'other.ts', side: 'new', line: 5 });
+
+    expect(state.selection).toEqual({ path: 'other.ts', anchor: { side: 'new', line: 5 } });
+  });
+
+  it('restarts the selection when tapping while a range is already selected', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+    state = tapLine(state, { path: 'a.ts', side: 'new', line: 10 });
+    expect(state.selection?.start).toBeDefined();
+
+    state = tapLine(state, { path: 'a.ts', side: 'new', line: 11 });
+
+    expect(state.selection).toEqual({ path: 'a.ts', anchor: { side: 'new', line: 11 } });
+  });
+
+  it('refuses a tap while the editor is already open', () => {
+    const state = clickLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 }, false);
+
+    const again = tapLine(state, { path: 'a.ts', side: 'new', line: 10 });
+
+    expect(again).toBe(state);
+  });
+
+  it('commentOnSelection opens the same single-line editor clickLine would', () => {
+    const viaTap = commentOnSelection(
+      tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 }),
+    );
+    const viaClick = clickLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 }, false);
+
+    expect(viaTap.editor).toEqual(viaClick.editor);
+    expect(viaTap.selection).toBeNull();
+  });
+
+  it('commentOnSelection opens the same range editor openRange would', () => {
+    let tapped = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 10 });
+    tapped = tapLine(tapped, { path: 'a.ts', side: 'new', line: 2 });
+    const viaTap = commentOnSelection(tapped);
+
+    let clicked = clickLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 10 }, false);
+    clicked = closeEditor(clicked);
+    clicked = clickLine(clicked, { path: 'a.ts', side: 'new', line: 2 }, true);
+
+    expect(viaTap.editor).toEqual(clicked.editor);
+    expect(viaTap.selection).toBeNull();
+  });
+
+  it('refuses commentOnSelection with no selection, an open editor, or when canComment is false', () => {
+    const noSelection = twoHunkLoaded();
+    expect(commentOnSelection(noSelection)).toBe(noSelection);
+
+    const selected = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+    const editorOpen: ReviewState = {
+      ...selected,
+      editor: { path: 'b.ts', anchor: { side: 'new', line: 1 }, draft: '', outdated: false, saving: false },
+    };
+    expect(commentOnSelection(editorOpen)).toBe(editorOpen);
+
+    const stale = { ...selected, staleDiffId: 'd2' };
+    expect(commentOnSelection(stale)).toBe(stale);
+  });
+
+  it('clears the selection on a new diffId', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+    state = summaryLoadStarted(state, 'a', 10);
+
+    state = summaryArrived(state, 'a', 10, summary('d2', [entry('a.ts')]));
+
+    expect(state.selection).toBeNull();
+  });
+
+  it('clears the selection on a non-ok summary', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
+    state = summaryLoadStarted(state, 'a', 10);
+
+    state = summaryArrived(state, 'a', 10, { status: 'landed', forgeUrl: null });
+
+    expect(state.selection).toBeNull();
+  });
+
+  it('rangeLines reads a selection the same way it reads an editor', () => {
+    let state = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 10 });
+    state = tapLine(state, { path: 'a.ts', side: 'new', line: 2 });
+
+    const lines = rangeLines(twoHunkFile, state.selection!);
+    expect(lines.map((l) => l.newLine)).toEqual([2, 3, 10]);
   });
 });
