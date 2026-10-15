@@ -70,6 +70,8 @@ import { AssignAgentDialog } from './AssignAgentDialog';
 import { invokeAttentionAnswer } from './attentionAnswer';
 import { stepPosition } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
+import { gateTrustChoices, gateTrustWaitingText, isGateTrustItem } from './gateStepView';
+import { useGateTrustHost } from './gateTrustHost';
 import { cardModelCaption } from './modelChoice';
 import { useModelLabels } from './ModelField';
 import { skillsLineLabels } from './skillPickerState';
@@ -247,6 +249,7 @@ export function TaskAgentPanel({
   mergeRequests = [],
 }: TaskAgentPanelProps): JSX.Element {
   const transport = useTransport();
+  const trustHost = useGateTrustHost();
   const styles = useStyles();
   const modelLabel = useModelLabels();
   const [assignOpen, setAssignOpen] = useState(false);
@@ -1360,7 +1363,14 @@ export function TaskAgentPanel({
             <>
               {item.options.length > 0 && (
                 <div className={styles.choices}>
-                  {item.options.map((option) => (
+                  {/* This host cannot press Trust itself (F8.13) — say so where the button
+                      would have been. Decline still relays fine via attention:answer. */}
+                  {isGateTrustItem(item) && !trustHost.canTrust && (
+                    <Caption1 className={styles.hint}>
+                      {gateTrustWaitingText(trustHost.name)}
+                    </Caption1>
+                  )}
+                  {gateTrustChoices(item.options, trustHost.canTrust).map((option) => (
                     <Button
                       key={option}
                       appearance={option === item.options[0] ? 'primary' : 'secondary'}

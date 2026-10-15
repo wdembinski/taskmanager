@@ -30,6 +30,7 @@ export type SettingsSection =
   | 'people'
   | 'desktop'
   | 'skills'
+  | 'workflows'
   | 'promptTemplates';
 
 /**

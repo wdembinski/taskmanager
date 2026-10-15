@@ -33,6 +33,8 @@ import { AgentQuestionForm } from './AgentQuestionForm';
 import { invokeAttentionAnswer } from './attentionAnswer';
 import { Markdown } from './chat/MarkdownView';
 import { draftKey, useDraft } from './drafts';
+import { gateTrustChoices, gateTrustWaitingText } from './gateStepView';
+import { useGateTrustHost } from './gateTrustHost';
 import { PaneLoading } from './PaneLoading';
 import { useTransport } from './transport';
 import { useInitialLoad, type InitialLoad } from './useInitialLoad';
@@ -143,6 +145,7 @@ export function InboxItem({
   onDismiss: (id: string) => Promise<void>;
 }): JSX.Element {
   const styles = useStyles();
+  const trustHost = useGateTrustHost();
   // A draft, not plain state: this component is now ALSO mounted inside the compact inbox's
   // full-screen detail view, which unmounts on every "Back" — unlike the wide list, where an
   // item stays mounted for as long as it is open. Without this, closing and reopening an item
@@ -231,7 +234,12 @@ export function InboxItem({
       ) : item.kind === 'task-failed' || item.kind === 'proposal' ? (
         <>
           <div className={styles.choices}>
-            {item.options.map((option) => (
+            {/* This host cannot press Trust itself (F8.13) — say so where the button would
+                have been. Decline still relays fine via attention:answer either way. */}
+            {isGateTrustOptions(item.options) && !trustHost.canTrust && (
+              <Caption1 className={styles.reason}>{gateTrustWaitingText(trustHost.name)}</Caption1>
+            )}
+            {gateTrustChoices(item.options, trustHost.canTrust).map((option) => (
               <Button
                 key={option}
                 appearance={option === item.options[0] ? 'primary' : 'secondary'}

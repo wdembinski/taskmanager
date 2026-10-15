@@ -14,7 +14,8 @@
  * So the split is by SECTION. Everything with a rule in it is shared as a real component
  * from `@tm/ui` — `ColorSwatches` and its palette and `PlanningModelField` here,
  * `StatusMapViewer` with `buildStatusMapRows` and `BaseBranchField` for the sections that
- * stayed on the desktop — and this file is the shell plus the plain `AppSettings` fields,
+ * stayed on the desktop, and `WorkflowBuilder` for Workflows, which loads itself exactly as
+ * `SkillsSection` does — and this file is the shell plus the plain `AppSettings` fields,
  * which are a form over a JSON blob and carry no rule at all.
  *
  * THE ONE SECTION THAT IS NOT SHARED, AND THE READ-ONLY HALF THAT IS
@@ -80,6 +81,7 @@ import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { SubagentModelField } from '@tm/ui/SubagentModelField';
 import { PromptTemplatesSection } from '@tm/ui/PromptTemplatesSection';
 import { SkillsSection } from '@tm/ui/SkillsSection';
+import { WorkflowBuilder } from '@tm/ui/WorkflowBuilder';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
@@ -380,6 +382,7 @@ export function SettingsScreen({
         <Tab value="people">People</Tab>
         <Tab value="skills">Skills</Tab>
         <Tab value="promptTemplates">Prompt templates</Tab>
+        <Tab value="workflows">Workflows</Tab>
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
 
@@ -841,6 +844,13 @@ export function SettingsScreen({
         </div>
       )}
 
+      {section === 'workflows' && (
+        <div className={styles.pane}>
+          <Subtitle2>Workflows</Subtitle2>
+          <WorkflowBuilder canUseFileSystem={false} />
+        </div>
+      )}
+
       {section === 'desktop' && (
         <div className={styles.pane}>
           <Subtitle2>Set these from the desktop app</Subtitle2>
@@ -908,5 +918,12 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'both read and write `SKILL.md` files on the machine the desktop app runs on. The ' +
       'Skills tab here still lists and edits the library itself — only the file-based ' +
       'Import menu and Export buttons stay on the desktop.',
+  },
+  {
+    title: 'Workflow file import and export',
+    why:
+      '"Paste JSON…" has a pure local fallback and still works here — only **File…** and ' +
+      '**Export**, which read and write a workflow file on the machine the desktop app runs ' +
+      'on, stay on the desktop.',
   },
 ];

@@ -6,7 +6,12 @@ import { describe, expect, it } from 'vitest';
 import type { AttentionItem } from '@tm/shared/attention';
 import type { Task, TaskActivityEntry } from '@tm/shared/model';
 import { GATE_TRUST_ACTION, type GateStep } from '@tm/shared/workflow';
-import { gateStepView, latestGateNote } from './gateStepView';
+import {
+  gateStepView,
+  gateTrustChoices,
+  gateTrustWaitingText,
+  latestGateNote,
+} from './gateStepView';
 
 const spec: GateStep = {
   id: 'g1',
@@ -68,6 +73,7 @@ describe('gateStepView', () => {
       command: 'pnpm test',
       attempt: null,
       output: null,
+      waiting: null,
     });
   });
 
@@ -140,6 +146,75 @@ describe('gateStepView', () => {
     const a = gateStepView({ step: step({ status: 'running', gateAttempts: 0 }) })!;
     const b = gateStepView({ step: step({ status: 'running', gateAttempts: 2 }) })!;
     expect(a.tone).toBe(b.tone);
+  });
+
+  describe('waiting (F8.13)', () => {
+    const trust = item({
+      kind: 'task-failed',
+      options: [GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline],
+    });
+
+    it('carries the sentence when this host cannot trust, named', () => {
+      const v = gateStepView({
+        step: step(),
+        attention: [trust],
+        trustHost: { canTrust: false, name: 'WORKSTATION' },
+      })!;
+      expect(v.state).toBe('awaiting-trust');
+      expect(v.waiting).toBe('Waiting for WORKSTATION to trust this command');
+    });
+
+    it('falls back to "the desktop app" with no name', () => {
+      const v = gateStepView({
+        step: step(),
+        attention: [trust],
+        trustHost: { canTrust: false, name: null },
+      })!;
+      expect(v.waiting).toBe('Waiting for the desktop app to trust this command');
+    });
+
+    it('is null when this host CAN trust', () => {
+      const v = gateStepView({
+        step: step(),
+        attention: [trust],
+        trustHost: { canTrust: true, name: null },
+      })!;
+      expect(v.waiting).toBeNull();
+    });
+
+    it('is null with no trustHost at all — the desktop needs no change', () => {
+      const v = gateStepView({ step: step(), attention: [trust] })!;
+      expect(v.waiting).toBeNull();
+    });
+  });
+});
+
+describe('gateTrustWaitingText', () => {
+  it('names the host when given one', () => {
+    expect(gateTrustWaitingText('WORKSTATION')).toBe(
+      'Waiting for WORKSTATION to trust this command',
+    );
+  });
+
+  it('falls back to "the desktop app" with no name', () => {
+    expect(gateTrustWaitingText(null)).toBe('Waiting for the desktop app to trust this command');
+  });
+});
+
+describe('gateTrustChoices', () => {
+  const pair = [GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline];
+
+  it('drops Trust and keeps Decline for the trust pair when this host cannot trust', () => {
+    expect(gateTrustChoices(pair, false)).toEqual([GATE_TRUST_ACTION.decline]);
+  });
+
+  it('leaves the trust pair alone when this host can trust', () => {
+    expect(gateTrustChoices(pair, true)).toEqual(pair);
+  });
+
+  it('leaves any other options alone, even when this host cannot trust', () => {
+    expect(gateTrustChoices(['Retry', 'Skip'], false)).toEqual(['Retry', 'Skip']);
+    expect(gateTrustChoices([GATE_TRUST_ACTION.trust], false)).toEqual([GATE_TRUST_ACTION.trust]);
   });
 });
 

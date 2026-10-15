@@ -341,7 +341,7 @@ command".
   - Server entity + migration + controller (`GET /v1/workflows`, `PUT/DELETE /v1/workflows/:id`, 64 KiB cap); desktop pusher (changed-only); `stepSpec` kind and `gateAttempts` on the task mirror.
   - Acceptance: controller tests (auth, cap, tombstone); pusher test for no re-send; `nest build` emits.
 
-- [ ] F8.13 Build and apply workflows from the web client @needs: F8.12 Mirror workflows to the cloud through a dedicated bounded endpoint, F8.9 Build the workflow builder screen on a pure editor state machine, F8.11 Offer Apply workflow from the assign dialog and the agent panel
+- [x] F8.13 Build and apply workflows from the web client @needs: F8.12 Mirror workflows to the cloud through a dedicated bounded endpoint, F8.9 Build the workflow builder screen on a pure editor state machine, F8.11 Offer Apply workflow from the assign dialog and the agent panel
 
   - `apps/web`: Workflows settings section, relay writes and apply, gate rows on steps, "waiting for <desktop> to trust" state.
   - Acceptance: `test/shell-parity.test.ts` and settings section tests pass; a relayed apply creates steps on the desktop (transport test).

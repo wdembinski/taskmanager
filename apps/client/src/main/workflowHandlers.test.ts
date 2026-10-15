@@ -14,8 +14,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { createWorkflowHandlers, type WorkflowHandlersDeps } from './workflowHandlers';
 import { RelayRegistry } from './ipcRegistry';
+import { applyCloudCommand } from './cloudCommands';
 import { MAX_PLAN_STEPS } from '@shared/board';
 import type { Project, Task } from '@shared/model';
+import type { CommandEnvelope } from '@protocol/wire';
 import {
   validateWorkflow,
   WORKFLOW_APPLY_REFUSAL_MESSAGE,
@@ -24,7 +26,7 @@ import {
   type WorkflowDoc,
   type WorkflowStep,
 } from '@shared/workflow';
-import type { SaveWorkflowResult, SyncOnly } from './store';
+import type { SaveWorkflowResult, Store, StoredCloudOutcome, SyncOnly } from './store';
 
 function baseTask(over: Partial<Task> = {}): Task {
   return {
@@ -676,5 +678,97 @@ describe('host-only channels refused through RelayRegistry', () => {
     expect(importResult.error).toContain('file picker');
     expect(exportResult.ok).toBe(false);
     expect(exportResult.error).toContain('file picker');
+  });
+});
+
+/**
+ * `applyCloudCommand` (`cloudCommands.ts`) is the path a relayed browser click actually takes
+ * — not `harness.registry.invoke` directly. The ledger store it needs (`getCloudCommandOutcome`
+ * / `recordCloudCommandApplied` / `runInTransaction`) is unrelated to the workflow store the
+ * handlers close over, and `workflow:apply`'s outcome always carries `taskId: null`
+ * (`cloudCommands.ts`'s `applyIpcInvoke`), so the failure-comment branch never fires and this
+ * stand-in never needs `getTask`/`addComment`.
+ */
+function fakeCloudLedger(): Store {
+  const applied = new Map<string, StoredCloudOutcome>();
+  return {
+    getCloudCommandOutcome: (id: string) => applied.get(id) ?? null,
+    recordCloudCommandApplied: (id: string, outcome: StoredCloudOutcome) => {
+      applied.set(id, outcome);
+    },
+    runInTransaction: <T>(fn: () => T) => fn(),
+  } as unknown as Store;
+}
+
+function applyEnvelope(id: string, channel: string, args: unknown[]): CommandEnvelope {
+  return { id, issuedAt: 1, issuedBy: 'web', kind: 'ipc-invoke', payload: { channel, args } };
+}
+
+describe('a relayed workflow:apply creates steps on the desktop', () => {
+  it('runs the handler through applyCloudCommand and records one step per workflow step', async () => {
+    const project = baseProject({ id: 'proj-1', path: '/repo' });
+    const task = baseTask({ id: 'task-1', projectId: 'proj-1', agentProjectId: 'proj-1' });
+    const doc = workflowDoc({
+      id: 'wf-1',
+      steps: [
+        agentStep({ id: 'a1', model: 'sonnet', mode: 'plan', skillRefs: ['lib:abc123'] }),
+        gateStep({ id: 'g1', onFail: { retryFrom: 'a1', maxAttempts: 2 } }),
+      ],
+    });
+    const harness = buildHarness({ projects: [project], tasks: [task], workflows: [doc] });
+
+    const outcome = await applyCloudCommand(
+      fakeCloudLedger(),
+      applyEnvelope('c1', 'workflow:apply', ['task-1', 'wf-1']),
+      harness.registry,
+    );
+
+    expect(outcome.ok).toBe(true);
+    const value = outcome.value as { ok: true; steps: Task[] };
+    expect(value.ok).toBe(true);
+    expect(value.steps).toHaveLength(2);
+    expect(value.steps.every((s) => s.workflowId === 'wf-1')).toBe(true);
+    expect(value.steps.every((s) => s.stepSpec !== null)).toBe(true);
+
+    const gateTask = value.steps[1];
+    const resolvedGate = gateTask.stepSpec as GateStep & { onFail: { retryFromIndex: number } };
+    expect(resolvedGate.onFail.retryFromIndex).toBe(0);
+
+    const stepsOnTheCard = [...harness.tasks.values()].filter((t) => t.parentTaskId === 'task-1');
+    expect(stepsOnTheCard).toHaveLength(2);
+  });
+
+  it('carries an is-step refusal back as a value, not a thrown error', async () => {
+    const parent = baseTask({ id: 'parent-1' });
+    const step = baseTask({ id: 'step-1', parentTaskId: 'parent-1' });
+    const harness = buildHarness({ tasks: [parent, step] });
+
+    const outcome = await applyCloudCommand(
+      fakeCloudLedger(),
+      applyEnvelope('c1', 'workflow:apply', ['step-1', 'wf-1']),
+      harness.registry,
+    );
+
+    // The handler returned a refusal rather than throwing, so the relay invoke itself
+    // succeeded — the refusal travels as `outcome.value`, not as `outcome.ok: false`.
+    expect(outcome.ok).toBe(true);
+    expect(outcome.value).toEqual({
+      ok: false,
+      reason: 'is-step',
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['is-step'],
+    });
+  });
+
+  it('refuses a relayed workflow:import with the file-picker reason', async () => {
+    const harness = buildHarness();
+
+    const outcome = await applyCloudCommand(
+      fakeCloudLedger(),
+      applyEnvelope('c1', 'workflow:import', [{ source: 'file' }]),
+      harness.registry,
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.reason).toContain('file picker');
   });
 });

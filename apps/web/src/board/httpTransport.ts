@@ -19,19 +19,20 @@
  * Three tiers now:
  *  1. **Direct** — `task:create`, `task:setStatus`, `task:move`, `task:setDescription`,
  *     `project:add`, `project:update`, `project:remove`, `settings:get`, `settings:save`,
- *     `automation:list`, `automation:runs`, `skill:list` and `skill:listRepo` post straight
- *     to the write/read endpoints (`POST`/`PATCH`/`DELETE /v1/tasks` and `/v1/projects`,
- *     `GET`/`PUT /v1/settings`, `GET /v1/automations` and `/v1/automations/:id/runs`, `GET
- *     /v1/skills`) instead of relaying at all — except `skill:listRepo`, which reads
- *     `project.repoSkills` straight off the mirror the board already has in memory, with no
- *     network call of its own. These are the edits and reads a browser with no desktop
- *     Client ever synced still has to be able to make — creating and working a card, filing
- *     it under a project of its own, reading and changing the account's global settings,
- *     seeing what the account's automations are and have done, and listing the library and
- *     repo skills a picker needs to show — is the whole reason cloud web has to stand on its
- *     own — and the server applies each write to the mirror itself and replays it to every
- *     desktop Client on record (`mirror.service.ts`), so a Client that is offline right now
- *     still catches up later instead of the edit never having happened at all.
+ *     `automation:list`, `automation:runs`, `skill:list`, `skill:listRepo` and
+ *     `workflow:list` post straight to the write/read endpoints (`POST`/`PATCH`/`DELETE
+ *     /v1/tasks` and `/v1/projects`, `GET`/`PUT /v1/settings`, `GET /v1/automations` and
+ *     `/v1/automations/:id/runs`, `GET /v1/skills`, `GET /v1/workflows`) instead of relaying
+ *     at all — except `skill:listRepo`, which reads `project.repoSkills` straight off the
+ *     mirror the board already has in memory, with no network call of its own. These are the
+ *     edits and reads a browser with no desktop Client ever synced still has to be able to
+ *     make — creating and working a card, filing it under a project of its own, reading and
+ *     changing the account's global settings, seeing what the account's automations are and
+ *     have done, listing the library and repo skills a picker needs to show, and listing the
+ *     workflow library a builder needs to show — is the whole reason cloud web has to stand
+ *     on its own — and the server applies each write to the mirror itself and replays it to
+ *     every desktop Client on record (`mirror.service.ts`), so a Client that is offline right
+ *     now still catches up later instead of the edit never having happened at all.
  *  2. **Relayed** — anything else `@tm/shared/ipcRelay` marks `'relay'`, still an `ipc-invoke`
  *     command held open and polled for through `GET /v1/results`, answered by the desktop's
  *     own handler. `automation:save`, `automation:delete`, `automation:setEnabled` and
@@ -74,6 +75,7 @@ import {
   type UpdateProjectRequest,
   type UpdateTaskRequest,
   type UploadTicket,
+  type WorkflowsResponse,
 } from '@tm/protocol/wire';
 import { CLOUD_BLOB_MAX_BYTES } from '@tm/shared/attachments';
 import type { TaskAttachment, UploadedAttachment } from '@tm/shared/attachments';
@@ -303,6 +305,16 @@ export class HttpTransport implements Transport {
       return Promise.resolve(this.deps.getProject?.(projectId)?.repoSkills ?? []) as ReturnType<
         IpcApi[K]
       >;
+    }
+    // Workflows are mirrored server-side too (`GET /v1/workflows`), same reasoning as skills:
+    // the builder has to list them with no desktop Client ever having synced. Writes
+    // (`workflow:save`/`delete`) and `workflow:apply` still relay — see the docstring's
+    // "Three tiers now" and `WorkflowBuilder`'s own note on why a stale list after a save is
+    // not a risk.
+    if (channel === 'workflow:list') {
+      return this.readJson<WorkflowsResponse>('/v1/workflows').then(
+        (body) => body.workflows,
+      ) as ReturnType<IpcApi[K]>;
     }
     // Automation edits still relay — the desktop that owns an automation is the only one that
     // evaluates or fires it — but to THAT owner, not this account's default target.
