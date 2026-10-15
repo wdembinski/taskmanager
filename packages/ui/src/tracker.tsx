@@ -100,13 +100,20 @@ export function TrackerMark({ task, size = 12, color }: TrackerMarkProps): JSX.E
   }
 }
 
-/** The channels a tracker's comment thread is read and written through. */
+/**
+ * The channels a tracker's comment thread is read and written through.
+ *
+ * Each field is the literal union of exactly the trackers' own channel names — not the whole
+ * `IpcInvokeChannel` — because `transport.invoke`'s return type is keyed off the channel it is
+ * given. Widen these to `IpcInvokeChannel` and every caller's `await transport.invoke(...)`
+ * degrades to the type of *every* IPC call in the app at once, which is no type at all.
+ */
 export interface TicketChannels {
-  fetchComments: IpcInvokeChannel;
-  markRead: IpcInvokeChannel;
-  addComment: IpcInvokeChannel;
+  fetchComments: Extract<IpcInvokeChannel, `${Tracker}:fetchComments`>;
+  markRead: Extract<IpcInvokeChannel, `${Tracker}:markRead`>;
+  addComment: Extract<IpcInvokeChannel, `${Tracker}:addComment`>;
   /** Null for a tracker whose @mention picker has nowhere to search from (Linear's). */
-  searchUsers: IpcInvokeChannel | null;
+  searchUsers: Extract<IpcInvokeChannel, `${Tracker}:searchUsers`> | null;
 }
 
 /**
