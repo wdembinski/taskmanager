@@ -3,10 +3,17 @@
  * and run (navigate somewhere, open a card, jump to a project, fire an action); a "source"
  * (`PaletteSource`) is a function that produces a fresh list of commands for the current
  * `PaletteContext`, so the host can mix together e.g. a static navigate list with a dynamic
- * per-card list without the model knowing where any of it came from.
+ * per-card list without the model knowing where any of it came from. A command may also carry
+ * a `secondary` action (e.g. "open in new tab") that the same row can run on Ctrl/⌘+Enter.
  *
  * `paletteScore` and `rankCommands` decide what a query shows and in what order; `paletteReduce`
- * is the `useReducer` transition function the palette component (F9.3) drives.
+ * is the `useReducer` transition function the palette component (F9.3) drives. Beyond
+ * open/close/query/move, `select` can target a row directly by `index` (a mouse click) and can
+ * ask for the row's `secondary` action instead of its primary one — either is a no-op when the
+ * target doesn't exist or doesn't have that action, and a second `select` while one is already
+ * pending (`selected` set) is ignored so a slow command can't be run twice. `failed` reports a
+ * run that threw, surfacing `error` without closing the palette. `groupRows`, `paletteKeyEvent`
+ * and `runSelected` are pure helpers so the component itself holds no logic.
  */
 
 /** Fixed section order the palette always renders in, independent of source order. */
@@ -18,7 +25,8 @@ export type PaletteGroup = (typeof PALETTE_GROUP_ORDER)[number];
  * One row the palette can show. `projectId` is a locality hint, not a filter — a command that
  * belongs to a card or project names it so {@link rankCommands} can surface the current
  * project's own commands first. `hostOnly` is carried through untouched; the host-vs-web split
- * (F9.5) is the only thing that reads it.
+ * (F9.5) is the only thing that reads it. `secondary` is an alternate action the same row offers
+ * (e.g. "open in new tab"), run instead of `run` when the `select` event asks for it.
  */
 export interface PaletteCommand {
   id: string;
@@ -29,6 +37,7 @@ export interface PaletteCommand {
   projectId?: string | null;
   run: () => void | Promise<void>;
   hostOnly?: boolean;
+  secondary?: { title: string; run: () => void | Promise<void> };
 }
 
 /** What a source needs to decide which commands it offers — just the current project for now. */
@@ -159,7 +168,9 @@ export function rankCommands(
 }
 
 /** The palette's whole UI-facing state. `commands` is the snapshot taken when it opened — a
- *  new query re-ranks that snapshot rather than re-collecting from sources. */
+ *  new query re-ranks that snapshot rather than re-collecting from sources. `secondary` is
+ *  whether `selected` was chosen via its secondary action; `error` is the last `failed`
+ *  event's message, cleared by `open` or `query`. */
 export interface PaletteState {
   open: boolean;
   query: string;
@@ -168,6 +179,8 @@ export interface PaletteState {
   rows: PaletteCommand[];
   activeIndex: number;
   selected: PaletteCommand | null;
+  secondary: boolean;
+  error: string | null;
 }
 
 export const initialPaletteState: PaletteState = {
@@ -178,6 +191,8 @@ export const initialPaletteState: PaletteState = {
   rows: [],
   activeIndex: -1,
   selected: null,
+  secondary: false,
+  error: null,
 };
 
 export type PaletteEvent =
@@ -185,7 +200,8 @@ export type PaletteEvent =
   | { type: 'close' }
   | { type: 'query'; query: string }
   | { type: 'move'; delta: number }
-  | { type: 'select' };
+  | { type: 'select'; index?: number; secondary?: boolean }
+  | { type: 'failed'; message: string };
 
 /** First row's index, or `-1` when `rows` is empty — shared by `open` and `query`. */
 function firstActiveIndex(rows: readonly PaletteCommand[]): number {
@@ -211,6 +227,8 @@ export function paletteReduce(state: PaletteState, event: PaletteEvent): Palette
         rows,
         activeIndex: firstActiveIndex(rows),
         selected: null,
+        secondary: false,
+        error: null,
       };
     }
 
@@ -225,6 +243,8 @@ export function paletteReduce(state: PaletteState, event: PaletteEvent): Palette
         rows,
         activeIndex: firstActiveIndex(rows),
         selected: null,
+        secondary: false,
+        error: null,
       };
     }
 
@@ -235,8 +255,93 @@ export function paletteReduce(state: PaletteState, event: PaletteEvent): Palette
     }
 
     case 'select': {
-      if (state.rows.length === 0) return state;
-      return { ...state, selected: state.rows[state.activeIndex] };
+      if (state.selected !== null) return state;
+
+      const index = event.index ?? state.activeIndex;
+      const row = state.rows[index];
+      if (row === undefined) return state;
+      if (event.secondary && row.secondary === undefined) return state;
+
+      return { ...state, activeIndex: index, selected: row, secondary: !!event.secondary };
     }
+
+    case 'failed':
+      return { ...state, selected: null, error: event.message };
   }
+}
+
+/** Display label for each {@link PaletteGroup}, in no particular order (use {@link groupRows} or
+ *  {@link PALETTE_GROUP_ORDER} for render order). */
+export const PALETTE_GROUP_LABELS: Record<PaletteGroup, string> = {
+  navigate: 'Navigate',
+  cards: 'Cards',
+  projects: 'Projects',
+  actions: 'Actions',
+};
+
+/** One row the palette renders, with the flat index into `rows` it came from — the index
+ *  `aria-activedescendant` and a click handler both key off of. */
+export interface PaletteRowItem {
+  command: PaletteCommand;
+  index: number;
+}
+
+/** `rows` bucketed by {@link PaletteGroup} and put in {@link PALETTE_GROUP_ORDER}, skipping empty
+ *  groups. Each item keeps its flat `index` into `rows` so the component never has to recompute
+ *  it. */
+export function groupRows(
+  rows: readonly PaletteCommand[],
+): { group: PaletteGroup; label: string; items: PaletteRowItem[] }[] {
+  const byGroup = new Map<PaletteGroup, PaletteRowItem[]>();
+  rows.forEach((command, index) => {
+    const items = byGroup.get(command.group) ?? [];
+    items.push({ command, index });
+    byGroup.set(command.group, items);
+  });
+
+  return PALETTE_GROUP_ORDER.filter((group) => byGroup.has(group)).map((group) => ({
+    group,
+    label: PALETTE_GROUP_LABELS[group],
+    items: byGroup.get(group) as PaletteRowItem[],
+  }));
+}
+
+/** A structural subset of a keyboard event, just what {@link paletteKeyEvent} needs — so tests
+ *  can pass plain objects without jsdom. */
+export interface PaletteKeyEventLike {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  isComposing?: boolean;
+}
+
+/**
+ * Maps a keydown to the {@link PaletteEvent} it should dispatch, or `null` when the key means
+ * nothing to the palette (including while composing, e.g. IME input): ArrowDown/ArrowUp to
+ * `move`, Enter to `select`, Ctrl/⌘+Enter to `select` with `secondary: true`, and Escape to
+ * `close`.
+ */
+export function paletteKeyEvent(evt: PaletteKeyEventLike): PaletteEvent | null {
+  if (evt.isComposing) return null;
+
+  switch (evt.key) {
+    case 'ArrowDown':
+      return { type: 'move', delta: 1 };
+    case 'ArrowUp':
+      return { type: 'move', delta: -1 };
+    case 'Enter':
+      return evt.ctrlKey || evt.metaKey ? { type: 'select', secondary: true } : { type: 'select' };
+    case 'Escape':
+      return { type: 'close' };
+    default:
+      return null;
+  }
+}
+
+/** The function `state.selected` should run — its `secondary.run` when `state.secondary` is set
+ *  and the command has one, otherwise its primary `run` — or `null` when nothing is selected. */
+export function runSelected(state: PaletteState): (() => void | Promise<void>) | null {
+  if (state.selected === null) return null;
+  if (state.secondary) return state.selected.secondary?.run ?? null;
+  return state.selected.run;
 }

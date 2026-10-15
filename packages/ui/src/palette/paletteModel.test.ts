@@ -1,23 +1,30 @@
 /**
  * `paletteModel.ts`'s pure logic: `paletteScore`'s all-tokens-required, order-independent,
  * boundary-beats-mid-word scoring; `rankCommands`'s group-then-score-then-locality ordering;
- * and `paletteReduce`'s open/close/query/move/select transitions, including the closed-state
- * no-op rule and `move`'s wraparound. Acceptance cases named in the design: `"fix bug"` hides
+ * and `paletteReduce`'s open/close/query/move/select/failed transitions, including the
+ * closed-state no-op rule, `move`'s wraparound, `select`'s secondary/index/no-double-select
+ * rules and `failed`'s error state. Acceptance cases named in the design: `"fix bug"` hides
  * "fix login" but matches "fix the bug" in either token order; `"log"` ranks "Open log" (a
  * boundary hit) over "Catalog" (mid-word); and a numeric query ranks a title containing it
- * above a row whose id merely contains it.
+ * above a row whose id merely contains it. Also covers the pure helpers the component holds no
+ * logic of its own for: `groupRows`, `paletteKeyEvent` and `runSelected`.
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
   collectCommands,
+  groupRows,
   initialPaletteState,
+  paletteKeyEvent,
   paletteReduce,
   paletteScore,
+  PALETTE_GROUP_LABELS,
   PALETTE_GROUP_ORDER,
   rankCommands,
+  runSelected,
   type PaletteCommand,
   type PaletteContext,
   type PaletteSource,
+  type PaletteState,
 } from './paletteModel';
 
 const noop = (): void => {};
@@ -205,5 +212,232 @@ describe('collectCommands', () => {
     expect(source1).toHaveBeenCalledWith(ctx);
     expect(source2).toHaveBeenCalledWith(ctx);
     expect(result.map((c) => c.id)).toEqual(['s1-p1', 's2-p1']);
+  });
+});
+
+describe('paletteReduce: select with secondary', () => {
+  const ctx: PaletteContext = { currentProjectId: null };
+
+  it('sets secondary: true when the active row has a secondary action', () => {
+    const commands = [command({ id: 'a', secondary: { title: 'Open in new tab', run: noop } })];
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+
+    const selected = paletteReduce(opened, { type: 'select', secondary: true });
+    expect(selected.selected?.id).toBe('a');
+    expect(selected.secondary).toBe(true);
+  });
+
+  it('is a no-op when the active row has no secondary action', () => {
+    const commands = [command({ id: 'a' })];
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+
+    const selected = paletteReduce(opened, { type: 'select', secondary: true });
+    expect(selected).toBe(opened);
+  });
+});
+
+describe('paletteReduce: select with index', () => {
+  const commands = [command({ id: 'a' }), command({ id: 'b' }), command({ id: 'c' })];
+  const ctx: PaletteContext = { currentProjectId: null };
+
+  it('picks the row at index and moves activeIndex to it', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+
+    const selected = paletteReduce(opened, { type: 'select', index: 2 });
+    expect(selected.activeIndex).toBe(2);
+    expect(selected.selected?.id).toBe('c');
+  });
+
+  it('is a no-op for an out-of-range index', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+
+    expect(paletteReduce(opened, { type: 'select', index: 99 })).toBe(opened);
+    expect(paletteReduce(opened, { type: 'select', index: -1 })).toBe(opened);
+  });
+
+  it('ignores a second select once selected is already set', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0 });
+
+    const reselected = paletteReduce(selected, { type: 'select', index: 2 });
+    expect(reselected).toBe(selected);
+    expect(reselected.selected?.id).toBe('a');
+  });
+});
+
+describe('paletteReduce: failed', () => {
+  const commands = [command({ id: 'a' }), command({ id: 'b' })];
+  const ctx: PaletteContext = { currentProjectId: null };
+
+  it('sets error, clears selected and keeps open', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0 });
+
+    const failed = paletteReduce(selected, { type: 'failed', message: 'boom' });
+    expect(failed.error).toBe('boom');
+    expect(failed.selected).toBeNull();
+    expect(failed.open).toBe(true);
+  });
+
+  it('is a no-op while closed', () => {
+    expect(paletteReduce(initialPaletteState, { type: 'failed', message: 'boom' })).toBe(
+      initialPaletteState,
+    );
+  });
+});
+
+describe('paletteReduce: error lifecycle around query, move, open and close', () => {
+  const commands = [command({ id: 'a' }), command({ id: 'b' })];
+  const ctx: PaletteContext = { currentProjectId: null };
+
+  it('query clears error', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0 });
+    const failed = paletteReduce(selected, { type: 'failed', message: 'boom' });
+
+    const queried = paletteReduce(failed, { type: 'query', query: 'a' });
+    expect(queried.error).toBeNull();
+  });
+
+  it('move keeps error', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0 });
+    const failed = paletteReduce(selected, { type: 'failed', message: 'boom' });
+
+    const moved = paletteReduce(failed, { type: 'move', delta: 1 });
+    expect(moved.error).toBe('boom');
+  });
+
+  it('close from an error state resets', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0 });
+    const failed = paletteReduce(selected, { type: 'failed', message: 'boom' });
+
+    expect(paletteReduce(failed, { type: 'close' })).toEqual(initialPaletteState);
+  });
+
+  it('open resets error', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0 });
+    const failed = paletteReduce(selected, { type: 'failed', message: 'boom' });
+
+    const reopened = paletteReduce(failed, { type: 'open', commands, ctx });
+    expect(reopened.error).toBeNull();
+  });
+});
+
+describe('paletteKeyEvent', () => {
+  const base = { key: '', ctrlKey: false, metaKey: false };
+
+  it('maps ArrowDown to move +1', () => {
+    expect(paletteKeyEvent({ ...base, key: 'ArrowDown' })).toEqual({ type: 'move', delta: 1 });
+  });
+
+  it('maps ArrowUp to move -1', () => {
+    expect(paletteKeyEvent({ ...base, key: 'ArrowUp' })).toEqual({ type: 'move', delta: -1 });
+  });
+
+  it('maps Enter to select', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Enter' })).toEqual({ type: 'select' });
+  });
+
+  it('maps Ctrl+Enter to select with secondary: true', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Enter', ctrlKey: true })).toEqual({
+      type: 'select',
+      secondary: true,
+    });
+  });
+
+  it('maps Meta+Enter to select with secondary: true', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Enter', metaKey: true })).toEqual({
+      type: 'select',
+      secondary: true,
+    });
+  });
+
+  it('maps Escape to close', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Escape' })).toEqual({ type: 'close' });
+  });
+
+  it('returns null while composing', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Enter', isComposing: true })).toBeNull();
+  });
+
+  it('returns null for an unrelated key', () => {
+    expect(paletteKeyEvent({ ...base, key: 'a' })).toBeNull();
+  });
+});
+
+describe('groupRows', () => {
+  it('preserves the flat indices and the group order', () => {
+    const rows = [
+      command({ id: 'nav1', group: 'navigate' }),
+      command({ id: 'act1', group: 'actions' }),
+      command({ id: 'cardA', group: 'cards' }),
+      command({ id: 'cardB', group: 'cards' }),
+    ];
+
+    const grouped = groupRows(rows);
+
+    expect(grouped.map((g) => g.group)).toEqual(['navigate', 'cards', 'actions']);
+    expect(grouped.map((g) => g.label)).toEqual([
+      PALETTE_GROUP_LABELS.navigate,
+      PALETTE_GROUP_LABELS.cards,
+      PALETTE_GROUP_LABELS.actions,
+    ]);
+
+    const cardsGroup = grouped.find((g) => g.group === 'cards');
+    expect(cardsGroup?.items).toEqual([
+      { command: rows[2], index: 2 },
+      { command: rows[3], index: 3 },
+    ]);
+
+    const navigateGroup = grouped.find((g) => g.group === 'navigate');
+    expect(navigateGroup?.items).toEqual([{ command: rows[0], index: 0 }]);
+  });
+
+  it('skips empty groups', () => {
+    const rows = [command({ id: 'a', group: 'actions' })];
+    expect(groupRows(rows).map((g) => g.group)).toEqual(['actions']);
+  });
+});
+
+describe('runSelected', () => {
+  const ctx: PaletteContext = { currentProjectId: null };
+
+  it('returns null when nothing is selected', () => {
+    expect(runSelected(initialPaletteState)).toBeNull();
+  });
+
+  it('returns the primary run when secondary is false', () => {
+    const primaryRun = vi.fn();
+    const commands = [command({ id: 'a', run: primaryRun })];
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0 });
+
+    expect(runSelected(selected)).toBe(primaryRun);
+  });
+
+  it('returns the secondary run when secondary is true', () => {
+    const primaryRun = vi.fn();
+    const secondaryRun = vi.fn();
+    const commands = [
+      command({ id: 'a', run: primaryRun, secondary: { title: 'Secondary', run: secondaryRun } }),
+    ];
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const selected = paletteReduce(opened, { type: 'select', index: 0, secondary: true });
+
+    expect(runSelected(selected)).toBe(secondaryRun);
+  });
+
+  it('returns null when secondary is true but selected has no secondary action', () => {
+    const state: PaletteState = {
+      ...initialPaletteState,
+      open: true,
+      selected: command({ id: 'a' }),
+      secondary: true,
+    };
+
+    expect(runSelected(state)).toBeNull();
   });
 });
