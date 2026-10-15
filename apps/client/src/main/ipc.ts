@@ -264,6 +264,7 @@ import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
 import { canStartVariants, planVariants, VARIANT_REFUSAL_MESSAGE } from '@shared/variants';
+import { pickVariant } from './variantPick';
 import { buildVariantSummary } from './variantSummary';
 import { createActivityRecorder } from './activityRecorder';
 import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
@@ -1399,6 +1400,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     ),
   );
 
+  handle('variants:pick', async (leaderId, variantId) => {
+    const leader = await pickVariant(
+      {
+        getTask: (id) => store.getTask(id),
+        getProject: (id) => store.getProject(id),
+        listVariantRows: (id) => store.listVariantRows(id),
+        discardVariantRow: (id) => scheduler.discardVariantRow(id),
+        cleanup: (project, taskId) => worktrees.cleanup(project, taskId),
+        deleteTaskBranch: (project, branch) => worktrees.deleteTaskBranch(project, branch),
+        archiveTask: (id, at, reason) => store.archiveTask(id, at, reason),
+        updateTask: (id, patch) => store.updateTask(id, patch),
+        addComment: (projectId, taskId, body) => store.addComment(projectId, taskId, body),
+      },
+      leaderId,
+      variantId,
+    );
+    send('project:tasksChanged', {
+      projectId: leader.projectId,
+      tasks: store.getTasks(leader.projectId),
+    });
+    return leader;
+  });
+
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note, opts) => scheduler.replanCard(taskId, note, opts));
   handle('task:create', async (projectId, input) => {
@@ -2380,6 +2404,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     getProject: (id) => store.getProject(id),
     getSettings: () => store.getSettings(),
     listMergeRequests: () => store.listMergeRequests(),
+    listVariantRows: (leaderId) => store.listVariantRows(leaderId),
     upsertMergeRequest: (mr) => {
       store.upsertMergeRequest(mr);
       // Pushed straight out, for the reason the row is written here at all: the card's

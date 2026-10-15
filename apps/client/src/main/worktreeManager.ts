@@ -1366,14 +1366,42 @@ export class WorktreeManager {
    * have had is exactly the kind of cleanup this whole area exists to stop trusting. Debris
    * git no longer recognises is deleted outright — there is no worktree left for git to
    * remove, its admin record went with the `.git` file.
+   *
+   * Returns the failure message for every slot that could not be removed — the same strings
+   * {@link WorktreeManager.removeWorktreeChecked} and {@link WorktreeManager.removeDebris}
+   * already produce instead of throwing. Every existing caller discards them (best-effort
+   * cleanup stays best-effort); a pick (F10.6) collects them onto the leader's timeline.
    */
-  async cleanup(project: Project, taskId: string): Promise<void> {
+  async cleanup(project: Project, taskId: string): Promise<string[]> {
     const { host, root } = await this.workspaceFor(project);
+    const failures: string[] = [];
     for (const cwd of this.candidatePaths(root, project.id, taskId)) {
       if (!existsSync(host.toApp(cwd))) continue;
-      if (await isRepo(cwd, host)) await this.removeWorktreeChecked(project, cwd, host);
-      else await this.removeDebris(host.toApp(cwd));
+      const failure = await (async () => {
+        if (await isRepo(cwd, host)) return this.removeWorktreeChecked(project, cwd, host);
+        return this.removeDebris(host.toApp(cwd));
+      })();
+      if (failure) failures.push(failure);
     }
+    return failures;
+  }
+
+  /**
+   * Delete a task's branch, once its worktree is gone — the other half of discarding a
+   * variant (F10.6): `cleanup` removes the worktree, this removes the branch it was checked
+   * out on. A no-op, not a failure, when the branch doesn't exist: that is what "already
+   * cleaned up" or "never had its own branch" (a legacy un-migrated row sharing the leader's)
+   * both look like, and neither is something to report.
+   */
+  async deleteTaskBranch(project: Project, branch: string): Promise<string | undefined> {
+    const { host } = await this.workspaceFor(project);
+    if (!(await branchExists(project.path, branch, host))) return undefined;
+    const res = await deleteBranch(project.path, branch, host);
+    if (res.code === 0) return undefined;
+    return (
+      `branch "${branch}" could not be deleted (${res.stderr.trim() || 'git branch -D failed'}), ` +
+      `so it is still on disk. Nothing depends on it — delete it when convenient.`
+    );
   }
 
   /**

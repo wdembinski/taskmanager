@@ -43,6 +43,7 @@ import {
 import { logMain } from './log';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
+import { variantWorkOwner } from '@shared/variants';
 import {
   forgeName,
   mrAbbrev,
@@ -1858,6 +1859,25 @@ export class Scheduler {
   }
 
   /**
+   * Drop one variant row (F10.6) — a losing row a pick is discarding, never the leader
+   * itself. `stopTask` covers a row that is running, parked behind a gate as
+   * `blocked-by-limit`, or still mid-chain, but a row only ever QUEUED behind its project's
+   * concurrency (plain `pending`, never started, no run to stop) matches none of
+   * `stopTask`'s own conditions and would otherwise survive this untouched — so that case is
+   * finished off here instead: dropped from {@link Scheduler.variantQueue} so `pump` never
+   * starts it, and written to `stopped` so it reads the same as any other discarded row.
+   */
+  discardVariantRow(id: string): void {
+    this.stopTask(id);
+    this.variantQueue.delete(id);
+    const row = this.store.getTask(id);
+    if (row && (row.status === 'pending' || row.status === 'blocked-by-limit')) {
+      this.updateTask(id, { status: 'stopped' }, null);
+      this.limitGate.unpark([id]);
+    }
+  }
+
+  /**
    * The step of `task`'s approved plan that a Start should run, if there is one.
    *
    * **A card with steps runs its CHAIN, not itself.** Steps written by hand were being
@@ -3312,7 +3332,9 @@ export class Scheduler {
     const queued: Task[] = [];
     for (const id of this.variantQueue) {
       const row = this.store.getTask(id);
-      if (!row || row.status !== 'pending') {
+      // Archived (e.g. `'variant-discarded'` by a pick) is dropped the same as a row that
+      // is no longer `pending` — either way there is nothing left here to start.
+      if (!row || row.status !== 'pending' || row.archivedAt) {
         this.variantQueue.delete(id);
         continue;
       }
@@ -6172,16 +6194,26 @@ export class Scheduler {
     };
     let ctx = this.readyToIntegrate.get(taskId);
     if (!ctx) {
+      // Whose work this card actually is: a leader that has picked resolves to the winning
+      // row, and a leader that has not picked yet has nothing to merge at all —
+      // `variantWorkOwner` refuses with `PICK_VARIANT_FIRST` for exactly that case, same as
+      // every other reader of a card's own work.
+      const owner = variantWorkOwner(task, this.store.listVariantRows(), (id) =>
+        this.store.getTask(id),
+      );
+      if ('refused' in owner) return refuse(owner.refused);
+      const row = owner.ownerId === task.id ? task : this.store.getTask(owner.ownerId);
+      if (!row) return refuse('The agent project for this card has been removed.');
+
       // The offer is gone but the branch may not be: `readyToIntegrate` lives in memory and
       // a restart empties it, while the worktree and the branch are facts on disk.
       // `inspect` READS those facts — deliberately not `prepare`, which would build them.
       // Asking `prepare` here meant that pressing Merge on a card whose branch had already
       // merged rebuilt its worktree and re-created the branch git had deleted, then
       // reported the result as unmergeable: a button that could only ever fail.
-      const project = this.store.getProject(task.agentProjectId ?? '');
+      const project = this.store.getProject(row.agentProjectId ?? '');
       if (!project) return refuse('The agent project for this card has been removed.');
-      const owner = task.parentTaskId ?? task.id;
-      const live = await this.worktrees!.inspect(project, owner, task.agentBranch ?? undefined);
+      const live = await this.worktrees!.inspect(project, row.id, row.agentBranch ?? undefined);
       if (!live) {
         return refuse(
           `There is no branch left to merge for this card. Its worktree and branch are ` +
@@ -6192,8 +6224,10 @@ export class Scheduler {
       }
       ctx = {
         projectId: project.id,
+        // The LEADER, not the row: a picked leader's own card is what `applyIntegrationResult`
+        // must land and write `landedAt` onto, exactly as a step's own run lands its parent.
         taskId,
-        runId: task.sessionId ?? taskId,
+        runId: row.sessionId ?? row.id,
         branch: live.branch,
         base: live.base,
         worktree: live.cwd,
@@ -6226,10 +6260,20 @@ export class Scheduler {
     const task = this.store.getTask(taskId);
     if (!task || !task.agentProjectId || task.status === 'running') return false;
     const project = this.store.getProject(task.agentProjectId);
+    if (!project?.useWorktrees) return false;
+    // A leader asks through the picked row — there is nothing to merge until a pick has
+    // happened, and once it has, the row is where the work (and `hasAgentWorked`'s own
+    // facts) actually live, not the leader card itself.
+    const owner = variantWorkOwner(task, this.store.listVariantRows(), (id) =>
+      this.store.getTask(id),
+    );
+    if ('refused' in owner) return false;
+    const row = owner.ownerId === task.id ? task : this.store.getTask(owner.ownerId);
+    if (!row) return false;
     // `hasAgentWorked`, not `task.sessionId` — a card whose plan has finished no longer
     // holds a session (`finishParentChain`) and would answer "no branch" about the branch
     // its six steps just wrote. Its steps are passed for the same reason.
-    return Boolean(project?.useWorktrees) && hasAgentWorked(task, this.store.getSubtasks(task.id));
+    return hasAgentWorked(row, this.store.getSubtasks(row.id));
   }
 
   private parkIntegrationFailure(project: Project, ctx: IntegrationCtx, reason: string): void {
@@ -6568,7 +6612,7 @@ export class Scheduler {
    * on one branch and the whole plan integrates into base exactly once.
    */
   private worktreeOwner(task: Task): string {
-    return task.parentTaskId ?? task.id;
+    return task.parentTaskId ?? task.pickedVariantId ?? task.id;
   }
 
   /**

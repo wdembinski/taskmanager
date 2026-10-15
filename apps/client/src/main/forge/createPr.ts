@@ -64,6 +64,7 @@ import { forgeName, mrIsSettled, mrNoun, mrRef } from '@shared/mergeRequest';
 import type { Project, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { sanitizeToken } from '@shared/secretToken';
+import { variantWorkOwner } from '@shared/variants';
 import {
   aggregateTested,
   branchChangesBody,
@@ -98,6 +99,8 @@ export interface CreatePrDeps {
   /** Every merge request the board knows about — filtered to this card here. */
   listMergeRequests(): MergeRequest[];
   upsertMergeRequest(mr: MergeRequest): void;
+  /** Every live variant row of any leader — `store.listVariantRows()`, for `variantWorkOwner`. */
+  listVariantRows(leaderId?: string): Task[];
   /**
    * What the card's worktree and branch ARE on disk right now, or null.
    * `WorktreeManager.inspect` — reading, never preparing.
@@ -163,8 +166,11 @@ export async function openPullRequest(
 
   // A step never opens its own pull request: it shares its parent's worktree and branch, so
   // one PR covers the whole plan and it belongs to the card the branch belongs to. Exactly
-  // the `worktreeOwner` rule the merge already follows.
-  const ownerId = task.parentTaskId ?? task.id;
+  // the `worktreeOwner` rule the merge already follows — and a leader routes the same way,
+  // through whichever variant it picked, refusing before a pick exactly as the merge does.
+  const resolved = variantWorkOwner(task, deps.listVariantRows(), (id) => deps.getTask(id));
+  if ('refused' in resolved) throw new Error(resolved.refused);
+  const ownerId = resolved.ownerId;
   const owner = ownerId === task.id ? task : (deps.getTask(ownerId) ?? task);
 
   const project = deps.getProject(owner.agentProjectId ?? '');
