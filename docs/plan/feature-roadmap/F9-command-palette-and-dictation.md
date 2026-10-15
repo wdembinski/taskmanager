@@ -90,7 +90,7 @@ None — the palette is pure UI over data each host already has (the board store
 
   - New `packages/ui/src/palette/paletteModel.ts`: `PaletteCommand`, `PaletteSource`, `paletteScore`, `rankCommands` (group order, empty-query locality order), `paletteReduce` (open/close/query/move/select).
   - Acceptance: `paletteModel.test.ts` covers — every token required; word-boundary beats mid-word; `767` ranks "767: fix" above a row whose id contains `767`; empty query keeps the current project's cards first; `move` wraps; `select` on an empty list is a no-op. `pnpm typecheck`, `pnpm test`, `pnpm build` green.
-- [ ] F9.2 Add a shared useGlobalShortcut hook with a pure mod+k matcher @needs: F9.1 Add the pure palette model with command sources and token scoring in packages/ui
+- [x] F9.2 Add a shared useGlobalShortcut hook with a pure mod+k matcher @needs: F9.1 Add the pure palette model with command sources and token scoring in packages/ui
 
   - `packages/ui/src/palette/shortcut.ts`: pure `shortcutMatches(evt, spec)` (Meta or Ctrl for `mod`, ignores `isComposing`, ignores repeat) + `useGlobalShortcut` that registers one window listener.
   - Acceptance: unit tests on plain event-like objects for Ctrl+K, Meta+K, Shift+Ctrl+K (no match), composing (no match), autorepeat (no match). Gates green.
