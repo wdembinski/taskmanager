@@ -9,6 +9,9 @@ import {
   isGateStep,
   MAX_WORKFLOW_STEPS,
   validateWorkflow,
+  WORKFLOW_DOC_MAX,
+  workflowDocBytes,
+  workflowTooLargeMessage,
   type AgentStep,
   type GateOutcome,
   type GateRunResult,
@@ -273,6 +276,53 @@ describe('validateWorkflow', () => {
       expect(result.issues.some((i) => i.toLowerCase().includes('attempt'))).toBe(true);
       expect(result.issues.length).toBeGreaterThanOrEqual(5);
     }
+  });
+});
+
+describe('WORKFLOW_DOC_MAX', () => {
+  it('is 64 KiB', () => {
+    expect(WORKFLOW_DOC_MAX).toBe(65536);
+  });
+});
+
+describe('workflowDocBytes', () => {
+  it('counts the UTF-8 bytes of JSON.stringify(doc), not of any single field', () => {
+    const doc = workflowDoc();
+    expect(workflowDocBytes(doc)).toBe(new TextEncoder().encode(JSON.stringify(doc)).length);
+  });
+
+  it('counts a multibyte character in bytes, not UTF-16 code units', () => {
+    // U+4E2D ("中") is 3 bytes in UTF-8 but one UTF-16 code unit — `.length` would read 1.
+    const doc = workflowDoc({ name: '中' });
+    const withAscii = workflowDocBytes(workflowDoc({ name: 'x' }));
+    expect(workflowDocBytes(doc)).toBe(withAscii + 2);
+  });
+
+  it('measures a doc padded to exactly WORKFLOW_DOC_MAX bytes as exactly that many', () => {
+    const base = workflowDoc({ name: '' });
+    const baseBytes = workflowDocBytes(base);
+    const padded = workflowDoc({ name: 'x'.repeat(WORKFLOW_DOC_MAX - baseBytes) });
+    expect(workflowDocBytes(padded)).toBe(WORKFLOW_DOC_MAX);
+  });
+
+  it('measures a doc one byte over WORKFLOW_DOC_MAX as exactly one over', () => {
+    const base = workflowDoc({ name: '' });
+    const baseBytes = workflowDocBytes(base);
+    const overBudget = workflowDoc({ name: 'x'.repeat(WORKFLOW_DOC_MAX - baseBytes + 1) });
+    expect(workflowDocBytes(overBudget)).toBe(WORKFLOW_DOC_MAX + 1);
+  });
+});
+
+describe('workflowTooLargeMessage', () => {
+  it('names both the rounded-up size and the cap, in KiB', () => {
+    expect(workflowTooLargeMessage(WORKFLOW_DOC_MAX + 1)).toBe(
+      'too large to sync (65 KiB > 64 KiB)',
+    );
+  });
+
+  it('never rounds down to the cap itself, even one byte over', () => {
+    const message = workflowTooLargeMessage(WORKFLOW_DOC_MAX + 1);
+    expect(message).not.toContain('64 KiB > 64 KiB');
   });
 });
 

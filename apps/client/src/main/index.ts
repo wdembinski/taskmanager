@@ -315,6 +315,7 @@ app.on('before-quit', () => {
           // would otherwise read a closed database.
           { name: 'cloudAttachments', run: () => live.cloudAttachments.dispose() },
           { name: 'cloudSkillPusher', run: () => live.cloudSkillPusher.dispose() },
+          { name: 'cloudWorkflowPusher', run: () => live.cloudWorkflowPusher.dispose() },
           { name: 'focusTracker', run: () => live.focusTracker.dispose() },
           { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
           { name: 'watcher', run: () => live.watcher.dispose() },

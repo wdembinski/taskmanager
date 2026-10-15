@@ -184,6 +184,27 @@ describe('buildMirrorDelta', () => {
     );
     expect(result).toEqual({ ...emptyFields, automationRuns: [r1] });
   });
+
+  it('carries a gate step card whole — stepSpec and gateAttempts ride along with the Task', () => {
+    const gateTask = {
+      id: 't-gate',
+      title: 'Run the gate',
+      stepSpec: { id: 'step-1', kind: 'gate', title: 'Gate', command: 'pnpm test' },
+      gateAttempts: 2,
+    } as unknown as Task;
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'task', entityId: 't-gate', op: 'update' })],
+      lookups({ getTask: (id) => (id === 't-gate' ? gateTask : undefined) }),
+    );
+    expect(result.tasks).toEqual([gateTask]);
+    expect(result.tasks[0]?.stepSpec).toEqual({
+      id: 'step-1',
+      kind: 'gate',
+      title: 'Gate',
+      command: 'pnpm test',
+    });
+    expect(result.tasks[0]?.gateAttempts).toBe(2);
+  });
 });
 
 describe('buildMirrorDeltaWithin', () => {

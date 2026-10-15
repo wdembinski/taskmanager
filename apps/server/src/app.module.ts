@@ -17,6 +17,7 @@ import { SkillMirror } from './entities/skillMirror.entity';
 import { Tombstone } from './entities/tombstone.entity';
 import { ProjectMirror } from './entities/projectMirror.entity';
 import { TaskMirror } from './entities/taskMirror.entity';
+import { WorkflowMirror } from './entities/workflowMirror.entity';
 import { AgentsModule } from './agents/agents.module';
 import { AttachmentsModule } from './attachments/attachments.module';
 import { EventsModule } from './events/events.module';
@@ -25,6 +26,7 @@ import { MirrorModule } from './mirror/mirror.module';
 import { PresenceModule } from './presence/presence.module';
 import { SkillsModule } from './skills/skills.module';
 import { TokensModule } from './tokens/tokens.module';
+import { WorkflowsModule } from './workflows/workflows.module';
 
 @Module({
   imports: [
@@ -62,6 +64,7 @@ import { TokensModule } from './tokens/tokens.module';
           SkillMirror,
           TaskMirror,
           Tombstone,
+          WorkflowMirror,
         ],
         // Migrations, not synchronize — see database/dataSource.ts.
         synchronize: false,
@@ -76,6 +79,7 @@ import { TokensModule } from './tokens/tokens.module';
     AgentsModule,
     SkillsModule,
     TokensModule,
+    WorkflowsModule,
   ],
 })
 export class AppModule {}

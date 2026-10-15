@@ -125,6 +125,10 @@ engine change is in `advanceSubtasks`: the next pending step is dispatched **by 
   inside `SyncRequest` (`one-answer-wedges-the-mirror`).
 - A card's steps already mirror; `stepSpec` kind and `gateAttempts` ride the task mirror so the web
   can draw gate steps. Gate output stays in the timeline, which already mirrors.
+- Both fields are plain `Task` fields, so they ride the existing whole-`Task` mirror
+  (`buildMirrorDelta`, `TaskMirror.data`) with no `MirrorDelta` shape change and no
+  `PROTOCOL_VERSION` bump — confirmed by a round-trip test on each side (`cloudDelta.test.ts`,
+  `mirror.service.test.ts`), not a new field added for this ticket.
 - **Command trust is local.** A gate command is arbitrary shell run unattended, and a workflow can be
   authored on the web. So each desktop keeps its own set of trusted command hashes (machine-local,
   never synced); the first time an untrusted command would run, the gate parks as an inbox item
