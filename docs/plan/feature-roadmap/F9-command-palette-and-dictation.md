@@ -72,7 +72,13 @@ None — the palette is pure UI over data each host already has (the board store
 ## Open questions
 
 1. **Does Web Speech work in the packaged Electron app?** Electron's Chromium exposes `webkitSpeechRecognition`, but it is backed by Google's speech service, which needs an API key Chrome bundles and Electron does not — the widely reported outcome is an immediate `network` error. *Recommended default:* assume it does **not**; the F9.7 spike proves it either way before any desktop dictation UI is built.
+
+   **Findings (F9.7, 2026-10-15):** It does not. Probed on Electron 33.4.11 / Chromium 130.0.6723.191: `webkitSpeechRecognition` reaches `onstart` (t=76ms) and `onaudiostart` (t=909ms), then fires `onerror: "network"` at t=1129ms and ends — confirming no bundled speech-service key, as predicted. `getUserMedia({audio:true})` with no `setPermissionRequestHandler` at all is **granted silently**, no prompt, returning the real device label — a reason F9.10 must add a handler regardless of the Web Speech outcome, since without one any renderer code gets silent microphone access. With a handler scoped to the app's own origin, both the recognizer (`onerror: "not-allowed"`, t=8ms) and `getUserMedia({audio:true})` (`NotAllowedError`) were **denied**, not granted: Electron reports the request-time origin to `setPermissionRequestHandler` as the opaque string `"null"` for a packaged `file://` renderer, even though `setPermissionCheckHandler` sees `"file:///"` for the same request — a handler written to string-match a literal `file://` origin denies its own app. F9.10's handler must account for this origin mismatch rather than reject anything that isn't `"file:///"`. `getUserMedia({video:true})` returned `NotFoundError` in both runs (no camera attached to the test machine), so it does not independently confirm video-denial.
+
+   **Chosen desktop path:** Web Speech fails, so F9.10 ships the OS-dictation hint (Win+H / Fn-Fn); local transcription stays a separate, later card.
 2. **Desktop dictation path if Web Speech fails.** Options: (a) a hint pointing at OS dictation (Windows Win+H, macOS Fn-Fn) which already works in any focused text field, zero code, zero data leaving the OS vendor's path; (b) local transcription (whisper.cpp via a native addon or a WASM model in the renderer — 40–150 MB model download, CPU cost, another ABI-split native module per *verify-electron-app*); (c) a cloud STT API via `@tm/server` (cost, privacy). *Recommended default:* (a) for v1, (b) only if the user asks for in-app dictation on the desktop.
+
+   **Resolved (F9.7):** (a), the OS-dictation hint — see the findings under question 1.
 3. **Web host**: Web Speech works in Chrome/Edge/Safari (Safari sends audio to Apple, Chrome to Google). *Recommended default:* enable it there, hide the mic in Firefox, and say in the mic tooltip which vendor processes the audio.
 4. **Ctrl+K collisions in the desktop** — nothing in the renderer binds it today. *Recommended default:* take it.
 
@@ -110,7 +116,7 @@ None — the palette is pure UI over data each host already has (the board store
 
 ### F9 · Phase 3 — Dictation
 
-- [ ] F9.7 Spike whether Web Speech recognition works in the packaged Electron renderer
+- [x] F9.7 Spike whether Web Speech recognition works in the packaged Electron renderer
 
   - Throwaway probe (scratch branch, never merged): call `webkitSpeechRecognition` in a packaged build and record the `onerror` code; also confirm `getUserMedia({audio:true})` behaviour with and without a `setPermissionRequestHandler`. Follow *verify-electron-app* — do NOT launch the app on the user's machine; ask the human to run the probe build or use a throwaway profile.
   - Acceptance: a short findings note appended to this file's Open questions (works / fails with which error) and the chosen desktop path (OS-dictation hint vs local transcription). No product code merged.
