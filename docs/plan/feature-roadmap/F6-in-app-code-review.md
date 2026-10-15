@@ -356,7 +356,7 @@ to send rather than deliver an empty message.
 
   - A Fluent v9 `Tree` file list with status and +/−; a unified diff with line gutters and word highlights; before/after images; collapsed generated files; the header with the refs and the uncommitted note; the empty, landed and conflicted states. Mount it as a **Changes** section in `TaskDetail.tsx`.
   - Acceptance: `pnpm build` green; a headless smoke check (memory *verify-electron-app*, never launch the user's app) renders a seeded card's diff; tokens only, no hard-coded colours.
-- [ ] F6.12 Add line and range comments with Send review to the pane @needs: F6.11 Build ReviewPane with FileTree and DiffView in packages/ui/src/review, F6.9 Implement review:send as one batched follow-up through the chat path
+- [x] F6.12 Add line and range comments with Send review to the pane @needs: F6.11 Build ReviewPane with FileTree and DiffView in packages/ui/src/review, F6.9 Implement review:send as one batched follow-up through the chat path
 
   - The gutter "+", shift-click ranges, the inline editor (Ctrl/Cmd+Enter to save), edit/delete, the outdated label, sent stamps, and the unsent count plus **Send review** with an optional overall note in the header.
   - Acceptance: the state-machine tests cover add, edit, delete and send transitions; a stub-CLI scenario shows the comments arriving at the agent and the pane flipping them to sent.

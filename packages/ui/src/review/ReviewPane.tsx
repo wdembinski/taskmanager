@@ -28,13 +28,33 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
+import type {
+  DiffSide,
+  DiffStale,
+  ReviewComment,
+  ReviewCommentInput,
+  ReviewCommentSent,
+} from '@tm/shared/review';
 import { useTransport } from '../transport';
 import {
+  clickLine,
+  closeEditor,
+  commentDeleted,
+  commentSaved,
+  commentsArrived,
+  commentsLoadStarted,
+  editDraft,
+  editNote,
   EMPTY_REVIEW,
   fileArrived,
   fileFailed,
   fileLoadStarted,
+  openExistingDraft,
+  reviewSent,
+  saveRefused,
+  saveStarted,
   selectFile,
+  sendStarted,
   summaryArrived,
   summaryFailed,
   summaryLoadStarted,
@@ -116,6 +136,108 @@ export function ReviewPane({ taskId }: ReviewPaneProps): JSX.Element {
     }
   }, [state, taskId, transport]);
 
+  const loadComments = useCallback(async () => {
+    const mySeq = ++seq.current;
+    setState((s) => commentsLoadStarted(s, taskId, mySeq));
+    try {
+      const comments = await transport.invoke('review:list', taskId);
+      setState((s) => commentsArrived(s, taskId, mySeq, comments));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [transport, taskId]);
+
+  // On mount, on a new diffId (the server recomputes `outdated` against whatever is
+  // current, regardless of which diffId is passed — see `ReviewService.list`), and after
+  // `review:send` below.
+  useEffect(() => {
+    void loadComments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId, state.diffId]);
+
+  function onClickLine(path: string, side: DiffSide, line: number, shift: boolean): void {
+    setState((s) => clickLine(s, { path, side, line }, shift));
+  }
+
+  function onEditDraft(text: string): void {
+    setState((s) => editDraft(s, text));
+  }
+
+  function onCancel(): void {
+    setState((s) => closeEditor(s));
+  }
+
+  function onEdit(comment: ReviewComment): void {
+    setState((s) => openExistingDraft(s, comment));
+  }
+
+  function onDelete(id: string): void {
+    void transport.invoke('review:delete', taskId, id).then((result) => {
+      if (result.status === 'ok') setState((s) => commentDeleted(s, taskId, id));
+    });
+  }
+
+  function onSave(): void {
+    const editor = state.editor;
+    if (editor === null) return;
+    setState((s) => saveStarted(s));
+
+    function accept(comment: ReviewComment): void {
+      setState((s) => commentSaved(s, taskId, comment));
+    }
+    function refuse(result: DiffStale | ReviewCommentSent | { error: string }): void {
+      setState((s) => saveRefused(s, taskId, result));
+    }
+    function onError(e: unknown): void {
+      refuse({ error: e instanceof Error ? e.message : String(e) });
+    }
+
+    if (editor.commentId !== undefined) {
+      void transport
+        .invoke('review:update', taskId, editor.commentId, { body: editor.draft })
+        .then(
+          (result) => (result.status === 'ok' ? accept(result.comment) : refuse(result)),
+          onError,
+        );
+      return;
+    }
+    if (state.diffId === null) return;
+    const input: ReviewCommentInput = {
+      taskId,
+      diffId: state.diffId,
+      path: editor.path,
+      side: editor.anchor.side,
+      line: editor.anchor.line,
+      body: editor.draft,
+      ...(editor.start ? { start: editor.start } : {}),
+    };
+    void transport
+      .invoke('review:add', input)
+      .then(
+        (result) => (result.status === 'ok' ? accept(result.comment) : refuse(result)),
+        onError,
+      );
+  }
+
+  function onEditNote(text: string): void {
+    setState((s) => editNote(s, text));
+  }
+
+  function onSend(): void {
+    setState((s) => sendStarted(s));
+    const note = state.note.trim() ? state.note : undefined;
+    void transport.invoke('review:send', taskId, note).then(
+      (result) => {
+        setState((s) => reviewSent(s, taskId, result));
+        void loadComments();
+      },
+      (e: unknown) => {
+        setState((s) => (s.taskId === taskId ? { ...s, sending: false } : s));
+        setError(e instanceof Error ? e.message : String(e));
+      },
+    );
+  }
+
   return (
     <ReviewPaneView
       taskId={taskId}
@@ -124,6 +246,14 @@ export function ReviewPane({ taskId }: ReviewPaneProps): JSX.Element {
       onReload={() => void loadSummary()}
       onSelectFile={(path) => setState((s) => selectFile(s, path))}
       onToggleExpanded={(path) => setState((s) => toggleExpanded(s, path))}
+      onClickLine={onClickLine}
+      onEditDraft={onEditDraft}
+      onSave={onSave}
+      onCancel={onCancel}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onEditNote={onEditNote}
+      onSend={onSend}
     />
   );
 }

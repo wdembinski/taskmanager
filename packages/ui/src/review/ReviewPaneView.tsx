@@ -23,16 +23,21 @@ import {
   MessageBar,
   MessageBarActions,
   MessageBarBody,
+  Popover,
+  PopoverSurface,
+  PopoverTrigger,
   Spinner,
+  Textarea,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { ArrowClockwiseRegular } from '@fluentui/react-icons';
+import { ArrowClockwiseRegular, NoteEditRegular, SendRegular } from '@fluentui/react-icons';
+import type { DiffSide, ReviewComment, ReviewSendRefusal } from '@tm/shared/review';
 import { MONO } from '../theme';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
-import type { ReviewState } from './reviewState';
-import { buildFileTree, summaryTotals } from './reviewView';
+import { canComment, canSend, unsentCount, type ReviewState } from './reviewState';
+import { buildFileTree, sendRefusalText, summaryTotals } from './reviewView';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px' },
@@ -46,6 +51,8 @@ const useStyles = makeStyles({
   notice: { color: tokens.colorNeutralForeground3 },
   link: { color: tokens.colorBrandForegroundLink },
   body: { display: 'flex', gap: '10px', minHeight: 0 },
+  unsent: { color: tokens.colorNeutralForeground3 },
+  note: { width: '320px', display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px' },
 });
 
 export interface ReviewPaneViewProps {
@@ -56,6 +63,14 @@ export interface ReviewPaneViewProps {
   onReload: () => void;
   onSelectFile: (path: string) => void;
   onToggleExpanded: (path: string) => void;
+  onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  onEditDraft: (text: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onEdit: (comment: ReviewComment) => void;
+  onDelete: (id: string) => void;
+  onEditNote: (text: string) => void;
+  onSend: () => void;
 }
 
 export function ReviewPaneView({
@@ -65,6 +80,14 @@ export function ReviewPaneView({
   onReload,
   onSelectFile,
   onToggleExpanded,
+  onClickLine,
+  onEditDraft,
+  onSave,
+  onCancel,
+  onEdit,
+  onDelete,
+  onEditNote,
+  onSend,
 }: ReviewPaneViewProps): JSX.Element {
   const styles = useStyles();
   const { summary } = state;
@@ -117,6 +140,37 @@ export function ReviewPaneView({
             <Caption1 className={styles.uncommitted}>Includes uncommitted changes</Caption1>
           )}
           <span className={styles.spacer} />
+          <Caption1 className={styles.unsent}>{unsentCount(state)} unsent</Caption1>
+          <Popover trapFocus positioning="below-end">
+            <PopoverTrigger disableButtonEnhancement>
+              <Button
+                size="small"
+                appearance="subtle"
+                icon={<NoteEditRegular />}
+                title="Add an overall note to send alongside the comments"
+                aria-label="Edit the review's overall note"
+              />
+            </PopoverTrigger>
+            <PopoverSurface>
+              <div className={styles.note}>
+                <Textarea
+                  value={state.note}
+                  placeholder="Add an overall note…  (optional)"
+                  resize="vertical"
+                  onChange={(_e, data) => onEditNote(data.value)}
+                />
+              </div>
+            </PopoverSurface>
+          </Popover>
+          <Button
+            size="small"
+            appearance="primary"
+            icon={state.sending ? <Spinner size="tiny" /> : <SendRegular />}
+            disabled={!canSend(state)}
+            onClick={onSend}
+          >
+            {state.sending ? 'Sending…' : 'Send review'}
+          </Button>
           {state.loading ? (
             <Spinner size="extra-tiny" />
           ) : (
@@ -143,7 +197,16 @@ export function ReviewPaneView({
             files={state.files}
             expanded={state.expanded}
             selectedPath={state.selectedPath}
+            comments={state.comments}
+            editor={state.editor}
+            canComment={canComment(state)}
             onToggleExpanded={onToggleExpanded}
+            onClickLine={onClickLine}
+            onEditDraft={onEditDraft}
+            onSave={onSave}
+            onCancel={onCancel}
+            onEdit={onEdit}
+            onDelete={onDelete}
           />
         </div>
       </>
@@ -160,6 +223,11 @@ export function ReviewPaneView({
               Retry
             </Button>
           </MessageBarActions>
+        </MessageBar>
+      )}
+      {state.sendError !== null && (
+        <MessageBar intent="warning">
+          <MessageBarBody>{sendRefusalText(state.sendError as ReviewSendRefusal)}</MessageBarBody>
         </MessageBar>
       )}
       {state.staleDiffId !== null && (

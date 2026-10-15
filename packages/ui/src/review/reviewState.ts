@@ -4,14 +4,16 @@
  * test harness (no jsdom, no testing-library), so the only way to prove the pane's races are
  * closed is to pull its transitions out of the component and test them as plain functions.
  *
- * Two races, one counter each. `ReviewPane` fetches a summary, then — lazily, per expanded file
- * — each file's patch, and those awaits are not guaranteed to land in request order. The caller
- * mints every `seq` from one ever-increasing counter. `applied` is the newest load this state
- * has accepted a summary for (`reviewAccepts`); each file's own `loading { seq }` is a SEPARATE
- * frontier, since files load independently of each other and of the summary. A late summary
- * answer for an old `(taskId, seq)`, a late file answer for a `diffId` the state has since moved
- * past, or a file answer a newer re-request has already superseded, is a no-op that returns the
- * SAME state object — the tests assert this with `toBe`.
+ * Three races, one counter each, all minted from the pane's one shared `seq` counter. `ReviewPane`
+ * fetches a summary, then — lazily, per expanded file — each file's patch, and separately
+ * `review:list`'s comments, and none of those awaits are guaranteed to land in request order.
+ * `applied` is the newest load this state has accepted a summary for (`reviewAccepts`);
+ * `commentsSeq` is the same idea for comments; each file's own `loading { seq }` is a SEPARATE
+ * frontier again, since files load independently of each other, of the summary and of comments. A
+ * late summary answer for an old `(taskId, seq)`, a late comments answer the same way, a late file
+ * answer for a `diffId` the state has since moved past, or a file answer a newer re-request has
+ * already superseded, is a no-op that returns the SAME state object — the tests assert this with
+ * `toBe`.
  *
  * Two things that are NOT part of either race, by design:
  *  - `editor` holds the human's own typing, not a fact about the current diff. It survives a
@@ -27,8 +29,11 @@ import type {
   DiffFileResult,
   DiffLine,
   DiffSide,
+  DiffStale,
   DiffSummaryResult,
   ReviewComment,
+  ReviewCommentSent,
+  ReviewSendResult,
 } from '@tm/shared/review';
 import { DIFF_COLLAPSE_LINES } from '@tm/shared/review';
 
@@ -53,6 +58,8 @@ export interface CommentEditor {
   draft: string;
   commentId?: string; // editing an existing draft rather than adding a new one
   outdated: boolean; // the diff moved on since the editor opened (drafts are kept)
+  saving: boolean;
+  error?: string; // a refused save's message; the draft is kept
 }
 
 export interface ReviewState {
@@ -71,6 +78,14 @@ export interface ReviewState {
   /** The last plain-clicked line, which Shift-click extends from. */
   rangeAnchor: CommentAnchor | null;
   editor: CommentEditor | null;
+  /** Every draft and sent comment on this card's review, in no particular order. */
+  comments: readonly ReviewComment[];
+  /** The newest load sequence number this state has accepted a `review:list` answer for. */
+  commentsSeq: number;
+  /** The note that goes out alongside the batched drafts when Send review runs. */
+  note: string;
+  sending: boolean;
+  sendError: string | null;
 }
 
 export const EMPTY_REVIEW: ReviewState = {
@@ -85,6 +100,11 @@ export const EMPTY_REVIEW: ReviewState = {
   files: {},
   rangeAnchor: null,
   editor: null,
+  comments: [],
+  commentsSeq: 0,
+  note: '',
+  sending: false,
+  sendError: null,
 };
 
 /** Whether an answer carrying `(taskId, seq)` is still the frontier `state` accepts. */
@@ -281,6 +301,7 @@ function openRange(
       start: { side: start.side, line: start.line },
       draft: '',
       outdated: false,
+      saving: false,
     },
   };
 }
@@ -306,7 +327,7 @@ export function clickLine(
   return {
     ...s,
     rangeAnchor: { path, side, line },
-    editor: { path, anchor: { side, line }, draft: '', outdated: false },
+    editor: { path, anchor: { side, line }, draft: '', outdated: false, saving: false },
   };
 }
 
@@ -316,8 +337,13 @@ export function editDraft(s: ReviewState, text: string): ReviewState {
   return { ...s, editor: { ...s.editor, draft: text } };
 }
 
-/** Opens the editor on an existing comment, to edit it. `outdated` reflects `s.diffId` now. */
+/**
+ * Opens the editor on an existing comment, to edit it. `outdated` reflects `s.diffId` now.
+ * Refused (same object) for a comment that has already gone out in a review message — it is no
+ * longer a draft to edit.
+ */
 export function openExistingDraft(s: ReviewState, comment: ReviewComment): ReviewState {
+  if (comment.sentAt !== null) return s;
   return {
     ...s,
     rangeAnchor: { path: comment.path, side: comment.side, line: comment.line },
@@ -328,6 +354,7 @@ export function openExistingDraft(s: ReviewState, comment: ReviewComment): Revie
       draft: comment.body,
       commentId: comment.id,
       outdated: comment.diffId !== s.diffId,
+      saving: false,
     },
   };
 }
@@ -336,6 +363,166 @@ export function openExistingDraft(s: ReviewState, comment: ReviewComment): Revie
 export function closeEditor(s: ReviewState): ReviewState {
   if (s.editor === null) return s;
   return { ...s, editor: null };
+}
+
+/** Whether an answer carrying `(taskId, seq)` is still the frontier `state` accepts for comments. */
+function commentsAccepted(s: ReviewState, taskId: string | null, seq: number): boolean {
+  return taskId === s.taskId && seq >= s.commentsSeq;
+}
+
+/** A `review:list` fetch began. Refused (same object) for a foreign `taskId` or a seq the
+ * frontier has already moved past. Bumps the frontier forward so a late answer for this load's
+ * own seq is still accepted, but an older in-flight one is dropped once this one lands first. */
+export function commentsLoadStarted(
+  s: ReviewState,
+  taskId: string | null,
+  seq: number,
+): ReviewState {
+  if (!commentsAccepted(s, taskId, seq)) return s;
+  return { ...s, commentsSeq: seq };
+}
+
+/** A `review:list` answer arrived. Refused unless `commentsAccepted`; replaces the list wholesale. */
+export function commentsArrived(
+  s: ReviewState,
+  taskId: string | null,
+  seq: number,
+  comments: readonly ReviewComment[],
+): ReviewState {
+  if (!commentsAccepted(s, taskId, seq)) return s;
+  return { ...s, commentsSeq: seq, comments };
+}
+
+function upsertComment(
+  comments: readonly ReviewComment[],
+  comment: ReviewComment,
+): readonly ReviewComment[] {
+  const idx = comments.findIndex((c) => c.id === comment.id);
+  if (idx === -1) return [...comments, comment];
+  const next = comments.slice();
+  next[idx] = comment;
+  return next;
+}
+
+/** A comment save began. A no-op if there is no editor. Clears a previous refusal's message. */
+export function saveStarted(s: ReviewState): ReviewState {
+  if (s.editor === null) return s;
+  return { ...s, editor: { ...s.editor, saving: true, error: undefined } };
+}
+
+/**
+ * A comment save succeeded. Refused (same object) for a foreign `taskId`. Upserts by `id`, and
+ * closes the editor only if it is still the one that was saved — a brand new draft (there is
+ * only ever one editor open at a time, so a save in flight for a new draft can only be this
+ * one), or an edit of this exact comment.
+ */
+export function commentSaved(
+  s: ReviewState,
+  taskId: string | null,
+  comment: ReviewComment,
+): ReviewState {
+  if (taskId !== s.taskId) return s;
+  const comments = upsertComment(s.comments, comment);
+  const closes =
+    s.editor !== null && (s.editor.commentId === undefined || s.editor.commentId === comment.id);
+  return { ...s, comments, editor: closes ? null : s.editor };
+}
+
+function saveRefusalMessage(result: DiffStale | ReviewCommentSent | { error: string }): string {
+  if (!('status' in result)) return result.error;
+  return result.status === 'stale' ? 'the diff moved on — reload' : 'already sent';
+}
+
+/**
+ * A comment save was refused. Refused (same object) for a foreign `taskId` or no open editor.
+ * Keeps the draft, sets `editor.error` and clears `saving`. A `stale` refusal also sets
+ * `staleDiffId`, same as a file's own stale answer.
+ */
+export function saveRefused(
+  s: ReviewState,
+  taskId: string | null,
+  result: DiffStale | ReviewCommentSent | { error: string },
+): ReviewState {
+  if (taskId !== s.taskId || s.editor === null) return s;
+  return {
+    ...s,
+    staleDiffId:
+      'status' in result && result.status === 'stale' ? result.currentDiffId : s.staleDiffId,
+    editor: { ...s.editor, saving: false, error: saveRefusalMessage(result) },
+  };
+}
+
+/**
+ * A comment was deleted. Refused (same object) for a foreign `taskId`. Removes it, and closes
+ * the editor if it was the one editing this comment.
+ */
+export function commentDeleted(s: ReviewState, taskId: string | null, id: string): ReviewState {
+  if (taskId !== s.taskId) return s;
+  const comments = s.comments.filter((c) => c.id !== id);
+  const editor = s.editor !== null && s.editor.commentId === id ? null : s.editor;
+  return { ...s, comments, editor };
+}
+
+/** Edits the note that goes out with Send review. A no-op if the text is unchanged. */
+export function editNote(s: ReviewState, text: string): ReviewState {
+  if (s.note === text) return s;
+  return { ...s, note: text };
+}
+
+/** A send began. A no-op if a send is already in flight. Clears a previous refusal's message. */
+export function sendStarted(s: ReviewState): ReviewState {
+  if (s.sending) return s;
+  return { ...s, sending: true, sendError: null };
+}
+
+/**
+ * `review:send` answered. Refused (same object) for a foreign `taskId` — note this compares
+ * against the card `taskId` the pane is showing, not `result.taskId`, which may name the live
+ * step that actually received the message rather than the card itself. On `sent`/`resumed`,
+ * upserts the returned comments (`sentAt` now stamped) and clears `note`, `sending` and
+ * `sendError`. On `refused`, keeps every draft and the note untouched, and sets `sendError` to
+ * the refusal reason — `reviewView.ts`'s `sendRefusalText` turns that into a sentence to show.
+ */
+export function reviewSent(
+  s: ReviewState,
+  taskId: string | null,
+  result: ReviewSendResult,
+): ReviewState {
+  if (taskId !== s.taskId) return s;
+  if (result.status === 'refused') {
+    return { ...s, sending: false, sendError: result.reason };
+  }
+  const comments = result.comments.reduce(upsertComment, s.comments);
+  return { ...s, comments, note: '', sending: false, sendError: null };
+}
+
+/** How many drafts have not gone out yet — what the Send review button's badge counts. */
+export function unsentCount(s: ReviewState): number {
+  return s.comments.filter((c) => c.sentAt === null).length;
+}
+
+/** The comments whose END anchor is `(path, side, line)` — where `ReviewPane` renders each one,
+ * whether it is a single line or the tail of a range. */
+export function commentsAt(
+  s: ReviewState,
+  path: string,
+  side: DiffSide,
+  line: number,
+): readonly ReviewComment[] {
+  return s.comments.filter((c) => c.path === path && c.side === side && c.line === line);
+}
+
+/**
+ * Whether Send review can run: at least one unsent draft, and not already sending. A note alone
+ * never enables it — `reviewService.send` refuses a note-only send as `nothing-to-send`.
+ */
+export function canSend(s: ReviewState): boolean {
+  return unsentCount(s) > 0 && !s.sending;
+}
+
+/** Whether a new comment can be started: the summary loaded ok, and the diff is not stale. */
+export function canComment(s: ReviewState): boolean {
+  return s.summary?.status === 'ok' && s.staleDiffId === null;
 }
 
 /**
