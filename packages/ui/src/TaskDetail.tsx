@@ -61,6 +61,7 @@ import { MergeRequests } from './MergeRequests';
 import { PaneLoading } from './PaneLoading';
 import { ReviewPane } from './review/ReviewPane';
 import { TaskChain } from './TaskChain';
+import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
@@ -1160,6 +1161,7 @@ export function TaskDetail({
 
   const changesContent = !isStep && (
     <>
+      <VariantCompare leaderId={task.id} />
       <ReviewPane taskId={task.id} />
       <MergeRequests
         mergeRequests={mergeRequests}

@@ -95,10 +95,16 @@ import { priorityIndicatorShown } from '@tm/shared/priority';
 import { delegatedAgentName } from '@tm/shared/tickets';
 import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
 import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
+import type { VariantGroupState } from '@tm/shared/variants';
 import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
 import { automationOriginTitle, type AutomationOrigin } from './automationOrigin';
-import { cardBadgeStatus, splitEarlierSteps, subtaskProgress } from './boardColumns';
+import {
+  cardBadgeStatus,
+  splitEarlierSteps,
+  subtaskProgress,
+  variantStripTone,
+} from './boardColumns';
 import type { ChainPosition } from './chainPosition';
 import {
   CHAIN_LINK_MIME,
@@ -141,6 +147,9 @@ import { useTransport } from '../transport';
  * with the card's type icon rather than tower over it.
  */
 const AGENT_ICON_SIZE = '16px';
+
+/** The group every card that never started variants carries — see the `variants` prop. */
+const NO_VARIANTS: VariantGroupState = { state: 'none', rows: [] };
 
 /**
  * The running band's geometry — see `runningBand` for what it draws.
@@ -438,6 +447,26 @@ const useStyles = makeStyles({
   },
   stepDone: { color: tokens.colorNeutralForeground4, textDecoration: 'line-through' },
   progress: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
+  /**
+   * The "×N" a leader wears once it has started variants (F10.5) — monochrome, same
+   * treatment as the step counter beside it: how many rows exist is a standing fact about
+   * the card, not something in motion, so it spends none of the board's colour budget. The
+   * strip right below it (`variantStrip`) is where the motion actually is.
+   */
+  variantBadge: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: '11px',
+    fontWeight: 600,
+    flexShrink: 0,
+  },
+  /**
+   * The leader's status strip (F10.5) — one thin segment per variant row, in label order,
+   * sitting directly under the title row. A band rather than a row of badges: it has to read
+   * at a glance across a column of other cards, the same way the running band and the step
+   * dots do.
+   */
+  variantStrip: { display: 'flex', gap: '3px' },
+  variantSegment: { flex: 1, minWidth: '12px', height: '4px', borderRadius: '2px' },
   /** A stopped chain reads in the frame's colour, so the two say one thing. */
   progressStopped: { color: ACCENT.unread },
   /**
@@ -977,6 +1006,12 @@ export interface TaskCardProps {
    * folded into `chainNeedsAttention` — so the ring and the card ordering agree.
    */
   mergeRequests?: MergeRequest[];
+  /**
+   * This card's variant group (F10.5) — `{state: 'none', rows: []}` for every card that
+   * never started one, which is also what a caller with no store of its own (the web board)
+   * gets by leaving this absent. `state !== 'none'` draws the "×N" badge and the status strip.
+   */
+  variants?: VariantGroupState;
   /** The user's status-note vocabulary, which colours the card's progress line. */
   statusKeywords?: readonly StatusKeyword[];
   /**
@@ -1160,6 +1195,7 @@ export function TaskCard({
   laterStepsShown = false,
   onToggleLaterSteps,
   mergeRequests = [],
+  variants = NO_VARIANTS,
   statusKeywords,
   attentionTaskIds,
   liveRunTaskIds,
@@ -1511,6 +1547,14 @@ export function TaskCard({
               {stopped && ' · stopped'}
             </Caption1>
           )}
+          {variants.state !== 'none' && (
+            <Caption1
+              className={styles.variantBadge}
+              title={`${variants.rows.length} variants started`}
+            >
+              ×{variants.rows.length}
+            </Caption1>
+          )}
           {task.originAutomationId && (
             <Tooltip relationship="label" content={automationOriginTitle(originAutomation)}>
               <span className={styles.originIcon}>
@@ -1655,6 +1699,23 @@ export function TaskCard({
             </Menu>
           )}
         </div>
+
+        {variants.state !== 'none' && (
+          <div className={styles.variantStrip}>
+            {variants.rows.map((row) => (
+              <Tooltip
+                key={row.id}
+                relationship="label"
+                content={`${row.label ?? '?'} · ${STATUS_LABEL[row.status]}`}
+              >
+                <span
+                  className={styles.variantSegment}
+                  style={{ backgroundColor: variantStripTone(row.status) }}
+                />
+              </Tooltip>
+            ))}
+          </div>
+        )}
 
         {((display.showLabels && (task.externalLabel || task.labels?.length)) ||
           (sprintShown && task.externalSprint)) && (

@@ -9,6 +9,7 @@ function cards(n: number): BoardCard[] {
     task: { id: `t${i}` } as Task,
     subtasks: [],
     mergeRequests: [],
+    variants: { state: 'none', rows: [] },
   }));
 }
 

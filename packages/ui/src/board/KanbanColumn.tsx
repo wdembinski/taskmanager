@@ -274,7 +274,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
         {props.cards.length === 0 ? (
           <Caption1 className={styles.empty}>—</Caption1>
         ) : (
-          props.cards.map(({ task, subtasks, mergeRequests }) => (
+          props.cards.map(({ task, subtasks, mergeRequests, variants }) => (
             <TaskCard
               key={task.id}
               task={task}
@@ -286,6 +286,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               projectColor={props.projectColorOf(task)}
               showSprint={props.showSprint}
               subtasks={subtasks}
+              variants={variants}
               stepsFolded={props.foldedStepTaskIds?.has(task.id)}
               onToggleSteps={props.onToggleSteps && (() => props.onToggleSteps?.(task.id))}
               earlierStepsShown={props.shownEarlierStepTaskIds?.has(task.id)}
