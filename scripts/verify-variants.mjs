@@ -75,10 +75,19 @@
  *
  * Comment out the `deps.cleanup(...)` call (and the `deps.deleteTaskBranch(...)` call right
  * below it) inside the loser loop of `pickVariant` in `apps/client/src/main/variantPick.ts`,
- * and re-run. Check 5's "gone" assertions turn red — A's and C's worktree directories and
- * branches are all still on disk — while every other check (including the SAME check's
- * `pickedVariantId`/archived/`listVariantRows` assertions) stays green, which is the proof
- * those two assertions are not vacuous. Restore the calls afterward.
+ * and re-run. Check 5's four "gone" assertions turn red — A's and C's worktree directories
+ * and branches are all still on disk — while every other check (including the SAME check's
+ * `pickedVariantId`/archived/`listVariantRows` assertions, and the "no left something behind"
+ * note) stays green, which is the proof those assertions are not vacuous. Restore the calls
+ * afterward.
+ *
+ * The two calls are also independently live, not just live together: disabling only
+ * `cleanup` turns the same four checks red PLUS the "left something behind" note (the still
+ * live `deleteTaskBranch` call now fails too, because a branch cannot be deleted while its
+ * worktree is still checked out) — five red checks in total. Disabling only
+ * `deleteTaskBranch`, with `cleanup` left alone, turns on only the two branch "gone" checks —
+ * the worktree ones stay green, proving that half of the assertion isolates the branch
+ * deletion specifically. Restore the calls afterward either way.
  *
  * Exits non-zero naming every failed check.
  */
