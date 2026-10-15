@@ -17,7 +17,7 @@
  * the stub here also makes a real git commit in its own worktree before it says a word —
  * standing in for "the agent wrote some code" — so `DiffService` has a real file to diff.
  *
- * Three scenarios:
+ * Four scenarios:
  *
  *  1. Before the card has ever run, `review:send` refuses `no-branch` (no worktree, no
  *     branch) and an unknown task id refuses `unknown-task` — neither touches chat.
@@ -28,6 +28,13 @@
  *  3. Once that run settles, a second comment sent with `review:send` resumes the task with
  *     a fresh `--resume` CLI invocation carrying the message as its prompt, `status:
  *     'resumed'` — proving the same wiring on the OTHER half of `chatWithAgent`.
+ *  4. On a third, fresh card, `packages/ui/src/review/reviewState.ts`'s own transitions are
+ *     driven by hand, exactly as `ReviewPane.tsx` drives them, against these same real
+ *     service answers: a summary and a file load, a plain click then a cancelled-and-
+ *     reopened shift-click range, two real `review:add`/`review:update` calls, a real
+ *     `review:send` whose stdin line is checked against `formatReviewMessage` byte for
+ *     byte, and a real `review:list` confirming the pane still shows both comments sent —
+ *     with `openExistingDraft` on a sent one refused, same object back.
  *
  * The app is NEVER launched (RELEASE.md rule 6). Nothing outside the scratch directory is
  * written: no real profile, no real git repository beyond the one this script creates and
@@ -62,6 +69,9 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  *  reaches `@protocol/wire` through `cloudDelta.ts`, so the second alias is not optional. */
 const sharedSrc = join(repo, '..', '..', 'packages', 'shared', 'src');
 const protocolSrc = join(repo, '..', '..', 'packages', 'protocol', 'src');
+/** `packages/ui/src/review/reviewState.ts` is the pane's own pure state machine — scenario 4
+ *  imports it straight from source, same reason as `sharedSrc`/`protocolSrc` above. */
+const uiSrc = join(repo, '..', '..', 'packages', 'ui', 'src');
 
 /**
  * Everything this script writes lives here, INSIDE the repo rather than in the temp dir,
@@ -103,7 +113,9 @@ async function bundle(entry, outDir) {
   await build({
     configFile: false,
     logLevel: 'error',
-    resolve: { alias: { '@shared': sharedSrc, '@protocol': protocolSrc, electron: stub } },
+    resolve: {
+      alias: { '@shared': sharedSrc, '@tm/shared': sharedSrc, '@protocol': protocolSrc, electron: stub },
+    },
     build: {
       ssr: entry,
       outDir,
@@ -333,6 +345,7 @@ async function main() {
         .replaceAll('__SCRATCH__', posix(scratch))
         .replaceAll('__REPO_DIR__', posix(repoDir))
         .replaceAll('__WORKTREE_ROOT__', posix(worktreeRoot))
+        .replaceAll('__UI_SRC__', posix(uiSrc))
         // Quoted by JSON so a Windows path's backslashes survive into the scenario's own
         // source, where a bare C:\Users\... would be read as escape sequences.
         .replaceAll('__BIN__', JSON.stringify(binDir))
@@ -380,6 +393,24 @@ import { createStore } from '__REPO__/src/main/store';
 import { WorktreeManager } from '__REPO__/src/main/worktreeManager';
 import { createDiffGit, DiffService } from '__REPO__/src/main/review/diffService';
 import { ReviewService } from '__REPO__/src/main/review/reviewService';
+import {
+  EMPTY_REVIEW,
+  clickLine,
+  closeEditor,
+  commentSaved,
+  commentsArrived,
+  commentsLoadStarted,
+  editDraft,
+  editNote,
+  fileArrived,
+  fileLoadStarted,
+  openExistingDraft,
+  reviewSent,
+  sendStarted,
+  summaryArrived,
+  summaryLoadStarted,
+  unsentCount,
+} from '__UI_SRC__/review/reviewState';
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -650,6 +681,163 @@ check(
 // about it — its argv and prompt, checked above, are the whole of what this scenario is
 // about.
 proceed(2);
+await sleep(500);
+
+// ===========================================================================
+section('4. The review pane drives its own transitions against these same real answers');
+
+const card3 = store.createTask(PERSONAL_PROJECT_ID, { title: 'Add another feature' });
+if (!card3) throw new Error('the store refused the third card');
+const delegated3 = store.updateTask(card3.id, { agentProjectId: project.id });
+if (!delegated3) throw new Error('the store refused the third delegation patch');
+
+scheduler.runTask(card3.id);
+const run3 = await nthInvocation(3, 'the third run to spawn');
+check('the third run is fresh too, with --session-id', run3.argv.includes('--session-id'));
+await promptLine(3, 1, "the third run's opening brief");
+
+// summaryLoadStarted / summaryArrived, exactly as ReviewPane.loadSummary drives them.
+let pane = summaryLoadStarted(EMPTY_REVIEW, card3.id, 1);
+const summary4 = await waitForSummary(card3.id, "card3's live diff to resolve");
+pane = summaryArrived(pane, card3.id, 1, summary4);
+check(
+  'the pane accepted the real summary',
+  pane.summary?.status === 'ok' && pane.diffId === summary4.summary.diffId,
+  JSON.stringify(pane.summary),
+);
+
+// fileLoadStarted / fileArrived with a real file, exactly as the pane's file-fetch effect does.
+let seq4 = 2;
+pane = fileLoadStarted(pane, card3.id, pane.diffId, 'feature.txt', seq4);
+const fileResult4 = await diffs.file(card3.id, pane.diffId, 'feature.txt');
+pane = fileArrived(pane, card3.id, pane.diffId, 'feature.txt', seq4, fileResult4);
+check(
+  'feature.txt loaded with hunks',
+  pane.files['feature.txt']?.status === 'loaded' && pane.files['feature.txt'].file.hunks.length > 0,
+  JSON.stringify(pane.files['feature.txt']),
+);
+
+// clickLine + shift-clickLine for a range: a plain click opens a single-line editor, the
+// human cancels it rather than saving, and a shift-click on another line of the same file
+// then extends the still-standing rangeAnchor into a two-line range — exactly how DiffView's
+// onClick={(e) => onClickLine(path, side, line, e.shiftKey)} forces every range to be built.
+pane = clickLine(pane, { path: 'feature.txt', side: 'new', line: 2 }, false);
+check(
+  'a plain click opens a single-line editor on that line',
+  pane.editor?.anchor.line === 2 && pane.editor.start === undefined,
+  JSON.stringify(pane.editor),
+);
+pane = closeEditor(pane);
+pane = clickLine(pane, { path: 'feature.txt', side: 'new', line: 3 }, true);
+check(
+  'the shift-click extends the earlier anchor into a range',
+  pane.editor?.start?.line === 2 && pane.editor.anchor.line === 3,
+  JSON.stringify(pane.editor),
+);
+
+pane = editDraft(pane, 'rename both of these');
+check('editDraft recorded the typed text', pane.editor?.draft === 'rename both of these');
+
+// The real review:add, built exactly as ReviewPane.onSave builds its input from the editor.
+const rangeInput = {
+  taskId: card3.id,
+  diffId: pane.diffId,
+  path: pane.editor.path,
+  side: pane.editor.anchor.side,
+  line: pane.editor.anchor.line,
+  body: pane.editor.draft,
+  ...(pane.editor.start ? { start: pane.editor.start } : {}),
+};
+const rangeAdded = await reviews.add(rangeInput);
+check('the range comment anchored against the real diff', rangeAdded.status === 'ok', JSON.stringify(rangeAdded));
+check(
+  "its excerpt spans both real lines",
+  rangeAdded.status === 'ok' && rangeAdded.comment.excerpt === 'line two\nline three',
+  rangeAdded.status === 'ok' ? rangeAdded.comment.excerpt : JSON.stringify(rangeAdded),
+);
+pane = commentSaved(pane, card3.id, rangeAdded.comment);
+check(
+  'commentSaved closed the editor and added the range comment',
+  pane.editor === null && pane.comments.length === 1,
+);
+
+// A second, single-line comment, the same way.
+pane = clickLine(pane, { path: 'feature.txt', side: 'new', line: 1 }, false);
+pane = editDraft(pane, 'and this first line too');
+const secondInput = {
+  taskId: card3.id,
+  diffId: pane.diffId,
+  path: pane.editor.path,
+  side: pane.editor.anchor.side,
+  line: pane.editor.anchor.line,
+  body: pane.editor.draft,
+};
+const secondAdded = await reviews.add(secondInput);
+check('the second, single-line comment anchored fine', secondAdded.status === 'ok', JSON.stringify(secondAdded));
+pane = commentSaved(pane, card3.id, secondAdded.comment);
+check('the pane now holds both comments', pane.comments.length === 2);
+
+// openExistingDraft + a real review:update, exactly as ReviewPane.onSave's commentId branch.
+pane = openExistingDraft(pane, secondAdded.comment);
+check(
+  'openExistingDraft reopened the second comment for editing',
+  pane.editor?.commentId === secondAdded.comment.id,
+);
+pane = editDraft(pane, 'and this first line too — please');
+const secondUpdated = await reviews.update(card3.id, pane.editor.commentId, { body: pane.editor.draft });
+check('review:update accepted the edit', secondUpdated.status === 'ok', JSON.stringify(secondUpdated));
+pane = commentSaved(pane, card3.id, secondUpdated.comment);
+check(
+  'the pane carries the edited body, not the original',
+  pane.comments.find((c) => c.id === secondAdded.comment.id)?.body === 'and this first line too — please',
+);
+
+pane = editNote(pane, 'two small naming nits');
+check('editNote recorded the overall note', pane.note === 'two small naming nits');
+
+// review:send(taskId, state.note), exactly as ReviewPane.onSend builds it.
+pane = sendStarted(pane);
+const noteArg = pane.note.trim() ? pane.note : undefined;
+const sendResult = await reviews.send(card3.id, noteArg);
+check(
+  "review:send delivered into card3's own live session",
+  sendResult.status === 'sent' && sendResult.taskId === card3.id,
+  JSON.stringify(sendResult),
+);
+
+const sentLine = await promptLine(3, 2, "the batched review pushed into card3's live session");
+const rangeCommentFinal = { ...rangeAdded.comment, outdated: false };
+const secondCommentFinal = { ...secondUpdated.comment, outdated: false };
+const expectedMessage4 = formatReviewMessage([rangeCommentFinal, secondCommentFinal], summary4.summary, noteArg);
+check(
+  'and it is EXACTLY formatReviewMessage for both comments, the range location, and the note',
+  sentLine === expectedMessage4,
+  'got:\n' + sentLine + '\n---\nwanted:\n' + expectedMessage4,
+);
+
+pane = reviewSent(pane, card3.id, sendResult);
+check(
+  'every pane comment now carries sentAt',
+  pane.comments.length === 2 && pane.comments.every((c) => c.sentAt !== null),
+  JSON.stringify(pane.comments),
+);
+check('unsentCount is zero', unsentCount(pane) === 0);
+check('the note is cleared', pane.note === '');
+
+seq4 += 1;
+pane = commentsLoadStarted(pane, card3.id, seq4);
+const listed4 = await reviews.list(card3.id);
+pane = commentsArrived(pane, card3.id, seq4, listed4);
+check(
+  'a real review:list still shows both comments, now sent',
+  pane.comments.length === 2 && pane.comments.every((c) => c.sentAt !== null),
+  JSON.stringify(pane.comments),
+);
+
+const refusedReopen = openExistingDraft(pane, pane.comments[0]);
+check('opening a sent comment for editing is refused — the same state object back', refusedReopen === pane);
+
+proceed(3);
 await sleep(500);
 
 // ===========================================================================
