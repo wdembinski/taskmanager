@@ -1181,7 +1181,11 @@ export function TaskDetail({
   const changesContent = !isStep && (
     <>
       <VariantCompare leaderId={task.id} />
-      <ReviewPane taskId={task.id} unreachable={hostUnreachable} />
+      <ReviewPane
+        taskId={task.id}
+        unreachable={hostUnreachable}
+        layout={section !== undefined ? 'compact' : undefined}
+      />
       <MergeRequests
         mergeRequests={mergeRequests}
         onMarkRead={(id) => void transport.invoke('mr:markRead', id)}

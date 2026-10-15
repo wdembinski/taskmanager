@@ -14,6 +14,16 @@
  * here is added/removed content — a line's own tint at its subtlest step, and the inner
  * word highlight one step stronger so it reads against that tint. Everything else
  * (gutters, headers, notices) stays on neutral tokens.
+ *
+ * **Touch mode** (`touch`, wired from `ReviewPaneView`'s compact layout): the hover-only "+"
+ * button has no equivalent on a touchscreen, so it is dropped entirely and the whole
+ * line-number gutter becomes a real, always-visible `button` instead — reaching the same
+ * canonical `target` the wide "+" already computes, just a different way to tap it. The
+ * inline `CommentThread` is always handed `editor={null}` here, even while one is open,
+ * because touch's editor lives in `ReviewPaneView`'s own bottom sheet, not inline; the
+ * comment cards themselves need no change, since they already have no hover-only controls.
+ * `wrap === false` (the compact pane's own `Switch`) switches a line's `white-space` from
+ * `pre-wrap` to `pre` and lets the file scroll sideways instead of folding.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -43,7 +53,13 @@ import type {
 import { MONO, fontPx } from '../theme';
 import { useTransport } from '../transport';
 import { CommentThread } from './CommentThread';
-import { rangeLines, renderedIndex, type CommentEditor, type FileLoad } from './reviewState';
+import {
+  rangeLines,
+  renderedIndex,
+  type CommentEditor,
+  type FileLoad,
+  type LineSelection,
+} from './reviewState';
 import { fileLoadNotice, pairWordDiffs, statusLetter } from './reviewView';
 
 const useStyles = makeStyles({
@@ -101,6 +117,7 @@ const useStyles = makeStyles({
     // here either, just an affordance that shows up on hover).
     '&:hover [data-add-comment]': { opacity: 1, pointerEvents: 'auto' },
   },
+  lineNoWrap: { whiteSpace: 'pre' },
   lineAdd: { backgroundColor: tokens.colorPaletteGreenBackground1 },
   lineDel: { backgroundColor: tokens.colorPaletteRedBackground1 },
   // The open editor's range, applied LAST in `mergeClasses` so it wins over the add/del tint —
@@ -124,6 +141,27 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground4,
     userSelect: 'none',
   },
+  // Touch's stand-in for `addButton`: the whole gutter is the tap target, so it needs to
+  // clear the 44px touch-target floor (`board-colour-budget`'s neighbour, *MoveToSheet*'s
+  // own `option` style) in both directions, not just the font-sized row height.
+  gutterButton: {
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '6px',
+    minWidth: '44px',
+    minHeight: '44px',
+    padding: '0 8px',
+    border: 'none',
+    background: 'none',
+    fontFamily: MONO,
+    fontSize: fontPx(12),
+    color: tokens.colorNeutralForeground4,
+    cursor: 'pointer',
+    userSelect: 'none',
+    '&:disabled': { cursor: 'default', opacity: 0.5 },
+  },
   text: { flex: 1, minWidth: 0, paddingRight: '8px' },
   wordAdd: { backgroundColor: tokens.colorPaletteGreenBackground2 },
   wordDel: { backgroundColor: tokens.colorPaletteRedBackground2 },
@@ -145,6 +183,9 @@ const useStyles = makeStyles({
   },
   orphanTitle: { color: tokens.colorNeutralForeground3 },
   orphanPath: { fontFamily: MONO, color: tokens.colorNeutralForeground2 },
+  // Harmless while `wrap` is true (there is nothing to scroll); the one thing that lets
+  // `lineNoWrap`'s `white-space: pre` actually overflow sideways instead of clipping.
+  fileBody: { overflowX: 'auto' },
 });
 
 export interface DiffViewProps {
@@ -160,8 +201,17 @@ export interface DiffViewProps {
   editor: CommentEditor | null;
   /** Whether a new comment can be started at all (loaded ok, diff not stale). */
   canComment: boolean;
+  /** Compact mode's gutter-becomes-a-button rendering (F3.8) — see the module header. */
+  touch?: boolean;
+  /** Whether a line wraps (`pre-wrap`, the default — wide rendering is unchanged) or scrolls
+   * sideways instead (`pre`, `false`). */
+  wrap?: boolean;
+  /** Compact mode's tap-selected line/range, before a comment is started on it. */
+  selection?: LineSelection | null;
   onToggleExpanded: (path: string) => void;
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  /** A gutter button tap in touch mode — `tapLine`'s own stand-in for `onClickLine`. */
+  onTapLine?: (path: string, side: DiffSide, line: number) => void;
   onEditDraft: (text: string) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -179,8 +229,12 @@ export function DiffView({
   comments,
   editor,
   canComment,
+  touch = false,
+  wrap = true,
+  selection = null,
   onToggleExpanded,
   onClickLine,
+  onTapLine,
   onEditDraft,
   onSave,
   onCancel,
@@ -214,10 +268,16 @@ export function DiffView({
             expanded={expanded.includes(entry.path)}
             load={files[entry.path]}
             comments={comments.filter((c) => c.path === entry.path)}
-            editor={editor?.path === entry.path ? editor : null}
+            // Touch's editor lives in `ReviewPaneView`'s own bottom sheet, never inline —
+            // see the module header.
+            editor={touch ? null : editor?.path === entry.path ? editor : null}
+            selection={selection?.path === entry.path ? selection : null}
             canComment={canComment}
+            touch={touch}
+            wrap={wrap}
             onToggleExpanded={onToggleExpanded}
             onClickLine={onClickLine}
+            onTapLine={onTapLine}
             onEditDraft={onEditDraft}
             onSave={onSave}
             onCancel={onCancel}
@@ -229,7 +289,7 @@ export function DiffView({
       {orphaned.length > 0 && (
         <OrphanedComments
           comments={orphaned}
-          editor={editor !== null && !knownPaths.has(editor.path) ? editor : null}
+          editor={touch || editor === null || knownPaths.has(editor.path) ? null : editor}
           onEditDraft={onEditDraft}
           onSave={onSave}
           onCancel={onCancel}
@@ -291,6 +351,7 @@ function OrphanedComments({
 
 interface CommentHandlers {
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  onTapLine?: (path: string, side: DiffSide, line: number) => void;
   onEditDraft: (text: string) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -306,7 +367,10 @@ function FileSection({
   load,
   comments,
   editor,
+  selection,
   canComment,
+  touch,
+  wrap,
   onToggleExpanded,
   ...handlers
 }: {
@@ -317,7 +381,10 @@ function FileSection({
   load: FileLoad | undefined;
   comments: readonly ReviewComment[];
   editor: CommentEditor | null;
+  selection: LineSelection | null;
   canComment: boolean;
+  touch: boolean;
+  wrap: boolean;
   onToggleExpanded: (path: string) => void;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
@@ -375,7 +442,10 @@ function FileSection({
           load={load}
           comments={anchored}
           editor={editorAnchored ? editor : null}
+          selection={selection}
           canComment={canComment}
+          touch={touch}
+          wrap={wrap}
           {...handlers}
         />
       )}
@@ -390,7 +460,10 @@ function FileBody({
   load,
   comments,
   editor,
+  selection,
   canComment,
+  touch,
+  wrap,
   ...handlers
 }: {
   taskId: string;
@@ -399,7 +472,10 @@ function FileBody({
   load: FileLoad | undefined;
   comments: readonly ReviewComment[];
   editor: CommentEditor | null;
+  selection: LineSelection | null;
   canComment: boolean;
+  touch: boolean;
+  wrap: boolean;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
 
@@ -438,10 +514,13 @@ function FileBody({
     return <Caption1 className={styles.notice}>{fileLoadNotice(load)}</Caption1>;
   }
 
-  const highlighted = editor ? new Set(rangeLines(load.file, editor)) : null;
+  // The editor's own range in wide mode, or touch's tap `selection` in compact — never both
+  // at once (`commentOnSelection` clears `selection` the same transition it opens `editor`).
+  const range = editor ?? selection;
+  const highlighted = range ? new Set(rangeLines(load.file, range)) : null;
 
   return (
-    <div>
+    <div className={styles.fileBody}>
       {load.file.hunks.map((hunk, i) => (
         <Hunk
           key={i}
@@ -450,6 +529,8 @@ function FileBody({
           comments={comments}
           editor={editor}
           canComment={canComment}
+          touch={touch}
+          wrap={wrap}
           highlighted={highlighted}
           {...handlers}
         />
@@ -484,8 +565,11 @@ function Hunk({
   comments,
   editor,
   canComment,
+  touch,
+  wrap,
   highlighted,
   onClickLine,
+  onTapLine,
   onEditDraft,
   onSave,
   onCancel,
@@ -497,6 +581,8 @@ function Hunk({
   comments: readonly ReviewComment[];
   editor: CommentEditor | null;
   canComment: boolean;
+  touch: boolean;
+  wrap: boolean;
   highlighted: ReadonlySet<DiffLine> | null;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
@@ -521,8 +607,11 @@ function Hunk({
               words={words[i]}
               target={target}
               canComment={canComment}
+              touch={touch}
+              wrap={wrap}
               selected={highlighted?.has(line) ?? false}
               onClickLine={onClickLine}
+              onTapLine={onTapLine}
             />
             <CommentThread
               comments={commentsForLine(comments, line)}
@@ -546,43 +635,65 @@ function DiffLineRow({
   words,
   target,
   canComment,
+  touch,
+  wrap,
   selected,
   onClickLine,
+  onTapLine,
 }: {
   path: string;
   line: DiffLine;
   words: readonly WordSegment[] | null;
   target: { side: DiffSide; line: number } | null;
   canComment: boolean;
+  touch: boolean;
+  wrap: boolean;
   selected: boolean;
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  onTapLine?: (path: string, side: DiffSide, line: number) => void;
 }): JSX.Element {
   const styles = useStyles();
   return (
     <div
       className={mergeClasses(
         styles.line,
+        !wrap && styles.lineNoWrap,
         line.kind === 'add' && styles.lineAdd,
         line.kind === 'del' && styles.lineDel,
         selected && styles.lineSelected,
       )}
     >
-      <span className={styles.addCell}>
-        {target && (
-          <Button
-            className={styles.addButton}
-            data-add-comment=""
-            size="small"
-            appearance="subtle"
-            icon={<AddRegular />}
-            disabled={!canComment}
-            aria-label={`Comment on line ${target.line}`}
-            onClick={(e) => onClickLine(path, target.side, target.line, e.shiftKey)}
-          />
-        )}
-      </span>
-      <span className={styles.gutter}>{line.oldLine ?? ''}</span>
-      <span className={styles.gutter}>{line.newLine ?? ''}</span>
+      {touch ? (
+        <button
+          type="button"
+          className={styles.gutterButton}
+          disabled={!canComment || target === null}
+          aria-label={target ? `Select line ${target.line}` : undefined}
+          onClick={() => target && onTapLine?.(path, target.side, target.line)}
+        >
+          <span>{line.oldLine ?? ''}</span>
+          <span>{line.newLine ?? ''}</span>
+        </button>
+      ) : (
+        <>
+          <span className={styles.addCell}>
+            {target && (
+              <Button
+                className={styles.addButton}
+                data-add-comment=""
+                size="small"
+                appearance="subtle"
+                icon={<AddRegular />}
+                disabled={!canComment}
+                aria-label={`Comment on line ${target.line}`}
+                onClick={(e) => onClickLine(path, target.side, target.line, e.shiftKey)}
+              />
+            )}
+          </span>
+          <span className={styles.gutter}>{line.oldLine ?? ''}</span>
+          <span className={styles.gutter}>{line.newLine ?? ''}</span>
+        </>
+      )}
       <span className={styles.text}>
         {words
           ? words.map((segment, i) => (

@@ -14,6 +14,7 @@ import type {
   DiffFileEntry,
   DiffFileStatus,
   DiffLine,
+  DiffSide,
   DiffSummary,
   ReviewSendRefusal,
   WordSegment,
@@ -21,7 +22,13 @@ import type {
 import { wordDiff } from '@tm/shared/review';
 import { formatAge } from '../countdown';
 import { REFUSAL_HINT } from '../taskChat';
-import { filesToLoad, isCollapsedByDefault, type FileLoad, type ReviewState } from './reviewState';
+import {
+  filesToLoad,
+  isCollapsedByDefault,
+  type FileLoad,
+  type LineSelection,
+  type ReviewState,
+} from './reviewState';
 
 /** A leaf: one changed file. */
 export interface FileTreeFile {
@@ -265,4 +272,20 @@ export function fileLoadNotice(load: FileLoad | undefined): string | null {
 export function formatSentStamp(sentAt: number, now: number): string {
   const age = formatAge(sentAt, now);
   return age === 'now' ? 'Sent just now' : `Sent ${age} ago`;
+}
+
+function sideLabel(side: DiffSide): string {
+  return side === 'old' ? 'old' : 'new';
+}
+
+/**
+ * The compact pane's selection pill: "Line 12" for a single line, "Lines 10–14" for a range on
+ * one side, or "Lines 10 (old)–14 (new)" when the two ends are on different sides — a range can
+ * span old and new, where a single line number alone would be ambiguous.
+ */
+export function selectionLabel(selection: LineSelection): string {
+  if (selection.start === undefined) return `Line ${selection.anchor.line}`;
+  const { start, anchor: end } = selection;
+  if (start.side === end.side) return `Lines ${start.line}–${end.line}`;
+  return `Lines ${start.line} (${sideLabel(start.side)})–${end.line} (${sideLabel(end.side)})`;
 }

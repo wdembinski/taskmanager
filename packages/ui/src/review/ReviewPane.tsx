@@ -37,9 +37,11 @@ import type {
 } from '@tm/shared/review';
 import { useTransport } from '../transport';
 import {
+  cancelSelection,
   clickLine,
   closeEditor,
   commentDeleted,
+  commentOnSelection,
   commentSaved,
   commentsArrived,
   commentsLoadStarted,
@@ -58,6 +60,7 @@ import {
   summaryArrived,
   summaryFailed,
   summaryLoadStarted,
+  tapLine,
   toggleExpanded,
   type ReviewState,
 } from './reviewState';
@@ -74,9 +77,12 @@ export interface ReviewPaneProps {
    * would.
    */
   unreachable?: string;
+  /** `'compact'` for the compact full-screen card screen's own Changes tab (F3.8); `undefined`
+   * (wide) everywhere else — carried straight through to {@link ReviewPaneView}. */
+  layout?: 'wide' | 'compact';
 }
 
-export function ReviewPane({ taskId, unreachable }: ReviewPaneProps): JSX.Element {
+export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JSX.Element {
   const transport = useTransport();
   const [state, setState] = useState<ReviewState>(EMPTY_REVIEW);
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +187,18 @@ export function ReviewPane({ taskId, unreachable }: ReviewPaneProps): JSX.Elemen
     setState((s) => clickLine(s, { path, side, line }, shift));
   }
 
+  function onTapLine(path: string, side: DiffSide, line: number): void {
+    setState((s) => tapLine(s, { path, side, line }));
+  }
+
+  function onCancelSelection(): void {
+    setState((s) => cancelSelection(s));
+  }
+
+  function onCommentSelection(): void {
+    setState((s) => commentOnSelection(s));
+  }
+
   function onEditDraft(text: string): void {
     setState((s) => editDraft(s, text));
   }
@@ -266,10 +284,14 @@ export function ReviewPane({ taskId, unreachable }: ReviewPaneProps): JSX.Elemen
       state={state}
       error={error}
       unreachable={unreachable}
+      layout={layout}
       onReload={() => void loadSummary()}
       onSelectFile={(path) => setState((s) => selectFile(s, path))}
       onToggleExpanded={(path) => setState((s) => toggleExpanded(s, path))}
       onClickLine={onClickLine}
+      onTapLine={onTapLine}
+      onCancelSelection={onCancelSelection}
+      onCommentSelection={onCommentSelection}
       onEditDraft={onEditDraft}
       onSave={onSave}
       onCancel={onCancel}
