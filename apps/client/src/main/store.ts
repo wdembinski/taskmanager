@@ -66,6 +66,7 @@ import {
   type Skill,
 } from '@shared/skills';
 import { validateWorkflow, type WorkflowDoc, type WorkflowStep } from '@shared/workflow';
+import { STARTER_WORKFLOWS } from '@shared/workflowStarters';
 import {
   type ActivityCursor,
   type ActivityDetail,
@@ -2554,6 +2555,39 @@ export function createStore(dbPath: string): Store {
     planningModel: DEFAULT_SETTINGS.defaultPlanningModel,
     defaultPermissionMode: DEFAULT_SETTINGS.defaultPermissionMode,
   });
+
+  // Seed the two starter workflows (F8.14, @shared/workflowStarters) once. The guard is a
+  // flag, not an id check — a user who deletes a starter (or edits it, same id, different
+  // doc) must have that stick on every later boot, not get it silently replaced back.
+  // `ON CONFLICT(id) DO NOTHING` is then belt-and-suspenders for the same boot the flag is
+  // being set on. The cloud pusher (`cloudWorkflowPusher.ts`) mirrors these up the normal
+  // way, by reading them back out of `getWorkflows()` on its next scan — no outbox entry
+  // needed here.
+  const WORKFLOW_STARTERS_SEEDED_KEY = 'workflowStartersSeeded';
+  if (!db.prepare(`SELECT 1 FROM app_state WHERE key = ?`).get(WORKFLOW_STARTERS_SEEDED_KEY)) {
+    db.transaction(() => {
+      const now = Date.now();
+      for (const starter of STARTER_WORKFLOWS) {
+        const result = validateWorkflow(starter);
+        if (!result.ok) continue;
+        db.prepare(
+          `INSERT INTO workflows (id, name, doc, createdAt, updatedAt)
+           VALUES (@id, @name, @doc, @createdAt, @updatedAt)
+           ON CONFLICT(id) DO NOTHING`,
+        ).run({
+          id: result.doc.id,
+          name: result.doc.name,
+          doc: JSON.stringify(result.doc),
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      db.prepare(`INSERT INTO app_state (key, value) VALUES (?, ?)`).run(
+        WORKFLOW_STARTERS_SEEDED_KEY,
+        '1',
+      );
+    })();
+  }
 
   // Migrate databases created before per-task git worktrees. Default on (1); it only
   // engages for git repos, so non-git projects keep running in the shared directory.
