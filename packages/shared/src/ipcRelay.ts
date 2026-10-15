@@ -55,6 +55,9 @@ export type HostOnlyReason =
  * returns are paths on THAT machine, which is exactly the thing a browser cannot use.
  * `skill:import`/`skill:export` are the same shape: a file/folder picker for where a batch
  * of `SKILL.md`s comes from or goes to, same reason `project:pickFile` already is one.
+ * `workflow:import`/`workflow:export` (F8) are the same shape again, one level down: a
+ * single file picker rather than a batch, but still a dialog on the desktop machine, so a
+ * web-built workflow goes through `workflow:save` from parsed JSON instead, which relays.
  *
  * **Window / OS.** `window:*` moves a window nobody is looking at; `update:install` quits
  * the app out from under its user; `attachment:open` pops a file open on someone else's
@@ -84,6 +87,8 @@ const HOST_ONLY_REASONS = {
   'jira:pickAttachments': 'native-modal',
   'skill:import': 'native-modal',
   'skill:export': 'native-modal',
+  'workflow:import': 'native-modal',
+  'workflow:export': 'native-modal',
 
   'window:minimize': 'window-os',
   'window:toggleMaximize': 'window-os',
@@ -201,6 +206,17 @@ export const RELAY_POLICY: {
   'skill:listRepo': 'relay',
   'skill:getRepo': 'relay',
   'task:setSkillRefs': 'relay',
+
+  // F8: a workflow is owned end to end by the desktop's own store, same as a library skill
+  // above, so list/get/save/delete/apply relay there. Import/export open a native file
+  // dialog on the desktop machine, so those two are host-only.
+  'workflow:list': 'relay',
+  'workflow:get': 'relay',
+  'workflow:save': 'relay',
+  'workflow:delete': 'relay',
+  'workflow:import': 'host-only',
+  'workflow:export': 'host-only',
+  'workflow:apply': 'relay',
 
   'agentProfile:list': 'relay',
   'agentProfile:add': 'relay',

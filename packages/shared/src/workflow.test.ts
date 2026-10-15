@@ -11,6 +11,7 @@ import {
   validateWorkflow,
   WORKFLOW_DOC_MAX,
   workflowDocBytes,
+  workflowFileName,
   workflowTooLargeMessage,
   type AgentStep,
   type GateOutcome,
@@ -588,5 +589,31 @@ describe('instantiateWorkflow', () => {
     });
 
     expect(() => instantiateWorkflow(doc, card, 1)).toThrow();
+  });
+});
+
+describe('workflowFileName', () => {
+  it('slugs a plain name', () => {
+    expect(workflowFileName('Implement + test gate')).toBe('implement-test-gate.workflow.json');
+  });
+
+  it('collapses runs of non-alphanumeric characters to one hyphen', () => {
+    expect(workflowFileName('  Fix / Build!!  Pipeline  ')).toBe(
+      'fix-build-pipeline.workflow.json',
+    );
+  });
+
+  it('falls back to "workflow" for an empty name', () => {
+    expect(workflowFileName('')).toBe('workflow.workflow.json');
+  });
+
+  it('falls back to "workflow" for a name made entirely of punctuation', () => {
+    expect(workflowFileName('!!!')).toBe('workflow.workflow.json');
+  });
+
+  it('caps the slug at 64 characters, trimming a trailing hyphen the cap exposes', () => {
+    const name = 'a'.repeat(70);
+    const result = workflowFileName(name);
+    expect(result).toBe(`${'a'.repeat(64)}.workflow.json`);
   });
 });

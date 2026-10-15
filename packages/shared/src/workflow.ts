@@ -442,6 +442,91 @@ export function instantiateWorkflow(
   });
 }
 
+/**
+ * `workflow:save`'s input (F8.7) — an editor's draft before a save mints the rest. `id`
+ * absent means "new workflow": the handler mints a uuid, the same contract `SkillDraft`
+ * (`@shared/skills`) gives `skill:save`.
+ */
+export type WorkflowDraft = Omit<WorkflowDoc, 'id'> & { id?: string };
+
+/**
+ * `workflow:save`'s answer. A value, not a throw — mirrors `SkillSaveResult`
+ * (`@shared/skills`): an editor shows `issues` next to the document rather than an error
+ * to show and abandon. The handler's own `validateWorkflow` call is what fills `issues`.
+ */
+export type WorkflowSaveResult =
+  { ok: true; workflow: WorkflowDoc } | { ok: false; reason: 'invalid'; issues: string[] };
+
+/**
+ * `workflow:import`'s input. Unlike `SkillImportRequest` (`@shared/skills`) there is no
+ * folder/batch form: a workflow is one document, not a directory of them, so one call
+ * imports exactly one. Pasted text carries its own bytes because there is no file for the
+ * main process to read.
+ */
+export type WorkflowImportRequest = { source: 'file' } | { source: 'text'; text: string };
+
+/**
+ * `workflow:import`'s answer. `'unreadable'` is a file the native picker resolved but
+ * reading or `JSON.parse`-ing failed; `'invalid'` is JSON that parsed but did not pass
+ * {@link validateWorkflow}, with `issues` carrying every problem found. The handler's own
+ * `null` (never this type) means the human cancelled the native picker.
+ */
+export type WorkflowImportResult =
+  | { ok: true; workflow: WorkflowDoc }
+  | { ok: false; reason: 'unreadable' | 'invalid'; issues: string[] };
+
+/** `workflow:export`'s answer: where the document landed on the desktop's own disk. */
+export interface WorkflowExportResult {
+  path: string;
+}
+
+/**
+ * Why `workflow:apply` refused to turn a workflow into a card's steps. A refusal is a
+ * normal outcome, not an exception — the same posture `ChatRefusal` (`@shared/model`)
+ * takes for a chat send, for the same reason: the UI turns each of these into a specific
+ * sentence rather than an error to show and abandon.
+ */
+export type WorkflowApplyRefusal =
+  /** The card already carries at least one step that is not `done`/`cancelled` — a plan
+   *  in progress, finished or not. Finish, stop, or remove those steps first. */
+  | 'unfinished-steps'
+  /** The target is a STEP, not a card. A step cannot own a plan of its own — apply the
+   *  workflow to its parent instead, same reasoning as `ChatRefusal['not-a-card']`. */
+  | 'is-step'
+  /** The card has no `agentProjectId`, or it names a project that is gone or has no repo —
+   *  there is nowhere to run the steps a workflow would add. */
+  | 'no-project'
+  /** The named workflow is gone, or its stored document no longer passes
+   *  {@link validateWorkflow} — nothing usable to instantiate. */
+  | 'invalid'
+  /** Instantiating the workflow would push the card past `MAX_PLAN_STEPS` (`@shared/board`)
+   *  — the same cap a re-plan's `chain-full` enforces, here enforced before the write
+   *  rather than after. */
+  | 'chain-full';
+
+/** `workflow:apply`'s answer: the fresh steps on success, or a typed refusal with a
+ *  human-readable `message` and, for `'invalid'`, the issues that made it so. */
+export type WorkflowApplyResult =
+  | { ok: true; steps: Task[] }
+  | { ok: false; reason: WorkflowApplyRefusal; message: string; issues?: string[] };
+
+/**
+ * `name`, slugged for use in a file name, with `.workflow.json` appended — `workflow:export`'s
+ * default file name. Same slugging rule as `skillNameFromFileName` (`@shared/skills`):
+ * lower-cased, every run of characters outside `[a-z0-9]` collapsed to one hyphen,
+ * leading/trailing hyphens trimmed, capped at 64 characters. Falls back to `workflow` when
+ * nothing usable survives (an empty name, or one made entirely of punctuation), so the
+ * result is never just `.workflow.json`.
+ */
+export function workflowFileName(name: string): string {
+  const collapsed = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  const slug = collapsed.slice(0, 64).replace(/-+$/g, '');
+  return `${slug || 'workflow'}.workflow.json`;
+}
+
 /** Build a {@link StepSpec} for one (already-snapshotted) step: an agent step as is, or
  *  a gate step with its `onFail` resolved to a {@link ResolvedGateOnFail}. Throws if
  *  `onFail.retryFrom` does not resolve to an earlier agent step — a programmer error,

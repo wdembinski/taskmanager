@@ -84,6 +84,7 @@ import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTracker
 import { createAutomationHandlers } from './automationHandlers';
 import type { Automation } from '@shared/automation';
 import { createSkillHandlers } from './skillHandlers';
+import { createWorkflowHandlers } from './workflowHandlers';
 import {
   isBlockedishStatus,
   linearCategory,
@@ -3775,6 +3776,48 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('skill:listRepo', skillHandlers['skill:listRepo']);
   handle('skill:getRepo', skillHandlers['skill:getRepo']);
   handle('task:setSkillRefs', skillHandlers['task:setSkillRefs']);
+
+  // --- Workflows (F8) — list/get/save/delete/import/export, and applying one to a card.
+  // The seven handler bodies live in `workflowHandlers.ts`, so they can be driven through a
+  // real `RelayRegistry` in a test without standing up Electron; this is just the native
+  // dialogs and the board push that file needs and cannot have itself. `workflowsChanged` is
+  // a hoisted function declaration further down this same function, so it is in scope here
+  // despite being defined later in the file.
+  const workflowHandlers = createWorkflowHandlers({
+    store,
+    newId: randomUUID,
+    pickImportFile: async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Import a workflow',
+        properties: ['openFile'],
+        filters: [{ name: 'Workflow files', extensions: ['json'] }],
+      });
+      return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+    },
+    pickExportPath: async (defaultName) => {
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export workflow',
+        defaultPath: defaultName,
+        filters: [{ name: 'Workflow files', extensions: ['json'] }],
+      });
+      return result.canceled || !result.filePath ? null : result.filePath;
+    },
+    readText: (path) => readFile(path, 'utf8'),
+    writeText: (path, text) => writeFile(path, text, 'utf8'),
+    workflowsChanged,
+    tasksChanged: (projectId) =>
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) }),
+  });
+  // Seven literal calls, not a loop over `Object.keys` — same reason the nine `skill:*`
+  // calls above are literal: `test/ipc-relay-coverage.test.ts` finds registrations with a
+  // regex over quoted text right after `handle(`, and a variable there would hide every one.
+  handle('workflow:list', workflowHandlers['workflow:list']);
+  handle('workflow:get', workflowHandlers['workflow:get']);
+  handle('workflow:save', workflowHandlers['workflow:save']);
+  handle('workflow:delete', workflowHandlers['workflow:delete']);
+  handle('workflow:import', workflowHandlers['workflow:import']);
+  handle('workflow:export', workflowHandlers['workflow:export']);
+  handle('workflow:apply', workflowHandlers['workflow:apply']);
 
   // --- Issues (F5) — read-only browsing, and the one-click import onto the board (F5.6). ---
   /**

@@ -115,6 +115,15 @@ import type {
   SkillImportResult,
   SkillSaveResult,
 } from './skills';
+import type {
+  WorkflowApplyResult,
+  WorkflowDoc,
+  WorkflowDraft,
+  WorkflowExportResult,
+  WorkflowImportRequest,
+  WorkflowImportResult,
+  WorkflowSaveResult,
+} from './workflow';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -1516,6 +1525,47 @@ export interface IpcApi {
    * write. Rejects with "Task not found." for an unknown id, like `task:setDescription`.
    */
   'task:setSkillRefs': (taskId: string, refs: string[]) => Promise<Task>;
+
+  // --- Workflows (F8): a reusable, ordered recipe of steps a card can run, as data rather
+  // than a one-off prompt. See `@shared/workflow` for the model and `workflow:apply`'s
+  // refusals. ------------------------------------------------------------------------------
+  /** Every workflow, name-sorted — small enough to hand over whole, like `skill:list`. */
+  'workflow:list': () => Promise<WorkflowDoc[]>;
+  /** One workflow by id, or `null` if it is gone. */
+  'workflow:get': (id: string) => Promise<WorkflowDoc | null>;
+  /**
+   * Create or edit a workflow, one channel for both: the handler mints `id` when the draft
+   * has none, same contract as `skill:save`. Rejects nothing — an invalid document comes
+   * back as `{ ok: false, reason: 'invalid', issues }` from `validateWorkflow`, so an editor
+   * can show every issue at once rather than catching a rejection.
+   */
+  'workflow:save': (draft: WorkflowDraft) => Promise<WorkflowSaveResult>;
+  /** Delete a workflow by id. A card's `workflowId` is deliberately left in place — deleting
+   *  the workflow never touches a card already applied from it. */
+  'workflow:delete': (id: string) => Promise<boolean>;
+  /**
+   * Import one workflow document — a file the human picks, or pasted/parsed JSON, per
+   * `request.source`. Always saves under a fresh id, so an import never overwrites an
+   * existing workflow. `null` means the human cancelled the native dialog (never happens for
+   * a `'text'` import, which opens none). Host-only: it opens a native file picker.
+   */
+  'workflow:import': (request: WorkflowImportRequest) => Promise<WorkflowImportResult | null>;
+  /**
+   * Write one workflow to a file the human picks, defaulted to `workflowFileName(doc.name)`.
+   * `null` means the human cancelled the native dialog, or unknown id. Host-only: it opens a
+   * native save-file picker.
+   */
+  'workflow:export': (id: string) => Promise<WorkflowExportResult | null>;
+  /**
+   * Turn a workflow into a fresh round of the card's own steps — the assign dialog's and the
+   * agent panel's "Apply workflow". Never starts a run; Start already honours pending steps.
+   * A value, not a throw, for every refusal `WorkflowApplyRefusal` names — the UI turns each
+   * into a specific sentence, the same posture `ChatRefusal` takes for a chat send. Still
+   * rejects with "Task not found." for an unknown id, and with "Stop the task before applying
+   * a workflow." for a card an agent is actively working on, the same two cases every other
+   * `task:*` write refuses by throwing rather than as a typed value.
+   */
+  'workflow:apply': (taskId: string, workflowId: string) => Promise<WorkflowApplyResult>;
 
   /**
    * Put a removed card back on the board, with the same id and everything hanging off it.
