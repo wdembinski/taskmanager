@@ -248,7 +248,7 @@ command".
   - `packages/ui`: `workflowBuilderState.ts` + `WorkflowBuilder.tsx` (step cards, add/reorder/remove, editors, inline issues, JSON preview/copy, import/export); uses F7's skill picker and `ModelField`; Settings → Workflows.
   - Acceptance: state-machine tests (reorder keeps `retryFrom` valid or flags it, Save disabled with issues, import of an invalid file lists issues); `pnpm build` green.
 
-- [ ] F8.10 Show gate steps with attempts and output on a card's steps list @needs: F8.6 Dispatch gate steps from the step chain and loop failures back to the agent step
+- [x] F8.10 Show gate steps with attempts and output on a card's steps list @needs: F8.6 Dispatch gate steps from the step chain and loop failures back to the agent step
 
   - `TaskSteps.tsx` gate row: Fluent terminal icon, status, attempt chip, output expander; pure view model.
   - Acceptance: view-model tests for pending/running/passed/failed/awaiting-trust; monochrome except status.

@@ -1153,6 +1153,7 @@ export function TaskDetail({
         subtasks={subtasks}
         onOpen={(id) => onOpenTask?.(id)}
         onChanged={() => onSubtasksChanged?.()}
+        attention={attention}
       />
       {/* Beside Steps, and deliberately after it: a card's own steps are the work
           inside it, and the chain is where that work sits among everything else.

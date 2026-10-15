@@ -263,6 +263,11 @@ export function workflowTooLargeMessage(bytes: number): string {
   return `too large to sync (${kib} KiB > ${WORKFLOW_DOC_MAX / 1024} KiB)`;
 }
 
+/** The inbox option that runs a not-yet-trusted gate command (F8.8). Named here so the
+ *  engine that raises the item and the steps list that reads "awaiting trust" off it
+ *  agree on one string. */
+export const GATE_TRUST_ACTION = 'Trust and run';
+
 /** How many bytes of a gate's timeline output to keep — enough to show the failing
  *  tail without storing an unbounded log for a command that ran for hours. */
 export const GATE_TIMELINE_TAIL_BYTES = 16 * 1024;
