@@ -100,7 +100,11 @@ function tokenScore(text: string, keywords: readonly string[], token: string): n
  * whole thing fails. A blank query matches everything with score `1`, so an empty palette
  * still lists every command in its default order.
  */
-export function paletteScore(text: string, query: string, keywords: readonly string[] = []): number {
+export function paletteScore(
+  text: string,
+  query: string,
+  keywords: readonly string[] = [],
+): number {
   const tokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return 1;
 
@@ -139,7 +143,8 @@ export function rankCommands(
     .filter((entry) => entry.score > 0);
 
   scored.sort((a, b) => {
-    const groupDiff = PALETTE_GROUP_ORDER.indexOf(a.command.group) - PALETTE_GROUP_ORDER.indexOf(b.command.group);
+    const groupDiff =
+      PALETTE_GROUP_ORDER.indexOf(a.command.group) - PALETTE_GROUP_ORDER.indexOf(b.command.group);
     if (groupDiff !== 0) return groupDiff;
     if (a.score !== b.score) return b.score - a.score;
 
