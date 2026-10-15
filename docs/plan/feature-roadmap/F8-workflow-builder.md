@@ -236,7 +236,7 @@ command".
   - Channels for workflow CRUD/import/export and `workflow:apply` with refusals (`unfinished-steps`, `is-step`, `no-project`, `invalid`); relay registration.
   - Acceptance: handler tests per refusal; `test/ipc-relay-coverage.test.ts` passes.
 
-- [ ] F8.8 Require a desktop to trust a gate command before it first runs @needs: F8.6 Dispatch gate steps from the step chain and loop failures back to the agent step
+- [x] F8.8 Require a desktop to trust a gate command before it first runs @needs: F8.6 Dispatch gate steps from the step chain and loop failures back to the agent step
 
   - Setting: `AppSettings.trustedGateCommands: string[]` (SHA-256 hex of the exact command
     string), default `[]`, kept OUT of `GLOBAL_SETTINGS_KEYS` (`packages/shared/src/settings.ts:1051`)
@@ -310,6 +310,12 @@ command".
     gate; trust arriving through `applyFailureChoice` (simulating `attention:answer`) is refused and
     re-parks the same ask; an edited command after a park is untrusted again on the next `start()`.
     `ipcRelay.test.ts` covers `gate:trust` as `host-only` with reason `trust-grant`.
+    `scripts/verify-workflow-gates.mjs`'s Scenario C drives the whole thing against the real
+    `Scheduler`: parks on an untrusted command without running it, `trustGateCommand` makes it
+    really run and pass, an edit to the step's command (written straight to the store, the one
+    piece of state it otherwise never patches post-instantiation) parks it again rather than
+    inheriting the grant, and Decline fails it with the reason on the timeline — shown to fail
+    when the trust check is removed (prove red before green).
 
 ### F8 · Phase 3 — Desktop UI
 

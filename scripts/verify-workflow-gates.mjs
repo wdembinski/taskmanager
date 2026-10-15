@@ -1,8 +1,9 @@
 /**
- * Headless proof of F8.6: a workflow's GATE steps, dispatched by the real `Scheduler`
- * through the real `GateStepRunner` (`apps/client/src/main/gateStep.ts`), actually loop a
- * failing check back to the agent step it names and actually park a budget-exhausted one
- * in the inbox.
+ * Headless proof of F8.6 and F8.8: a workflow's GATE steps, dispatched by the real
+ * `Scheduler` through the real `GateStepRunner` (`apps/client/src/main/gateStep.ts`),
+ * actually loop a failing check back to the agent step it names, actually park a
+ * budget-exhausted one in the inbox, and actually require this desktop's own trust before
+ * an untrusted command's first run.
  *
  *     node scripts/verify-workflow-gates.mjs
  *
@@ -44,6 +45,16 @@
  *     three gate actions (`Run gate again`, `Send back to agent`, `Skip gate`). Answering
  *     **Skip gate** through the real `Scheduler.answerAttention` really lands the chain the
  *     same way a passing gate would — the gate step reaches `done`.
+ *  3. **Scenario C — trust, end to end (F8.8).** A third card's gate command was never seen
+ *     by this desktop, so its first `start()` really parks `waiting-input` with a real
+ *     `Trust and run` / `Decline` item — and its command really never ran (no marker file).
+ *     The real `Scheduler.trustGateCommand` really adds the hash to
+ *     `AppSettings.trustedGateCommands` and really re-runs the command, which really passes
+ *     (marker file written). The step's command is then edited directly in the store (the
+ *     one piece of state the store has no API to patch after `addSubtask`) to a different
+ *     command the desktop has never trusted, so `startTaskNow` really parks it again rather
+ *     than inheriting the first grant. Declining that second ask really fails the gate with
+ *     the reason on its own timeline, and the edited command still never ran.
  *
  * ## Prove it can fail
  *
@@ -66,6 +77,22 @@
  * still noted it (neither of those needed the reset), but nothing downstream of the reset
  * ever fired again. The source was restored byte-identically afterwards (`git diff` empty)
  * before this script was run again to confirm green.
+ *
+ * Separately (F8.8), commented out the `if (!this.deps.isTrusted(command)) { … return; }`
+ * trust check at the top of that same `start()` — Scenario C's gate then just runs on its
+ * first `start()` instead of parking. Re-running produced:
+ *
+ *     PASS  Scenario C's first run is a fresh session (no --resume)
+ *     FAIL  waited for the untrusted gate to park awaiting trust instead of running — timed out after 30000ms
+ *     FAIL  the gate's command was NOT run while untrusted
+ *     FAIL  exactly one trust item was raised — 0
+ *     TypeError: Cannot read properties of undefined (reading 'options')
+ *
+ * — the gate command actually ran unasked (the marker file existed), no trust item was ever
+ * raised, and every later Scenario C assertion that reads off that item throws rather than
+ * fails cleanly, which is itself evidence the park never happened. Scenarios A and B stayed
+ * green throughout, since both seed their commands as already trusted. Restored
+ * byte-identically (`git diff` empty) before this script was run again to confirm green.
  *
  * Run with Bash, not PowerShell — `ELECTRON_RUN_AS_NODE`'s stdout is invisible there.
  */
@@ -338,8 +365,15 @@ const { createStore } = require(join(work, 'store.cjs'));
 const { SessionManager } = require(join(work, 'sessionManager.cjs'));
 const { Scheduler, FAILURE_ACTION } = require(join(work, 'scheduler.cjs'));
 const { WorktreeManager } = require(join(work, 'worktreeManager.cjs'));
-const { instantiateWorkflow } = require(join(work, 'workflow.cjs'));
+const { instantiateWorkflow, GATE_TRUST_ACTION } = require(join(work, 'workflow.cjs'));
 const { gateCommandHash } = require(join(work, 'gateTrust.cjs'));
+// The store exposes no way to edit a step's `stepSpec` after `addSubtask` writes it —
+// deliberately, per `store.ts`'s own comment on its `UPDATE tasks` statement ("a step's
+// spec is written once at instantiation"). Scenario C's "edit the command" needs a real
+// edit through the real store's own file, so it reaches for the same driver `better-sqlite3`
+// that `store.cjs` uses internally (resolved the same way, via `NODE_PATH`), rather than
+// faking the edit in a way the real app could never produce.
+const Database = require('better-sqlite3');
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -406,6 +440,40 @@ const gateCommand =
     : 'test -f fixed.txt || { echo GATE-SAYS-NO; exit 3; }';
 const alwaysFailCommand =
   process.platform === 'win32' ? 'echo GATE-SAYS-NO & exit /b 3' : 'echo GATE-SAYS-NO; exit 3';
+
+// Scenario C's gate command (F8.8) — deliberately NOT in the `trustedGateCommands` seed
+// below, so its first run parks on trust instead of running. It writes `trustMarkerPath`
+// (outside the worktree, so it is reachable without resolving one) only if it is actually
+// executed — the one fact "parked, never ran" and "trusted, really ran" both rest on.
+const trustMarkerPath = join(work, 'trust-marker.txt');
+const untrustedCommand =
+  process.platform === 'win32'
+    ? `echo trusted> "${trustMarkerPath}" & exit /b 0`
+    : `echo trusted > '${trustMarkerPath}'; exit 0`;
+// A different command (hence a different hash) to simulate editing the step while its
+// trust ask sits in the inbox — never actually run in this scenario (it is declined), so
+// its own exit code is irrelevant; only that its hash differs from `untrustedCommand`'s.
+const editedCommand =
+  process.platform === 'win32'
+    ? 'echo EDITED-GATE-SAYS-NO & exit /b 3'
+    : 'echo EDITED-GATE-SAYS-NO; exit 3';
+
+/** Rewrite a step's `stepSpec.command` directly on disk, the one piece of state the real
+ *  store has no API to patch post-instantiation. A short-lived second connection: WAL mode
+ *  allows it alongside the driver's own open `store`, and it is closed immediately after. */
+function editGateCommand(taskId, command) {
+  const task = store.getTask(taskId);
+  if (!task?.stepSpec) throw new Error('no stepSpec to edit for ' + taskId);
+  const db = new Database(join(work, 'orchestrator.db'));
+  try {
+    db.prepare('UPDATE tasks SET stepSpec = ? WHERE id = ?').run(
+      JSON.stringify({ ...task.stepSpec, command }),
+      taskId,
+    );
+  } finally {
+    db.close();
+  }
+}
 
 const store = createStore(join(work, 'orchestrator.db'));
 store.saveSettings({
@@ -626,6 +694,88 @@ async function runChecks() {
   scheduler.answerAttention(item.id, { decision: 'reply', text: FAILURE_ACTION.skipGate });
   await waitFor('Skip gate to land the chain', () => store.getTask(b.test.id)?.status === 'done');
   check('"Skip gate" marked the gate step done', store.getTask(b.test.id)?.status === 'done');
+
+  // ===========================================================================
+  section(
+    'Scenario C: an untrusted gate parks, Trust and run makes it run, an edit re-parks it, Decline fails it',
+  );
+
+  const c = buildChain('Gate loop: trust', untrustedCommand, 2);
+
+  const invocationsBeforeC = invocations().length;
+  scheduler.runTask(c.owner.id);
+  const cFirst = await nthInvocation(invocationsBeforeC + 1, 'Scenario C\'s "Implement" run');
+  check(
+    "Scenario C's first run is a fresh session (no --resume)",
+    !cFirst.argv.includes('--resume'),
+  );
+  proceed(invocationsBeforeC + 1);
+
+  await waitFor(
+    'the untrusted gate to park awaiting trust instead of running',
+    () => store.getTask(c.test.id)?.status === 'waiting-input',
+  );
+  check("the gate's command was NOT run while untrusted", !existsSync(trustMarkerPath));
+  const trustItems = taskFailedFor(c.test.id);
+  check('exactly one trust item was raised', trustItems.length === 1, trustItems.length);
+  const trustItem = trustItems[0];
+  check(
+    'it offers exactly Trust and run / Decline',
+    JSON.stringify(trustItem.options) ===
+      JSON.stringify([GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline]),
+    JSON.stringify(trustItem.options),
+  );
+
+  scheduler.trustGateCommand(trustItem.id);
+  await waitFor(
+    'the gate to actually run and pass once trusted',
+    () => store.getTask(c.test.id)?.status === 'done',
+  );
+  check('the trusted gate really ran its command', existsSync(trustMarkerPath));
+  check(
+    '"Trust and run" landed the gate step as done',
+    store.getTask(c.test.id)?.status === 'done',
+  );
+
+  // An edit made after trust was granted is a DIFFERENT command — never seen by this
+  // desktop — so it must park again rather than silently inheriting the original's trust.
+  rmSync(trustMarkerPath, { force: true });
+  editGateCommand(c.test.id, editedCommand);
+  scheduler.startTaskNow(c.test.id);
+  await waitFor(
+    'the edited command to park on trust again',
+    () => taskFailedFor(c.test.id).length === 2,
+  );
+  check(
+    "the edited command was NOT run either — editing a step re-asks trust, it doesn't inherit it",
+    !existsSync(trustMarkerPath),
+  );
+  const secondTrustItem = taskFailedFor(c.test.id)[1];
+  check(
+    'the second park also offers exactly Trust and run / Decline',
+    JSON.stringify(secondTrustItem.options) ===
+      JSON.stringify([GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline]),
+    JSON.stringify(secondTrustItem.options),
+  );
+
+  scheduler.answerAttention(secondTrustItem.id, {
+    decision: 'reply',
+    text: GATE_TRUST_ACTION.decline,
+  });
+  await waitFor('Decline to fail the gate', () => store.getTask(c.test.id)?.status === 'failed');
+  check('"Decline" failed the gate step', store.getTask(c.test.id)?.status === 'failed');
+  const declineNoteText = store
+    .getTaskActivity(c.test.id)
+    .map((e) => e.body ?? (e.kind === 'event' ? e.event?.text : undefined) ?? '')
+    .join('\n');
+  check(
+    "the decline reason landed on the gate's own timeline",
+    declineNoteText.includes(
+      `Declined to trust "${editedCommand}" on this desktop — the gate did not run.`,
+    ),
+    declineNoteText,
+  );
+  check('declining never ran the edited command either', !existsSync(trustMarkerPath));
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
 
