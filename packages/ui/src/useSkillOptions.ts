@@ -9,7 +9,7 @@
  * `useInitialLoad`.
  */
 import { useEffect, useState } from 'react';
-import { skillOptions, type SkillOption } from './skillPicker';
+import { skillOptions, type SkillOption } from './skillPickerState';
 import { useTransport } from './transport';
 
 export interface SkillOptionsState {

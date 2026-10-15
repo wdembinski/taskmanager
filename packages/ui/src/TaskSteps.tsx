@@ -35,10 +35,12 @@ import {
 import { AttachmentStrip } from './AttachmentStrip';
 import { splitStepPhases, subtaskProgress } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
+import { SkillPicker } from './SkillPicker';
 import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
 import { FLUO, STATUS_INDICATOR_COLOR } from './theme';
 import { FoldToggle } from './FoldToggle';
+import { useSkillOptions } from './useSkillOptions';
 import { useTransport } from './transport';
 import { usePasteAttachments } from './usePasteAttachments';
 
@@ -178,6 +180,8 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
    * always open on its own (see the render below).
    */
   const [openRounds, setOpenRounds] = useState<ReadonlySet<number>>(new Set());
+  /** Repo skills follow the CARD's agent project — every step runs in the same worktree. */
+  const skillOptionsState = useSkillOptions(task.agentProjectId ?? null);
 
   // Switching cards closes whatever was open on the previous one. What was TYPED into those
   // forms is not cleared here any more — each field is a draft, parked under the card it was
@@ -219,6 +223,20 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
       stepTitle.reset();
       stepBrief.reset();
       setAdding(false);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** A step's own `skillRefs` — never the card's, which the picker never lets you toggle. */
+  async function saveStepSkillRefs(stepId: string, nextOwn: string[]): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await transport.invoke('task:setSkillRefs', stepId, nextOwn);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -447,6 +465,14 @@ export function TaskSteps({ task, subtasks, onOpen, onChanged }: TaskStepsProps)
                           and never contradict the card's own counter. */}
                       <Caption1 className={styles.index}>{index + 1}.</Caption1>
                       <Text className={styles.title}>{step.title}</Text>
+                      <SkillPicker
+                        options={skillOptionsState.options}
+                        own={step.skillRefs ?? []}
+                        inherited={task.skillRefs ?? undefined}
+                        onChange={(next) => void saveStepSkillRefs(step.id, next)}
+                        disabled={busy}
+                        loading={skillOptionsState.loading}
+                      />
                       {/* A running step wears a blinking cyan dot, exactly as a running
                           pipeline stage does two sections below it — the app says "this is
                           moving" with one shape everywhere, and this row used to say it with

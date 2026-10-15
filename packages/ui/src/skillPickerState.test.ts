@@ -1,5 +1,5 @@
 /**
- * `skillPicker.ts`'s pure state: option building/sorting, filtering, row derivation (own vs
+ * `skillPickerState.ts`'s pure state: option building/sorting, filtering, row derivation (own vs
  * inherited vs missing), the toggle, and the agent panel's label line. The one acceptance
  * case F7.9's step-1 design decisions call out by name: an inherited card skill on a step
  * renders checked and non-removable, and toggling it is a no-op.
@@ -13,7 +13,7 @@ import {
   skillsLineLabels,
   toggleSkillRef,
   type SkillOption,
-} from './skillPicker';
+} from './skillPickerState';
 
 const librarySkill = (over: Partial<Skill>): Skill => ({
   id: 'id-1',

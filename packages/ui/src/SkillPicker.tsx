@@ -2,7 +2,7 @@
  * The shared skill picker (F7.9) — a small Popover `AssignAgentDialog`, `TaskAgentPanel` and
  * each `TaskSteps` row all drive from their own `own`/`inherited` refs, so the three surfaces
  * get one look rather than three. All the row logic (filtering, inherited-wins, missing refs)
- * lives in `skillPicker.ts`; this component only renders `pickerRows` and calls `onChange`
+ * lives in `skillPickerState.ts`; this component only renders `pickerRows` and calls `onChange`
  * with `toggleSkillRef`'s result.
  *
  * The trigger button's own `onClick` stops propagation because a step row is itself a click
@@ -23,7 +23,12 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { pickerRows, toggleSkillRef, type SkillOption, type SkillPickerRow } from './skillPicker';
+import {
+  pickerRows,
+  toggleSkillRef,
+  type SkillOption,
+  type SkillPickerRow,
+} from './skillPickerState';
 
 const useStyles = makeStyles({
   surface: {
