@@ -3,16 +3,21 @@ import { PERSONAL_PROJECT_ID, type Task, type TaskStatus } from './model';
 import { RUN_REFUSAL_MESSAGE } from './scheduler';
 import type { SessionEvent } from './session';
 import {
+  PICK_VARIANT_FIRST,
   VARIANT_HINTS,
+  VARIANT_PICK_REFUSAL_MESSAGE,
   VARIANT_REFUSAL_MESSAGE,
   VARIANT_SUMMARY_MAX_CHARS,
   canStartVariants,
   diffStatOf,
+  pickNote,
+  planVariantPick,
   planVariants,
   sortVariantRows,
   variantCost,
   variantGroupState,
   variantSummaryLine,
+  variantWorkOwner,
   type VariantFields,
   type VariantLabel,
 } from './variants';
@@ -303,5 +308,121 @@ describe('sortVariantRows', () => {
     const copy = [...rows];
     sortVariantRows(rows);
     expect(rows).toEqual(copy);
+  });
+});
+
+describe('planVariantPick', () => {
+  const pickLeader = task({ id: 'L' });
+  const rowA = row('A1', 'A', 'done');
+  const rowB = row('B1', 'B', 'running');
+  const rowC = row('C1', 'C', 'pending');
+  const rows = [rowA, rowB, rowC];
+
+  it('picks the named row, losing the rest', () => {
+    expect(planVariantPick(pickLeader, rows, 'B1')).toEqual({ winner: rowB, losers: [rowA, rowC] });
+  });
+
+  it('is a no-op re-picking the current winner, even once it has dropped out of rows', () => {
+    const picked = { ...pickLeader, pickedVariantId: 'B1' };
+    expect(planVariantPick(picked, rows, 'B1')).toEqual({ noop: true });
+    expect(planVariantPick(picked, [], 'B1')).toEqual({ noop: true });
+  });
+
+  it('refuses a missing or archived leader as unknown-task', () => {
+    expect(planVariantPick(undefined, rows, 'B1')).toEqual({ refused: 'unknown-task' });
+    expect(planVariantPick({ ...pickLeader, archivedAt: 1 }, rows, 'B1')).toEqual({
+      refused: 'unknown-task',
+    });
+  });
+
+  it('refuses an id that is not a live row of this leader', () => {
+    expect(planVariantPick(pickLeader, rows, 'nope')).toEqual({ refused: 'not-a-variant' });
+    expect(
+      planVariantPick(pickLeader, [task({ id: 'other', variantOf: 'other-leader' })], 'other'),
+    ).toEqual({ refused: 'not-a-variant' });
+  });
+
+  it('refuses a different id once already picked, before a merge, as already-picked', () => {
+    const picked = { ...pickLeader, pickedVariantId: 'B1' };
+    expect(planVariantPick(picked, rows, 'C1')).toEqual({ refused: 'already-picked' });
+  });
+
+  it('refuses a different id once already picked AND merged, as already-merged', () => {
+    const picked = { ...pickLeader, pickedVariantId: 'B1', landedAt: 123 };
+    expect(planVariantPick(picked, rows, 'C1')).toEqual({ refused: 'already-merged' });
+  });
+
+  it('gives each refusal its own sentence, reusing unknown-task’s from the run refusals', () => {
+    expect(VARIANT_PICK_REFUSAL_MESSAGE['unknown-task']).toBe(RUN_REFUSAL_MESSAGE['unknown-task']);
+    const texts = Object.values(VARIANT_PICK_REFUSAL_MESSAGE);
+    expect(new Set(texts).size).toBe(texts.length);
+  });
+});
+
+describe('pickNote', () => {
+  it('names the winner and the discarded labels for a ×3 pick', () => {
+    expect(pickNote({ variantLabel: 'B' }, 3)).toBe('Picked B of 3 — discarded A, C.');
+  });
+
+  it('names the winner and the one discarded label for a ×2 pick', () => {
+    expect(pickNote({ variantLabel: 'A' }, 2)).toBe('Picked A of 2 — discarded B.');
+  });
+});
+
+describe('variantWorkOwner', () => {
+  const card = task({ id: 'C' });
+  const leaderWithRows = task({ id: 'L' });
+  const liveRows = [
+    { id: 'A1', variantOf: 'L' },
+    { id: 'B1', variantOf: 'L' },
+  ];
+  const noGetTask = () => undefined;
+
+  it('resolves an ordinary card to itself', () => {
+    expect(variantWorkOwner(card, [], noGetTask)).toEqual({ ownerId: 'C' });
+  });
+
+  it('resolves a variant row itself to itself, never to its leader', () => {
+    const variantRow = task({ id: 'A1', variantOf: 'L' });
+    expect(variantWorkOwner(variantRow, liveRows, noGetTask)).toEqual({ ownerId: 'A1' });
+  });
+
+  it('resolves a leader with no pick and live rows to the "pick a variant" refusal', () => {
+    expect(variantWorkOwner(leaderWithRows, liveRows, noGetTask)).toEqual({
+      refused: PICK_VARIANT_FIRST,
+    });
+  });
+
+  it('resolves a leader with no pick and no live rows left to itself', () => {
+    expect(variantWorkOwner(leaderWithRows, [], noGetTask)).toEqual({ ownerId: 'L' });
+  });
+
+  it('resolves a picked leader to the picked row, merged or not', () => {
+    const picked = { ...leaderWithRows, pickedVariantId: 'B1' };
+    expect(variantWorkOwner(picked, liveRows, noGetTask)).toEqual({ ownerId: 'B1' });
+  });
+
+  it('resolves a step through its parent card', () => {
+    const step = task({ id: 'S', parentTaskId: 'C' });
+    const getTask = (id: string) => (id === 'C' ? card : undefined);
+    expect(variantWorkOwner(step, [], getTask)).toEqual({ ownerId: 'C' });
+  });
+
+  it('resolves a step through a picked leader parent', () => {
+    const picked = { ...leaderWithRows, pickedVariantId: 'B1' };
+    const step = task({ id: 'S', parentTaskId: 'L' });
+    const getTask = (id: string) => (id === 'L' ? picked : undefined);
+    expect(variantWorkOwner(step, liveRows, getTask)).toEqual({ ownerId: 'B1' });
+  });
+
+  it('resolves a step through an unpicked leader parent to the same refusal', () => {
+    const step = task({ id: 'S', parentTaskId: 'L' });
+    const getTask = (id: string) => (id === 'L' ? leaderWithRows : undefined);
+    expect(variantWorkOwner(step, liveRows, getTask)).toEqual({ refused: PICK_VARIANT_FIRST });
+  });
+
+  it('falls back to the step itself if its parent cannot be found', () => {
+    const step = task({ id: 'S', parentTaskId: 'gone' });
+    expect(variantWorkOwner(step, [], noGetTask)).toEqual({ ownerId: 'S' });
   });
 });

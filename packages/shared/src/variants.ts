@@ -317,3 +317,118 @@ export function sortVariantRows<T extends { label: VariantLabel | null }>(rows: 
     label === null ? VARIANT_LABELS.length : VARIANT_LABELS.indexOf(label);
   return [...rows].sort((a, b) => rank(a.label) - rank(b.label));
 }
+
+/**
+ * The pick (F10.6) — once a leader keeps one variant, that row's branch and worktree ARE
+ * the card's own work from then on. Pure rules only: `variantWorkOwner` resolves "whose
+ * work is this card's" (including through a step's chain); `planVariantPick` decides what
+ * a `variants:pick` call does, before the engine (`task:pickVariant`, under
+ * `apps/client/src/main`) ever stops a run, removes a worktree or writes anything.
+ */
+
+/** Shown wherever a leader's own work is asked for before anything has been picked. */
+export const PICK_VARIANT_FIRST =
+  "Pick a variant first — this card's work lives in its variants until you keep one.";
+
+/**
+ * Why a `variants:pick` call did nothing. The leader or the named row is gone or not a
+ * variant of this leader, or the leader already picked — once, which `planVariantPick`
+ * tells apart from a same-id re-pick (a no-op, not a refusal).
+ */
+export type VariantPickRefusal =
+  'unknown-task' | 'not-a-variant' | 'already-picked' | 'already-merged';
+
+/** One sentence per {@link VariantPickRefusal}, in the voice of {@link VARIANT_REFUSAL_MESSAGE}. */
+export const VARIANT_PICK_REFUSAL_MESSAGE: Record<VariantPickRefusal, string> = {
+  'unknown-task': RUN_REFUSAL_MESSAGE['unknown-task'],
+  'not-a-variant':
+    "That isn't one of this card's current variants — it may already be discarded, or belong " +
+    'to a different card.',
+  'already-picked':
+    'This card already picked a variant and discarded the others — there is nothing left to ' +
+    'switch to.',
+  'already-merged':
+    "This card's picked variant already merged — picking a different one now would abandon " +
+    'that work.',
+};
+
+/** The leader fields {@link planVariantPick} reads. */
+export type VariantPickLeader = Pick<Task, 'id' | 'archivedAt' | 'pickedVariantId' | 'landedAt'>;
+
+/**
+ * What a `variants:pick(leader, variantId)` call does, before the engine touches a
+ * worktree: a no-op, a refusal, or the winning row plus the live rows it beats.
+ *
+ * `rows` is the leader's LIVE rows (not archived, `variantOf === leader.id`) — the same
+ * shape `variantGroupState` reads. The same-id check runs before the rows lookup, so
+ * re-picking the current winner is a no-op even once that row has dropped out of `rows`
+ * (e.g. the caller only queries unsettled rows by then, well after the merge) — "same-id
+ * re-pick is a noop even after merge".
+ */
+export function planVariantPick<T extends Pick<Task, 'id'> & VariantFields>(
+  leader: VariantPickLeader | null | undefined,
+  rows: readonly T[],
+  variantId: string,
+): { noop: true } | { refused: VariantPickRefusal } | { winner: T; losers: T[] } {
+  if (!leader || leader.archivedAt) return { refused: 'unknown-task' };
+  if (leader.pickedVariantId === variantId) return { noop: true };
+  if (leader.pickedVariantId) {
+    return { refused: leader.landedAt != null ? 'already-merged' : 'already-picked' };
+  }
+  const winner = rows.find((r) => r.id === variantId && r.variantOf === leader.id);
+  if (!winner) return { refused: 'not-a-variant' };
+  const losers = rows.filter((r) => r.variantOf === leader.id && r.id !== variantId);
+  return { winner, losers };
+}
+
+/**
+ * "Picked B of 3 — discarded A, C." for the pick's one timeline note — derived from the
+ * winner's label and the group's size alone, since the discarded labels are exactly
+ * {@link VARIANT_LABELS} up to `total`, minus the winner's own.
+ */
+export function pickNote(winner: Pick<VariantFields, 'variantLabel'>, total: number): string {
+  const label = winner.variantLabel ?? '?';
+  const discarded = VARIANT_LABELS.slice(0, total).filter((l) => l !== winner.variantLabel);
+  return discarded.length > 0
+    ? `Picked ${label} of ${total} — discarded ${discarded.join(', ')}.`
+    : `Picked ${label} of ${total}.`;
+}
+
+/** The task fields {@link variantWorkOwner} reads, on both the task itself and its ancestors. */
+export type VariantWorkOwnerTask = Pick<
+  Task,
+  'id' | 'parentTaskId' | 'variantOf' | 'pickedVariantId'
+>;
+
+/**
+ * Where a card's own work actually lives: the id whose worktree/branch/project a merge, a
+ * PR or auto-release should resolve through. `task` is whatever was asked about — the
+ * card, or one of its steps; `rows` is every live variant row the caller knows of, since a
+ * step's chain can run under a picked leader exactly as it runs under an ordinary card.
+ *
+ * In priority order:
+ * - a step (`parentTaskId` set) resolves through its parent, recursively — the chain's
+ *   worktree is the parent's, picked leader or not, same as a step's chain today;
+ * - a leader that has picked resolves to the picked row's id, merged or not;
+ * - a leader with live rows and no pick yet refuses with {@link PICK_VARIANT_FIRST} — there
+ *   is no card work to point at until a human keeps one;
+ * - anything else (an ordinary card, a variant row itself, a leader whose rows are all
+ *   gone) owns its own work.
+ *
+ * Leaders are recognised by `pickedVariantId` or by having live rows in `rows` — never by
+ * `source` or `status` — so a plain board card with neither reaches the last branch and
+ * resolves to itself, exactly like today.
+ */
+export function variantWorkOwner(
+  task: VariantWorkOwnerTask,
+  rows: readonly (Pick<Task, 'id'> & VariantFields)[],
+  getTask: (id: string) => VariantWorkOwnerTask | undefined,
+): { ownerId: string } | { refused: string } {
+  if (task.parentTaskId) {
+    const parent = getTask(task.parentTaskId);
+    return parent ? variantWorkOwner(parent, rows, getTask) : { ownerId: task.id };
+  }
+  if (task.pickedVariantId) return { ownerId: task.pickedVariantId };
+  if (rows.some((r) => r.variantOf === task.id)) return { refused: PICK_VARIANT_FIRST };
+  return { ownerId: task.id };
+}

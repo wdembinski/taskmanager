@@ -257,6 +257,7 @@ export const RELAY_POLICY: {
   'task:resumeAgent': 'relay',
   'task:startVariants': 'relay',
   'variants:summary': 'relay',
+  'variants:pick': 'relay',
   'task:chat': 'relay',
   'task:replan': 'relay',
   'task:dismissAttention': 'relay',

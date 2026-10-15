@@ -882,6 +882,21 @@ export interface IpcApi {
    */
   'variants:summary': (leaderId: string) => Promise<VariantSummaryRow[]>;
   /**
+   * Keep one variant and discard the rest (F10.6): stop the OTHER live rows, remove their
+   * worktrees, archive them `'variant-discarded'`, and set `pickedVariantId` so every later
+   * "where is this card's work" question — merge, PR, auto-release, a step's chain — resolves
+   * through the picked row from here on. The picked row itself is left running if it still
+   * is; only the losers are touched.
+   *
+   * Re-picking the SAME id is a no-op: resolves with the leader unchanged, writes no new
+   * timeline note. A DIFFERENT id once already picked rejects with
+   * `VARIANT_PICK_REFUSAL_MESSAGE['already-merged' | 'already-picked']`, depending on
+   * whether the pick has landed; naming an id that is not a live row of this leader (or an
+   * unknown/archived leader) rejects with the sibling messages for `'not-a-variant'` /
+   * `'unknown-task'`. See `@shared/variants`'s `planVariantPick`.
+   */
+  'variants:pick': (leaderId: string, variantId: string) => Promise<Task>;
+  /**
    * Say something to the agent working this card (Phase 12) — the card's half of a
    * conversation, not an answer to a question it asked. The message is recorded on the
    * timeline as a `chat` entry and delivered to the live session's open input stream.
