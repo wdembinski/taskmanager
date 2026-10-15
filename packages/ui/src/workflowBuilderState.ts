@@ -44,8 +44,7 @@ export type WorkflowSelection = { kind: 'library'; id: string } | { kind: 'new' 
  *  CURRENT library state at confirm time, not from whatever it looked like when the
  *  human first asked. */
 export type PendingSelectionTarget =
-  | { kind: 'select'; selection: WorkflowSelection }
-  | { kind: 'duplicate'; id: string };
+  { kind: 'select'; selection: WorkflowSelection } | { kind: 'duplicate'; id: string };
 
 /** A switch the human asked for while {@link WorkflowBuilderState.draft} was dirty — held
  *  here instead of applied immediately, so the section can show a discard-confirm and let
@@ -240,7 +239,8 @@ function switchSelection(
   state: WorkflowBuilderState,
   selection: WorkflowSelection,
 ): WorkflowBuilderState {
-  if (isDirty(state)) return { ...state, pendingSelection: { target: { kind: 'select', selection } } };
+  if (isDirty(state))
+    return { ...state, pendingSelection: { target: { kind: 'select', selection } } };
   return applySelectionTarget(state, selection);
 }
 
@@ -281,7 +281,11 @@ export function cancelPendingSelection(state: WorkflowBuilderState): WorkflowBui
 /** Restores the open draft (and its `retryOnText` boxes) to a fresh copy of `baseline`. */
 export function discardDraft(state: WorkflowBuilderState): WorkflowBuilderState {
   if (!state.baseline) return state;
-  return { ...state, draft: cloneDraft(state.baseline), retryOnText: retryOnTextFor(state.baseline) };
+  return {
+    ...state,
+    draft: cloneDraft(state.baseline),
+    retryOnText: retryOnTextFor(state.baseline),
+  };
 }
 
 function stableStringify(value: unknown): string {
@@ -289,7 +293,10 @@ function stableStringify(value: unknown): string {
   if (value && typeof value === 'object') {
     const entries = Object.keys(value as Record<string, unknown>)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`);
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`,
+      );
     return `{${entries.join(',')}}`;
   }
   return JSON.stringify(value);
@@ -397,11 +404,16 @@ export function canSave(state: WorkflowBuilderState): boolean {
 
 /** Appends a blank step of `kind` to the open draft, with a fresh id from
  *  {@link nextStepId}. A no-op with no draft open. */
-export function addStep(state: WorkflowBuilderState, kind: WorkflowStep['kind']): WorkflowBuilderState {
+export function addStep(
+  state: WorkflowBuilderState,
+  kind: WorkflowStep['kind'],
+): WorkflowBuilderState {
   if (!state.draft) return state;
   const id = nextStepId(state.draft.steps, kind);
   const step: WorkflowStep =
-    kind === 'agent' ? { id, kind: 'agent', title: '', brief: '' } : { id, kind: 'gate', title: '', command: '' };
+    kind === 'agent'
+      ? { id, kind: 'agent', title: '', brief: '' }
+      : { id, kind: 'gate', title: '', command: '' };
   const steps = [...state.draft.steps, step];
   const retryOnText = kind === 'gate' ? { ...state.retryOnText, [id]: '' } : state.retryOnText;
   return { ...state, draft: { ...state.draft, steps }, retryOnText };
@@ -428,14 +440,21 @@ export function removeStep(state: WorkflowBuilderState, id: string): WorkflowBui
  * `up`/`down` reordering is just this with `to` one less/more than `from`. A no-op with
  * no draft open, or with either index out of range.
  */
-export function moveStep(state: WorkflowBuilderState, from: number, to: number): WorkflowBuilderState {
+export function moveStep(
+  state: WorkflowBuilderState,
+  from: number,
+  to: number,
+): WorkflowBuilderState {
   if (!state.draft) return state;
   const steps = moveItem(state.draft.steps, from, to);
   return { ...state, draft: { ...state.draft, steps } };
 }
 
 /** Patches the open draft's `name`. A no-op with no draft open. */
-export function editWorkflow(state: WorkflowBuilderState, patch: { name: string }): WorkflowBuilderState {
+export function editWorkflow(
+  state: WorkflowBuilderState,
+  patch: { name: string },
+): WorkflowBuilderState {
   if (!state.draft) return state;
   return { ...state, draft: { ...state.draft, ...patch } };
 }
@@ -461,7 +480,9 @@ export function setStepModel(
   id: string,
   model: ClaudeModel | null,
 ): WorkflowBuilderState {
-  return updateStep(state, id, (step) => (isAgentStep(step) ? withOptional(step, 'model', model) : step));
+  return updateStep(state, id, (step) =>
+    isAgentStep(step) ? withOptional(step, 'model', model) : step,
+  );
 }
 
 /** Sets (or, with `null`, deletes) agent step `id`'s `mode` override. A no-op on a gate
@@ -471,7 +492,9 @@ export function setStepMode(
   id: string,
   mode: PermissionMode | null,
 ): WorkflowBuilderState {
-  return updateStep(state, id, (step) => (isAgentStep(step) ? withOptional(step, 'mode', mode) : step));
+  return updateStep(state, id, (step) =>
+    isAgentStep(step) ? withOptional(step, 'mode', mode) : step,
+  );
 }
 
 /** Sets (or, with `null`, deletes) agent step `id`'s `skillRefs`. A no-op on a gate step
@@ -481,7 +504,9 @@ export function setStepSkillRefs(
   id: string,
   skillRefs: string[] | null,
 ): WorkflowBuilderState {
-  return updateStep(state, id, (step) => (isAgentStep(step) ? withOptional(step, 'skillRefs', skillRefs) : step));
+  return updateStep(state, id, (step) =>
+    isAgentStep(step) ? withOptional(step, 'skillRefs', skillRefs) : step,
+  );
 }
 
 /** Sets (or, with `null`, deletes) gate step `id`'s `onFail`, and resyncs its
@@ -511,7 +536,11 @@ export function setGateOnFail(
  * non-zero exit"). Text that doesn't parse leaves the step's `onFail.retryOn` exactly as
  * it was; {@link workflowIssues} flags the box itself until it parses again.
  */
-export function setRetryOnText(state: WorkflowBuilderState, id: string, text: string): WorkflowBuilderState {
+export function setRetryOnText(
+  state: WorkflowBuilderState,
+  id: string,
+  text: string,
+): WorkflowBuilderState {
   const retryOnText = { ...state.retryOnText, [id]: text };
   if (!state.draft) return { ...state, retryOnText };
 
@@ -535,7 +564,10 @@ export function setRetryOnText(state: WorkflowBuilderState, id: string, text: st
  * `issues` to `notices` instead, leaving the draft open and unchanged so the human can
  * fix it and retry.
  */
-export function applySaveResult(state: WorkflowBuilderState, result: WorkflowSaveResult): WorkflowBuilderState {
+export function applySaveResult(
+  state: WorkflowBuilderState,
+  result: WorkflowSaveResult,
+): WorkflowBuilderState {
   if (result.ok) {
     const draft = draftFromDoc(result.workflow);
     return {

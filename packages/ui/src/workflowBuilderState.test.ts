@@ -279,7 +279,9 @@ describe('pending selection', () => {
     const dirty = editWorkflow(state, { name: 'Changed' });
 
     const switched = selectWorkflow(dirty, 'w2');
-    expect(switched.pendingSelection).toEqual({ target: { kind: 'select', selection: { kind: 'library', id: 'w2' } } });
+    expect(switched.pendingSelection).toEqual({
+      target: { kind: 'select', selection: { kind: 'library', id: 'w2' } },
+    });
     expect(switched.selection).toEqual({ kind: 'library', id: 'w1' });
 
     const confirmed = confirmPendingSelection(switched);
