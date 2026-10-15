@@ -15,13 +15,19 @@
  * already superseded, is a no-op that returns the SAME state object — the tests assert this with
  * `toBe`.
  *
- * Two things that are NOT part of either race, by design:
+ * Three things that are NOT part of either race, by design:
  *  - `editor` holds the human's own typing, not a fact about the current diff. It survives a
  *    same-card reload and a stale-diff reload untouched but for `outdated` flipping to `true`;
  *    only a non-ok summary (landed/conflicted/no-branch), switching to a different card, or an
  *    explicit `closeEditor` clears it.
  *  - `expanded` is the human's own choice of what is open, not a fact about the current diff
  *    either — a reload keeps it, and only a diffId change prunes paths that stopped existing.
+ *  - `selection` is the compact pane's own tap-to-select stand-in for `rangeAnchor` plus a
+ *    Shift-click — touch has no modifier key, so `tapLine` builds the same anchor/start shape
+ *    across two taps instead, and only ever turns into `editor` through `commentOnSelection`.
+ *    Unlike `editor`, it never survives a diffId change: `summaryArrived` clears it the same
+ *    moment `files` resets, since line numbers from the old diff don't mean the same thing
+ *    any more.
  */
 import type {
   DiffFile,

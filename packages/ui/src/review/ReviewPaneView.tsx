@@ -14,30 +14,58 @@
  * here is added/removed content — a line's own tint at its subtlest step, and the inner
  * word highlight one step stronger so it reads against that tint, plus the same green/red
  * reused (never a third hue) for the +/− counts. Everything else stays on neutral tokens.
+ *
+ * **Compact layout** (`layout === 'compact'`, from `TaskDetail`'s own per-section tab, F3.8):
+ * the same `ReviewState` drives a different body. A **Files (n)** button and a **Wrap**
+ * `Switch` stand in for the wide file tree sitting beside the diff — picking a file from the
+ * `Files` sheet closes it and lets `DiffView`'s own scroll-to-selected do the rest. A sticky
+ * footer carries Cancel/Comment for the active tap `selection` plus an always-present
+ * Note/Send review row, so neither ever scrolls out of reach on a phone; the overall note
+ * moves from the wide pane's `Popover` into its own bottom sheet for the same reason a
+ * `Popover` anchored to a toolbar button stops working once the toolbar itself is this
+ * cramped. The comment editor never renders inline here — `DiffView`'s own `touch` mode
+ * suppresses that — it opens in a bottom sheet instead, shared by a brand new comment and an
+ * Edit on an existing draft alike (`state.editor !== null` either way).
  */
+import { useState } from 'react';
 import type { JSX } from 'react';
 import {
   Body1,
   Button,
   Caption1,
+  DrawerBody,
+  DrawerHeader,
+  DrawerHeaderTitle,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
+  OverlayDrawer,
   Popover,
   PopoverSurface,
   PopoverTrigger,
   Spinner,
+  Switch,
   Textarea,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import { ArrowClockwiseRegular, NoteEditRegular, SendRegular } from '@fluentui/react-icons';
-import type { DiffSide, ReviewComment, ReviewSendRefusal } from '@tm/shared/review';
+import type { DiffLine, DiffSide, ReviewComment, ReviewSendRefusal } from '@tm/shared/review';
 import { MONO } from '../theme';
+import { CommentEditorCard } from './CommentThread';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
-import { canComment, canSend, unsentCount, type ReviewState } from './reviewState';
-import { buildFileTree, sendRefusalText, summaryTotals } from './reviewView';
+import {
+  canComment,
+  canSend,
+  rangeLines,
+  unsentCount,
+  type CommentEditor,
+  type FileLoad,
+  type ReviewState,
+} from './reviewState';
+import { buildFileTree, selectionLabel, sendRefusalText, summaryTotals } from './reviewView';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px' },
@@ -53,6 +81,42 @@ const useStyles = makeStyles({
   body: { display: 'flex', gap: '10px', minHeight: 0 },
   unsent: { color: tokens.colorNeutralForeground3 },
   note: { width: '320px', display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px' },
+  // Compact layout (F3.8): a single-column body, no file tree beside the diff — `Files (n)`
+  // opens it as a sheet instead.
+  compactBody: { display: 'flex', flexDirection: 'column', gap: '8px', minHeight: 0 },
+  reloadCompact: { minWidth: '44px', minHeight: '44px' },
+  sheetBody: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px' },
+  // Sticky over the diff rather than scrolling away with it — the one thing that keeps
+  // Comment/Send review reachable while a phone's own keyboard is already eating half the
+  // screen.
+  stickyFooter: {
+    position: 'sticky',
+    bottom: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    padding: '8px',
+    backgroundColor: tokens.colorNeutralBackground1,
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  footerRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+  footerButton: { minHeight: '44px' },
+  selectionCaption: { fontFamily: MONO, color: tokens.colorNeutralForeground2 },
+  // The comment sheet's own excerpt of the lines it is anchored to — the same green/red
+  // tint `DiffView`'s own lines use, never a third colour (board-colour-budget).
+  excerpt: {
+    display: 'flex',
+    flexDirection: 'column',
+    fontFamily: MONO,
+    fontSize: '12px',
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusMedium,
+    overflow: 'hidden',
+    marginBottom: '8px',
+  },
+  excerptLine: { padding: '2px 8px', whiteSpace: 'pre-wrap' },
+  excerptAdd: { backgroundColor: tokens.colorPaletteGreenBackground1 },
+  excerptDel: { backgroundColor: tokens.colorPaletteRedBackground1 },
 });
 
 export interface ReviewPaneViewProps {
@@ -67,10 +131,19 @@ export interface ReviewPaneViewProps {
    * `readOnly`) rather than looking live over a channel that cannot answer (F6.13).
    */
   unreachable?: string;
+  /** `'compact'` for the compact full-screen card screen's own Changes tab (F3.8); `undefined`
+   * (wide) everywhere else. */
+  layout?: 'wide' | 'compact';
   onReload: () => void;
   onSelectFile: (path: string) => void;
   onToggleExpanded: (path: string) => void;
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  /** A gutter button tap in compact mode — `tapLine`'s own stand-in for `onClickLine`. */
+  onTapLine: (path: string, side: DiffSide, line: number) => void;
+  /** Dismisses the compact pane's own tap `selection` without starting a comment. */
+  onCancelSelection: () => void;
+  /** Starts a comment from the compact pane's own tap `selection`. */
+  onCommentSelection: () => void;
   onEditDraft: (text: string) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -80,15 +153,31 @@ export interface ReviewPaneViewProps {
   onSend: () => void;
 }
 
+/** The lines `range` covers in `path`'s loaded file, or `[]` while it is not loaded — the
+ * compact pane's own comment sheet shows these as a read-only excerpt above the editor. */
+function excerptLines(
+  files: Readonly<Record<string, FileLoad>>,
+  path: string,
+  range: Pick<CommentEditor, 'anchor' | 'start'>,
+): readonly DiffLine[] {
+  const load = files[path];
+  if (load === undefined || load.status !== 'loaded') return [];
+  return rangeLines(load.file, range);
+}
+
 export function ReviewPaneView({
   taskId,
   state,
   error,
   unreachable,
+  layout,
   onReload,
   onSelectFile,
   onToggleExpanded,
   onClickLine,
+  onTapLine,
+  onCancelSelection,
+  onCommentSelection,
   onEditDraft,
   onSave,
   onCancel,
@@ -100,6 +189,10 @@ export function ReviewPaneView({
   const styles = useStyles();
   const { summary } = state;
   const readOnly = unreachable !== undefined;
+  const compact = layout === 'compact';
+  const [wrap, setWrap] = useState(true);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
 
   let body: JSX.Element | null = null;
   if (summary === null) {
@@ -134,7 +227,173 @@ export function ReviewPaneView({
     );
   } else {
     const totals = summaryTotals(summary.summary);
-    body = (
+    const diff = compact ? (
+      <DiffView
+        taskId={taskId}
+        diffId={summary.summary.diffId}
+        summary={summary.summary}
+        files={state.files}
+        expanded={state.expanded}
+        selectedPath={state.selectedPath}
+        comments={state.comments}
+        editor={state.editor}
+        canComment={canComment(state, readOnly)}
+        touch
+        wrap={wrap}
+        selection={state.selection}
+        onToggleExpanded={onToggleExpanded}
+        onClickLine={onClickLine}
+        onTapLine={onTapLine}
+        onEditDraft={onEditDraft}
+        onSave={onSave}
+        onCancel={onCancel}
+        onEdit={onEdit}
+        onDelete={onDelete}
+      />
+    ) : (
+      <DiffView
+        taskId={taskId}
+        diffId={summary.summary.diffId}
+        summary={summary.summary}
+        files={state.files}
+        expanded={state.expanded}
+        selectedPath={state.selectedPath}
+        comments={state.comments}
+        editor={state.editor}
+        canComment={canComment(state, readOnly)}
+        onToggleExpanded={onToggleExpanded}
+        onClickLine={onClickLine}
+        onEditDraft={onEditDraft}
+        onSave={onSave}
+        onCancel={onCancel}
+        onEdit={onEdit}
+        onDelete={onDelete}
+      />
+    );
+
+    body = compact ? (
+      <>
+        <div className={styles.header}>
+          <Caption1 className={styles.refs}>
+            {summary.summary.baseRef} → {summary.summary.headSha.slice(0, 7)}
+          </Caption1>
+          <Caption1 className={styles.totals}>
+            {totals.files} file{totals.files === 1 ? '' : 's'} ·{' '}
+            <span className={styles.added}>+{totals.additions}</span>{' '}
+            <span className={styles.deleted}>-{totals.deletions}</span>
+          </Caption1>
+          {summary.summary.includesWorkingTree && (
+            <Caption1 className={styles.uncommitted}>Includes uncommitted changes</Caption1>
+          )}
+          <span className={styles.spacer} />
+          <Button size="small" appearance="subtle" onClick={() => setFilesOpen(true)}>
+            Files ({totals.files})
+          </Button>
+          <Switch label="Wrap" checked={wrap} onChange={(_e, d) => setWrap(d.checked)} />
+          {state.loading ? (
+            <Spinner size="extra-tiny" />
+          ) : (
+            <Button
+              className={styles.reloadCompact}
+              appearance="subtle"
+              icon={<ArrowClockwiseRegular />}
+              title="Re-read this card's changes"
+              aria-label="Refresh the diff"
+              onClick={onReload}
+            />
+          )}
+        </div>
+        <OverlayDrawer
+          open={filesOpen}
+          position="bottom"
+          onOpenChange={(_e, d) => setFilesOpen(d.open)}
+        >
+          <DrawerHeader>
+            <DrawerHeaderTitle>Files</DrawerHeaderTitle>
+          </DrawerHeader>
+          <DrawerBody>
+            <FileTree
+              nodes={buildFileTree(summary.summary.files)}
+              selectedPath={state.selectedPath}
+              onSelectFile={(path) => {
+                onSelectFile(path);
+                setFilesOpen(false);
+              }}
+            />
+          </DrawerBody>
+        </OverlayDrawer>
+        <div className={styles.compactBody}>{diff}</div>
+        <div className={styles.stickyFooter}>
+          {state.selection !== null && (
+            <div className={styles.footerRow}>
+              <Caption1 className={styles.selectionCaption}>
+                {selectionLabel(state.selection)}
+              </Caption1>
+              <span className={styles.spacer} />
+              <Button
+                className={styles.footerButton}
+                size="large"
+                appearance="subtle"
+                onClick={onCancelSelection}
+              >
+                Cancel
+              </Button>
+              <Button
+                className={styles.footerButton}
+                size="large"
+                appearance="primary"
+                disabled={!canComment(state, readOnly)}
+                onClick={onCommentSelection}
+              >
+                Comment
+              </Button>
+            </div>
+          )}
+          <div className={styles.footerRow}>
+            <Button
+              className={styles.footerButton}
+              size="large"
+              appearance="subtle"
+              icon={<NoteEditRegular />}
+              onClick={() => setNoteOpen(true)}
+            >
+              Note
+            </Button>
+            <Caption1 className={styles.unsent}>{unsentCount(state)} unsent</Caption1>
+            <span className={styles.spacer} />
+            <Button
+              className={styles.footerButton}
+              size="large"
+              appearance="primary"
+              icon={state.sending ? <Spinner size="tiny" /> : <SendRegular />}
+              disabled={!canSend(state, readOnly)}
+              onClick={onSend}
+            >
+              {state.sending ? 'Sending…' : 'Send review'}
+            </Button>
+          </div>
+        </div>
+        <OverlayDrawer
+          open={noteOpen}
+          position="bottom"
+          onOpenChange={(_e, d) => setNoteOpen(d.open)}
+        >
+          <DrawerHeader>
+            <DrawerHeaderTitle>Overall note</DrawerHeaderTitle>
+          </DrawerHeader>
+          <DrawerBody>
+            <div className={styles.sheetBody}>
+              <Textarea
+                value={state.note}
+                placeholder="Add an overall note…  (optional)"
+                resize="vertical"
+                onChange={(_e, data) => onEditNote(data.value)}
+              />
+            </div>
+          </DrawerBody>
+        </OverlayDrawer>
+      </>
+    ) : (
       <>
         <div className={styles.header}>
           <Caption1 className={styles.refs}>
@@ -199,24 +458,7 @@ export function ReviewPaneView({
             selectedPath={state.selectedPath}
             onSelectFile={onSelectFile}
           />
-          <DiffView
-            taskId={taskId}
-            diffId={summary.summary.diffId}
-            summary={summary.summary}
-            files={state.files}
-            expanded={state.expanded}
-            selectedPath={state.selectedPath}
-            comments={state.comments}
-            editor={state.editor}
-            canComment={canComment(state, readOnly)}
-            onToggleExpanded={onToggleExpanded}
-            onClickLine={onClickLine}
-            onEditDraft={onEditDraft}
-            onSave={onSave}
-            onCancel={onCancel}
-            onEdit={onEdit}
-            onDelete={onDelete}
-          />
+          {diff}
         </div>
       </>
     );
@@ -258,6 +500,55 @@ export function ReviewPaneView({
         </MessageBar>
       )}
       {body}
+      {compact && state.editor !== null && (
+        <OverlayDrawer open position="bottom" onOpenChange={(_e, d) => !d.open && onCancel()}>
+          <DrawerHeader>
+            <DrawerHeaderTitle>{selectionLabel(state.editor)}</DrawerHeaderTitle>
+          </DrawerHeader>
+          <DrawerBody>
+            <div className={styles.sheetBody}>
+              <CommentExcerpt files={state.files} editor={state.editor} />
+              <CommentEditorCard
+                editor={state.editor}
+                onEditDraft={onEditDraft}
+                onSave={onSave}
+                onCancel={onCancel}
+              />
+            </div>
+          </DrawerBody>
+        </OverlayDrawer>
+      )}
+    </div>
+  );
+}
+
+/** The comment sheet's own read-only excerpt of the lines `editor` is anchored to — the
+ * editor itself opens with no diff context on screen behind it, unlike the wide pane's
+ * inline one. */
+function CommentExcerpt({
+  files,
+  editor,
+}: {
+  files: Readonly<Record<string, FileLoad>>;
+  editor: CommentEditor;
+}): JSX.Element | null {
+  const styles = useStyles();
+  const lines = excerptLines(files, editor.path, editor);
+  if (lines.length === 0) return null;
+  return (
+    <div className={styles.excerpt}>
+      {lines.map((line, i) => (
+        <div
+          key={i}
+          className={mergeClasses(
+            styles.excerptLine,
+            line.kind === 'add' && styles.excerptAdd,
+            line.kind === 'del' && styles.excerptDel,
+          )}
+        >
+          {line.text || ' '}
+        </div>
+      ))}
     </div>
   );
 }
