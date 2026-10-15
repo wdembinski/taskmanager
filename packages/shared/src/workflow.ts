@@ -228,6 +228,41 @@ export function validateWorkflow(input: unknown): ValidateWorkflowResult {
   return { ok: true, doc: input as unknown as WorkflowDoc };
 }
 
+/**
+ * 64 KiB of `JSON.stringify(doc)`. Unlike a `Skill` (`@shared/skills`), a workflow
+ * has no single "body" field to cap — the cap applies to the whole document, the shape
+ * the server's `/v1/workflows` mirror (F8.12) actually stores and `PUT`/`GET` actually
+ * send, so that is what is measured.
+ */
+export const WORKFLOW_DOC_MAX = 64 * 1024;
+
+/**
+ * `doc`'s size the way {@link WORKFLOW_DOC_MAX} actually bounds it — UTF-8 bytes of its
+ * `JSON.stringify`, not `string.length` (UTF-16 code units). Same `TextEncoder`
+ * convention as `skillBodyBytes` (`@shared/skills`) and for the same reason: a document
+ * full of multi-byte characters is under budget by `.length` while already over it in
+ * the bytes the server and the desktop pusher both count.
+ *
+ * `JSON.stringify(doc)` doubles as the mirror's change fingerprint (F8.12): `WorkflowDoc`
+ * carries no `updatedAt` of its own, and this is exactly the string a `PUT` sends, so a
+ * desktop that seeds its last-pushed fingerprint from a prior `GET` compares like for
+ * like and a restart does not re-push an unchanged workflow.
+ */
+export function workflowDocBytes(doc: WorkflowDoc): number {
+  return new TextEncoder().encode(JSON.stringify(doc)).length;
+}
+
+/**
+ * The sentence a 413 earns, worded identically wherever it is shown — same convention as
+ * `skillTooLargeMessage` (`@shared/skills`). `bytes` is rounded UP to whole KiB, so a
+ * document one byte over {@link WORKFLOW_DOC_MAX} never reads as "64 KiB > 64 KiB" — a
+ * contradiction a reader would reasonably doubt.
+ */
+export function workflowTooLargeMessage(bytes: number): string {
+  const kib = Math.ceil(bytes / 1024);
+  return `too large to sync (${kib} KiB > ${WORKFLOW_DOC_MAX / 1024} KiB)`;
+}
+
 /** How many bytes of a gate's timeline output to keep — enough to show the failing
  *  tail without storing an unbounded log for a command that ran for hours. */
 export const GATE_TIMELINE_TAIL_BYTES = 16 * 1024;
