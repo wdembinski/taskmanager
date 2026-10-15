@@ -99,6 +99,11 @@ const useStyles = makeStyles({
   optionWhy: { color: tokens.colorNeutralForeground3 },
   decide: { display: 'flex', flexDirection: 'column', gap: '10px' },
   actions: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
+  // Fluent's largest Button size is 40px tall — 4px under the 44px touch-target floor every
+  // other control on this screen already clears (`option`, `row` above). These three are the
+  // ones a human actually sends an answer or a plan decision with, so they get it explicitly
+  // rather than inheriting whatever Fluent's biggest built-in size happens to be.
+  primaryAction: { minHeight: '44px' },
 });
 
 /**
@@ -228,6 +233,7 @@ function AnswerQuestions({
       <Button
         appearance="primary"
         size="large"
+        className={styles.primaryAction}
         disabled={busy || !isComplete(questions, draft)}
         onClick={() => void send(draft)}
       >
@@ -303,6 +309,7 @@ function AnswerDecision({
         <Button
           appearance="primary"
           size="large"
+          className={styles.primaryAction}
           disabled={busy}
           onClick={() =>
             void decide(
@@ -314,6 +321,7 @@ function AnswerDecision({
         </Button>
         <Button
           size="large"
+          className={styles.primaryAction}
           disabled={busy || (isPlan && note.value.trim().length === 0)}
           onClick={deny}
         >
