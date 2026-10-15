@@ -1758,6 +1758,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('attention:list', async () => scheduler.listAttention());
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
   /**
+   * `gate:trust`'s one handler (F8.8) — host-only (see `ipcRelay.ts`'s `trust-grant`
+   * reason), so this only ever runs on the desktop that is about to run the command.
+   */
+  handle('gate:trust', async (itemId) => scheduler.trustGateCommand(itemId));
+  /**
    * The inbox's per-item Dismiss. `dismissAttentionItem` reports `false` for an item that is
    * already gone or a `merge-conflict` it refuses to drop — thrown here (rather than
    * swallowed) so the UI can say why the button did nothing, the same shape every other

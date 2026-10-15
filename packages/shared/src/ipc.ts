@@ -936,6 +936,15 @@ export interface IpcApi {
    */
   'attention:answer': (itemId: string, answer: AttentionAnswer) => Promise<void>;
   /**
+   * Grant a parked gate's command permission to run on THIS desktop (F8.8) — the only path
+   * that may add a hash to `AppSettings.trustedGateCommands`. Separate from
+   * `attention:answer` (rather than one more `AttentionAnswer` decision carried over it)
+   * because trust is a fact about the machine running the command, and this channel is
+   * `host-only` for exactly that reason: a browser tab relaying `GATE_TRUST_ACTION.trust`
+   * through `attention:answer` is refused and re-parks the same ask instead.
+   */
+  'gate:trust': (itemId: string) => Promise<void>;
+  /**
    * Drop exactly ONE inbox item, without answering it — the inbox's own per-item Dismiss,
    * as opposed to `task:dismissAttention` which sweeps a whole card and its steps. Same two
    * exceptions as the sweep: a held tool is released as a deny rather than abandoned, and a

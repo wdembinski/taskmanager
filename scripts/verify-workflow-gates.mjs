@@ -249,7 +249,10 @@ async function main() {
     };
 
     bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'));
-    bundle(join(root, 'apps/client/src/main/sessionManager.ts'), join(scratch, 'sessionManager.cjs'));
+    bundle(
+      join(root, 'apps/client/src/main/sessionManager.ts'),
+      join(scratch, 'sessionManager.cjs'),
+    );
     // Scheduler.ts pulls in `gateStep.ts`, `gateRunner.ts`, `chainRunner.ts` and
     // `@shared/workflow` itself as ordinary (non-type-only) imports — bundled in here too.
     bundle(join(root, 'apps/client/src/main/scheduler.ts'), join(scratch, 'scheduler.cjs'));
@@ -257,8 +260,15 @@ async function main() {
     // constructor, and `instantiateWorkflow` to build a card's steps the way a real "apply
     // this workflow" action would — both bundled standalone since the driver calls them
     // directly rather than through the scheduler.
-    bundle(join(root, 'apps/client/src/main/worktreeManager.ts'), join(scratch, 'worktreeManager.cjs'));
+    bundle(
+      join(root, 'apps/client/src/main/worktreeManager.ts'),
+      join(scratch, 'worktreeManager.cjs'),
+    );
     bundle(join(sharedSrc, 'workflow.ts'), join(scratch, 'workflow.cjs'));
+    // F8.8: the driver seeds `trustedGateCommands` itself (below) so neither scenario's gate
+    // parks awaiting trust instead of actually running — needs the same hash `gateStep.ts`
+    // checks against, not a re-implementation of it.
+    bundle(join(root, 'apps/client/src/main/gateTrust.ts'), join(scratch, 'gateTrust.cjs'));
 
     const electron = join(
       clientModules,
@@ -329,6 +339,7 @@ const { SessionManager } = require(join(work, 'sessionManager.cjs'));
 const { Scheduler, FAILURE_ACTION } = require(join(work, 'scheduler.cjs'));
 const { WorktreeManager } = require(join(work, 'worktreeManager.cjs'));
 const { instantiateWorkflow } = require(join(work, 'workflow.cjs'));
+const { gateCommandHash } = require(join(work, 'gateTrust.cjs'));
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -387,8 +398,25 @@ function flag(invocation, name) {
   return i >= 0 && i + 1 < invocation.argv.length ? invocation.argv[i + 1] : '';
 }
 
+// Both scenarios' gate commands, hoisted so they can be trusted below BEFORE either chain
+// runs — `buildChain` (in `runChecks`) takes the same strings rather than re-deriving them.
+const gateCommand =
+  process.platform === 'win32'
+    ? 'if exist fixed.txt (exit /b 0) else (echo GATE-SAYS-NO & exit /b 3)'
+    : 'test -f fixed.txt || { echo GATE-SAYS-NO; exit 3; }';
+const alwaysFailCommand =
+  process.platform === 'win32' ? 'echo GATE-SAYS-NO & exit /b 3' : 'echo GATE-SAYS-NO; exit 3';
+
 const store = createStore(join(work, 'orchestrator.db'));
-store.saveSettings({ ...store.getSettings(), maxAutoRetries: 0, limitJitterMs: 0 });
+store.saveSettings({
+  ...store.getSettings(),
+  maxAutoRetries: 0,
+  limitJitterMs: 0,
+  // F8.8: without this, EVERY gate below parks awaiting trust instead of running — this
+  // script proves the gate LOOP, not the trust ask, which is `gateStep.test.ts`'s/
+  // `scheduler.test.ts`'s job.
+  trustedGateCommands: [gateCommandHash(gateCommand), gateCommandHash(alwaysFailCommand)],
+});
 
 const sessions = new SessionManager(() => {});
 const taskChanges = [];
@@ -475,16 +503,13 @@ function buildChain(title, gateCommand, maxAttempts) {
 
 /** Only the `task-failed` items raised for one STEP (a gate failure's `taskId` is the gate
  *  step's own id, per `raiseGateFailure` — never the owner card's). */
-const taskFailedFor = (taskId) => attentionItems.filter((i) => i.kind === 'task-failed' && i.taskId === taskId);
+const taskFailedFor = (taskId) =>
+  attentionItems.filter((i) => i.kind === 'task-failed' && i.taskId === taskId);
 
 async function runChecks() {
   // ===========================================================================
   section('Scenario A: a failing gate loops back, the agent fixes it, the gate passes');
 
-  const gateCommand =
-    process.platform === 'win32'
-      ? 'if exist fixed.txt (exit /b 0) else (echo GATE-SAYS-NO & exit /b 3)'
-      : 'test -f fixed.txt || { echo GATE-SAYS-NO; exit 3; }';
   const a = buildChain('Gate loop: fail then fix', gateCommand, 2);
 
   scheduler.runTask(a.owner.id);
@@ -497,17 +522,24 @@ async function runChecks() {
   // that status alone is ambiguous between the two. `gateAttempts` only ever moves 0 → 1 as
   // part of the SAME synchronous write as the reset and the note below, so waiting on it
   // instead pins the check to the real moment, unambiguously.
-  await waitFor('the gate to fail and send step 1 back', () => store.getTask(a.test.id)?.gateAttempts === 1);
+  await waitFor(
+    'the gate to fail and send step 1 back',
+    () => store.getTask(a.test.id)?.gateAttempts === 1,
+  );
   const implementAfterFail = store.getTask(a.implement.id);
   const gateAfterFail = store.getTask(a.test.id);
-  check('the gate recorded one attempt', gateAfterFail?.gateAttempts === 1, gateAfterFail?.gateAttempts);
+  check(
+    'the gate recorded one attempt',
+    gateAfterFail?.gateAttempts === 1,
+    gateAfterFail?.gateAttempts,
+  );
   check('step 1 ("Implement") was sent back to pending', implementAfterFail?.status === 'pending');
   const gateNoteText = store
     .getTaskActivity(a.test.id)
     .map((e) => e.body ?? (e.kind === 'event' ? e.event?.text : undefined) ?? '')
     .join('\n');
   check(
-    'the gate\'s own timeline says it sent step 1 back on attempt 1/2',
+    "the gate's own timeline says it sent step 1 back on attempt 1/2",
     gateNoteText.includes('sending step 1 back (attempt 1/2)'),
     gateNoteText,
   );
@@ -521,9 +553,9 @@ async function runChecks() {
     flag(second, '--resume') === firstSessionId && firstSessionId.length > 0,
     `${flag(second, '--resume')} != ${firstSessionId}`,
   );
-  const secondPrompt = await promptFor(2, 'invocation 2\'s own prompt');
+  const secondPrompt = await promptFor(2, "invocation 2's own prompt");
   check(
-    'invocation 2\'s prompt carries the gate\'s failure text — the note really reached the agent',
+    "invocation 2's prompt carries the gate's failure text — the note really reached the agent",
     secondPrompt.includes('GATE-SAYS-NO'),
     secondPrompt,
   );
@@ -536,20 +568,25 @@ async function runChecks() {
   });
   check('step 1 ("Implement") is done', store.getTask(a.implement.id)?.status === 'done');
   check('step 2 ("Run tests") is done', store.getTask(a.test.id)?.status === 'done');
-  check('exactly 2 "Implement" invocations happened', invocations().length === 2, invocations().length);
+  check(
+    'exactly 2 "Implement" invocations happened',
+    invocations().length === 2,
+    invocations().length,
+  );
   check('no task-failed item was ever raised for the gate', taskFailedFor(a.test.id).length === 0);
 
   // ===========================================================================
   section('Scenario B: the retry budget runs out — a task-failed item, then Skip gate');
 
-  const alwaysFailCommand =
-    process.platform === 'win32' ? 'echo GATE-SAYS-NO & exit /b 3' : 'echo GATE-SAYS-NO; exit 3';
   const b = buildChain('Gate loop: never fixed', alwaysFailCommand, 1);
 
   const invocationsBeforeB = invocations().length;
   scheduler.runTask(b.owner.id);
-  const bFirst = await nthInvocation(invocationsBeforeB + 1, "Scenario B's first \"Implement\" run");
-  check('Scenario B\'s first run is a fresh session (no --resume)', !bFirst.argv.includes('--resume'));
+  const bFirst = await nthInvocation(invocationsBeforeB + 1, 'Scenario B\'s first "Implement" run');
+  check(
+    "Scenario B's first run is a fresh session (no --resume)",
+    !bFirst.argv.includes('--resume'),
+  );
   proceed(invocationsBeforeB + 1);
 
   // One retry is spent on the first failure (`attemptsUsed(0) < maxAttempts(1)`), so the
@@ -560,21 +597,31 @@ async function runChecks() {
   );
   proceed(invocationsBeforeB + 2);
 
-  await waitFor('a task-failed item to land on the gate', () => taskFailedFor(b.test.id).length > 0);
+  await waitFor(
+    'a task-failed item to land on the gate',
+    () => taskFailedFor(b.test.id).length > 0,
+  );
   const failedItems = taskFailedFor(b.test.id);
   check('exactly one task-failed item was raised', failedItems.length === 1, failedItems.length);
   const item = failedItems[0];
   check(
     'it carries exactly the three gate actions',
     JSON.stringify(item.options) ===
-      JSON.stringify([FAILURE_ACTION.runGateAgain, FAILURE_ACTION.sendBackToAgent, FAILURE_ACTION.skipGate]),
+      JSON.stringify([
+        FAILURE_ACTION.runGateAgain,
+        FAILURE_ACTION.sendBackToAgent,
+        FAILURE_ACTION.skipGate,
+      ]),
     JSON.stringify(item.options),
   );
   // `raiseTaskFailed` parks the task at `waiting-input` (the standard "awaiting a human
   // decision" status every parked failure — run, integration, or gate — settles on), even
   // though `GateStepRunner.settle` itself writes `failed` a moment earlier: `raiseGateFailure`
   // → `raiseTaskFailed` overwrites it synchronously right after.
-  check('the gate step is parked awaiting the human\'s choice', store.getTask(b.test.id)?.status === 'waiting-input');
+  check(
+    "the gate step is parked awaiting the human's choice",
+    store.getTask(b.test.id)?.status === 'waiting-input',
+  );
 
   scheduler.answerAttention(item.id, { decision: 'reply', text: FAILURE_ACTION.skipGate });
   await waitFor('Skip gate to land the chain', () => store.getTask(b.test.id)?.status === 'done');

@@ -100,6 +100,7 @@ interface Calls {
   setFailureNote: Array<{ id: string; note: string }>;
   note: Array<{ taskId: string; text: string }>;
   raiseFailure: GateFailureInfo[];
+  raiseTrust: Array<{ taskId: string; command: string }>;
   advance: string[];
   finishStep: Array<{ taskId: string; landing: unknown }>;
 }
@@ -109,6 +110,8 @@ function makeDeps(
     siblings?: Task[];
     prepLanding?: unknown;
     prepError?: string;
+    /** Defaults to "every command is trusted" — F8.6's tests never touch trust. */
+    isTrusted?: (command: string) => boolean;
   } = {},
 ): { deps: GateStepDeps; calls: Calls } {
   const siblings = opts.siblings ?? [];
@@ -118,6 +121,7 @@ function makeDeps(
     setFailureNote: [],
     note: [],
     raiseFailure: [],
+    raiseTrust: [],
     advance: [],
     finishStep: [],
   };
@@ -134,6 +138,8 @@ function makeDeps(
           ? { error: opts.prepError }
           : { cwd: '/work', host: {} as never, landing: opts.prepLanding },
       ),
+    isTrusted: opts.isTrusted ?? (() => true),
+    raiseTrust: (task, command) => calls.raiseTrust.push({ taskId: task.id, command }),
     raiseFailure: (info) => calls.raiseFailure.push(info),
     advance: (parentId) => calls.advance.push(parentId),
     finishStep: (task, landing) => calls.finishStep.push({ taskId: task.id, landing }),
@@ -348,6 +354,67 @@ describe('GateStepRunner.start → stopped and prep/run errors', () => {
     expect(startGate).not.toHaveBeenCalled();
     expect(calls.setStatus).toContainEqual({ id: 'gate-1', status: 'failed' });
     expect(calls.raiseFailure[0].reason).toBe('no exec host for this project');
+  });
+});
+
+describe('GateStepRunner.start → trust (F8.8)', () => {
+  it('parks an untrusted command without ever calling prepare/startGate or writing running', async () => {
+    const gate = gateStepTask();
+    const { deps, calls } = makeDeps({ siblings: [gate], isTrusted: () => false });
+    const prepare = vi.fn(deps.prepare);
+    deps.prepare = prepare;
+    const startGate = vi.fn();
+    deps.startGate = startGate;
+    const raiseTrust = vi.fn();
+    deps.raiseTrust = raiseTrust;
+    const runner = new GateStepRunner(deps);
+
+    await runner.start(gate);
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(startGate).not.toHaveBeenCalled();
+    expect(calls.setStatus).toEqual([]); // never reserved `running` or wrote any status
+    expect(runner.isRunning(gate.id)).toBe(false);
+    expect(raiseTrust).toHaveBeenCalledWith(gate, 'pnpm test');
+    expect(calls.raiseFailure).toEqual([]);
+  });
+
+  it('leaves a trusted command whose stepSpec.command was then edited untrusted again', async () => {
+    const original = 'pnpm test';
+    const { deps, calls } = makeDeps({
+      siblings: [],
+      isTrusted: (command) => command === original,
+    });
+    const prepare = vi.fn(deps.prepare);
+    deps.prepare = prepare;
+    const raiseTrust = vi.fn();
+    deps.raiseTrust = raiseTrust;
+    const edited = gateStepTask({
+      stepSpec: {
+        id: 'g1',
+        kind: 'gate',
+        title: 'Run tests',
+        command: 'pnpm test --changed',
+        onFail: resolvedOnFail({ retryFrom: 'a1', maxAttempts: 3, retryFromIndex: 0 }),
+      },
+    });
+    const runner = new GateStepRunner(deps);
+
+    await runner.start(edited);
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(calls.setStatus).toEqual([]);
+    expect(raiseTrust).toHaveBeenCalledWith(edited, 'pnpm test --changed');
+  });
+
+  it('runs a trusted command exactly as before — the default fake trusts everything', async () => {
+    const siblings = [agentStepTask(), gateStepTask()];
+    const { deps, calls } = makeDeps({ siblings }); // isTrusted defaults to () => true
+    await runToSettled(deps, gateStepTask(), gateResult({ exitCode: 0 }));
+
+    expect(calls.setStatus).toContainEqual({ id: 'gate-1', status: 'running' });
+    expect(calls.setStatus).toContainEqual({ id: 'gate-1', status: 'done' });
+    expect(calls.raiseFailure).toEqual([]);
   });
 });
 
