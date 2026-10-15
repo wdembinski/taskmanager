@@ -1858,6 +1858,25 @@ export class Scheduler {
   }
 
   /**
+   * Drop one variant row (F10.6) — a losing row a pick is discarding, never the leader
+   * itself. `stopTask` covers a row that is running, parked behind a gate as
+   * `blocked-by-limit`, or still mid-chain, but a row only ever QUEUED behind its project's
+   * concurrency (plain `pending`, never started, no run to stop) matches none of
+   * `stopTask`'s own conditions and would otherwise survive this untouched — so that case is
+   * finished off here instead: dropped from {@link Scheduler.variantQueue} so `pump` never
+   * starts it, and written to `stopped` so it reads the same as any other discarded row.
+   */
+  discardVariantRow(id: string): void {
+    this.stopTask(id);
+    this.variantQueue.delete(id);
+    const row = this.store.getTask(id);
+    if (row && (row.status === 'pending' || row.status === 'blocked-by-limit')) {
+      this.updateTask(id, { status: 'stopped' }, null);
+      this.limitGate.unpark([id]);
+    }
+  }
+
+  /**
    * The step of `task`'s approved plan that a Start should run, if there is one.
    *
    * **A card with steps runs its CHAIN, not itself.** Steps written by hand were being
@@ -3312,7 +3331,9 @@ export class Scheduler {
     const queued: Task[] = [];
     for (const id of this.variantQueue) {
       const row = this.store.getTask(id);
-      if (!row || row.status !== 'pending') {
+      // Archived (e.g. `'variant-discarded'` by a pick) is dropped the same as a row that
+      // is no longer `pending` — either way there is nothing left here to start.
+      if (!row || row.status !== 'pending' || row.archivedAt) {
         this.variantQueue.delete(id);
         continue;
       }
