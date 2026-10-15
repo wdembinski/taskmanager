@@ -134,6 +134,7 @@ import { CommandQueue } from './commandQueue';
 import { relayRegistry } from './ipcRegistry';
 import { CloudAttachmentUploader, fetchUploadBytes } from './cloudAttachmentUploader';
 import { CloudSkillPusher } from './cloudSkillPusher';
+import { CloudWorkflowPusher } from './cloudWorkflowPusher';
 import {
   refreshAllRepoSkills,
   refreshRepoSkillsForProject,
@@ -407,6 +408,15 @@ export interface Engine {
    *  `cloudPoller` tick, so this just brings a push forward rather than being the only way
    *  one happens. */
   skillsChanged: () => void;
+  /** Pushes workflow documents to the cloud mirror (F8.12) — changed-only, its own bounded
+   *  endpoint rather than `SyncRequest.deltas`, same shape as `cloudSkillPusher` above. No
+   *  timer of its own; see where it is scanned in this function for why. */
+  cloudWorkflowPusher: CloudWorkflowPusher;
+  /** Hint `cloudWorkflowPusher` that a workflow changed, for F8.9's future
+   *  `workflow:save`/`workflow:delete` handlers to call for immediacy — `scan()` itself
+   *  already runs on boot and on every `cloudPoller` tick, so this just brings a push
+   *  forward rather than being the only way one happens. */
+  workflowsChanged: () => void;
   /** The `BrowserWindow` focus/idle signal `cloudPoller` polls on — its listeners outlive
    * the window's own close handlers, so it is disposed alongside every other timer. */
   focusTracker: FocusTracker;
@@ -440,6 +450,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   // below once the store and the token getter exist, and scanned by `ipc.ts` itself rather
   // than on its own timer — see where it is configured for the schedule.
   const cloudSkillPusher = new CloudSkillPusher();
+
+  // The cloud's copy of the workflow library (F8.12), inert for the same reason and shaped
+  // the same way as `cloudSkillPusher` just above.
+  const cloudWorkflowPusher = new CloudWorkflowPusher();
 
   // Small helper: push an event to the UI unless the window is gone.
   //
@@ -5619,6 +5633,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     cloudSkillPusher.scan();
   }
 
+  // The workflow library's half of the same mirror. Configured here for the same reason,
+  // and scanned once for the boot backfill: a workflow made or edited before this build (or
+  // while the cloud was off) has no way to know it should push until something asks.
+  cloudWorkflowPusher.configure({
+    getSettings: () => store.getSettings().cloud,
+    getAccessToken: getCloudAccessToken,
+    listWorkflows: () => store.getWorkflows(),
+    onAuthRejected: () => cloudToken.invalidate(),
+  });
+  cloudWorkflowPusher.scan();
+
+  // F8.9's future `workflow:save`/`workflow:delete` handlers call this so an edit reaches
+  // the cloud without waiting for `cloudPoller`'s own tick below — `scan()` is cheap (no
+  // request when nothing actually changed), so calling it eagerly here costs nothing today.
+  function workflowsChanged(): void {
+    cloudWorkflowPusher.scan();
+  }
+
   // The cloud mirror's own poller — same `trackSync` wrapping as JIRA/GitLab above, so the
   // status bar's ring reacts to it identically, but its own seconds-scale, self-scheduling
   // timer rather than a slot on `syncPoller`'s shared one. See `cloudPoller.ts`'s header for
@@ -5652,6 +5684,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     onSynced: () => {
       cloudToken.accepted();
       cloudSkillPusher.scan();
+      cloudWorkflowPusher.scan();
       refreshRepoSkillsIfCloudEnabled(store.listProjects());
     },
     // What a browser names this desktop by, once it has more than one to choose between —
@@ -5730,6 +5763,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     cloudAttachments,
     cloudSkillPusher,
     skillsChanged,
+    cloudWorkflowPusher,
+    workflowsChanged,
     focusTracker,
     claudeUsagePoller,
     updater,
