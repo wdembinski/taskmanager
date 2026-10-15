@@ -56,6 +56,7 @@ import { Composer, type ComposerBusy } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
 import { draftKey, useDraft } from './drafts';
+import type { DictationPath } from './dictation/dictationModel';
 import type { CardSection } from './layout/compactRoute';
 import { MergeRequests } from './MergeRequests';
 import { PaneLoading } from './PaneLoading';
@@ -346,6 +347,8 @@ export interface TaskDetailProps {
    * section on screen for either half to share height with on a phone.
    */
   section?: CardSection;
+  /** The host's dictation offer (F9.10), passed straight through to `Composer`. */
+  dictation?: DictationPath;
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
@@ -381,6 +384,7 @@ export function TaskDetail({
   onStatusSet,
   onSubtasksChanged,
   section,
+  dictation,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -1352,6 +1356,7 @@ export function TaskDetail({
           // nor Linear has an API for putting a file on an issue, so offering the picker would
           // collect paths nothing could ever upload.
           onPickAttachments={isJira ? () => transport.invoke('jira:pickAttachments') : undefined}
+          dictation={dictation}
           onSendChat={() => void sendChat()}
           onAddNote={() => void addComment()}
           onPostStatus={() => void postStatus()}

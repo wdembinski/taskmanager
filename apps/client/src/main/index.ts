@@ -10,13 +10,14 @@
  * usage-limit gate) from here too.
  */
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog, protocol, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, protocol, safeStorage, session, shell } from 'electron';
 import { ATTACHMENT_SCHEME } from '@shared/attachments';
 import { PRODUCT_NAME } from '@shared/product';
 import { DEFAULT_SETTINGS } from '@shared/settings';
 import { AppTray } from './appTray';
 import { closeAction, shouldQuitOnClose, trayLikelyAvailable } from './backgroundMode';
 import { registerContextMenu } from './contextMenu';
+import { registerMediaPermissionGuard } from './mediaPermission';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 import { runShutdownSteps, type ShutdownStep } from './shutdown';
@@ -258,6 +259,10 @@ function reportFatal(title: string, err: unknown, fatal = false): void {
 // app.whenReady() resolves once Electron has finished starting up; only then may
 // we create windows.
 void app.whenReady().then(() => {
+  // Session-wide, not per-window — must run once here, before any window (and thus
+  // any renderer) exists, and must NOT be re-registered from `activate` below.
+  registerMediaPermissionGuard(session.defaultSession);
+
   const window = createWindow();
   try {
     // The engine needs the window so it can push live session events to the UI.

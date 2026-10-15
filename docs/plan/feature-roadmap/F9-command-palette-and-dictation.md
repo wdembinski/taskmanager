@@ -36,6 +36,8 @@ No persisted data, no IPC channels, no migration. Everything lives in `packages/
 - None for the palette — it only calls IPC channels that already exist (`task:*`, navigation is renderer state).
 - Dictation on the desktop needs a main-process **permission handler** for the `media` permission (audio only), scoped to the app's own renderer origin, if the spike (Phase 3) chooses any `getUserMedia` path. If it chooses OS dictation instead, no main-process change.
 
+  **Landed (F9.10):** main now denies `media` outright (`apps/client/src/main/mediaPermission.ts`, registered on `session.defaultSession` in `app.whenReady()`) regardless of the path chosen, because the F9.7 spike found `getUserMedia` is granted silently — no prompt — when no handler is registered at all. The handler denies by permission *name*, not by origin string, since the spike also found the request-time origin arrives as the opaque `"null"` for a packaged `file://` renderer.
+
 ### Server & sync
 
 None — the palette is pure UI over data each host already has (the board store in the web, the IPC reads on the desktop). Dictation never leaves the device in the recommended path.
@@ -128,7 +130,9 @@ None — the palette is pure UI over data each host already has (the board store
 
   - Mic button in `packages/ui/src/chat/Composer.tsx` and the description field of `packages/ui/src/AddTaskDialog.tsx`; recording overlay (dot, mm:ss, partial text, cancel / insert / insert-and-send); rendered only when `supported`; inserts at the caret; tooltip names the vendor that processes audio.
   - Acceptance: mic absent when the recognizer is unsupported (pure `dictationAvailable(host, window)` tested for web-Chrome / web-Firefox / desktop); insert at caret helper unit-tested. Gates green.
-- [ ] F9.10 Ship the desktop dictation path chosen by the spike @needs: F9.7 Spike whether Web Speech recognition works in the packaged Electron renderer, F9.8 Add the pure dictation state machine with a pluggable recognizer seam
+
+  **Note (F9.10):** `dictationAvailable(host, win)` already exists (landed with F9.8's dictation model, `packages/ui/src/dictation/dictationModel.ts`), resolving desktop to `os-dictation`/`none` and web to `web-speech`/`none`. F9.9 only wires the `web-speech` path into the Composer and AddTaskDialog mic button; the desktop `os-dictation` hint is F9.10's own work, not F9.9's.
+- [x] F9.10 Ship the desktop dictation path chosen by the spike @needs: F9.7 Spike whether Web Speech recognition works in the packaged Electron renderer, F9.8 Add the pure dictation state machine with a pluggable recognizer seam
 
   - If OS dictation: a mic-shaped hint in the desktop composers that explains Win+H / Fn-Fn and focuses the field. If Web Speech works: enable F9.9's path on the desktop and add a `media`/audio-only `setPermissionRequestHandler` in `apps/client/src/main` scoped to the app origin. Local transcription is a separate, later card.
   - Acceptance: the choice is reflected in `dictationAvailable` tests; if a permission handler is added, a unit test proves it grants audio for the app origin only and denies video and foreign origins. Gates green.

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   INITIAL_DICTATION,
   bindRecognizer,
+  dictationAvailable,
   dictationReduce,
+  osDictationHint,
   recognizerFor,
   type DictationAction,
   type DictationState,
@@ -279,5 +281,72 @@ describe('recognizerFor', () => {
     const recognizer = support.create();
     expect(recognizer).toBeInstanceOf(StandardRecognizer);
     expect(recognizer).not.toBeInstanceOf(PrefixedRecognizer);
+  });
+});
+
+function winWithUserAgent(userAgent: string, ctor?: unknown): object {
+  return { navigator: { userAgent }, ...(ctor ? { webkitSpeechRecognition: ctor } : {}) };
+}
+
+describe('dictationAvailable', () => {
+  it('prefers os-dictation over web-speech on desktop Windows even when webkitSpeechRecognition exists', () => {
+    const win = winWithUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      FakeRecognizer,
+    );
+
+    expect(dictationAvailable('desktop', win)).toEqual({
+      kind: 'os-dictation',
+      platform: 'windows',
+    });
+  });
+
+  it('resolves desktop Mac to os-dictation/mac', () => {
+    const win = winWithUserAgent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+    );
+
+    expect(dictationAvailable('desktop', win)).toEqual({ kind: 'os-dictation', platform: 'mac' });
+  });
+
+  it('resolves desktop Linux to none, since Linux has no built-in OS dictation', () => {
+    const win = winWithUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36');
+
+    expect(dictationAvailable('desktop', win)).toEqual({ kind: 'none' });
+  });
+
+  it('resolves a desktop host with no window to none', () => {
+    expect(dictationAvailable('desktop', undefined)).toEqual({ kind: 'none' });
+  });
+
+  it('resolves web-Chrome (webkitSpeechRecognition present) to web-speech', () => {
+    const win = { webkitSpeechRecognition: FakeRecognizer };
+
+    const path = dictationAvailable('web', win);
+    expect(path.kind).toBe('web-speech');
+    if (path.kind !== 'web-speech') throw new Error('unreachable');
+    expect(path.create()).toBeInstanceOf(FakeRecognizer);
+  });
+
+  it('resolves web-Firefox (no recognizer constructor) to none', () => {
+    expect(dictationAvailable('web', {})).toEqual({ kind: 'none' });
+  });
+});
+
+describe('osDictationHint', () => {
+  it('gives the Windows shortcut and tooltip', () => {
+    expect(osDictationHint('windows')).toEqual({
+      shortcut: 'Win+H',
+      tooltip:
+        'Dictate with Windows voice typing — press Win+H. Audio is handled by the OS, not this app.',
+    });
+  });
+
+  it('gives the Mac shortcut and tooltip', () => {
+    expect(osDictationHint('mac')).toEqual({
+      shortcut: 'Fn Fn',
+      tooltip:
+        'Dictate with macOS Dictation — press Fn twice. Audio is handled by the OS, not this app.',
+    });
   });
 });
