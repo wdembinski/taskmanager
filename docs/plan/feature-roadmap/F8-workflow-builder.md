@@ -238,8 +238,78 @@ command".
 
 - [ ] F8.8 Require a desktop to trust a gate command before it first runs @needs: F8.6 Dispatch gate steps from the step chain and loop failures back to the agent step
 
-  - Machine-local trusted-hash set (local settings key, never in `GLOBAL_SETTINGS_KEYS`); untrusted gate parks as an inbox item; Trust and run / Decline.
-  - Acceptance: tests that an edited command is untrusted again, that the key is classified local by the settings guard, and that a declined gate writes `failed` with the reason.
+  - Setting: `AppSettings.trustedGateCommands: string[]` (SHA-256 hex of the exact command
+    string), default `[]`, kept OUT of `GLOBAL_SETTINGS_KEYS` (`packages/shared/src/settings.ts:1051`)
+    and added instead to `settings.test.ts`'s `LOCAL_SETTINGS_KEYS` — its doc comment says why it is
+    local (a workflow can be authored on the web; trust is a fact about ONE desktop) and that only
+    `gate:trust` ever writes it.
+  - Hashing lives in the main process (`node:crypto`'s `createHash('sha256')`, the same primitive
+    `review/diffService.ts:computeDiffId` already uses, full hex digest here rather than a sliced
+    one): new `apps/client/src/main/gateTrust.ts` — `gateCommandHash(command): string`,
+    `isCommandTrusted(trusted, command): boolean`, `withTrustedHash(trusted, hash): string[]`
+    (dedup, order-preserving). Hashing the exact bytes means any edit, even whitespace, makes the
+    command untrusted again — there is deliberately no normalisation.
+  - Shared constant: `GATE_TRUST_ACTION = { trust: 'Trust and run', decline: 'Decline' }` in
+    `packages/shared/src/workflow.ts`, next to `GateStep`/`decideGateOutcome`. Both the main process
+    and `packages/ui` match on this text instead of each hand-writing it.
+  - Engine (`apps/client/src/main/gateStep.ts`): `GateStepDeps` gains `isTrusted(command): boolean`
+    and `raiseTrust(task, command): void`. `GateStepRunner.start()` (currently: guard on
+    `this.running`, reserve `'starting'`, `setStatus('running')`, THEN `prepare()`) checks trust
+    FIRST, before any of that — untrusted calls `raiseTrust` and returns without touching `running`
+    or the task's status. Every path that reaches a gate's `start()` — `advanceSubtasks`, `requeue`,
+    "Run gate again", boot `reconcile`, and a limit/sign-in resume — goes through this one check, so
+    none of them needs its own trust gate.
+  - Scheduler (`apps/client/src/main/scheduler.ts`):
+    - `PendingFailure.kind` (line ~1077: `'run' | 'integration' | 'pull-request' | 'gate'`) gains
+      `'gate-trust'`, plus an optional `commandHash` — the hash of the command the human was SHOWN,
+      so a later edit to the step can't silently trust something else. `failureActionsFor('gate-trust')`
+      returns `[GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline]`.
+    - `raiseGateTrust` is `raiseTaskFailed`'s inbox persistence (the `AttentionItem` carries
+      `kind: 'task-failed'`, same as today's gate failures; `pendingFailures.set` + `store.saveAttention`)
+      with its own prompt — "Trust and run `<command>` on this desktop?" — and timeline note. Status
+      `waiting-input`, so `rehydrateAttention` restores it after a restart exactly as a parked gate
+      failure already does.
+    - `applyFailureChoice` grows two cases for `f.kind === 'gate-trust'`:
+      - `GATE_TRUST_ACTION.decline` → gate `failed`, timeline note "Declined to trust `<command>` on
+        this desktop — the gate did not run." Siblings stay `pending` — the chain's existing
+        failure contract, unchanged.
+      - `GATE_TRUST_ACTION.trust` arriving through this path (i.e. via `attention:answer`, not the
+        dedicated channel below — a relay hop or a stale UI) is REFUSED: re-park the same ask
+        (`raiseTaskFailed(f)`, the same fallback the `default:` branch already uses for an
+        unrecognised answer) with a note that trust must be granted at the desktop. Trust is never
+        granted off this path.
+    - New public `trustGateCommand(itemId: string): void`: find the `gate-trust` pending failure,
+      `store.saveSettings` the trusted set with `withTrustedHash(trusted, f.commandHash)`, resolve
+      the attention item, add a "Trusted on this desktop" timeline note, then set the gate `pending`
+      and `advanceSubtasks` — the same ending `FAILURE_ACTION.runGateAgain` already uses. Routing
+      back through `start()` means an edited command re-checks `isTrusted` on the CURRENT command and
+      parks again if it no longer matches `commandHash` — trust never silently extends to a command
+      nobody saw.
+  - IPC: `'gate:trust': (itemId: string) => Promise<void>` in `packages/shared/src/ipc.ts`, next to
+    `'attention:answer'`. Classified `host-only` in `packages/shared/src/ipcRelay.ts`'s
+    `HOST_ONLY_REASONS`/`RELAY_POLICY` under a new `HostOnlyReason`, `'trust-grant'`, with
+    `REASON_TEXT['trust-grant']` = "it lets that machine run a command, which only someone at that
+    machine can allow" — the same shape as the existing `credential-write`/`live-session` reasons, not
+    a one-off special case. Handler in `apps/client/src/main/ipc.ts` (next to the `'attention:answer'`
+    handler at line 1758) calls `scheduler.trustGateCommand(itemId)`.
+  - UI (`packages/ui`): a pure helper `attentionAnswerCall(id, answer)` returns `['gate:trust', id]`
+    when `answer` is a `reply` carrying `GATE_TRUST_ACTION.trust`, and `['attention:answer', id, answer]`
+    otherwise. Its three current direct callers of `transport.invoke('attention:answer', …)` —
+    `Attention.tsx`'s `useAttentionItems.answer` (line 388), `CompactInbox.tsx`'s `answer` (line 182)
+    and `TaskAgentPanel.tsx`'s `answer` (line 513) — call through it instead, each spreading the
+    tuple into `transport.invoke(...)`. On the web, `httpTransport.ts`'s existing host-only refusal
+    (`hostOnlyMessage`) already shows a message for any host-only channel, so `gate:trust` needs no
+    new web-side branch. The web's "waiting for `<desktop>`" wording is F8.13's, not this step's.
+  - Acceptance: `gateTrust.test.ts` — `gateCommandHash` is deterministic and whitespace-sensitive
+    (one trailing space changes the hash), `isCommandTrusted`/`withTrustedHash` round-trip and dedup.
+    `settings.test.ts` places `trustedGateCommands` in `LOCAL_SETTINGS_KEYS`, not
+    `GLOBAL_SETTINGS_KEYS`. `gateStep.test.ts` covers an untrusted `start()` calling `raiseTrust`
+    without reserving a running slot or writing `running`, and a trusted one proceeding exactly as
+    today. `scheduler`/`gateStep` tests cover: decline writes `failed` with the reason and leaves
+    siblings `pending`; trust via `trustGateCommand` adds the hash, resolves the item, and reruns the
+    gate; trust arriving through `applyFailureChoice` (simulating `attention:answer`) is refused and
+    re-parks the same ask; an edited command after a park is untrusted again on the next `start()`.
+    `ipcRelay.test.ts` covers `gate:trust` as `host-only` with reason `trust-grant`.
 
 ### F8 · Phase 3 — Desktop UI
 
