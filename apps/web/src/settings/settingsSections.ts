@@ -4,22 +4,32 @@
  *
  * WHY THIS IS ITS OWN FILE
  * ------------------------
- * `settings:get` is a RELAYED read (`@tm/shared/ipcRelay`): a browser tab posts an
- * `ipc-invoke` and waits for a desktop client to answer it. With no desktop on the account it
- * never resolves. `SettingsScreen` used to gate its WHOLE shell behind that one read, which
- * trapped every tab — including **Personal access tokens**, the page whose only job is to mint
- * the credential you paste into your first desktop. That is a bootstrap deadlock: you need a
- * desktop to reach the page that lets you connect a desktop.
+ * `settings:get` used to be a RELAYED read (`@tm/shared/ipcRelay`): a browser tab posted an
+ * `ipc-invoke` and waited for a desktop client to answer it, which with no desktop on the
+ * account never resolved. It now reads `GET /v1/settings` directly, but `SettingsScreen` still
+ * waits on that one call before drawing a pane, which used to trap every tab — including
+ * **Personal access tokens**, the page whose only job is to mint the credential you paste into
+ * your first desktop. That was a bootstrap deadlock: you needed a desktop to reach the page
+ * that lets you connect a desktop.
  *
  * Only the panes that render `AppSettings` FIELDS actually need the blob. The token page, the
  * People pane, the Projects list and the Desktop-only notices all reach the server (or a
- * static list) on their own and must render whether or not a desktop is awake. This predicate
- * is the seam that keeps the two sets honest, and is unit-tested directly so the rule cannot
- * quietly drift back to "the whole screen waits".
+ * static list) on their own and must render whether or not that read has answered yet. This
+ * predicate is the seam that keeps the two sets honest, and is unit-tested directly so the rule
+ * cannot quietly drift back to "the whole screen waits".
  */
 
 export type SettingsSection =
-  'general' | 'board' | 'features' | 'projects' | 'jira' | 'tokens' | 'people' | 'desktop';
+  | 'general'
+  | 'board'
+  | 'features'
+  | 'projects'
+  | 'jira'
+  | 'tokens'
+  | 'people'
+  | 'desktop'
+  | 'skills'
+  | 'promptTemplates';
 
 /**
  * The sections whose form reads `AppSettings`. Everything NOT here draws without it — see the
@@ -30,6 +40,7 @@ const SECTIONS_NEEDING_SETTINGS: ReadonlySet<SettingsSection> = new Set<Settings
   'board',
   'features',
   'jira',
+  'promptTemplates',
 ]);
 
 /** Whether this pane can only render once `settings:get` has answered. */

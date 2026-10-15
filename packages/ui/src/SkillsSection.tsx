@@ -9,10 +9,11 @@
  * its own selection, not a flat list edited in place, so there is no single "draft" a host
  * screen could usefully hold on its behalf.
  *
- * `canUseFileSystem` gates the three actions that open a native dialog (`skill:import` for
- * files/folder, `skill:export`) — both channels are host-only, so a transport without them
- * (apps/web, eventually) passes `false` and this hides them rather than offering a button that
- * can never answer.
+ * `canUseFileSystem` gates the whole Import menu and Export: `skill:import` and `skill:export`
+ * are both host-only channels, so a transport without them (apps/web) passes `false` and this
+ * hides every entry point to them — including **Paste text…**, which does not touch the file
+ * system itself but lands on the same host-only `skill:import` channel as the rest of the menu
+ * — rather than offering a button that can never answer.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -121,19 +122,28 @@ const useStyles = makeStyles({
 });
 
 export interface SkillsSectionProps {
-  /** Whether the host can open native file/folder dialogs — `false` hides Import's
-   *  Files…/Folder… and both Export buttons, since `skill:import`/`skill:export` are
+  /** Whether the host can open native file/folder dialogs — `false` hides the whole Import
+   *  menu (Files…, Folder… and Paste text…, which all land on the same host-only
+   *  `skill:import` channel) and both Export buttons, since `skill:import`/`skill:export` are
    *  host-only channels a browser transport cannot answer. Defaults to `true` (desktop). */
   canUseFileSystem?: boolean;
+  /** The host's own project list, by id/name — when given, `load()` uses it directly instead
+   *  of the relayed `project:list`, so a host that already holds the list (apps/web, off its
+   *  board mirror) does not need a live desktop Client just to show this picker. Desktop
+   *  leaves this unset and loads its own. */
+  projects?: Array<{ id: string; name: string }>;
 }
 
-export function SkillsSection({ canUseFileSystem = true }: SkillsSectionProps): JSX.Element {
+export function SkillsSection({
+  canUseFileSystem = true,
+  projects: projectsProp,
+}: SkillsSectionProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
 
   const [loaded, setLoaded] = useState(false);
   const [editor, setEditor] = useState<SkillsEditorState>(() => openSkillsEditor([]));
-  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>(projectsProp ?? []);
   const [repoSkills, setRepoSkills] = useState<Record<string, RepoSkillSummary[]>>({});
 
   const [saved, setSaved] = useState(false);
@@ -152,11 +162,14 @@ export function SkillsSection({ canUseFileSystem = true }: SkillsSectionProps): 
   const [repoDetailError, setRepoDetailError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const [skills, projectsWithTasks] = await Promise.all([
+    const [skills, projectList] = await Promise.all([
       transport.invoke('skill:list'),
-      transport.invoke('project:list'),
+      projectsProp
+        ? Promise.resolve(projectsProp)
+        : transport
+            .invoke('project:list')
+            .then((list) => list.map((p) => ({ id: p.project.id, name: p.project.name }))),
     ]);
-    const projectList = projectsWithTasks.map((p) => ({ id: p.project.id, name: p.project.name }));
     const repoLists = await Promise.all(
       projectList.map((p) => transport.invoke('skill:listRepo', p.id)),
     );
@@ -168,7 +181,7 @@ export function SkillsSection({ canUseFileSystem = true }: SkillsSectionProps): 
     setRepoSkills(repoMap);
     setEditor((prev) => reloadLibrary(prev, skills));
     setLoaded(true);
-  }, [transport]);
+  }, [transport, projectsProp]);
 
   const initial = useInitialLoad(load);
 
@@ -320,31 +333,29 @@ export function SkillsSection({ canUseFileSystem = true }: SkillsSectionProps): 
         <Button icon={<AddRegular />} onClick={() => apply((p) => startNew(p))}>
           New skill
         </Button>
-        <Menu>
-          <MenuTrigger disableButtonEnhancement>
-            <Button icon={<ArrowImportRegular />} disabled={importing}>
-              Import
-            </Button>
-          </MenuTrigger>
-          <MenuPopover>
-            <MenuList>
-              {canUseFileSystem && (
+        {canUseFileSystem && (
+          <Menu>
+            <MenuTrigger disableButtonEnhancement>
+              <Button icon={<ArrowImportRegular />} disabled={importing}>
+                Import
+              </Button>
+            </MenuTrigger>
+            <MenuPopover>
+              <MenuList>
                 <MenuItem
                   icon={<DocumentArrowUpRegular />}
                   onClick={() => void importFrom('files')}
                 >
                   Files…
                 </MenuItem>
-              )}
-              {canUseFileSystem && (
                 <MenuItem icon={<FolderRegular />} onClick={() => void importFrom('folder')}>
                   Folder…
                 </MenuItem>
-              )}
-              <MenuItem onClick={() => setPasteOpen(true)}>Paste text…</MenuItem>
-            </MenuList>
-          </MenuPopover>
-        </Menu>
+                <MenuItem onClick={() => setPasteOpen(true)}>Paste text…</MenuItem>
+              </MenuList>
+            </MenuPopover>
+          </Menu>
+        )}
         {canUseFileSystem && (
           <Button
             icon={<ArrowExportRegular />}

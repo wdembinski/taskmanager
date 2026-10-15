@@ -18,11 +18,18 @@ describe('sectionNeedsSettings', () => {
   });
 
   it('still gates the panes that render AppSettings fields', () => {
-    // These four ARE forms over the blob, so they genuinely cannot draw until it loads.
+    // These five ARE forms over the blob, so they genuinely cannot draw until it loads.
     expect(sectionNeedsSettings('general')).toBe(true);
     expect(sectionNeedsSettings('board')).toBe(true);
     expect(sectionNeedsSettings('features')).toBe(true);
     expect(sectionNeedsSettings('jira')).toBe(true);
+    expect(sectionNeedsSettings('promptTemplates')).toBe(true);
+  });
+
+  it('lets the Skills pane render without settings — it loads itself', () => {
+    // `SkillsSection` owns its own `skill:list`/`project:list` round trip and holds no
+    // `AppSettings` field, so it draws whether or not `settings:get` has answered.
+    expect(sectionNeedsSettings('skills')).toBe(false);
   });
 
   it('classifies every section — no pane is left unclassified', () => {
@@ -38,6 +45,8 @@ describe('sectionNeedsSettings', () => {
       tokens: false,
       people: false,
       desktop: false,
+      skills: false,
+      promptTemplates: true,
     };
     for (const [section, expected] of Object.entries(all)) {
       expect(sectionNeedsSettings(section as SettingsSection)).toBe(expected);

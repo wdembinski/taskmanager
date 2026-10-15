@@ -78,6 +78,8 @@ import { PeopleSettings } from '@tm/ui/projects/PeopleSettings';
 import { ModelField } from '@tm/ui/ModelField';
 import { PlanningModelField } from '@tm/ui/PlanningModelField';
 import { SubagentModelField } from '@tm/ui/SubagentModelField';
+import { PromptTemplatesSection } from '@tm/ui/PromptTemplatesSection';
+import { SkillsSection } from '@tm/ui/SkillsSection';
 import { PaneLoading } from '@tm/ui/PaneLoading';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
@@ -95,6 +97,7 @@ import {
   withColumnHidden,
 } from '@tm/shared/settings';
 import type { AppSettings, FeatureSettings } from '@tm/shared/settings';
+import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import { statusesByColumn } from '@tm/shared/columnStatuses';
 import { selectAgentProjects } from '../board/boardSelectors';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
@@ -329,11 +332,23 @@ export function SettingsScreen({
     }
   };
 
-  // NOT an early return over the whole screen any more. `settings` comes from the relayed
-  // `settings:get`, which a browser with no desktop polling never gets an answer to — and
-  // gating the shell on it trapped the Personal access tokens pane, the one page that exists
-  // to connect the FIRST desktop. Only the panes that render `AppSettings` fields wait; the
-  // rest draw regardless. See `settingsSections.ts` for the seam and its test.
+  /**
+   * Prompt templates get their own narrow save, same reasoning as the desktop's own
+   * `savePromptTemplates` (`apps/client/src/renderer/src/Settings.tsx:551-555`): this tab may
+   * have been open for a while, so it reads the STORED settings fresh rather than merging over
+   * whatever `settings` currently holds, and only then writes the one field back.
+   */
+  async function savePromptTemplates(next: PromptTemplate[]): Promise<void> {
+    const fresh = await transport.invoke('settings:get');
+    await transport.invoke('settings:save', { ...fresh, promptTemplates: next });
+    setSettings((prev) => (prev ? { ...prev, promptTemplates: next } : prev));
+  }
+
+  // NOT an early return over the whole screen any more. `settings` comes from `GET
+  // /v1/settings`, which this tab waits on the first time it mounts — and gating the shell on
+  // it trapped the Personal access tokens pane, the one page that exists to connect the FIRST
+  // desktop. Only the panes that render `AppSettings` fields wait; the rest draw regardless.
+  // See `settingsSections.ts` for the seam and its test.
   const waitingForSettings = sectionNeedsSettings(section) && !settings;
 
   const actions = (
@@ -361,6 +376,8 @@ export function SettingsScreen({
         <Tab value="jira">JIRA</Tab>
         <Tab value="tokens">Personal access tokens</Tab>
         <Tab value="people">People</Tab>
+        <Tab value="skills">Skills</Tab>
+        <Tab value="promptTemplates">Prompt templates</Tab>
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
 
@@ -780,6 +797,26 @@ export function SettingsScreen({
         </div>
       )}
 
+      {section === 'skills' && (
+        <div className={styles.pane}>
+          <Subtitle2>Skills</Subtitle2>
+          <SkillsSection
+            canUseFileSystem={false}
+            projects={Object.values(projects).map((p) => ({ id: p.id, name: p.name }))}
+          />
+        </div>
+      )}
+
+      {section === 'promptTemplates' && settings && (
+        <div className={styles.pane}>
+          <Subtitle2>Prompt templates</Subtitle2>
+          <PromptTemplatesSection
+            templates={settings.promptTemplates}
+            onSave={savePromptTemplates}
+          />
+        </div>
+      )}
+
       {section === 'desktop' && (
         <div className={styles.pane}>
           <Subtitle2>Set these from the desktop app</Subtitle2>
@@ -840,5 +877,12 @@ const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
       'permission mode, the epics it owns — is configured beside it. A project’s name, ' +
       'colour and ticket prefix are not part of this: those are rows in the store, and the ' +
       'Projects tab lets you set them from here just as it does on the desktop.',
+  },
+  {
+    title: 'Skill import and export',
+    why:
+      'both read and write `SKILL.md` files on the machine the desktop app runs on. The ' +
+      'Skills tab here still lists and edits the library itself — only the file-based ' +
+      'Import menu and Export buttons stay on the desktop.',
   },
 ];
