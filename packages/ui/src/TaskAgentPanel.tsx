@@ -33,10 +33,12 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
+  Dropdown,
   Field,
   Input,
   MessageBar,
   MessageBarBody,
+  Option,
   Spinner,
   Text,
   Textarea,
@@ -63,6 +65,7 @@ import { autoCreatePrOn } from '@tm/shared/pullRequest';
 import { mrAbbrev, mrIsSettled, mrNoun, mrRef, type MergeRequest } from '@tm/shared/mergeRequest';
 import { effectiveSkillRefs } from '@tm/shared/skills';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
+import { WORKFLOW_APPLY_REFUSAL_MESSAGE } from '@tm/shared/workflow';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { invokeAttentionAnswer } from './attentionAnswer';
 import { stepPosition } from './board/boardColumns';
@@ -75,6 +78,8 @@ import { STATUS_LABEL } from './taskStatus';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
 import { useSkillOptions } from './useSkillOptions';
+import { useWorkflowOptions } from './useWorkflowOptions';
+import { applyOutcome, predictApplyRefusal, reconcileSelection } from './workflowPickerState';
 import { useTransport } from './transport';
 import { UNREAD_ORANGE as ASK_ORANGE } from '@tm/shared/accent';
 
@@ -299,6 +304,15 @@ export function TaskAgentPanel({
   const [linkPrOpen, setLinkPrOpen] = useState(false);
   const [linkPrUrl, setLinkPrUrl] = useState('');
   const [linkPrBusy, setLinkPrBusy] = useState(false);
+  /** The "Apply workflow" dialog's own state — same shape as the link-PR one above, and for
+   *  the same reason: applying must not disable the rest of the panel while it is in flight. */
+  const [applyWorkflowOpen, setApplyWorkflowOpen] = useState(false);
+  const [applyWorkflowId, setApplyWorkflowId] = useState<string | null>(null);
+  const [applyWorkflowBusy, setApplyWorkflowBusy] = useState(false);
+  const [applyWorkflowError, setApplyWorkflowError] = useState<{
+    sentence: string;
+    issues?: string[];
+  } | null>(null);
 
   const taskId = task.id;
   // Which step (if any) the shown item belongs to, and which step has stopped the chain
@@ -347,6 +361,14 @@ export function TaskAgentPanel({
    * stopped chain has nothing runnable in it until those steps go back to `pending`.
    */
   const resumesChain = ownSteps.some((s) => s.status === 'stopped');
+  /**
+   * The refusal "Apply workflow" would certainly hit, predicted from what this pane already
+   * knows — `null` passed as the dialog's own project override, since this button applies to
+   * the card's EXISTING project rather than one being picked alongside it. `null` here means
+   * nothing rules it out yet; `workflow:apply` itself still has the last word once a workflow
+   * is actually chosen.
+   */
+  const applyWorkflowRefusal = predictApplyRefusal(task, ownSteps, null);
   const assigned = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
   // The skills this card (or, for a step, this step together with its card) actually runs
   // with — `effectiveSkillRefs` reads `parentTask ?? {}` as the card side, so a plain card
@@ -354,6 +376,14 @@ export function TaskAgentPanel({
   const skillOptionsState = useSkillOptions(task.agentProjectId ?? null);
   const effectiveSkills = effectiveSkillRefs(parentTask ?? {}, task);
   const skillLabels = skillsLineLabels(effectiveSkills, skillOptionsState.options);
+  // Loaded fresh each time the "Apply workflow" dialog opens — same reload-on-open contract
+  // as `AssignAgentDialog`'s own picker.
+  const workflowState = useWorkflowOptions(applyWorkflowOpen);
+  // Clears the selection if the list comes back without it (e.g. a workflow deleted while
+  // this dialog was open).
+  useEffect(() => {
+    setApplyWorkflowId((id) => reconcileSelection(id, workflowState.workflows));
+  }, [workflowState.workflows]);
   // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
   // without being started. "Has it run" is the test rather than the status, because a
   // staged card and a queued one are both `pending`.
@@ -458,6 +488,9 @@ export function TaskAgentPanel({
     setMergePressed(false);
     setMergingOther(null);
     setCreatingPrNow(false);
+    setApplyWorkflowOpen(false);
+    setApplyWorkflowId(null);
+    setApplyWorkflowError(null);
   }, [taskId]);
 
   // Hand over cleanly: once the engine is reporting the merge, the local bridge lets go.
@@ -682,6 +715,35 @@ export function TaskAgentPanel({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLinkPrBusy(false);
+    }
+  }
+
+  /**
+   * Turn a saved workflow into this card's fresh steps, on the human's say-so.
+   *
+   * A refusal (predicted ones aside, `invalid`/`chain-full` need the document itself to know)
+   * renders inline in the dialog rather than the panel's own `error` above, so it sits right
+   * next to the picker that caused it — same posture `linkExistingPr` takes for a bad URL. On
+   * success the dialog just closes: the board's `tasksChanged` push is what refreshes the
+   * steps list, same as `workflow:apply`'s own doc comment says.
+   */
+  async function applyWorkflow(): Promise<void> {
+    if (!applyWorkflowId) return;
+    setApplyWorkflowBusy(true);
+    setApplyWorkflowError(null);
+    try {
+      const outcome = applyOutcome(
+        await transport.invoke('workflow:apply', taskId, applyWorkflowId),
+      );
+      if (outcome.kind === 'refused') {
+        setApplyWorkflowError({ sentence: outcome.sentence, issues: outcome.issues });
+        return;
+      }
+      setApplyWorkflowOpen(false);
+    } catch (e) {
+      setApplyWorkflowError({ sentence: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setApplyWorkflowBusy(false);
     }
   }
 
@@ -1027,6 +1089,29 @@ export function TaskAgentPanel({
             {task.agentProjectId ? 'Reassign…' : 'Assign to an agent…'}
           </Button>
         )}
+        {/* Turns a saved workflow into this card's own steps, replacing the agent's own
+            planning — the assign dialog's own workflow picker, offered again here for a card
+            already on a project. Not for a step, which has no plan of its own to replace, and
+            not mid-run or mid-merge, same guards as Reassign beside it. */}
+        {!isStep && task.agentProjectId && (
+          <Button
+            size="small"
+            appearance="secondary"
+            disabled={busy || live || mergeBusy || applyWorkflowRefusal !== null}
+            title={
+              applyWorkflowRefusal
+                ? WORKFLOW_APPLY_REFUSAL_MESSAGE[applyWorkflowRefusal]
+                : undefined
+            }
+            onClick={() => {
+              setApplyWorkflowId(null);
+              setApplyWorkflowError(null);
+              setApplyWorkflowOpen(true);
+            }}
+          >
+            Apply workflow…
+          </Button>
+        )}
       </div>
 
       {task.agentProjectId && (
@@ -1369,6 +1454,63 @@ export function TaskAgentPanel({
                 onClick={() => void linkExistingPr()}
               >
                 {linkPrBusy ? 'Linking…' : 'Link'}
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
+
+      <Dialog
+        open={applyWorkflowOpen}
+        onOpenChange={(_e, d) => !d.open && !applyWorkflowBusy && setApplyWorkflowOpen(false)}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Apply workflow</DialogTitle>
+            <DialogContent className={styles.box}>
+              {applyWorkflowError && (
+                <MessageBar intent="error">
+                  <MessageBarBody>
+                    {applyWorkflowError.sentence}
+                    {applyWorkflowError.issues && applyWorkflowError.issues.length > 0 && (
+                      <ul>
+                        {applyWorkflowError.issues.map((issue) => (
+                          <li key={issue}>{issue}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </MessageBarBody>
+                </MessageBar>
+              )}
+              <Field label="Workflow" hint="Replaces this card's steps with the workflow's own.">
+                <Dropdown
+                  value={workflowState.workflows.find((w) => w.id === applyWorkflowId)?.name ?? ''}
+                  selectedOptions={applyWorkflowId ? [applyWorkflowId] : []}
+                  onOptionSelect={(_e, d) => d.optionValue && setApplyWorkflowId(d.optionValue)}
+                >
+                  {workflowState.workflows.map((w) => (
+                    <Option key={w.id} value={w.id} text={w.name}>
+                      {w.name} · {w.caption}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                appearance="secondary"
+                disabled={applyWorkflowBusy}
+                onClick={() => setApplyWorkflowOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                appearance="primary"
+                disabled={applyWorkflowBusy || !applyWorkflowId}
+                icon={applyWorkflowBusy ? <Spinner size="tiny" /> : undefined}
+                onClick={() => void applyWorkflow()}
+              >
+                {applyWorkflowBusy ? 'Applying…' : 'Apply'}
               </Button>
             </DialogActions>
           </DialogBody>

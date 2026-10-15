@@ -9,6 +9,7 @@
  * back as a list of every problem found, not just the first, so an editor can show them
  * all at once.
  */
+import { MAX_PLAN_STEPS } from './board';
 import { isUsableModel } from './model';
 import type { Task } from './model';
 import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from './session';
@@ -519,6 +520,34 @@ export type WorkflowApplyRefusal =
 export type WorkflowApplyResult =
   | { ok: true; steps: Task[] }
   | { ok: false; reason: WorkflowApplyRefusal; message: string; issues?: string[] };
+
+/**
+ * One sentence per {@link WorkflowApplyRefusal}, in the voice of `VARIANT_REFUSAL_MESSAGE`
+ * (`@shared/variants`) — `workflowHandlers.ts`'s `workflow:apply` reads this map rather than
+ * hand-writing its own copy, and `packages/ui`'s picker state predicts the same refusal ahead
+ * of the round trip from these same sentences, so the two can never drift apart.
+ */
+export const WORKFLOW_APPLY_REFUSAL_MESSAGE: Record<WorkflowApplyRefusal, string> = {
+  'unfinished-steps': 'Finish or remove the current steps first.',
+  'is-step': 'Apply a workflow to the card, not to one of its steps.',
+  'no-project': 'Assign this card to an agent project before applying a workflow.',
+  invalid: 'This workflow is no longer valid.',
+  'chain-full': `This card already carries ${MAX_PLAN_STEPS} steps — the most one card can hold.`,
+};
+
+/**
+ * A `WorkflowApplyResult` refusal's sentence, plus its `issues` (only ever present for
+ * `'invalid'`) — what a dialog/panel shows next to the refused attempt. `null` for an `ok`
+ * result, since there is nothing to show.
+ */
+export function workflowApplyRefusalText(
+  result: WorkflowApplyResult,
+): { sentence: string; issues?: string[] } | null {
+  if (result.ok) return null;
+  return result.issues
+    ? { sentence: WORKFLOW_APPLY_REFUSAL_MESSAGE[result.reason], issues: result.issues }
+    : { sentence: WORKFLOW_APPLY_REFUSAL_MESSAGE[result.reason] };
+}
 
 /**
  * `name`, slugged for use in a file name, with `.workflow.json` appended — `workflow:export`'s
