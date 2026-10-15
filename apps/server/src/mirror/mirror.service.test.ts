@@ -907,6 +907,58 @@ describe('MirrorService.sync automation mirror', () => {
   });
 });
 
+describe('MirrorService.sync workflow step fields', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository(store.clientRows),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  it('mirrors a gate card whole — stepSpec.kind and gateAttempts survive a sync and a board read', async () => {
+    const { service } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
+
+    const gateTask = {
+      id: 'task-gate-1',
+      projectId: project.id,
+      title: 'Run the gate',
+      stepSpec: { id: 'step-1', kind: 'gate', title: 'Gate', command: 'pnpm test' },
+      gateAttempts: 2,
+    };
+
+    await service.sync(accountId, {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: {
+        tasks: [gateTask as never],
+        projects: [project],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      },
+      ackedCommandIds: [],
+    });
+
+    const board = await service.board(accountId, undefined, undefined, false);
+    const mirrored = board.deltas.tasks.find((t) => t.id === 'task-gate-1');
+    expect(mirrored?.stepSpec?.kind).toBe('gate');
+    expect(mirrored?.gateAttempts).toBe(2);
+  });
+});
+
 describe('MirrorService.automations / automationRuns', () => {
   function buildService(): { service: MirrorService; store: FakeStore } {
     const store = new FakeStore();
