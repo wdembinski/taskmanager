@@ -40,6 +40,8 @@ import { ModelField } from '../ModelField';
 import { TemplateMenu } from '../TemplateMenu';
 import { OsDictationHint } from '../dictation/OsDictationHint';
 import type { DictationPath } from '../dictation/dictationModel';
+import { DictationControl } from '../dictation/DictationControl';
+import { insertDictationIntoComposer, type CaretSelection } from '../dictation/insertAtCaret';
 import { applyTemplateToComposer, templateVarsForTask } from '../templateInsert';
 import { MentionPicker } from './MentionPicker';
 import {
@@ -278,6 +280,45 @@ export function Composer({
     });
   }
 
+  // ---- dictation -------------------------------------------------------------
+  // The caret has to be captured BEFORE the mic button steals focus, so it is read off the
+  // textarea's own blur rather than at insert time — by the time Insert is pressed, the
+  // textarea hasn't had focus (or a caret worth trusting) for the whole recording.
+  const dictationSelectionRef = useRef<CaretSelection>(value.text.length);
+
+  function insertDictation(text: string): void {
+    const { value: next, caret } = insertDictationIntoComposer(
+      value,
+      dictationSelectionRef.current,
+      text,
+    );
+    onChange(next);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node) {
+        node.focus();
+        node.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
+  // `onSendChat`/`onAddNote` close over the CURRENT render's `value.text`, which is stale the
+  // instant dictation inserts and calls one of them in the same breath — they would send
+  // whatever was in the box before the transcript landed. Flagging the send and firing it
+  // from an effect keyed on `value.text` means it only fires once the parent has re-rendered
+  // with the new text.
+  const pendingSendRef = useRef(false);
+  useEffect(() => {
+    if (!pendingSendRef.current) return;
+    pendingSendRef.current = false;
+    if (!isBusy) (canChat ? onSendChat : onAddNote)();
+  }, [value.text]);
+
+  function insertDictationAndSend(text: string): void {
+    pendingSendRef.current = true;
+    insertDictation(text);
+  }
+
   async function attach(): Promise<void> {
     if (!onPickAttachments) return;
     const picked = await onPickAttachments();
@@ -315,7 +356,11 @@ export function Composer({
             const el = e.target as HTMLTextAreaElement;
             setQuery(findMentionQuery(el.value, el.selectionStart));
           }}
-          onBlur={() => setQuery(null)}
+          onBlur={(e) => {
+            setQuery(null);
+            const el = e.target as HTMLTextAreaElement;
+            dictationSelectionRef.current = { start: el.selectionStart, end: el.selectionEnd };
+          }}
           onKeyDown={(e) => {
             // While the picker is open it owns the navigation keys — otherwise Enter
             // would send the half-typed comment instead of accepting the highlighted
@@ -420,6 +465,11 @@ export function Composer({
             />
           )}
           <TemplateMenu surface="chat" onPick={pickTemplate} />
+          <DictationControl
+            onInsert={insertDictation}
+            onInsertAndSend={insertDictationAndSend}
+            disabled={isBusy}
+          />
           <span className={styles.grow} />
         </div>
 

@@ -126,7 +126,7 @@ None — the palette is pure UI over data each host already has (the board store
 
   - `packages/ui/src/dictation/dictationModel.ts`: `Recognizer` interface (structural — start/stop/abort/onresult/onerror/onend), `recognizerFor(window)` support check, `foldResults(final, interim, event)` (finals append, interims replace the tail), and a reducer `idle → recording → idle` with cancel / insert / insert-and-send.
   - Acceptance: tests drive a fake recognizer class — partials grow, finals stick, error keeps finalized text, cancel discards, insert returns the transcript, unsupported → `supported: false`. Gates green.
-- [ ] F9.9 Wire Web Speech dictation into the Composer and the AddTaskDialog description where supported @needs: F9.8 Add the pure dictation state machine with a pluggable recognizer seam
+- [x] F9.9 Wire Web Speech dictation into the Composer and the AddTaskDialog description where supported @needs: F9.8 Add the pure dictation state machine with a pluggable recognizer seam
 
   - Mic button in `packages/ui/src/chat/Composer.tsx` and the description field of `packages/ui/src/AddTaskDialog.tsx`; recording overlay (dot, mm:ss, partial text, cancel / insert / insert-and-send); rendered only when `supported`; inserts at the caret; tooltip names the vendor that processes audio.
   - Acceptance: mic absent when the recognizer is unsupported (pure `dictationAvailable(host, window)` tested for web-Chrome / web-Firefox / desktop); insert at caret helper unit-tested. Gates green.
