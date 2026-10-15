@@ -18,6 +18,7 @@ import { MAX_PLAN_STEPS } from '@shared/board';
 import type { Project, Task } from '@shared/model';
 import {
   validateWorkflow,
+  WORKFLOW_APPLY_REFUSAL_MESSAGE,
   type AgentStep,
   type GateStep,
   type WorkflowDoc,
@@ -296,7 +297,7 @@ describe('workflow:apply — is-step', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'is-step',
-      message: 'Apply a workflow to the card, not to one of its steps.',
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['is-step'],
     });
   });
 });
@@ -311,7 +312,7 @@ describe('workflow:apply — no-project', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'no-project',
-      message: 'Assign this card to an agent project before applying a workflow.',
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['no-project'],
     });
   });
 
@@ -325,7 +326,7 @@ describe('workflow:apply — no-project', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'no-project',
-      message: 'Assign this card to an agent project before applying a workflow.',
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['no-project'],
     });
   });
 });
@@ -342,7 +343,7 @@ describe('workflow:apply — unfinished-steps', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'unfinished-steps',
-      message: 'Finish or remove the current steps first.',
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['unfinished-steps'],
     });
   });
 
@@ -357,7 +358,7 @@ describe('workflow:apply — unfinished-steps', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'unfinished-steps',
-      message: 'Finish or remove the current steps first.',
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['unfinished-steps'],
     });
   });
 });
@@ -373,7 +374,7 @@ describe('workflow:apply — invalid', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'invalid',
-      message: 'This workflow is no longer valid.',
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['invalid'],
     });
   });
 
@@ -388,7 +389,7 @@ describe('workflow:apply — invalid', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected a refusal');
     expect(result.reason).toBe('invalid');
-    expect(result.message).toBe('This workflow is no longer valid.');
+    expect(result.message).toBe(WORKFLOW_APPLY_REFUSAL_MESSAGE['invalid']);
     expect(result.issues).toContain('A workflow needs at least one step.');
   });
 });
@@ -412,7 +413,7 @@ describe('workflow:apply — chain-full', () => {
     expect(result).toEqual({
       ok: false,
       reason: 'chain-full',
-      message: `This card already carries ${MAX_PLAN_STEPS} steps — the most one card can hold.`,
+      message: WORKFLOW_APPLY_REFUSAL_MESSAGE['chain-full'],
     });
   });
 });

@@ -9,7 +9,9 @@ import {
   isGateStep,
   MAX_WORKFLOW_STEPS,
   validateWorkflow,
+  WORKFLOW_APPLY_REFUSAL_MESSAGE,
   WORKFLOW_DOC_MAX,
+  workflowApplyRefusalText,
   workflowDocBytes,
   workflowFileName,
   workflowTooLargeMessage,
@@ -17,6 +19,7 @@ import {
   type GateOutcome,
   type GateRunResult,
   type GateStep,
+  type WorkflowApplyRefusal,
   type WorkflowDoc,
   type WorkflowStep,
 } from './workflow';
@@ -615,5 +618,51 @@ describe('workflowFileName', () => {
     const name = 'a'.repeat(70);
     const result = workflowFileName(name);
     expect(result).toBe(`${'a'.repeat(64)}.workflow.json`);
+  });
+});
+
+const WORKFLOW_APPLY_REFUSALS = [
+  'unfinished-steps',
+  'is-step',
+  'no-project',
+  'invalid',
+  'chain-full',
+] as const satisfies readonly WorkflowApplyRefusal[];
+
+describe('WORKFLOW_APPLY_REFUSAL_MESSAGE', () => {
+  it('maps every WorkflowApplyRefusal to a non-empty sentence ending in a period', () => {
+    for (const reason of WORKFLOW_APPLY_REFUSALS) {
+      const sentence = WORKFLOW_APPLY_REFUSAL_MESSAGE[reason];
+      expect(sentence.length).toBeGreaterThan(0);
+      expect(sentence.endsWith('.')).toBe(true);
+    }
+  });
+});
+
+describe('workflowApplyRefusalText', () => {
+  it('returns null for an ok result', () => {
+    expect(workflowApplyRefusalText({ ok: true, steps: [] })).toBeNull();
+  });
+
+  it("returns the refusal's sentence without issues for a reason other than 'invalid'", () => {
+    expect(
+      workflowApplyRefusalText({
+        ok: false,
+        reason: 'is-step',
+        message: WORKFLOW_APPLY_REFUSAL_MESSAGE['is-step'],
+      }),
+    ).toEqual({ sentence: WORKFLOW_APPLY_REFUSAL_MESSAGE['is-step'] });
+  });
+
+  it("returns the sentence plus issues for 'invalid'", () => {
+    const issues = ['A workflow needs at least one step.'];
+    expect(
+      workflowApplyRefusalText({
+        ok: false,
+        reason: 'invalid',
+        message: WORKFLOW_APPLY_REFUSAL_MESSAGE.invalid,
+        issues,
+      }),
+    ).toEqual({ sentence: WORKFLOW_APPLY_REFUSAL_MESSAGE.invalid, issues });
   });
 });

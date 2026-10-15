@@ -23,8 +23,8 @@ import {
   workflowDocBytes,
   workflowFileName,
   workflowTooLargeMessage,
+  WORKFLOW_APPLY_REFUSAL_MESSAGE,
   WORKFLOW_DOC_MAX,
-  type WorkflowApplyRefusal,
   type WorkflowDoc,
   type WorkflowImportResult,
 } from '@shared/workflow';
@@ -74,24 +74,6 @@ export type WorkflowHandlers = Pick<
   | 'workflow:export'
   | 'workflow:apply'
 >;
-
-/** The one sentence a human reads for each `WorkflowApplyRefusal`. `issues` (for
- *  `'invalid'`) rides alongside this on the result itself rather than folded into the
- *  sentence — the same split `WorkflowSaveResult` makes. */
-function applyRefusalMessage(reason: WorkflowApplyRefusal): string {
-  switch (reason) {
-    case 'unfinished-steps':
-      return 'Finish or remove the current steps first.';
-    case 'is-step':
-      return 'Apply a workflow to the card, not to one of its steps.';
-    case 'no-project':
-      return 'Assign this card to an agent project before applying a workflow.';
-    case 'invalid':
-      return 'This workflow is no longer valid.';
-    case 'chain-full':
-      return `This card already carries ${MAX_PLAN_STEPS} steps — the most one card can hold.`;
-  }
-}
 
 /**
  * Parse → validate → size → save, for one imported document. Always saves under a FRESH
@@ -184,7 +166,11 @@ export function createWorkflowHandlers(deps: WorkflowHandlersDeps): WorkflowHand
       if (!task) throw new Error('Task not found.');
 
       if (task.parentTaskId) {
-        return { ok: false, reason: 'is-step', message: applyRefusalMessage('is-step') };
+        return {
+          ok: false,
+          reason: 'is-step',
+          message: WORKFLOW_APPLY_REFUSAL_MESSAGE['is-step'],
+        };
       }
 
       if (task.status === 'running' || task.status === 'waiting-input') {
@@ -193,7 +179,11 @@ export function createWorkflowHandlers(deps: WorkflowHandlersDeps): WorkflowHand
 
       const project = task.agentProjectId ? deps.store.getProject(task.agentProjectId) : undefined;
       if (!project || !hasRepo(project)) {
-        return { ok: false, reason: 'no-project', message: applyRefusalMessage('no-project') };
+        return {
+          ok: false,
+          reason: 'no-project',
+          message: WORKFLOW_APPLY_REFUSAL_MESSAGE['no-project'],
+        };
       }
 
       const existingSteps = deps.store.getSubtasks(taskId);
@@ -201,27 +191,31 @@ export function createWorkflowHandlers(deps: WorkflowHandlersDeps): WorkflowHand
         return {
           ok: false,
           reason: 'unfinished-steps',
-          message: applyRefusalMessage('unfinished-steps'),
+          message: WORKFLOW_APPLY_REFUSAL_MESSAGE['unfinished-steps'],
         };
       }
 
       const stored = deps.store.getWorkflow(workflowId);
       if (!stored) {
-        return { ok: false, reason: 'invalid', message: applyRefusalMessage('invalid') };
+        return { ok: false, reason: 'invalid', message: WORKFLOW_APPLY_REFUSAL_MESSAGE['invalid'] };
       }
       const validated = validateWorkflow(stored);
       if (!validated.ok) {
         return {
           ok: false,
           reason: 'invalid',
-          message: applyRefusalMessage('invalid'),
+          message: WORKFLOW_APPLY_REFUSAL_MESSAGE['invalid'],
           issues: validated.issues,
         };
       }
       const doc = validated.doc;
 
       if (existingSteps.length + doc.steps.length > MAX_PLAN_STEPS) {
-        return { ok: false, reason: 'chain-full', message: applyRefusalMessage('chain-full') };
+        return {
+          ok: false,
+          reason: 'chain-full',
+          message: WORKFLOW_APPLY_REFUSAL_MESSAGE['chain-full'],
+        };
       }
 
       const round = deps.store.runInTransaction(() => {
