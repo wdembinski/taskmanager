@@ -73,7 +73,14 @@ import {
   timelineLoadStarted,
   type TimelineState,
 } from './taskTimeline';
-import { TrackerMark, shortTicketKey, trackerName, trackerOf } from './tracker';
+import {
+  TrackerMark,
+  shortTicketKey,
+  ticketChannels,
+  ticketLinkTitle,
+  trackerName,
+  trackerOf,
+} from './tracker';
 import { runPhase } from '@tm/shared/board';
 import { useDelayedFlag } from './useDelayedFlag';
 import { useTransport } from './transport';
@@ -436,19 +443,25 @@ export function TaskDetail({
   /**
    * WHICH tracker this card belongs to, or null for a card that is nobody's ticket.
    *
-   * Every ticket call below is a pair now — `jira:fetchComments`/`github:fetchComments`, the
-   * two @mention pickers, the two comment posts — so the thing the pane needs is not "is this
-   * JIRA" but "whose issue is it", which is also what the composer's button and the key badge
-   * above have to say. The narrowing itself lives in `./tracker` with the mark and the name,
-   * because a pane that decided the tracker one way and drew it another is the bug.
+   * Every ticket call below goes through `ticketChannels` now — fetch, mark-read, add-comment,
+   * and the @mention picker — so the thing the pane needs is not "is this JIRA" but "whose
+   * issue is it", which is also what the composer's button and the key badge above have to
+   * say. The narrowing itself lives in `./tracker` with the mark and the name, because a pane
+   * that decided the tracker one way and drew it another is the bug.
    */
   const tracker = task ? trackerOf(task) : null;
   /**
-   * JIRA in particular: files. Uploading one is a JIRA-only route — GitHub has no REST
-   * endpoint for attaching a file to an issue at all — so the attach button belongs to one
-   * tracker rather than to any ticket.
+   * JIRA in particular: files. Uploading one is a JIRA-only route — neither GitHub nor Linear
+   * has a REST endpoint for attaching a file to an issue at all — so the attach button belongs
+   * to one tracker rather than to any ticket.
    */
   const isJira = tracker === 'jira';
+  /**
+   * The @mention picker's search channel, or null for a tracker with nowhere to search from
+   * (Linear's) — which is also why this, not `tracker` alone, is what `Composer` gets: passing
+   * a function it would call into nothing is a worse lie than not passing one at all.
+   */
+  const searchUsersChannel = tracker ? ticketChannels(tracker).searchUsers : null;
 
   /**
    * The composer's whole value: what was typed, who is named in it, and what is attached.
@@ -489,9 +502,9 @@ export function TaskDetail({
     let comments: TaskActivityEntry[] = [];
     if (tracker) {
       // The ticket's comments are fetched live and merged in; failures shouldn't blank the
-      // pane. Which channel is the only tracker-shaped thing here — both answer with the same
-      // `TaskActivityEntry[]`, in the kind that names where each comment came from.
-      const channel = tracker === 'github' ? 'github:fetchComments' : 'jira:fetchComments';
+      // pane. Which channel is the only tracker-shaped thing here — all three answer with the
+      // same `TaskActivityEntry[]`, in the kind that names where each comment came from.
+      const channel = ticketChannels(tracker).fetchComments;
       comments = await transport.invoke(channel, taskId).catch(() => []);
     }
     // A newer load may have started while the comments were in flight. Its own activity
@@ -505,7 +518,7 @@ export function TaskDetail({
     // many times you opened it.
     if (tracker) {
       await transport
-        .invoke(tracker === 'github' ? 'github:markRead' : 'jira:markRead', taskId)
+        .invoke(ticketChannels(tracker).markRead, taskId)
         .then((updated) => {
           // A superseded load must not stamp its optimistic overlay on the card this one
           // left — the human already opened whatever card is showing now.
@@ -516,7 +529,7 @@ export function TaskDetail({
     // `onStatusChanged` is read through a ref (below), not named here: a caller that rebuilds
     // it every render — as the web board's inline arrow used to — must not force this callback
     // to a new identity too, since the effect below reruns `loadActivity` on every identity
-    // change and each run re-fires `jira:markRead`/`github:markRead` against the tracker.
+    // change and each run re-fires the tracker's own `markRead` channel.
   }, [taskId, tracker, transport]);
 
   useEffect(() => {
@@ -536,7 +549,7 @@ export function TaskDetail({
   // rather than closing over `onStatusChanged` directly, so a caller whose prop is a fresh
   // arrow on every render (an inline closure, not a `useCallback`) does not force
   // `loadActivity` itself to a new identity — which used to re-run the mount effect below on
-  // every poll and, on the web, resend `jira:markRead`/`github:markRead` each time too.
+  // every poll and, on the web, resend the tracker's `markRead` channel each time too.
   const onStatusChangedRef = useRef(onStatusChanged);
   onStatusChangedRef.current = onStatusChanged;
   useEffect(() => {
@@ -826,24 +839,21 @@ export function TaskDetail({
     setBusy('ticket');
     setError(null);
     try {
-      await transport.invoke(
-        tracker === 'github' ? 'github:addComment' : 'jira:addComment',
-        task.id,
-        {
-          // Untrimmed: the mention ranges are offsets into THIS string, so trimming here
-          // would silently move every one of them. Main trims the tail only.
-          text: comment.text,
-          mentions: comment.mentions.map((m) => ({
-            start: m.start,
-            end: m.end,
-            id: m.accountId,
-            displayName: m.displayName,
-          })),
-          // Only ever non-empty on a JIRA card — the attach button is offered nowhere else, and
-          // `github:addComment` refuses a path rather than posting the words without the file.
-          attachmentPaths: comment.attachments,
-        },
-      );
+      await transport.invoke(ticketChannels(tracker).addComment, task.id, {
+        // Untrimmed: the mention ranges are offsets into THIS string, so trimming here
+        // would silently move every one of them. Main trims the tail only.
+        text: comment.text,
+        mentions: comment.mentions.map((m) => ({
+          start: m.start,
+          end: m.end,
+          id: m.accountId,
+          displayName: m.displayName,
+        })),
+        // Only ever non-empty on a JIRA card — the attach button is offered nowhere else, and
+        // neither GitHub's nor Linear's `addComment` accepts a path; both refuse rather than
+        // posting the words without the file.
+        attachmentPaths: comment.attachments,
+      });
       composer.reset();
       await loadActivity();
     } catch (e) {
@@ -1044,7 +1054,7 @@ export function TaskDetail({
                     href={task.externalUrl}
                     target="_blank"
                     rel="noreferrer noopener"
-                    title={`Open ${task.externalKey} in ${trackerName(task) ?? 'the tracker'}`}
+                    title={ticketLinkTitle(task) ?? undefined}
                   >
                     <Badge
                       appearance="outline"
@@ -1331,16 +1341,12 @@ export function TaskDetail({
           onChange={composer.set}
           busy={busy}
           tracker={tracker}
-          onSearchPeople={(q) =>
-            transport.invoke(
-              tracker === 'github' ? 'github:searchUsers' : 'jira:searchUsers',
-              task.id,
-              q,
-            )
+          onSearchPeople={
+            searchUsersChannel ? (q) => transport.invoke(searchUsersChannel, task.id, q) : undefined
           }
-          // JIRA only, and the prop's absence is what hides the attach button: GitHub has no
-          // API for putting a file on an issue, so offering the picker would collect paths
-          // nothing could ever upload.
+          // JIRA only, and the prop's absence is what hides the attach button: neither GitHub
+          // nor Linear has an API for putting a file on an issue, so offering the picker would
+          // collect paths nothing could ever upload.
           onPickAttachments={isJira ? () => transport.invoke('jira:pickAttachments') : undefined}
           onSendChat={() => void sendChat()}
           onAddNote={() => void addComment()}

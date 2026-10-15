@@ -13,10 +13,12 @@
  * and are imported rather than re-declared — a bubble that says JIRA over a GitHub comment is
  * the same bug as a badge that does.
  */
+import type { IpcInvokeChannel } from '@tm/shared/ipc';
 import type { Task } from '@tm/shared/model';
 
 import { GitHubMark } from './GitHubMark';
 import { JiraMark } from './JiraMark';
+import { LinearMark } from './LinearMark';
 import { TRACKER_NAME } from './chat/turns';
 
 /** A card's tracker, narrowed off `externalSource` — null for a card that is nobody's ticket. */
@@ -46,11 +48,12 @@ export function trackerName(task: Pick<Task, 'externalSource'>): string | null {
 /**
  * The card's key as a **tight** surface should print it, or null when it has none.
  *
- * JIRA's `PROJ-123` is already as short as it gets. GitHub's is `owner/repo#123` — repo-scoped
- * on purpose, because issue 123 exists in every repository there has ever been (see
- * `Task.externalKey`) — and that is three quarters of a card's width spent on a fact the human
- * already knows: they picked the repository. So the badge prints `#123` and the tooltip carries
- * the whole key, which is the same bargain `mrRef` strikes for a merge request's number.
+ * JIRA's `PROJ-123` and Linear's `ENG-12` are already as short as they get. GitHub's is
+ * `owner/repo#123` — repo-scoped on purpose, because issue 123 exists in every repository
+ * there has ever been (see `Task.externalKey`) — and that is three quarters of a card's width
+ * spent on a fact the human already knows: they picked the repository. So the badge prints
+ * `#123` and the tooltip carries the whole key, which is the same bargain `mrRef` strikes for
+ * a merge request's number.
  *
  * Only where space is tight. The archived-cards dialog has a full row per card and prints the
  * whole key, because there the repository is the part you are actually scanning for.
@@ -90,7 +93,67 @@ export function TrackerMark({ task, size = 12, color }: TrackerMarkProps): JSX.E
       return <JiraMark size={size} color={color} />;
     case 'github':
       return <GitHubMark size={size} color={color} />;
+    case 'linear':
+      return <LinearMark size={size} color={color} />;
     default:
       return null;
   }
+}
+
+/**
+ * The channels a tracker's comment thread is read and written through.
+ *
+ * Each field is the literal union of exactly the trackers' own channel names — not the whole
+ * `IpcInvokeChannel` — because `transport.invoke`'s return type is keyed off the channel it is
+ * given. Widen these to `IpcInvokeChannel` and every caller's `await transport.invoke(...)`
+ * degrades to the type of *every* IPC call in the app at once, which is no type at all.
+ */
+export interface TicketChannels {
+  fetchComments: Extract<IpcInvokeChannel, `${Tracker}:fetchComments`>;
+  markRead: Extract<IpcInvokeChannel, `${Tracker}:markRead`>;
+  addComment: Extract<IpcInvokeChannel, `${Tracker}:addComment`>;
+  /** Null for a tracker whose @mention picker has nowhere to search from (Linear's). */
+  searchUsers: Extract<IpcInvokeChannel, `${Tracker}:searchUsers`> | null;
+}
+
+/**
+ * Each tracker's own comment-thread channels, named `<tracker>:<verb>` — `jira:fetchComments`,
+ * `github:markRead`, and so on. A `Record<Tracker, …>` rather than a `switch`, so a fourth
+ * tracker landing in `Tracker` without a row here is a compile error, not a blank pane.
+ */
+const TICKET_CHANNELS: Record<Tracker, TicketChannels> = {
+  jira: {
+    fetchComments: 'jira:fetchComments',
+    markRead: 'jira:markRead',
+    addComment: 'jira:addComment',
+    searchUsers: 'jira:searchUsers',
+  },
+  github: {
+    fetchComments: 'github:fetchComments',
+    markRead: 'github:markRead',
+    addComment: 'github:addComment',
+    searchUsers: 'github:searchUsers',
+  },
+  linear: {
+    fetchComments: 'linear:fetchComments',
+    markRead: 'linear:markRead',
+    addComment: 'linear:addComment',
+    searchUsers: null,
+  },
+};
+
+/** The comment-thread channels for `tracker`. */
+export function ticketChannels(tracker: Tracker): TicketChannels {
+  return TICKET_CHANNELS[tracker];
+}
+
+/**
+ * The tooltip/title for a card's "open in the tracker" link — `"Open ENG-12 in Linear"` — or
+ * null for a card with no external key to link. The one place this string is built; `TaskDetail`
+ * used to inline it.
+ */
+export function ticketLinkTitle(task: Pick<Task, 'externalSource' | 'externalKey'>): string | null {
+  const key = task.externalKey ?? null;
+  if (key === null) return null;
+  return `Open ${key} in ${trackerName(task) ?? 'the tracker'}`;
 }
