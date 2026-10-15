@@ -888,7 +888,13 @@ describe('tap selection', () => {
     const selected = tapLine(twoHunkLoaded(), { path: 'a.ts', side: 'new', line: 2 });
     const editorOpen: ReviewState = {
       ...selected,
-      editor: { path: 'b.ts', anchor: { side: 'new', line: 1 }, draft: '', outdated: false, saving: false },
+      editor: {
+        path: 'b.ts',
+        anchor: { side: 'new', line: 1 },
+        draft: '',
+        outdated: false,
+        saving: false,
+      },
     };
     expect(commentOnSelection(editorOpen)).toBe(editorOpen);
 
