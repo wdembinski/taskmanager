@@ -409,7 +409,9 @@ you can then edit — the repo file itself is never written back to.
 
 Either kind is attached the same way, from the same small **Skills** picker wherever it
 appears — a card's own panel, the assign dialog, or a row in an approved plan's steps —
-listing the library plus whatever repo skills the card's agent project carries.
+listing the library plus whatever repo skills the card's agent project carries. The
+picker's own trigger reads plain **Skills** until at least one is attached, then
+**Skills · _n_** for the combined count.
 
 #### Card vs. step
 
@@ -417,7 +419,8 @@ A step of an approved plan runs with its card's skills **and** its own: the two 
 are a union, the card's refs first. A step can add its own skills on top, but it cannot
 remove one its card carries — in the picker, a skill inherited from the card shows
 checked, disabled, and captioned *"from card"*, and only the step's own entries can be
-toggled off.
+toggled off. A card's own panel repeats the same union as a read-only **Skills · _name_
+· _name_** caption beneath the picker, so the names are visible without opening it.
 
 #### Budget and omission
 
@@ -454,10 +457,11 @@ Prompt templates**, global across every project.
 
 #### What the web can and can't do
 
-Listing and **attaching** skills — library or repo — to a card or a step works on the
-web the same as on desktop: it's a direct read, not routed through a desktop Client.
-Creating, editing, or deleting a *library* skill, and reading a repo skill's full body
-to **Copy to library**, relay to a desktop Client and need one online to answer.
+Listing skills — library or repo — for a card or a step's picker works on the web the
+same as on desktop: it's a direct read, not routed through a desktop Client.
+**Attaching** one, creating, editing, or deleting a *library* skill, and reading a repo
+skill's full body to **Copy to library**, all relay to a desktop Client and need one
+online to answer.
 **Import** and **Export** are host-only — native file/folder dialogs the web has no way
 to open — and are hidden there entirely. Prompt templates are plain global settings, so
 listing, inserting, and editing them works the same everywhere.
