@@ -6,6 +6,7 @@ import {
   buildFileTree,
   defaultExpanded,
   fetchablePaths,
+  fileLoadNotice,
   pairWordDiffs,
   statusLetter,
   summaryTotals,
@@ -222,5 +223,56 @@ describe('fetchablePaths', () => {
       },
     };
     expect(fetchablePaths(loaded)).toEqual(['b.ts']);
+  });
+
+  it('returns at most one path even with several expanded', () => {
+    const state = summaryLoaded(
+      [entry('a.ts'), entry('b.ts'), entry('c.ts')],
+      ['a.ts', 'b.ts', 'c.ts'],
+    );
+    expect(fetchablePaths(state)).toEqual(['a.ts']);
+  });
+
+  it('returns nothing while any file is already loading', () => {
+    const state = summaryLoaded([entry('a.ts'), entry('b.ts')], ['a.ts', 'b.ts']);
+    const loading = {
+      ...state,
+      files: { ...state.files, 'a.ts': { status: 'loading' as const, seq: 1 } },
+    };
+    expect(fetchablePaths(loading)).toEqual([]);
+  });
+});
+
+describe('fileLoadNotice', () => {
+  it('is null while there is nothing to say: no load yet, loading, or loaded', () => {
+    expect(fileLoadNotice(undefined)).toBeNull();
+    expect(fileLoadNotice({ status: 'idle' })).toBeNull();
+    expect(fileLoadNotice({ status: 'loading', seq: 1 })).toBeNull();
+    expect(
+      fileLoadNotice({ status: 'loaded', file: { diffId: 'd1', path: 'a.ts', hunks: [] } }),
+    ).toBeNull();
+  });
+
+  it('names the error for an idle load that failed', () => {
+    expect(fileLoadNotice({ status: 'idle', error: 'network error' })).toBe(
+      "Couldn't load this file: network error",
+    );
+  });
+
+  it('names the byte count for a file too large to show', () => {
+    const notice = fileLoadNotice({ status: 'tooLarge', bytes: 999_999 });
+    expect(notice).toContain('999,999 bytes');
+    expect(notice).toContain('too large to show here');
+  });
+
+  it('points at reload for a stale file', () => {
+    expect(fileLoadNotice({ status: 'stale', currentDiffId: 'd2' })).toContain('reload');
+  });
+
+  it('names the byte count and the desktop for a file too large to send over the relay', () => {
+    const notice = fileLoadNotice({ status: 'tooLargeForBrowser', bytes: 5_000_000 });
+    expect(notice).toBe(
+      'This file is too large to send to the browser (5,000,000 bytes) — open it on the desktop.',
+    );
   });
 });

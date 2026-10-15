@@ -425,3 +425,23 @@ export function hostOnlyMessage(channel: string): string {
   if (!reason) return `"${channel}" is not a channel this app knows.`;
   return `"${channel}" only works in the desktop app — ${REASON_TEXT[reason]}. Do this from there.`;
 }
+
+/**
+ * The sentence `cloudResults.ts` hands back instead of a relayed answer too large to ever
+ * fit in a `/v1/sync` request (see its `unsendable`). Written once here so the review pane
+ * can tell this error apart from any other failure, via {@link parseOversizedAnswer}, rather
+ * than guessing from a string it does not own.
+ */
+export function oversizedAnswerMessage(bytes: number): string {
+  return `The desktop's answer was too large to send (${bytes} bytes).`;
+}
+
+/**
+ * The inverse of {@link oversizedAnswerMessage}. Unanchored, so a message some other layer
+ * prefixed with its own context — "task:diffFile failed: The desktop's answer was..." — still
+ * matches. Returns `null` for anything else, including a message that merely mentions bytes.
+ */
+export function parseOversizedAnswer(message: string): number | null {
+  const match = /The desktop's answer was too large to send \((\d+) bytes\)\./.exec(message);
+  return match ? Number(match[1]) : null;
+}

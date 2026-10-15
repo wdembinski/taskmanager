@@ -36,13 +36,15 @@ import type {
   ReviewSendResult,
 } from '@tm/shared/review';
 import { DIFF_COLLAPSE_LINES } from '@tm/shared/review';
+import { parseOversizedAnswer } from '@tm/shared/ipcRelay';
 
 export type FileLoad =
   | { status: 'idle'; error?: string } // never fetched, or a failed fetch (message kept)
   | { status: 'loading'; seq: number }
   | { status: 'loaded'; file: DiffFile }
   | { status: 'tooLarge'; bytes: number } // DiffFile.tooLarge was set
-  | { status: 'stale'; currentDiffId: string }; // answered DiffStale
+  | { status: 'stale'; currentDiffId: string } // answered DiffStale
+  | { status: 'tooLargeForBrowser'; bytes: number }; // the relay itself refused the answer
 
 export interface CommentAnchor {
   path: string;
@@ -248,7 +250,11 @@ export function fileArrived(
   };
 }
 
-/** A file's load failed. Same guards as {@link fileArrived}; sets the path to `idle { error }`. */
+/**
+ * A file's load failed. Same guards as {@link fileArrived}; sets the path to `idle { error }`,
+ * unless the relay itself refused the answer for being too large to ever send — then it becomes
+ * `tooLargeForBrowser`, which `filesToLoad` never refetches since it is not `idle`.
+ */
 export function fileFailed(
   s: ReviewState,
   taskId: string | null,
@@ -260,7 +266,10 @@ export function fileFailed(
   if (taskId !== s.taskId || diffId !== s.diffId || !isLoadingThisSeq(s.files[path], seq)) {
     return s;
   }
-  return { ...s, files: { ...s.files, [path]: { status: 'idle', error } } };
+  const bytes = parseOversizedAnswer(error);
+  const fileLoad: FileLoad =
+    bytes === null ? { status: 'idle', error } : { status: 'tooLargeForBrowser', bytes };
+  return { ...s, files: { ...s.files, [path]: fileLoad } };
 }
 
 function flattenLines(file: DiffFile): readonly DiffLine[] {
@@ -513,16 +522,21 @@ export function commentsAt(
 }
 
 /**
- * Whether Send review can run: at least one unsent draft, and not already sending. A note alone
- * never enables it — `reviewService.send` refuses a note-only send as `nothing-to-send`.
+ * Whether Send review can run: at least one unsent draft, not already sending, and the host
+ * is reachable. A note alone never enables it — `reviewService.send` refuses a note-only send
+ * as `nothing-to-send`. `readOnly` is `TaskDetail`'s `hostUnreachable` carried down as a plain
+ * boolean — the pane cannot send a review the desktop that owns it cannot hear (F6.13).
  */
-export function canSend(s: ReviewState): boolean {
-  return unsentCount(s) > 0 && !s.sending;
+export function canSend(s: ReviewState, readOnly = false): boolean {
+  return !readOnly && unsentCount(s) > 0 && !s.sending;
 }
 
-/** Whether a new comment can be started: the summary loaded ok, and the diff is not stale. */
-export function canComment(s: ReviewState): boolean {
-  return s.summary?.status === 'ok' && s.staleDiffId === null;
+/**
+ * Whether a new comment can be started: the summary loaded ok, the diff is not stale, and the
+ * host is reachable — see {@link canSend}'s own note on `readOnly`.
+ */
+export function canComment(s: ReviewState, readOnly = false): boolean {
+  return !readOnly && s.summary?.status === 'ok' && s.staleDiffId === null;
 }
 
 /**

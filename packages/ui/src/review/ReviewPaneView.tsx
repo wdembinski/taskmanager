@@ -60,6 +60,13 @@ export interface ReviewPaneViewProps {
   state: ReviewState;
   /** A failed `task:diffSummary`/`task:diffFile` call — not part of `ReviewState` itself. */
   error: string | null;
+  /**
+   * Set when the desktop host cannot be reached — `TaskDetail`'s own `hostUnreachable`, carried
+   * all the way down. The pane keeps whatever `state` it last loaded on screen, shows a warning
+   * bar in its place, and disables commenting and Send review (`canComment`/`canSend`'s own
+   * `readOnly`) rather than looking live over a channel that cannot answer (F6.13).
+   */
+  unreachable?: string;
   onReload: () => void;
   onSelectFile: (path: string) => void;
   onToggleExpanded: (path: string) => void;
@@ -77,6 +84,7 @@ export function ReviewPaneView({
   taskId,
   state,
   error,
+  unreachable,
   onReload,
   onSelectFile,
   onToggleExpanded,
@@ -91,6 +99,7 @@ export function ReviewPaneView({
 }: ReviewPaneViewProps): JSX.Element {
   const styles = useStyles();
   const { summary } = state;
+  const readOnly = unreachable !== undefined;
 
   let body: JSX.Element | null = null;
   if (summary === null) {
@@ -166,7 +175,7 @@ export function ReviewPaneView({
             size="small"
             appearance="primary"
             icon={state.sending ? <Spinner size="tiny" /> : <SendRegular />}
-            disabled={!canSend(state)}
+            disabled={!canSend(state, readOnly)}
             onClick={onSend}
           >
             {state.sending ? 'Sending…' : 'Send review'}
@@ -199,7 +208,7 @@ export function ReviewPaneView({
             selectedPath={state.selectedPath}
             comments={state.comments}
             editor={state.editor}
-            canComment={canComment(state)}
+            canComment={canComment(state, readOnly)}
             onToggleExpanded={onToggleExpanded}
             onClickLine={onClickLine}
             onEditDraft={onEditDraft}
@@ -215,6 +224,14 @@ export function ReviewPaneView({
 
   return (
     <div className={styles.root}>
+      {unreachable !== undefined && (
+        <MessageBar intent="warning">
+          <MessageBarBody>
+            The desktop app is unreachable — showing what was last loaded. Comments and Send review
+            are paused.
+          </MessageBarBody>
+        </MessageBar>
+      )}
       {error && (
         <MessageBar intent="error">
           <MessageBarBody>{error}</MessageBarBody>

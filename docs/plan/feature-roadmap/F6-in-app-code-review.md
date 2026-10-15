@@ -363,7 +363,7 @@ to send rather than deliver an empty message.
 
 ### F6 · Phase 5 — Review from the browser
 
-- [ ] F6.13 Make the review pane work over the relay in apps/web @needs: F6.12 Add line and range comments with Send review to the pane
+- [x] F6.13 Make the review pane work over the relay in apps/web @needs: F6.12 Add line and range comments with Send review to the pane
 
   - Confirm the shared `TaskDetail` mounts the pane in the web. Draw the unreachable, stale and oversized-answer states. One file is fetched at a time, lazily on expand.
   - Acceptance: `httpTransport` tests that the new channels are relayed (not refused); a test that an oversized relayed answer renders the "too large for the browser" state; web build green.

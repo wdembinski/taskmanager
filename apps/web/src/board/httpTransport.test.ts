@@ -2,10 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IpcApi } from '@tm/shared/ipc';
 import { CLOUD_BLOB_MAX_BYTES, type TaskAttachment } from '@tm/shared/attachments';
 import type { Automation, AutomationRun } from '@tm/shared/automation';
+import { hostOnlyMessage, isRelayable, oversizedAnswerMessage } from '@tm/shared/ipcRelay';
 import type { Project } from '@tm/shared/model';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import type { RepoSkillSummary, Skill } from '@tm/shared/skills';
 import type { CommandResult } from '@tm/protocol/wire';
+import {
+  EMPTY_REVIEW,
+  fileFailed,
+  fileLoadStarted,
+  type ReviewState,
+} from '@tm/ui/review/reviewState';
+import { fileLoadNotice } from '@tm/ui/review/reviewView';
 import { HttpTransport, RPC_TIMEOUT_MS, type HttpTransportDeps } from './httpTransport';
 
 /** One project, for the `skill:listRepo` direct-tier tests. */
@@ -760,6 +768,148 @@ describe('HttpTransport: channels that used to be stubbed', () => {
       });
     });
   }
+});
+
+describe("HttpTransport: the review pane's channels", () => {
+  /**
+   * F6.13: the review pane's eight channels — the diff reads and the comment CRUD/send —
+   * relay to the desktop the same as any other `ipc-invoke` channel. Pinned down here,
+   * channel by channel, rather than trusted to follow from `ipcRelay.ts`'s own exhaustiveness
+   * check, because this table is what a reviewer actually reads to confirm the pane works
+   * over the relay at all.
+   */
+  const REVIEW: Array<{
+    channel: keyof IpcApi;
+    args: readonly unknown[];
+    call: (x: HttpTransport) => Promise<unknown>;
+  }> = [
+    {
+      channel: 'task:diffSummary',
+      args: ['t1'],
+      call: (x) => x.invoke('task:diffSummary', 't1'),
+    },
+    {
+      channel: 'task:diffFile',
+      args: ['t1', 'd1', 'a.ts'],
+      call: (x) => x.invoke('task:diffFile', 't1', 'd1', 'a.ts'),
+    },
+    {
+      channel: 'task:diffImage',
+      args: ['t1', 'd1', 'a.png'],
+      call: (x) => x.invoke('task:diffImage', 't1', 'd1', 'a.png'),
+    },
+    { channel: 'review:list', args: ['t1'], call: (x) => x.invoke('review:list', 't1') },
+    {
+      channel: 'review:add',
+      args: [{ taskId: 't1', diffId: 'd1', path: 'a.ts', side: 'new', line: 3, body: 'lgtm' }],
+      call: (x) =>
+        x.invoke('review:add', {
+          taskId: 't1',
+          diffId: 'd1',
+          path: 'a.ts',
+          side: 'new',
+          line: 3,
+          body: 'lgtm',
+        }),
+    },
+    {
+      channel: 'review:update',
+      args: ['t1', 'c1', { body: 'edited' }],
+      call: (x) => x.invoke('review:update', 't1', 'c1', { body: 'edited' }),
+    },
+    {
+      channel: 'review:delete',
+      args: ['t1', 'c1'],
+      call: (x) => x.invoke('review:delete', 't1', 'c1'),
+    },
+    {
+      channel: 'review:send',
+      args: ['t1', 'looks good'],
+      call: (x) => x.invoke('review:send', 't1', 'looks good'),
+    },
+  ];
+
+  for (const { channel, args, call } of REVIEW) {
+    it(`relays ${channel} over the wire`, async () => {
+      expect(isRelayable(channel)).toBe(true);
+
+      const server = makeServer();
+      const { transport } = makeTransport({
+        fetchImpl: server.fetchImpl as unknown as typeof fetch,
+        newCommandId: () => 'cmd-1',
+      });
+
+      let rejection: Error | undefined;
+      const pending = call(transport).catch((e: Error) => {
+        rejection = e;
+      });
+      server.answer('cmd-1', { ok: true, value: null });
+      await pending;
+
+      expect(rejection?.message).not.toBe(hostOnlyMessage(channel));
+      expect(server.queued).toHaveLength(1);
+      expect(server.queued[0]).toMatchObject({
+        kind: 'ipc-invoke',
+        payload: { channel, args },
+      });
+    });
+  }
+
+  /**
+   * The acceptance test F6.13 asks for: a relayed `task:diffFile` answer the server refused
+   * as too large to ever send becomes the pane's own `tooLargeForBrowser` state, not a plain
+   * `idle` error the pane would otherwise offer to retry forever.
+   */
+  it('classifies an oversized task:diffFile answer as tooLargeForBrowser', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-1',
+    });
+
+    const pending = transport.invoke('task:diffFile', 't1', 'd1', 'a.ts');
+    server.answer('cmd-1', { ok: false, error: oversizedAnswerMessage(2_000_000) });
+
+    const error = await pending.then(
+      () => {
+        throw new Error('expected task:diffFile to reject');
+      },
+      (e: unknown) => e as Error,
+    );
+
+    let state: ReviewState = {
+      ...EMPTY_REVIEW,
+      taskId: 'a',
+      diffId: 'd1',
+      summary: {
+        status: 'ok',
+        summary: {
+          diffId: 'd1',
+          baseRef: 'main',
+          baseSha: 'base-sha',
+          headSha: 'head-sha',
+          includesWorkingTree: false,
+          files: [
+            {
+              path: 'a.ts',
+              status: 'modified',
+              additions: 1,
+              deletions: 1,
+              binary: false,
+              image: false,
+              bytes: 10,
+            },
+          ],
+          truncated: false,
+        },
+      },
+    };
+    state = fileLoadStarted(state, 'a', 'd1', 'a.ts', 1);
+    state = fileFailed(state, 'a', 'd1', 'a.ts', 1, error.message);
+
+    expect(state.files['a.ts']).toEqual({ status: 'tooLargeForBrowser', bytes: 2_000_000 });
+    expect(fileLoadNotice(state.files['a.ts'])).toContain('too large to send to the browser');
+  });
 });
 
 describe('HttpTransport: the two silences it tells apart', () => {

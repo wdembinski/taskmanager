@@ -63,6 +63,7 @@ import { CompactShell } from '@tm/ui/shell/CompactShell';
 import { CompactInbox } from '@tm/ui/CompactInbox';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { routeForTab, tabForRoute, type CompactTab } from '@tm/ui/layout/compactRoute';
+import { activityGate } from '../activity/activityGate';
 import { BoardScreen } from '../board/BoardScreen';
 import { worstConnectionState } from '../board/connectionState';
 import type { DesktopPresence } from '../board/desktopPresence';
@@ -141,6 +142,15 @@ export function CompactApp({
     presence === 'offline' ? { everSeenClient: board.targetClientId !== null } : null,
     skew && client ? { skew, client } : null,
   );
+
+  // The Changes pane's own read of the same three signals (F6.13) — see `App.tsx`'s identical
+  // computation for the wide layout.
+  const reviewGate = activityGate({
+    pollError: board.pollError,
+    presence,
+    targetClientId: board.targetClientId,
+  });
+  const hostUnreachable = reviewGate.kind === 'unreachable' ? reviewGate.message : undefined;
   // A relay or draining page still in flight outranks the plain poll age here too, same as
   // the wide status bar's separate `StatusBusy` — the strip has no second line to put it on.
   const busyLabel = busy ? syncBusyLabel(board.syncProgress, board.pendingRelays) : null;
@@ -207,6 +217,7 @@ export function CompactApp({
                     }
                   : undefined,
             }}
+            hostUnreachable={hostUnreachable}
           />
         ) : (
           <SyncCurtain

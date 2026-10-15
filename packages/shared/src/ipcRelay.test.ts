@@ -3,6 +3,8 @@ import {
   hostOnlyMessage,
   hostOnlyReason,
   isRelayable,
+  oversizedAnswerMessage,
+  parseOversizedAnswer,
   RELAY_POLICY,
   type HostOnlyReason,
 } from './ipcRelay';
@@ -147,5 +149,22 @@ describe('a name that is not a channel', () => {
     // that trusted `in` rather than the VALUE would relay this.
     expect(isRelayable('constructor')).toBe(false);
     expect(isRelayable('toString')).toBe(false);
+  });
+});
+
+describe('an oversized relayed answer', () => {
+  it('round-trips through the message cloudResults.ts builds', () => {
+    const bytes = 1_234_567;
+    expect(parseOversizedAnswer(oversizedAnswerMessage(bytes))).toBe(bytes);
+  });
+
+  it('still matches with a prefix in front of it', () => {
+    const message = `task:diffFile failed: ${oversizedAnswerMessage(42)}`;
+    expect(parseOversizedAnswer(message)).toBe(42);
+  });
+
+  it('is null for any other error', () => {
+    expect(parseOversizedAnswer('nope')).toBeNull();
+    expect(parseOversizedAnswer('500 bytes written')).toBeNull();
   });
 });

@@ -27,6 +27,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { AddRegular } from '@fluentui/react-icons';
+import { parseOversizedAnswer } from '@tm/shared/ipcRelay';
 import { isCollapsedByDefault } from '@tm/shared/review';
 import type {
   DiffFileEntry,
@@ -43,7 +44,7 @@ import { MONO, fontPx } from '../theme';
 import { useTransport } from '../transport';
 import { CommentThread } from './CommentThread';
 import { rangeLines, renderedIndex, type CommentEditor, type FileLoad } from './reviewState';
-import { pairWordDiffs, statusLetter } from './reviewView';
+import { fileLoadNotice, pairWordDiffs, statusLetter } from './reviewView';
 
 const useStyles = makeStyles({
   root: {
@@ -413,8 +414,9 @@ function FileBody({
     );
   }
   if (load === undefined || load.status === 'idle') {
-    return load?.error !== undefined ? (
-      <Caption1 className={styles.notice}>Couldn&apos;t load this file: {load.error}</Caption1>
+    const notice = fileLoadNotice(load);
+    return notice !== null ? (
+      <Caption1 className={styles.notice}>{notice}</Caption1>
     ) : (
       <div className={styles.notice}>
         <Spinner size="tiny" label="Loading…" labelPosition="after" />
@@ -428,20 +430,12 @@ function FileBody({
       </div>
     );
   }
-  if (load.status === 'tooLarge') {
-    return (
-      <Caption1 className={styles.notice}>
-        This file is too large to show here ({load.bytes.toLocaleString()} bytes) — open it in your
-        editor.
-      </Caption1>
-    );
-  }
-  if (load.status === 'stale') {
-    return (
-      <Caption1 className={styles.notice}>
-        The files changed since this was loaded — reload to see the latest.
-      </Caption1>
-    );
+  if (
+    load.status === 'tooLarge' ||
+    load.status === 'stale' ||
+    load.status === 'tooLargeForBrowser'
+  ) {
+    return <Caption1 className={styles.notice}>{fileLoadNotice(load)}</Caption1>;
   }
 
   const highlighted = editor ? new Set(rangeLines(load.file, editor)) : null;
@@ -656,8 +650,13 @@ function ImageDiffBody({
     );
   }
   if (state.status === 'error') {
+    const bytes = parseOversizedAnswer(state.message);
     return (
-      <Caption1 className={styles.notice}>Couldn&apos;t load this image: {state.message}</Caption1>
+      <Caption1 className={styles.notice}>
+        {bytes === null
+          ? `Couldn't load this image: ${state.message}`
+          : fileLoadNotice({ status: 'tooLargeForBrowser', bytes })}
+      </Caption1>
     );
   }
   if (state.status === 'stale') {
