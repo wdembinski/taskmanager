@@ -99,7 +99,7 @@ None — the palette is pure UI over data each host already has (the board store
 
 ### F9 · Phase 2 — Palette in both hosts
 
-- [ ] F9.3 Build the CommandPalette dialog in packages/ui with full keyboard navigation @needs: F9.1 Add the pure palette model with command sources and token scoring in packages/ui, F9.2 Add a shared useGlobalShortcut hook with a pure mod+k matcher
+- [x] F9.3 Build the CommandPalette dialog in packages/ui with full keyboard navigation @needs: F9.1 Add the pure palette model with command sources and token scoring in packages/ui, F9.2 Add a shared useGlobalShortcut hook with a pure mod+k matcher
 
   - `packages/ui/src/palette/CommandPalette.tsx` — Fluent `Dialog` + `Input` + listbox driven entirely by `paletteReduce`; ARIA listbox/option roles; Escape closes; Enter runs; Ctrl/⌘+Enter runs the secondary action; errors from `run` render as a `MessageBar` inside the palette instead of closing it.
   - Acceptance: the component holds no logic beyond wiring (reviewable); reducer tests from F9.1 extended for secondary-action and error-row transitions. Gates green.
