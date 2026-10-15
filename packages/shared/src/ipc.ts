@@ -65,7 +65,7 @@ import type { IssuePage, IssueProviderId, IssueQuery } from './issues';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
 import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
-import type { VariantCount } from './variants';
+import type { VariantCount, VariantSummaryRow } from './variants';
 import type { AttentionAnswer, AttentionItem } from './attention';
 import type { AuthState } from './auth';
 import type { LimitState } from './limit';
@@ -864,6 +864,13 @@ export interface IpcApi {
     count: VariantCount,
     input: AssignAgentInput,
   ) => Promise<{ leader: Task; rows: Task[] }>;
+  /**
+   * The compare view's rows for one leader's variant group (F10.4): each live row's
+   * status, total cost, diff stat and a one-line gist of its last result, sorted A, B, C
+   * (unlabelled last). Read-only, so a browser tab may call it directly. Rejects
+   * `'Task not found.'` for an unknown leader; `[]` for a leader with no live rows.
+   */
+  'variants:summary': (leaderId: string) => Promise<VariantSummaryRow[]>;
   /**
    * Say something to the agent working this card (Phase 12) — the card's half of a
    * conversation, not an answer to a question it asked. The message is recorded on the

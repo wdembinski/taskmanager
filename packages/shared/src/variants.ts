@@ -17,6 +17,7 @@ import type { TaskAttachment } from './attachments';
 import { isBoardCard, isRunStatus } from './board';
 import type { AssignAgentInput, Task, TaskStatus } from './model';
 import { RUN_REFUSAL_MESSAGE, type RunRefusal } from './scheduler';
+import type { SessionEvent } from './session';
 
 /** How many variants one start may create. ×1 is not a variant group — it is Assign agent. */
 export type VariantCount = 2 | 3;
@@ -225,4 +226,89 @@ export function variantGroupState(
   else if (has('failed')) state = 'failed';
   else state = 'stopped';
   return { state, rows: mine };
+}
+
+/**
+ * The variant summary channel (F10.4) — one row per variant for the compare view: its
+ * cost, diff stat and a one-line gist of what it did. Pure helpers only; `variants:summary`
+ * assembles them with the task store and `DiffService` (`apps/client/src/main/variantSummary.ts`).
+ */
+
+/** One variant's diff against base: files touched and total lines added/removed. */
+export interface VariantDiffStat {
+  files: number;
+  added: number;
+  removed: number;
+}
+
+/** One row of the compare view. */
+export interface VariantSummaryRow {
+  id: string;
+  label: VariantLabel | null;
+  status: TaskStatus;
+  /** Sum of the row's runs' costs; null when none ever reported one — never a fake 0. */
+  costUsd: number | null;
+  diffStat: VariantDiffStat;
+  /** First non-empty line of the row's last result, capped at `VARIANT_SUMMARY_MAX_CHARS`. */
+  summary: string;
+}
+
+/** Caps `variantSummaryLine` so the payload stays bounded no matter what the agent wrote. */
+export const VARIANT_SUMMARY_MAX_CHARS = 200;
+
+/**
+ * The compare view's one-line gist of a result: its first non-empty line, whitespace
+ * collapsed, a leading markdown heading/bullet/numbered-list marker stripped, and capped
+ * at `VARIANT_SUMMARY_MAX_CHARS` with a trailing `…`. `''` when there is no non-empty line.
+ */
+export function variantSummaryLine(resultText: string): string {
+  const line = resultText
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!line) return '';
+  const collapsed = line
+    .replace(/^(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)/, '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  return collapsed.length > VARIANT_SUMMARY_MAX_CHARS
+    ? `${collapsed.slice(0, VARIANT_SUMMARY_MAX_CHARS)}…`
+    : collapsed;
+}
+
+/**
+ * Sum of non-null `costUsd` across a row's `result` events — a retried row has several
+ * runs, each its own session, so its cost is the total of every one. `null` when none
+ * carried a cost, never a fake 0.
+ */
+export function variantCost(history: readonly SessionEvent[]): number | null {
+  const costs = history
+    .filter((e): e is Extract<SessionEvent, { kind: 'result' }> => e.kind === 'result')
+    .map((e) => e.costUsd)
+    .filter((c): c is number => c != null);
+  return costs.length > 0 ? costs.reduce((sum, c) => sum + c, 0) : null;
+}
+
+/**
+ * A row's diff stat from its diff entries: file count and the sum of additions/deletions.
+ * Structural over the entry shape (not `NameStatusEntry` itself) so this stays a pure
+ * function of plain numbers — a binary entry already reports 0/0, same as everywhere else.
+ */
+export function diffStatOf(
+  entries: readonly { additions: number; deletions: number }[],
+): VariantDiffStat {
+  let added = 0;
+  let removed = 0;
+  for (const entry of entries) {
+    added += entry.additions;
+    removed += entry.deletions;
+  }
+  return { files: entries.length, added, removed };
+}
+
+/** Sorts variant rows by label (A, B, C), unlabelled last — the compare view's column order. */
+export function sortVariantRows<T extends { label: VariantLabel | null }>(
+  rows: readonly T[],
+): T[] {
+  return [...rows].sort((a, b) => (a.label ?? '~').localeCompare(b.label ?? '~'));
 }

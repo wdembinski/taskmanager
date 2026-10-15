@@ -263,6 +263,7 @@ import { ClaudeUsagePoller, readClaudeUsage } from './claudeUsage';
 import { discoverModelCatalog, resolveModel } from './claudeModels';
 import { validateBranchName } from '@shared/branchName';
 import { canStartVariants, planVariants, VARIANT_REFUSAL_MESSAGE } from '@shared/variants';
+import { buildVariantSummary } from './variantSummary';
 import { createActivityRecorder } from './activityRecorder';
 import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
@@ -1366,6 +1367,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       rows: rowIds.map((id) => store.getTask(id) as Task),
     };
   });
+
+  handle('variants:summary', async (leaderId) =>
+    buildVariantSummary(
+      {
+        getTask: (id) => store.getTask(id),
+        listVariantRows: (id) => store.listVariantRows(id),
+        getTaskHistory: (id) => store.getTaskHistory(id),
+        diffStat: (id) => diffs.stat(id),
+      },
+      leaderId,
+    ),
+  );
 
   handle('task:chat', async (taskId, message) => scheduler.chatWithAgent(taskId, message));
   handle('task:replan', async (taskId, note, opts) => scheduler.replanCard(taskId, note, opts));
