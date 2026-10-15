@@ -114,7 +114,7 @@ None — the palette is pure UI over data each host already has (the board store
 
   - Throwaway probe (scratch branch, never merged): call `webkitSpeechRecognition` in a packaged build and record the `onerror` code; also confirm `getUserMedia({audio:true})` behaviour with and without a `setPermissionRequestHandler`. Follow *verify-electron-app* — do NOT launch the app on the user's machine; ask the human to run the probe build or use a throwaway profile.
   - Acceptance: a short findings note appended to this file's Open questions (works / fails with which error) and the chosen desktop path (OS-dictation hint vs local transcription). No product code merged.
-- [ ] F9.8 Add the pure dictation state machine with a pluggable recognizer seam
+- [x] F9.8 Add the pure dictation state machine with a pluggable recognizer seam
 
   - `packages/ui/src/dictation/dictationModel.ts`: `Recognizer` interface (structural — start/stop/abort/onresult/onerror/onend), `recognizerFor(window)` support check, `foldResults(final, interim, event)` (finals append, interims replace the tail), and a reducer `idle → recording → idle` with cancel / insert / insert-and-send.
   - Acceptance: tests drive a fake recognizer class — partials grow, finals stick, error keeps finalized text, cancel discards, insert returns the transcript, unsupported → `supported: false`. Gates green.
