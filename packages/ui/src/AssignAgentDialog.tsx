@@ -71,12 +71,18 @@ import { SkillPicker } from './SkillPicker';
 import { TemplateMenu } from './TemplateMenu';
 import { applyTemplateToText, templateVarsForTask } from './templateInsert';
 import { useSkillOptions } from './useSkillOptions';
+import { useWorkflowOptions } from './useWorkflowOptions';
+import { applyOutcome, reconcileSelection } from './workflowPickerState';
 import { useTransport } from './transport';
 
 /** Same length, same refs in the same order — whether the picker has anything unsaved. */
 function sameSkillRefs(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((ref, i) => ref === b[i]);
 }
+
+/** The Workflow dropdown's "no workflow" row — `workflowId` stays `null` while it's picked. */
+const WORKFLOW_NONE = '';
+const WORKFLOW_NONE_LABEL = 'None — the agent plans its own work';
 
 const useStyles = makeStyles({
   /**
@@ -173,6 +179,9 @@ export function AssignAgentDialog({
   const [notes, setNotes] = useState('');
   // The card's own skillRefs, seeded on open — see the effect below.
   const [skillRefs, setSkillRefs] = useState<string[]>([]);
+  // The workflow to apply after assigning, or null for "the agent plans its own work" —
+  // always reset to null on open, never seeded from the card (see the effect below).
+  const [workflowId, setWorkflowId] = useState<string | null>(null);
   // The branch, and the Conventional Commits type it is proposed from. `branchTouched`
   // is what stops re-proposing over a name the human has edited.
   const [branchType, setBranchType] = useState<BranchType>('feat');
@@ -196,6 +205,7 @@ export function AssignAgentDialog({
     setNotes('');
     setCount(1);
     setSkillRefs(card.skillRefs ?? []);
+    setWorkflowId(null);
     const resolved = seedAssignProject(card, projects);
     setProjectId(resolved?.id ?? '');
     // The card's own model ONLY: reading the project's in as a seed made a fresh assignment
@@ -264,6 +274,12 @@ export function AssignAgentDialog({
     setMode((current) => modeForPickedProject(agentProjects, id, current));
   }
 
+  /** ×2/×3 are out of scope for a workflow — picking one forces back to a single attempt. */
+  function pickWorkflow(id: string | null): void {
+    setWorkflowId(id);
+    if (id) setCount(1);
+  }
+
   /** Insert a picked template into Instructions at the caret, replacing any selection. */
   function pickTemplate(template: PromptTemplate): void {
     if (!task) return;
@@ -302,6 +318,12 @@ export function AssignAgentDialog({
     };
   }
 
+  /**
+   * The delegation, plus — when a workflow is picked — turning it into the card's own
+   * steps right after. The assign itself always starts `false` in that case: the workflow's
+   * steps are what `start` should honour, via `task:run` once they exist, not the agent's
+   * own (nonexistent) planning.
+   */
   async function assign(start: boolean): Promise<void> {
     if (!task || !projectId) return;
     setBusy(true);
@@ -312,9 +334,27 @@ export function AssignAgentDialog({
       }
       const updated = await transport.invoke('task:assignAgent', task.id, {
         ...buildAssignInput(),
-        start,
+        start: workflowId ? false : start,
       });
       onAssigned(updated);
+
+      if (workflowId) {
+        const outcome = applyOutcome(await transport.invoke('workflow:apply', task.id, workflowId));
+        if (outcome.kind === 'refused') {
+          // The assignment already stuck — only the workflow failed to apply — so the
+          // dialog stays open on a sentence that says exactly that, rather than closing on
+          // a step that didn't happen.
+          setError(
+            `Assigned, but the workflow could not be applied: ${outcome.sentence}` +
+              (outcome.issues && outcome.issues.length > 0 ? ` ${outcome.issues.join(' ')}` : ''),
+          );
+          return;
+        }
+        if (start) {
+          await transport.invoke('task:run', task.id);
+        }
+      }
+
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -350,6 +390,13 @@ export function AssignAgentDialog({
   // Repo skills follow the project picked ABOVE, not the card's prior one — switching repo
   // mid-dialog switches what the picker can offer, same as the model/mode defaults do.
   const skillState = useSkillOptions(projectId || null);
+  const workflowState = useWorkflowOptions(open);
+  // Clears the selection if the list comes back without it (e.g. a workflow deleted while
+  // this dialog was open) — never seeds one, since the field itself starts at "None" on
+  // every open.
+  useEffect(() => {
+    setWorkflowId((id) => reconcileSelection(id, workflowState.workflows));
+  }, [workflowState.workflows]);
   const selected = agentProjects.find((p) => p.id === projectId) ?? null;
   // What this card's steps actually resolve to right now, so the planning field's
   // "Same as steps execution (…)" sentinel names it accurately rather than a stale guess.
@@ -425,10 +472,41 @@ export function AssignAgentDialog({
                     </Dropdown>
                   </Field>
 
+                  <Field
+                    label="Workflow (optional)"
+                    hint="The workflow's steps replace the agent's own planning."
+                  >
+                    <Dropdown
+                      className={styles.dropdown}
+                      value={
+                        workflowId
+                          ? (workflowState.workflows.find((w) => w.id === workflowId)?.name ?? '')
+                          : WORKFLOW_NONE_LABEL
+                      }
+                      selectedOptions={[workflowId ?? WORKFLOW_NONE]}
+                      onOptionSelect={(_e, d) =>
+                        pickWorkflow(
+                          d.optionValue === WORKFLOW_NONE ? null : (d.optionValue ?? null),
+                        )
+                      }
+                    >
+                      <Option value={WORKFLOW_NONE} text={WORKFLOW_NONE_LABEL}>
+                        {WORKFLOW_NONE_LABEL}
+                      </Option>
+                      {workflowState.workflows.map((w) => (
+                        <Option key={w.id} value={w.id} text={w.name}>
+                          {w.name} · {w.caption}
+                        </Option>
+                      ))}
+                    </Dropdown>
+                  </Field>
+
                   {/* ×1 is Assign agent exactly as it always was. ×2/×3 start a variant
                       group instead — N hidden rows running the same card, compared once
                       they finish — so the secondary Assign button below is disabled for
-                      those two: a variant group always starts immediately. */}
+                      those two: a variant group always starts immediately. A workflow is
+                      also out of scope for a variant group, so picking one forces ×1 too
+                      (see `pickWorkflow`) and disables ×2/×3 here. */}
                   <Field label="How many attempts">
                     <div className={styles.countRow}>
                       {([1, 2, 3] as const).map((n) => (
@@ -437,6 +515,12 @@ export function AssignAgentDialog({
                           size="small"
                           appearance="subtle"
                           checked={count === n}
+                          disabled={Boolean(workflowId) && n !== 1}
+                          title={
+                            workflowId && n !== 1
+                              ? 'A workflow always runs as a single attempt.'
+                              : undefined
+                          }
                           onClick={() => setCount(n)}
                         >
                           ×{n}

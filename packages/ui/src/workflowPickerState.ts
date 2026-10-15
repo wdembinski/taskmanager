@@ -37,11 +37,17 @@ export function workflowOptions(docs: WorkflowDoc[]): WorkflowOption[] {
 }
 
 /**
- * `selectedId` if it still names one of `docs`, else `null` — what a picker's selection
+ * `selectedId` if it still names one of `rows`, else `null` — what a picker's selection
  * becomes after a reload (e.g. a workflow was deleted out from under an open dialog).
+ *
+ * Takes anything id-bearing — a `WorkflowDoc[]` or the reduced `WorkflowOption[]` a picker
+ * actually renders from — since only `.id` is ever read.
  */
-export function reconcileSelection(selectedId: string | null, docs: WorkflowDoc[]): string | null {
-  return docs.some((doc) => doc.id === selectedId) ? selectedId : null;
+export function reconcileSelection(
+  selectedId: string | null,
+  rows: readonly { id: string }[],
+): string | null {
+  return rows.some((row) => row.id === selectedId) ? selectedId : null;
 }
 
 /** The task fields {@link predictApplyRefusal} reads. */
