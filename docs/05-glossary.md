@@ -278,6 +278,48 @@ step that was interrupted. Neither moves the card: only you do that. What rememb
 by anything that starts the work again. See
 [doc 03](03-how-orchestration-works.md#stopping-and-resuming-it).
 
+### Skill
+
+A reusable playbook — markdown with a `name` and a one-line `description` up front,
+then a body — that a card or step carries into **every turn** of a run, attached before
+the run starts rather than typed in the moment. Two kinds, one reference shape (a
+`Task.skillRefs` entry): a **library skill** this app owns, or a **repo skill** already
+living in the project's own worktree. See
+[doc 03](03-how-orchestration-works.md#skills-and-prompt-templates).
+
+### Library skill
+
+A skill this app owns end to end — written, edited, imported and exported from
+**Settings → Skills**, and synced through its own `/v1/skills` endpoint rather than
+riding the project mirror. Addressed in a `Task.skillRefs` entry by id (`lib:<id>`). See
+[doc 03](03-how-orchestration-works.md#skills-and-prompt-templates).
+
+### Repo skill
+
+A `SKILL.md` that already lives in a project's own worktree, under
+`.claude/skills/<name>/SKILL.md` — read-only here, never written by this app. Addressed
+in a `Task.skillRefs` entry by name (`repo:<name>`), and read fresh off disk at run
+time rather than cached. **Copy to library** turns its current body into an editable
+library skill, leaving the file itself untouched. See
+[doc 03](03-how-orchestration-works.md#skills-and-prompt-templates).
+
+### Skills in force
+
+The `## Skills in force for this run` section of the system prompt: every attached
+skill's full body, rebuilt at every spawn — a fresh run, a chat reply, a resume —
+rather than cached from an earlier turn, and bounded to a size budget past which the
+remaining skills are named as omitted rather than silently dropped. Never applied to a
+release run, and never lets a skill override the orchestrator's own rules. See
+[doc 03](03-how-orchestration-works.md#skills-and-prompt-templates).
+
+### Prompt template
+
+Canned starting text for the Add-task description, the assign dialog, or a card's chat
+composer — edited before sending, unlike a **skill**, which the agent carries silently
+into the run. Its body may use `{{title}}`/`{{key}}`/`{{project}}`, filled in from the
+card at the moment it is inserted. Edited globally from **Settings → Prompt
+templates**. See [doc 03](03-how-orchestration-works.md#skills-and-prompt-templates).
+
 ### Parked chain
 
 A card whose approved plan has stopped: some step is `failed` or waiting on a question,
