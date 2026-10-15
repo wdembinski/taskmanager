@@ -44,7 +44,9 @@ export type HostOnlyReason =
   /** Owns a live Claude process' lifetime or its open stdin. */
   | 'live-session'
   /** Answers with a path on the desktop's own disk, which means nothing in a browser. */
-  | 'host-path';
+  | 'host-path'
+  /** Grants a gate command permission to run, unattended, on that machine. */
+  | 'trust-grant';
 
 /**
  * Every host-only channel and the reason it is one.
@@ -79,6 +81,12 @@ export type HostOnlyReason =
  * would receive it over the relay. A browser pasting an image already has its own route
  * (`attachFiles` → `POST /v1/uploads` → `attachment:addUploaded`) that keeps bytes out of
  * the relay's `commands` audit table entirely; relaying this one would push them through it.
+ *
+ * **Trust grant.** `gate:trust` (F8.8) is the one channel that may add a hash to
+ * `AppSettings.trustedGateCommands` — a decision about what THAT machine is allowed to run
+ * unattended next, so only someone sitting at it may make it. Not a `credential-write`: no
+ * secret moves, but the same "only that machine" shape, hence its own reason rather than a
+ * borrowed one.
  */
 const HOST_ONLY_REASONS = {
   'project:pickDirectory': 'native-modal',
@@ -114,6 +122,8 @@ const HOST_ONLY_REASONS = {
   'session:answer': 'live-session',
 
   'attachment:stagePasted': 'host-path',
+
+  'gate:trust': 'trust-grant',
 } as const satisfies Partial<Record<keyof IpcApi, HostOnlyReason>>;
 
 /** The channels {@link HOST_ONLY_REASONS} names — a union of literals, not `string`. */
@@ -283,6 +293,7 @@ export const RELAY_POLICY: {
   'attention:list': 'relay',
   'attention:answer': 'relay',
   'attention:dismiss': 'relay',
+  'gate:trust': 'host-only',
 
   'limit:current': 'relay',
   'limit:resumeNow': 'relay',
@@ -426,6 +437,7 @@ const REASON_TEXT: Record<HostOnlyReason, string> = {
   'credential-write': "it stores a secret in that machine's own credential store",
   'live-session': 'it drives a live Claude process, which only the desktop app holds',
   'host-path': "it hands back a path on that machine's own disk, which a browser cannot use",
+  'trust-grant': 'it lets that machine run a command, which only someone at that machine can allow',
 };
 
 /**

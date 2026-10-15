@@ -44,6 +44,7 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['session:stop', 'live-session'],
   ['session:answer', 'live-session'],
   ['attachment:stagePasted', 'host-path'],
+  ['gate:trust', 'trust-grant'],
 ];
 
 describe('the host-only channels', () => {
@@ -68,6 +69,7 @@ describe('the host-only channels', () => {
     expect(hostOnlyMessage('session:start')).toContain('live Claude process');
     expect(hostOnlyMessage('window:close')).toContain('desktop app itself');
     expect(hostOnlyMessage('attachment:stagePasted')).toContain('own disk');
+    expect(hostOnlyMessage('gate:trust')).toContain('run a command');
   });
 });
 

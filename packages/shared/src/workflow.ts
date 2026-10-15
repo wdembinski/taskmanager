@@ -60,6 +60,16 @@ export interface GateStep {
   onFail?: GateOnFail;
 }
 
+/**
+ * The two answers a human can give an untrusted gate command (F8.8) — the exact strings
+ * both the main process (`gateStep.ts`/`scheduler.ts`) and `packages/ui` match on, so
+ * neither hand-writes its own copy that can drift from the other's.
+ */
+export const GATE_TRUST_ACTION = {
+  trust: 'Trust and run',
+  decline: 'Decline',
+} as const;
+
 export type WorkflowStep = AgentStep | GateStep;
 
 export function isAgentStep(step: WorkflowStep): step is AgentStep {

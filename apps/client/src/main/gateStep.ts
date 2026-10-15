@@ -146,6 +146,12 @@ export interface GateStepDeps<Landing = unknown> {
   prepare(task: Task): Promise<GatePrepResult<Landing>>;
   /** Defaults to `gateRunner.startGate`; overridden in tests with a fake `GateRun`. */
   startGate?: (host: ExecHost, req: GateRunRequest, deps?: GateRunnerDeps) => GateRun;
+  /** Whether this exact command has been told to run on THIS desktop (F8.8) — exact bytes,
+   *  no normalisation, so an edited command is a different question. See `gateTrust.ts`. */
+  isTrusted(command: string): boolean;
+  /** Park this gate as needing a human, AT THIS DESKTOP, to trust its command before it
+   *  may run for the first time (or re-trust it after an edit). */
+  raiseTrust(task: Task, command: string): void;
   /** Park this gate step in the inbox as a failure the human must resolve. */
   raiseFailure(info: GateFailureInfo<Landing>): void;
   /** Start the next pending step of this chain — `Scheduler.advanceSubtasks`. */
@@ -185,8 +191,19 @@ export class GateStepRunner<Landing = unknown> {
   }
 
   /** Run a gate step's command. A no-op if it is already running — the guard that keeps a
-   *  second `advanceSubtasks`/reconcile pass from spawning the command twice. */
+   *  second `advanceSubtasks`/reconcile pass from spawning the command twice.
+   *
+   * Trust (F8.8) is checked FIRST, before that guard or anything else — an untrusted
+   * command never reserves a `running` slot or flips the task to `running`, it just parks
+   * and returns. Every path that reaches a gate's `start()` (`advanceSubtasks`, `requeue`,
+   * "Run gate again", boot `reconcile`, a limit/sign-in resume, and `trustGateCommand`'s own
+   * re-run) goes through this one check, so none of them needs a trust gate of its own. */
   async start(task: Task): Promise<void> {
+    const command = gateCommand(task);
+    if (!this.deps.isTrusted(command)) {
+      this.deps.raiseTrust(task, command);
+      return;
+    }
     if (this.running.has(task.id)) return;
     this.running.set(task.id, 'starting');
     this.deps.setStatus(task.id, 'running');

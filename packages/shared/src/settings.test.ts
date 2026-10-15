@@ -233,6 +233,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'shelvedCardIds',
   'shelfFolded',
   'runInBackground',
+  'trustedGateCommands',
 ];
 
 // The Features group — every later phase reads its own switch out of here, and a blob
@@ -400,6 +401,16 @@ describe('pickGlobalSettings', () => {
   it('drops runInBackground — it is this machine’s own process-lifetime choice', () => {
     const picked = pickGlobalSettings({ ...DEFAULT_SETTINGS, runInBackground: true });
     expect(picked).not.toHaveProperty('runInBackground');
+  });
+
+  // F8.8: trust is a fact about the desktop that is about to run a gate command, not the
+  // account — a replay carrying another machine's trusted set must never reach this one.
+  it('drops trustedGateCommands — trust is a fact about this desktop, not the account', () => {
+    const picked = pickGlobalSettings({
+      ...DEFAULT_SETTINGS,
+      trustedGateCommands: ['deadbeef'],
+    });
+    expect(picked).not.toHaveProperty('trustedGateCommands');
   });
 
   it('copies only keys that are present — a partial patch stays partial', () => {

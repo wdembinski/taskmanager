@@ -28,7 +28,9 @@ import {
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
+import { GATE_TRUST_ACTION } from '@tm/shared/workflow';
 import { AgentQuestionForm } from './AgentQuestionForm';
+import { invokeAttentionAnswer } from './attentionAnswer';
 import { Markdown } from './chat/MarkdownView';
 import { draftKey, useDraft } from './drafts';
 import { PaneLoading } from './PaneLoading';
@@ -70,6 +72,15 @@ const useStyles = makeStyles({
   empty: { color: tokens.colorNeutralForeground3 },
   dismissError: { marginTop: '-4px' },
 });
+
+/** True once `options` is exactly the trust/decline pair a parked gate offers (F8.8). */
+function isGateTrustOptions(options: readonly string[]): boolean {
+  return (
+    options.length === 2 &&
+    options[0] === GATE_TRUST_ACTION.trust &&
+    options[1] === GATE_TRUST_ACTION.decline
+  );
+}
 
 export function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Element {
   if (kind === 'permission') {
@@ -237,23 +248,27 @@ export function InboxItem({
               </Button>
             ))}
           </div>
-          <Field
-            className={styles.note}
-            label={
-              item.kind === 'proposal'
-                ? 'Optional note to the team'
-                : 'Optional note (used by “AI fix & retry”)'
-            }
-          >
-            <Textarea
-              value={note.value}
-              resize="vertical"
-              onChange={(_e, d) => note.set(d.value)}
-              placeholder={
-                item.kind === 'proposal' ? 'Extra guidance…' : 'Extra guidance for a retry…'
+          {/* A trust pair has nothing for a note to attach to — there is no retry it could
+              guide, only a yes/no on running a command. */}
+          {!isGateTrustOptions(item.options) && (
+            <Field
+              className={styles.note}
+              label={
+                item.kind === 'proposal'
+                  ? 'Optional note to the team'
+                  : 'Optional note (used by “AI fix & retry”)'
               }
-            />
-          </Field>
+            >
+              <Textarea
+                value={note.value}
+                resize="vertical"
+                onChange={(_e, d) => note.set(d.value)}
+                placeholder={
+                  item.kind === 'proposal' ? 'Extra guidance…' : 'Extra guidance for a retry…'
+                }
+              />
+            </Field>
+          )}
         </>
       ) : item.kind === 'merge-conflict' ? (
         <div className={styles.actions}>
@@ -385,7 +400,7 @@ export function useAttentionItems(): AttentionItems {
   }, [transport]);
 
   const answer = async (id: string, a: AttentionAnswer): Promise<void> => {
-    await transport.invoke('attention:answer', id, a);
+    await invokeAttentionAnswer(transport, id, a);
     // The engine will also emit `attention:resolved`; remove now for a snappy UI.
     setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
   };

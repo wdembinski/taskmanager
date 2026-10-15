@@ -926,6 +926,18 @@ export interface AppSettings {
    * automations running in the background and the laptop to quit on close.
    */
   runInBackground: boolean;
+  /**
+   * SHA-256 hex digests of gate commands this DESKTOP has been told to run (F8.8) — exact
+   * bytes, no normalisation, so editing a trusted command by even one character or a
+   * trailing space makes it untrusted again. Only `gate:trust` ever writes it; see
+   * `apps/client/src/main/gateTrust.ts`.
+   *
+   * **Local**, not account-scoped: a workflow can be authored on the web and run on any of
+   * several desktops, and trusting a command on one of them must not silently trust it on
+   * the others — trust is a fact about the machine that is about to run the command, not
+   * about the account. See {@link GLOBAL_SETTINGS_KEYS}.
+   */
+  trustedGateCommands: string[];
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -981,6 +993,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   shelvedCardIds: [],
   shelfFolded: false,
   runInBackground: false,
+  // Nothing trusted out of the box: a fresh install (or a desktop that has never seen a
+  // given gate command) must park it for a human to look at before it runs.
+  trustedGateCommands: [],
 };
 
 /**
@@ -1036,7 +1051,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Everything NOT listed is either MACHINE-local — `defaultExecTarget` (a path only that
  * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
  * connection to the server), `toastsEnabled` (that app's toasts), `runInBackground` (this
- * machine's own process-lifetime choice) — or per-SURFACE view-state:
+ * machine's own process-lifetime choice), `trustedGateCommands` (a gate command trusted on
+ * THIS desktop, not the account — see the field's own doc) — or per-SURFACE view-state:
  * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` / `shownLaterStepCards` name
  * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline, and
  * `shelvedCardIds` / `shelfFolded` the same for the parked shelf. A browser and a desktop

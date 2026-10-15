@@ -117,7 +117,8 @@ import {
 import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { ChainRunner, type ChainTrigger } from './chainRunner';
 import { GateStepRunner, type GateFailureInfo, type GatePrepResult } from './gateStep';
-import { isGateStep } from '@shared/workflow';
+import { gateCommandHash, isCommandTrusted, withTrustedHash } from './gateTrust';
+import { GATE_TRUST_ACTION, isGateStep } from '@shared/workflow';
 import type { PermissionGate } from './claudeSession';
 import { buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
@@ -367,12 +368,15 @@ const GATE_FAILURE_ACTIONS = [
   FAILURE_ACTION.sendBackToAgent,
   FAILURE_ACTION.skipGate,
 ];
+/** Actions offered for a gate whose command has never been trusted on this desktop (F8.8). */
+const GATE_TRUST_ACTIONS = [GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline];
 
 /** The interactive resolution actions offered for a parked failure, by kind. Pure. */
 export function failureActionsFor(kind: PendingFailure['kind']): string[] {
   if (kind === 'integration') return [...INTEGRATION_FAILURE_OPTIONS];
   if (kind === 'pull-request') return [...PULL_REQUEST_FAILURE_OPTIONS];
   if (kind === 'gate') return [...GATE_FAILURE_ACTIONS];
+  if (kind === 'gate-trust') return [...GATE_TRUST_ACTIONS];
   return [...RUN_FAILURE_OPTIONS];
 }
 
@@ -1068,13 +1072,17 @@ type LandingContext = PendingIntegration;
  * A parked failed task awaiting the human's chosen resolution (Phase A). `kind`
  * distinguishes a failed agent RUN (retry the agent), a failed branch INTEGRATION
  * (re-attempt the merge), a failed PULL REQUEST open (re-attempt opening the PR —
- * never a merge, which is a different outcome from the one the card asked for), and a
- * failed GATE (F8.6 — run the check again, loop back to the agent, or skip it). Worktree
- * fields are present in worktree mode, and (for a gate past a chain's last step) carry what
- * `finishStep` needs to land the branch on "Skip gate" — see {@link GateStepRunner}.
+ * never a merge, which is a different outcome from the one the card asked for), a
+ * failed GATE (F8.6 — run the check again, loop back to the agent, or skip it), and a
+ * GATE needing TRUST before its first run (F8.8 — grant it at this desktop, or decline).
+ * Worktree fields are present in worktree mode, and (for a gate past a chain's last step)
+ * carry what `finishStep` needs to land the branch on "Skip gate" — see
+ * {@link GateStepRunner}. `commandHash` is `gate-trust`'s own field — the hash of the
+ * command the human was SHOWN, so trust can never silently extend to a command edited
+ * after it was parked (see `trustGateCommand`).
  */
 interface PendingFailure {
-  kind: 'run' | 'integration' | 'pull-request' | 'gate';
+  kind: 'run' | 'integration' | 'pull-request' | 'gate' | 'gate-trust';
   projectId: string;
   taskId: string;
   runId: string;
@@ -1082,6 +1090,7 @@ interface PendingFailure {
   branch?: string;
   base?: string;
   worktree?: string;
+  commandHash?: string;
 }
 
 /**
@@ -1552,6 +1561,9 @@ export class Scheduler {
       setFailureNote: (id, note) => this.fixNotes.set(id, note),
       note: (task, text) => this.noteRun(task.projectId, task.id, 'gate', text),
       prepare: (task) => this.prepareGateStep(task),
+      isTrusted: (command) =>
+        isCommandTrusted(this.store.getSettings().trustedGateCommands ?? [], command),
+      raiseTrust: (task, command) => this.raiseGateTrust(task, command),
       raiseFailure: (info) => this.raiseGateFailure(info),
       advance: (parentId) => this.advanceSubtasks(parentId),
       finishStep: (task, landing) => this.finishStep(task, landing),
@@ -6551,9 +6563,19 @@ export class Scheduler {
    * offers retry-the-pull-request / cleanup / mark-done.
    */
   private raiseTaskFailed(f: PendingFailure): void {
+    this.parkFailure(f, `Task parked after failure: ${f.reason}`);
+  }
+
+  /**
+   * Shared inbox persistence behind a parked `PendingFailure` (Phase A) — builds the
+   * `AttentionItem`, files the timeline note, and flips the task to `waiting-input`.
+   * `raiseTaskFailed` and `raiseGateTrust` are its two callers; each supplies its own
+   * timeline note text, since "Task parked after failure" is not what a trust ask is.
+   */
+  private parkFailure(f: PendingFailure, noteText: string): void {
     const task = this.store.getTask(f.taskId);
     const options = failureActionsFor(f.kind);
-    this.noteRun(f.projectId, f.taskId, f.runId, `Task parked after failure: ${f.reason}`);
+    this.noteRun(f.projectId, f.taskId, f.runId, noteText);
     const item: AttentionItem = {
       id: randomUUID(),
       runId: f.runId,
@@ -6714,6 +6736,25 @@ export class Scheduler {
         this.finishStep(task, landing);
         break;
       }
+      case GATE_TRUST_ACTION.decline: {
+        // The chain's existing failure contract, unchanged: siblings stay pending — only a
+        // human resolving THIS item moves the chain on.
+        const command = task.stepSpec && isGateStep(task.stepSpec) ? task.stepSpec.command : '';
+        this.noteRun(
+          f.projectId,
+          f.taskId,
+          f.runId,
+          `Declined to trust "${command}" on this desktop — the gate did not run.`,
+        );
+        this.updateTask(f.taskId, { status: 'failed' }, null);
+        break;
+      }
+      case GATE_TRUST_ACTION.trust:
+        // Trust may only be granted through the desktop-only `gate:trust` channel
+        // (`trustGateCommand`) — an answer arriving here (a relay hop, or a stale UI that
+        // still posts through `attention:answer`) is refused by re-parking the same ask.
+        this.raiseTaskFailed(f);
+        break;
       default:
         // Unrecognized (free-text) answer — re-park so the decision isn't lost.
         this.raiseTaskFailed(f);
@@ -6840,6 +6881,51 @@ export class Scheduler {
       base: landing?.base,
       worktree: landing?.worktree,
     });
+  }
+
+  /**
+   * `GateStepDeps.raiseTrust` — park a gate whose command has never run on THIS desktop
+   * (F8.8), offering `GATE_TRUST_ACTION.trust`/`.decline`. `commandHash` is the hash of the
+   * exact command just shown to the human, so a later edit to the step is a DIFFERENT
+   * question — see `trustGateCommand`.
+   */
+  private raiseGateTrust(task: Task, command: string): void {
+    const f: PendingFailure = {
+      kind: 'gate-trust',
+      projectId: task.projectId,
+      taskId: task.id,
+      runId: randomUUID(),
+      reason: `Trust and run "${command}" on this desktop?`,
+      commandHash: gateCommandHash(command),
+    };
+    this.parkFailure(f, `Waiting for this desktop to trust "${command}" before running it.`);
+  }
+
+  /**
+   * `gate:trust`'s handler (F8.8) — the one path allowed to actually grant trust. Adds the
+   * parked command's hash to `AppSettings.trustedGateCommands`, resolves the inbox item, and
+   * re-queues the gate through `advanceSubtasks` → `GateStepRunner.start()` exactly as "Run
+   * gate again" does — which re-checks `isTrusted` against whatever the step's command is
+   * NOW, so an edit made while this sat in the inbox parks it again rather than silently
+   * inheriting trust for a command nobody saw.
+   *
+   * A no-op for an unknown item or one that is not a `gate-trust` park — already handled, or
+   * answered through the wrong channel.
+   */
+  trustGateCommand(itemId: string): void {
+    const f = this.pendingFailures.get(itemId);
+    if (!f || f.kind !== 'gate-trust' || !f.commandHash) return;
+    this.pendingFailures.delete(itemId);
+    this.resolveAttention(itemId);
+    const settings = this.store.getSettings();
+    this.store.saveSettings({
+      ...settings,
+      trustedGateCommands: withTrustedHash(settings.trustedGateCommands ?? [], f.commandHash),
+    });
+    this.noteRun(f.projectId, f.taskId, f.runId, 'Trusted on this desktop.');
+    this.updateTask(f.taskId, { status: 'pending' }, null);
+    const task = this.store.getTask(f.taskId);
+    if (task?.parentTaskId) this.advanceSubtasks(task.parentTaskId);
   }
 
   /**

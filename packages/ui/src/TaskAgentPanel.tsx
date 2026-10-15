@@ -64,6 +64,7 @@ import { mrAbbrev, mrIsSettled, mrNoun, mrRef, type MergeRequest } from '@tm/sha
 import { effectiveSkillRefs } from '@tm/shared/skills';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
+import { invokeAttentionAnswer } from './attentionAnswer';
 import { stepPosition } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { cardModelCaption } from './modelChoice';
@@ -510,7 +511,7 @@ export function TaskAgentPanel({
       setBusy(true);
       setError(null);
       try {
-        await transport.invoke('attention:answer', item.id, a);
+        await invokeAttentionAnswer(transport, item.id, a);
         // No local clear of the ITEM: the engine emits `attention:resolved` and the board's
         // index drops exactly this one, leaving any sibling ask standing. The reply itself
         // has been sent, so its draft is spent.

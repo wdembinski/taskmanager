@@ -29,7 +29,9 @@ import type { LimitState } from '@shared/limit';
 import type { MergeRequest } from '@shared/mergeRequest';
 import type { ActivityRow } from '@shared/activity';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
+import { GATE_TRUST_ACTION } from '@shared/workflow';
 import { createActivityRecorder } from './activityRecorder';
+import { gateCommandHash } from './gateTrust';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type { WorktreeManager } from './worktreeManager';
@@ -1580,6 +1582,14 @@ describe('failure decision helpers (pure)', () => {
     expect(actions).not.toContain(FAILURE_ACTION.cleanup);
     expect(actions).not.toContain(FAILURE_ACTION.markDone);
   });
+
+  it('offers only Trust and run / Decline for a gate awaiting trust (F8.8)', () => {
+    const actions = failureActionsFor('gate-trust');
+    expect(actions).toEqual([GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline]);
+    expect(actions).not.toContain(FAILURE_ACTION.runGateAgain);
+    expect(actions).not.toContain(FAILURE_ACTION.sendBackToAgent);
+    expect(actions).not.toContain(FAILURE_ACTION.skipGate);
+  });
 });
 
 describe('Scheduler run-failure handling', () => {
@@ -2189,6 +2199,9 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       finishResult?: Record<string, unknown>;
       /** The setting that decides whether a failure is re-queued or parked for a human. */
       maxAutoRetries?: number;
+      /** Hashes of gate commands already trusted on this desktop (F8.8) — defaults to none,
+       *  so a gate step's `stepSpec.command` must be seeded here before it can really run. */
+      trustedGateCommands?: string[];
     },
   ) {
     const agentProject = {
@@ -2251,6 +2264,9 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       steps: Array<{ title: string; description?: string | null }>;
     }> = [];
     const comments: string[] = [];
+    /** F8.8: mutable so `saveSettings` → `getSettings` round-trips a granted trust, the way
+     *  the real store does — `trustGateCommand`'s re-run depends on seeing it. */
+    let trustedGateCommands = opts?.trustedGateCommands ?? [];
     const store = {
       getTask: (id: string) => byId.get(id),
       getProject: (id: string) => (id === 'agent-1' ? agentProject : undefined),
@@ -2295,6 +2311,13 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
         limitJitterMs: 0,
         concurrency: 1,
         autoIntegrate: opts?.autoIntegrate ?? true,
+        // F8.8: untrusted by default — a gate's own trust tests seed this, or grant trust
+        // through `saveSettings` below, which this reads back (unlike the other settings
+        // here, a real `trustGateCommand` → `start()` round trip depends on seeing it).
+        trustedGateCommands,
+      }),
+      saveSettings: vi.fn((next: { trustedGateCommands: string[] }) => {
+        trustedGateCommands = next.trustedGateCommands;
       }),
       // The usage-limit gate persists itself on every change; these cases drive it, so the
       // two ends of that have to exist. `loadLimitGate` answering null is also the state
@@ -3882,6 +3905,157 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       await flush();
 
       expect(h.integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+    });
+
+    /**
+     * Gate command trust (F8.8): a gate step's command must be trusted on THIS desktop
+     * before its first run. Unlike the cases above, the "parks because untrusted" and "an
+     * edit re-parks it" cases below reach the REAL `gateSteps` (a `GateStepRunner`) —
+     * safe to do because trust is checked before `prepare()`/`startGate`, so nothing spawns.
+     * The cases that exercise what happens AFTER trust is granted install the same fake the
+     * cases above use, exactly as "Run gate again"/"Send back to agent"/"Skip gate" do.
+     */
+    describe('gate command trust (F8.8)', () => {
+      /** Park a gate-trust ask the way `raiseGateTrust` would, without going through a real
+       *  `start()` — the same shortcut `parkGateFailure` takes for an ordinary gate failure. */
+      function parkGateTrust(
+        h: ReturnType<typeof setup>,
+        taskId = 's1',
+        commandHash = gateCommandHash('npm test'),
+      ): string {
+        const itemId = 'gate-trust-item-1';
+        (h.scheduler as unknown as { attention: Map<string, unknown> }).attention.set(itemId, {
+          id: itemId,
+          runId: 'r1',
+          taskId,
+          projectId: 'agent-1',
+          taskTitle: 'Run tests',
+          kind: 'task-failed',
+          prompt: 'Trust and run "npm test" on this desktop?',
+          options: [GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline],
+          toolName: null,
+          reason: null,
+          worktreePath: null,
+          branch: null,
+          createdAt: Date.now(),
+        });
+        (h.scheduler as unknown as { pendingFailures: Map<string, unknown> }).pendingFailures.set(
+          itemId,
+          {
+            kind: 'gate-trust',
+            projectId: 'agent-1',
+            taskId,
+            runId: 'r1',
+            reason: 'Trust and run "npm test" on this desktop?',
+            commandHash,
+          },
+        );
+        return itemId;
+      }
+
+      it('parks an untrusted gate with Trust and run / Decline, and flips it to waiting-input', async () => {
+        const h = setup([{ id: 's1', status: 'pending', stepSpec: gateStep() }]);
+        const gateSteps = (
+          h.scheduler as unknown as { gateSteps: { start(t: Task): Promise<void> } }
+        ).gateSteps;
+
+        await gateSteps.start(h.children[0]);
+
+        const items = [
+          ...(
+            h.scheduler as unknown as { attention: Map<string, { options: string[] }> }
+          ).attention.values(),
+        ];
+        expect(items).toHaveLength(1);
+        expect(items[0].options).toEqual([GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline]);
+        expect(h.children[0].status).toBe('waiting-input');
+      });
+
+      it('"Decline" fails the gate with the reason, leaving the next sibling pending', async () => {
+        const h = setup([
+          { id: 's1', status: 'waiting-input', stepSpec: gateStep() },
+          { id: 's2', status: 'pending' },
+        ]);
+        const itemId = parkGateTrust(h);
+
+        h.scheduler.answerAttention(itemId, { decision: 'reply', text: GATE_TRUST_ACTION.decline });
+        await flush();
+
+        expect(h.children[0].status).toBe('failed');
+        expect(h.children[1].status).toBe('pending'); // the chain's existing failure contract
+        expect(h.store.appendTaskEvent).toHaveBeenCalledWith(
+          'agent-1',
+          's1',
+          'r1',
+          expect.objectContaining({ text: expect.stringContaining('Declined to trust') }),
+        );
+      });
+
+      it('"Trust and run" arriving through attention:answer is refused and re-parks the same ask', async () => {
+        const h = setup([{ id: 's1', status: 'waiting-input', stepSpec: gateStep() }]);
+        const fake = installFakeGateSteps(h.scheduler);
+        const itemId = parkGateTrust(h);
+
+        h.scheduler.answerAttention(itemId, { decision: 'reply', text: GATE_TRUST_ACTION.trust });
+        await flush();
+
+        // Never ran, and nothing was added to the trusted set — only `gate:trust` may do that.
+        expect(fake.started).toEqual([]);
+        expect(h.store.saveSettings).not.toHaveBeenCalled();
+        const items = [
+          ...(
+            h.scheduler as unknown as { attention: Map<string, { options: string[] }> }
+          ).attention.values(),
+        ];
+        expect(items).toHaveLength(1); // re-parked as a fresh item, same two options
+        expect(items[0].options).toEqual([GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline]);
+      });
+
+      it('trustGateCommand adds the hash, resolves the item, and reruns the gate', async () => {
+        const h = setup([{ id: 's1', status: 'waiting-input', stepSpec: gateStep() }]);
+        const fake = installFakeGateSteps(h.scheduler);
+        const hash = gateCommandHash('npm test');
+        const itemId = parkGateTrust(h, 's1', hash);
+
+        h.scheduler.trustGateCommand(itemId);
+        await flush();
+
+        const saved = (h.store.saveSettings as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+          trustedGateCommands: string[];
+        };
+        expect(saved.trustedGateCommands).toContain(hash);
+        expect(h.children[0].status).toBe('pending');
+        expect(fake.started).toEqual(['s1']);
+        expect(
+          (h.scheduler as unknown as { attention: Map<string, unknown> }).attention.has(itemId),
+        ).toBe(false);
+      });
+
+      it('an edit to the command between park and trust parks it again instead of running', async () => {
+        const h = setup([{ id: 's1', status: 'pending', stepSpec: gateStep() }]);
+        const gateSteps = (
+          h.scheduler as unknown as { gateSteps: { start(t: Task): Promise<void> } }
+        ).gateSteps;
+        await gateSteps.start(h.children[0]); // parks: untrusted
+
+        const attention = (
+          h.scheduler as unknown as { attention: Map<string, { id: string; prompt: string }> }
+        ).attention;
+        const firstItemId = [...attention.keys()][0];
+
+        // The command is edited while the ask sits in the inbox.
+        h.children[0].stepSpec = { ...gateStep(), command: 'npm test --changed' };
+
+        h.scheduler.trustGateCommand(firstItemId);
+        await flush();
+
+        // Trust was granted for the OLD hash; `start()` re-checks the CURRENT command, which
+        // no longer matches, so it parks again instead of running.
+        const items = [...attention.values()];
+        expect(items).toHaveLength(1);
+        expect(items[0].prompt).toContain('npm test --changed');
+        expect(h.children[0].status).toBe('waiting-input');
+      });
     });
   });
 });
