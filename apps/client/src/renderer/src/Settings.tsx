@@ -105,6 +105,7 @@ import { ModelField } from '@ui/ModelField';
 import { PlanningModelField } from '@ui/PlanningModelField';
 import { PromptTemplatesSection } from '@ui/PromptTemplatesSection';
 import type { PromptTemplate } from '@shared/promptTemplates';
+import { SkillsSection } from '@ui/SkillsSection';
 import { SubagentModelField } from '@ui/SubagentModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
@@ -196,6 +197,7 @@ type SettingsSection =
   | 'cloud'
   | 'people'
   | 'agentProfiles'
+  | 'skills'
   | 'promptTemplates';
 
 /**
@@ -647,6 +649,7 @@ export function Settings(): JSX.Element {
         <Tab value="cloud">Cloud</Tab>
         <Tab value="people">People</Tab>
         <Tab value="agentProfiles">Agent profiles</Tab>
+        <Tab value="skills">Skills</Tab>
         <Tab value="promptTemplates">Prompt templates</Tab>
       </TabList>
 
@@ -656,6 +659,11 @@ export function Settings(): JSX.Element {
         </div>
       ) : section === 'agentProfiles' ? (
         <AgentProfiles />
+      ) : section === 'skills' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Skills</Subtitle2>
+          <SkillsSection />
+        </div>
       ) : section === 'promptTemplates' ? (
         <div className={styles.pane}>
           <Subtitle2>Prompt templates</Subtitle2>
