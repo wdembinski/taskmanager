@@ -110,6 +110,8 @@ import { TicketTypeFields } from './projects/TicketTypeFields';
 import { TemplateMenu } from './TemplateMenu';
 import { OsDictationHint } from './dictation/OsDictationHint';
 import type { DictationPath } from './dictation/dictationModel';
+import { DictationControl } from './dictation/DictationControl';
+import { insertAtCaret, type CaretSelection } from './dictation/insertAtCaret';
 import { applyTemplateToText, templateVarsForNewTask } from './templateInsert';
 import { useTransport } from './transport';
 
@@ -846,6 +848,28 @@ export function AddTaskDialog({
     });
   }
 
+  /**
+   * The caret has to be read before the mic button takes focus away from the textarea, so
+   * it's captured on blur (same reasoning as the composer's own dictation wiring) rather
+   * than at Insert time, by which point the field hasn't been focused for the whole
+   * recording.
+   */
+  const dictationSelectionRef = useRef<CaretSelection>(description.length);
+
+  /** Splice a dictated transcript in at the captured caret — same restore dance as
+   *  {@link insertRefs}/{@link pickTemplate}. */
+  function insertDictation(text: string): void {
+    const { text: next, caret } = insertAtCaret(description, dictationSelectionRef.current, text);
+    setDescription(next);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node) {
+        node.focus();
+        node.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
   /** Take paths on, and cite whatever was actually new — attaching writes the `@name` for you. */
   function stage(paths: string[]): void {
     const next = stageAttachments(staged, paths);
@@ -1088,6 +1112,13 @@ export function AddTaskDialog({
                     resize="vertical"
                     textarea={{ ref: textareaRef }}
                     onChange={(_e, d) => setDescription(d.value)}
+                    onBlur={(e) => {
+                      const el = e.target as HTMLTextAreaElement;
+                      dictationSelectionRef.current = {
+                        start: el.selectionStart,
+                        end: el.selectionEnd,
+                      };
+                    }}
                     // Only when files can be staged at all — a browser has no path for a
                     // pasted file to resolve to, and keeps its own native paste here instead.
                     onPaste={filesEnabled ? onDescriptionPaste : undefined}
@@ -1103,6 +1134,7 @@ export function AddTaskDialog({
                     />
                   )}
                   <TemplateMenu surface="add-task" onPick={pickTemplate} />
+                  <DictationControl onInsert={insertDictation} />
                 </div>
               </Field>
               {/* The files the work is ABOUT, picked while the brief is being written rather

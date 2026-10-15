@@ -168,6 +168,8 @@ interface Pending {
 }
 
 export class HttpTransport implements Transport {
+  /** The one host fact `@tm/ui/transport` asks for — see `Transport.host`'s own docstring. */
+  readonly host = 'web';
   private readonly pending = new Map<string, Pending>();
   private polling = false;
   private resultCursor: string | null = null;
