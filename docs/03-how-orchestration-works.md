@@ -370,6 +370,98 @@ card's timeline explaining why, and the run proceeds regardless.
 > drag a card between columns, post a comment, create a card as a real issue — but
 > the agent never does it on your behalf.
 
+### Skills and prompt templates
+
+Two different ways to shape what an agent does, and they are not interchangeable. A
+**[skill](05-glossary.md#skill)** is context the agent carries into the run — a
+playbook it follows for every turn, attached before the run starts. A **[prompt
+template](05-glossary.md#prompt-template)** is text you edit before sending — canned
+starting prose for a box you're about to type into, gone the moment you've changed it.
+
+#### Skills in force
+
+A skill attached to a card or a step is meant to be **[in force](05-glossary.md#skills-in-force)**
+for the run, not merely discoverable: its full body is injected into the system prompt
+under a `## Skills in force for this run` heading, rather than left for the agent to go
+find on disk. That section is rebuilt at **every spawn** — a fresh run, a chat reply, a
+resume after a Stop or a usage-limit reset — never cached from an earlier turn, so a
+skill you edit or detach takes effect the next time the card's agent is spoken to, not
+retroactively on a turn already in flight.
+
+> **Skills never override the orchestrator's own rules.** Where one conflicts with the
+> instructions already governing the run — ending the turn, merging, writing to the
+> tracker — the rules above it in the prompt win. A skill shapes *how* the agent works
+> within those rules, not whether they apply.
+
+**A release run never sees them.** The `RELEASE.md` follow-up that runs after a merge
+is the tool's own run, governed by the repo's release recipe, not the card's work — so
+the card's and step's skills have nothing to say about it and the section is omitted
+outright.
+
+#### Library skills and repo skills
+
+A **[library skill](05-glossary.md#library-skill)** is a `SKILL.md` this app owns end
+to end — written, edited, imported and synced from **Settings → Skills**. A **[repo
+skill](05-glossary.md#repo-skill)** is read-only here: it already lives in a project's
+own worktree under `.claude/skills/<name>/SKILL.md`, and this app only discovers and
+displays it. **Copy to library** turns a repo skill's current body into a library skill
+you can then edit — the repo file itself is never written back to.
+
+Either kind is attached the same way, from the same small **Skills** picker wherever it
+appears — a card's own panel, the assign dialog, or a row in an approved plan's steps —
+listing the library plus whatever repo skills the card's agent project carries.
+
+#### Card vs. step
+
+A step of an approved plan runs with its card's skills **and** its own: the two lists
+are a union, the card's refs first. A step can add its own skills on top, but it cannot
+remove one its card carries — in the picker, a skill inherited from the card shows
+checked, disabled, and captioned *"from card"*, and only the step's own entries can be
+toggled off.
+
+#### Budget and omission
+
+The section is bounded to a size budget (currently 24 KiB) so a handful of attached
+skills can't crowd out everything else in the prompt. Skills are kept in attachment
+order — card refs before step refs — until one would push past the budget; that one and
+everything after it are dropped, never silently: the section itself names exactly which
+skills were omitted and invites the agent to ask for them if it needs them.
+
+#### The timeline note, and dangling refs
+
+Every run that has any skills attached (or any reference that failed to resolve) adds a
+note to the card's activity timeline naming which skills were in force, which were
+omitted for budget, and which refs were dangling. A **dangling** reference is one that
+no longer resolves to anything — a library skill that was deleted, or a repo skill
+folder that moved or was removed from the worktree. It never fails the run: the ref is
+simply dropped and named on the timeline, so a human reading the card's history sees
+exactly what the agent saw, not just that a skills section exists. The note also says
+plainly that a change to a card's skills takes effect on its *next* run, not the one
+already underway.
+
+#### Prompt templates
+
+A **prompt template** is reusable starting text for three surfaces: the Add-task
+description, the assign dialog's instructions, and a card's chat composer. Its body may
+use `{{title}}`, `{{key}}` and `{{project}}`, filled in from the card at the moment a
+template is inserted — an unknown or mistyped `{{placeholder}}` is left exactly as
+written rather than silently dropped, so a typo stays visible. Picking one from the
+**Template** menu on a surface either fills an empty box outright or inserts at the
+current caret/selection, except on a box that's showing its own pre-filled ticket
+reference untouched — there, the template lands below it rather than overwriting it.
+Templates are edited, reordered and toggled on or off per surface from **Settings →
+Prompt templates**, global across every project.
+
+#### What the web can and can't do
+
+Listing and **attaching** skills — library or repo — to a card or a step works on the
+web the same as on desktop: it's a direct read, not routed through a desktop Client.
+Creating, editing, or deleting a *library* skill, and reading a repo skill's full body
+to **Copy to library**, relay to a desktop Client and need one online to answer.
+**Import** and **Export** are host-only — native file/folder dialogs the web has no way
+to open — and are hidden there entirely. Prompt templates are plain global settings, so
+listing, inserting, and editing them works the same everywhere.
+
 ### Merging the branch
 
 Whether a finished branch merges itself is asked of the **card**, and answered by the
