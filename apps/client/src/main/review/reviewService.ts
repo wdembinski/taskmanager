@@ -15,9 +15,15 @@
  *    review message quotes; whether it still matches the code is a fact about the CURRENT
  *    diff, not the comment, so `list` recomputes it fresh on every call instead of trusting
  *    a column that would go stale the moment the agent touches the file again.
+ *  - **`send` batches every open draft into one follow-up.** It reuses `list`'s `outdated`
+ *    recompute, formats every comment still unsent into one message via `formatReviewMessage`,
+ *    and hands that to `chatWithAgent` — the same chat path a human types into, so a card
+ *    running an approved plan has the message land on its live step rather than the card
+ *    itself. Nothing is stamped `sentAt` until delivery actually succeeds.
  */
 import {
   excerptFor,
+  formatReviewMessage,
   markOutdated,
   type DiffStale,
   type ReviewAddResult,
@@ -26,8 +32,10 @@ import {
   type ReviewCommentInput,
   type ReviewCommentPatch,
   type ReviewDeleteResult,
+  type ReviewSendResult,
   type ReviewUpdateResult,
 } from '@shared/review';
+import type { ChatSendResult } from '@shared/model';
 import type { Store } from '../store';
 import type { DiffService } from './diffService';
 
@@ -39,8 +47,10 @@ export interface ReviewServiceDeps {
     | 'addReviewComment'
     | 'updateReviewComment'
     | 'deleteReviewComment'
+    | 'markReviewSent'
   >;
-  diffs: Pick<DiffService, 'filesFor'>;
+  diffs: Pick<DiffService, 'filesFor' | 'summary'>;
+  chat: (taskId: string, message: string) => ChatSendResult;
 }
 
 export class ReviewService {
@@ -140,6 +150,56 @@ export class ReviewService {
     if (existing?.sentAt != null) return { status: 'sent', sentAt: existing.sentAt };
     this.deps.store.deleteReviewComment(id);
     return { status: 'ok' };
+  }
+
+  /**
+   * Batch every open draft on `taskId` into one follow-up and send it down `deps.chat` — the
+   * same path a human's own chat message takes, so a card running an approved plan has the
+   * message land on its live step rather than the card itself.
+   *
+   * Refuses `unknown-task` when the card is gone; `landed`/`conflicted`/`no-branch` when
+   * `diffs.summary` cannot resolve a diff to put in the message's header; `nothing-to-send`
+   * when every draft has already gone out (the double-send case); `empty-message` as a guard
+   * if `formatReviewMessage` still comes back `''`; and whatever `deps.chat` itself refuses
+   * with — in every refusal, nothing is stamped.
+   */
+  async send(taskId: string, note?: string): Promise<ReviewSendResult> {
+    if (!this.deps.store.getTask(taskId)) {
+      return { status: 'refused', taskId, reason: 'unknown-task' };
+    }
+
+    const listed = await this.list(taskId);
+
+    const summary = await this.deps.diffs.summary(taskId);
+    if (summary.status !== 'ok') {
+      return { status: 'refused', taskId, reason: summary.status };
+    }
+
+    const drafts = this.deps.store
+      .listReviewComments(taskId)
+      .filter((c) => c.sentAt === null)
+      .map((c) => {
+        const current = listed.find((l) => l.id === c.id);
+        return current ? { ...c, outdated: current.outdated } : c;
+      });
+    if (drafts.length === 0) {
+      return { status: 'refused', taskId, reason: 'nothing-to-send' };
+    }
+
+    const message = formatReviewMessage(drafts, summary.summary, note);
+    if (!message) {
+      return { status: 'refused', taskId, reason: 'empty-message' };
+    }
+
+    const delivery = this.deps.chat(taskId, message);
+    if (delivery.status === 'refused') return delivery;
+
+    const stamped = this.deps.store.markReviewSent(
+      taskId,
+      drafts.map((c) => c.id),
+      Date.now(),
+    );
+    return { ...delivery, comments: stamped };
   }
 
   /**

@@ -251,6 +251,7 @@ export const RELAY_POLICY: {
   'review:add': 'relay',
   'review:update': 'relay',
   'review:delete': 'relay',
+  'review:send': 'relay',
   'task:assignAgent': 'relay',
   'task:stopAgent': 'relay',
   'task:resumeAgent': 'relay',

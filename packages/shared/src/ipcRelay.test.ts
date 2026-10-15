@@ -104,6 +104,7 @@ describe('the channels that DO relay', () => {
     'review:add',
     'review:update',
     'review:delete',
+    'review:send',
   ];
 
   for (const channel of MUST_RELAY) {
