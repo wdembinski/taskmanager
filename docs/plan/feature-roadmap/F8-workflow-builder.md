@@ -346,7 +346,7 @@ command".
   - `apps/web`: Workflows settings section, relay writes and apply, gate rows on steps, "waiting for <desktop> to trust" state.
   - Acceptance: `test/shell-parity.test.ts` and settings section tests pass; a relayed apply creates steps on the desktop (transport test).
 
-- [ ] F8.14 Ship two starter workflows and document the builder @needs: F8.13 Build and apply workflows from the web client
+- [x] F8.14 Ship two starter workflows and document the builder @needs: F8.13 Build and apply workflows from the web client
 
   - Seed "Implement + test gate" and "Implement → review → test gate"; `docs/03-how-orchestration-works.md` (steps vs chain arrows vs workflows, gates, trust), glossary entries.
   - Acceptance: starters validate with `validateWorkflow`; docs match behaviour; formatter clean.

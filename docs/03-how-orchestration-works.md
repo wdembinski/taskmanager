@@ -798,7 +798,10 @@ the **next** run and can never move one already in flight.
 
 You don't need a planning round. Every card's detail sidebar has a **Steps** box: add
 steps by hand with a title and a brief, then assign the parent — the chain runs your
-steps directly. On the board, a parent card shows its steps as rows under its body
+steps directly. A third way needs neither a research turn nor hand-writing each step:
+**Apply workflow…**, from the card's own panel or the assign dialog's **Workflow**
+picker, turns a saved recipe into the same kind of round in one click — see
+[Workflows](#workflows). On the board, a parent card shows its steps as rows under its body
 with a `2/5` progress caption; selecting a step gives it a breadcrumb back to the
 parent and "Step N of M".
 
@@ -876,14 +879,20 @@ card to another, plus the **gate** that says what "after" means for that pair.
 The two features share the word and almost nothing else. Steps are one card's work,
 split up; a chain is several cards, ordered.
 
-| | **Steps** (of one card) | **A chain** (between cards) |
-|---|---|---|
-| What it is | phases of one approved plan, `parentTaskId` → the card | links (`task_links`) between two ordinary cards |
-| Where the work happens | **one** branch in **one** worktree, shared by every step | each card keeps **its own** branch and worktree |
-| Integration | **once**, when the last step finishes | **each card merges itself**, in its own time |
-| Order | implicit and total — `order`, one at a time | whatever arrows you drew: a line, a fan, a diamond |
-| Who made it | the planner (or you, by hand, in the Steps box) | you, by dragging |
-| Failure | the rest of the steps stop | the successor is simply never released |
+| | **Steps** (of one card) | **A chain** (between cards) | **A workflow** (a recipe) |
+|---|---|---|---|
+| What it is | phases of one approved plan, `parentTaskId` → the card | links (`task_links`) between two ordinary cards | a saved, reusable `WorkflowDoc` you *apply* to a card |
+| Where the work happens | **one** branch in **one** worktree, shared by every step | each card keeps **its own** branch and worktree | nowhere of its own — applying one produces ordinary steps, which then share one branch/worktree like any other round |
+| Integration | **once**, when the last step finishes | **each card merges itself**, in its own time | not its own either — the steps it produced integrate exactly as a hand-written round would |
+| Order | implicit and total — `order`, one at a time | whatever arrows you drew: a line, a fan, a diamond | fixed at apply time — the recipe's own step order becomes that round's `order` |
+| Who made it | the planner (or you, by hand, in the Steps box) | you, by dragging | you, in **Settings → Workflows**, or imported from a `.workflow.json` file |
+| Failure | the rest of the steps stop | the successor is simply never released | the same as a hand-written step chain — plus a **gate** step, which can send an earlier step back for another attempt on its own |
+
+A workflow is not a third runtime sitting beside the other two: applying one is a fast
+way to produce the **Steps** column — a fresh `planRound`, one branch, one merge after
+the last step — the same shape **Plan first, then execute in steps** already produces,
+just compiled from a recipe instead of from a research turn. See
+[Workflows](#workflows) below.
 
 Which is why a **step may not be chained at either end**: its order *is* a chain
 already, and a second one over the top of it could only ever disagree. Chain the
@@ -1019,6 +1028,143 @@ sends you hunting through three other cards' logs.
 - **Release now**, in a blocked card's pane, starts it anyway. Some chains only ever recorded
   the order things ought to be *looked at*, and there the gate is an obstacle rather than a
   safeguard. The link stays; the timeline says it went ahead of it.
+
+---
+
+## Workflows
+
+A **workflow** is a reusable recipe for a card's own steps — write it once, in
+**Settings → Workflows**, and apply it to any card instead of running a planning turn
+or typing each step by hand. See [Steps vs chain arrows vs
+workflows](#a-chain-is-not-a-cards-steps) above for how the three relate; the short
+version is that a workflow is not a new runtime and not an arrow between cards — it
+*compiles into* a card's existing step machinery, as a fresh `planRound` on one shared
+branch, merging once after its last step exactly as any other round does. **Applying**
+one is therefore an alternative to **Plan first** (see
+[above](#plan-first-then-execute-in-steps)), not a different feature sitting next to it.
+
+A workflow holds two kinds of step, defined in `@shared/workflow`:
+
+- An **agent step** hands a brief to Claude, same as a hand-written step: `title`,
+  `brief`, and optionally a `model`, a permission `mode`, and `skillRefs` — any field
+  left unset follows the card's own project default, exactly as a step you typed
+  yourself would.
+- A **gate step** runs a shell `command` and checks its exit code instead of briefing
+  an agent. It has no session and no brief — only `title`, `command`, and an optional
+  `onFail` naming an earlier agent step to retry (`retryFrom`), how many attempts to
+  allow (`maxAttempts`, 1–5), and which exit codes are worth retrying on (`retryOn`;
+  absent means any non-zero code). `onFail.retryFrom` must name an agent step that
+  comes before the gate in the same workflow — never itself, never another gate, never
+  a later step — which is checked once, at save/import time, so a broken document
+  never reaches a card.
+
+> A **gate step** is a different thing from the **gate** on a chain link
+> (*after-merge*/*stacked*, [above](#the-two-gates)): one is a workflow step that runs
+> a command inside a card, the other is what "after" means between two cards. They
+> share a name and nothing else.
+
+### Running a gate
+
+A gate's command runs in the card's own worktree, through the same **exec host** every
+step uses — a login `bash -lc` on WSL/Linux, and through `cmd.exe` on local Windows (so
+a PATH shim like a `.cmd`/`.ps1` wrapper resolves the way a terminal would). It is
+killed after 20 minutes if it hasn't finished, and only the last 16 KiB of its combined
+stdout/stderr is kept — enough to show the failing tail, not an unbounded log. A gate
+has no Claude session, so running one **costs no tokens**, and it is never held behind
+the usage-limit or sign-in gates the way an agent step is: there is nothing there for
+either of those to park.
+
+What the exit code means next (`decideGateOutcome`, `@shared/workflow`):
+
+- **Pass** (exit 0, no timeout) — the step is marked done and the chain advances, same
+  as any other step finishing.
+- **Retry** — a non-zero, retryable exit code with attempts left resets every step from
+  `retryFrom` through the gate itself back to `pending` and advances the chain, so the
+  named agent step runs again. The failing output (bounded to 8 KiB) is queued as that
+  step's failure note, and the gate's own row shows an **attempt N/M** chip once it has
+  looped at least once.
+- **Fail** — no `onFail`, a non-retryable exit code, attempts exhausted, or a **timeout**
+  (checked first, and never retryable even if `onFail` allows retries — a hang is an
+  infrastructure fact, not a command result the gate can reason about). The chain stops
+  and parks an inbox item with three resolutions: **Run gate again** (re-runs the same
+  command in place), **Send back to agent** (loops to `retryFrom` once more, past the
+  gate's own attempt budget), and **Skip gate** (accepts the failure as a pass and lets
+  the chain carry on).
+
+A gate at the **end** of a round is therefore a **pre-merge gate**: a pass (or a human's
+Skip gate) is what releases that round's merge, same as a passing last step always has;
+until then, nothing lands.
+
+### Trust
+
+A gate's command is not run on a fresh desktop the first time it is reached — it has to
+be trusted there first (F8.8). Trust is keyed on the command's **exact bytes** (a
+SHA-256 hash, no whitespace normalisation — one edited character is a different
+command), and it is **machine-local**: the hash set (`AppSettings.trustedGateCommands`)
+is never part of the settings this app syncs or relays to another desktop, and nothing
+but the dedicated trust channel may add to it — an answer arriving any other way (a
+relayed web click, a stale UI) is refused and re-parked.
+
+An untrusted gate parks an inbox item — *"Trust and run "\<command\>" on this desktop?"*
+— with two buttons: **Trust and run** adds the hash and re-queues the gate, which
+re-checks the command it finds **now**, so editing the step while the prompt sits
+unanswered asks again rather than quietly inheriting trust for a command nobody saw;
+**Decline** leaves the step failed and the chain stopped, with a note naming the
+command that was refused. The web has no desktop of its own to run the command on, so
+it drops the Trust button entirely and shows **"Waiting for `<desktop>` to trust this
+command"** (or *"the desktop app"* when it can't name one) in its place — Decline still
+works from there.
+
+### Building and applying
+
+**Settings → Workflows** is the builder: a list of saved documents on the left, the
+open one's editor on the right. Steps are added, reordered and removed from the editor;
+every change is checked live against the same rules `validateWorkflow` enforces (a
+`retryFrom` that doesn't resolve, a duplicate step id, a missing brief or command, …),
+and each issue is shown inline against the step it belongs to — **Save** stays disabled
+until the draft is both changed and issue-free. A **Show JSON preview** toggle renders
+the exact document a save would write, with its own Copy button. **Import** accepts a
+`.workflow.json` file or pasted JSON (pasting works even where there is no file system
+to open one from, i.e. the web); **Export** writes one back out, named from the
+workflow's own title (`<name>.workflow.json`).
+
+Applying a workflow to a card is separate from editing one: **Apply workflow…** on an
+assigned card's own panel, or the **Workflow** picker in the assign dialog, turns a
+saved document into that card's next round of steps. It is refused — before the round
+trip, where the dialog can already tell, and always by `workflow:apply` itself — for
+the same reasons re-planning is: the target is a **step**, not a card; the card has no
+agent project to run in; the card already carries steps that are not finished or
+cancelled; the named workflow no longer validates; or applying it would push the card
+past its own step cap. Every refusal reads from one map
+(`WORKFLOW_APPLY_REFUSAL_MESSAGE`), so a dialog's predicted refusal and the one the
+handler actually returns can never say different things.
+
+**Editing a workflow never changes a card it was already applied to.** Applying takes
+a deep snapshot of the document's steps into each new step's own `stepSpec` — the card
+runs what the recipe said *at apply time*, forever, even if the saved workflow is later
+edited, renamed, or deleted. Re-applying (once the round is finished or cancelled) is
+how a card picks up a workflow's latest version.
+
+The web builds and applies workflows the same way the desktop does, relayed to a
+connected desktop Client rather than running locally — there is no separate web-only
+implementation to drift out of step with the desktop's.
+
+### Starter workflows
+
+Every fresh install seeds two workflows once, keyed by id so a reseed is a no-op and an
+edit you make to one afterwards is never overwritten by a later launch:
+
+- **Implement + test gate** — one agent step (*Implement the change*) into one gate
+  (*Run the tests*, `npm test`), retrying the implementation up to 3 times on a red run.
+- **Implement → review → test gate** — the same shape with a *Review the change* agent
+  step between implementing and the test gate, still retrying from the
+  **implementation** on a red run rather than the review — a reviewer that already saw
+  a passing run has nothing left to add once the tests go red again.
+
+Both ship with `npm test` as the gate's command — edit it in the builder to whatever
+your project actually runs before applying either one. The first time a card reaches
+that gate, this desktop has never seen the command before, so it asks to [trust
+it](#trust) exactly as a hand-written gate would.
 
 ---
 

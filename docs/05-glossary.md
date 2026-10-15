@@ -349,12 +349,14 @@ every sync; a link is between arbitrary cards, made by a human, and survives a r
 
 ### Gate
 
-What "after" means for one link. **After merge** (`after-merge`, the default) waits for the
-predecessor to have **landed** — settled code, the safe choice. **Stacked on this branch**
-(`stacked`) fires as soon as the predecessor stops writing, so the next card starts sooner
-on a base that may still be rewritten under it. Both the board and the release engine ask
-the same function (`linkSatisfied` in `src/shared/taskChain.ts`), so they cannot disagree
-about whether a card is ready.
+What "after" means for one **chain link**. **After merge** (`after-merge`, the default)
+waits for the predecessor to have **landed** — settled code, the safe choice. **Stacked
+on this branch** (`stacked`) fires as soon as the predecessor stops writing, so the next
+card starts sooner on a base that may still be rewritten under it. Both the board and
+the release engine ask the same function (`linkSatisfied` in `src/shared/taskChain.ts`),
+so they cannot disagree about whether a card is ready. Not to be confused with a
+**[gate step](#gate-step)** — a workflow step that runs a command inside a single card;
+the two share a name and nothing else.
 
 ### Stacked branch
 
@@ -371,6 +373,55 @@ waits on. Stored rather than inferred, so a card dragged back out of Done or a m
 list a poll behind cannot un-release a chain that already started. Stamped from two places:
 a local integrate that merges the branch, and a linked **merge request** GitLab reports as
 `merged` — the only signal that exists on a project where nobody merges locally.
+
+### Workflow
+
+A reusable, saved recipe (`WorkflowDoc`) of **agent steps** and **gate steps**, built
+and edited in **Settings → Workflows** and applied to a card instead of running a
+planning turn or typing each step by hand. Applying one compiles it into a fresh
+round of the card's own steps — it is not a new runtime, and it is not an arrow
+between cards like a **[chain](#chain-of-execution)**. Editing a saved workflow never
+changes a card it was already applied to: applying takes a snapshot. See
+[doc 03](03-how-orchestration-works.md#workflows).
+
+### Agent step
+
+A workflow step that hands a brief to Claude — the same shape as a hand-written
+**[subtask](#subtask-step)**: a title, a brief, and optional model/permission-mode/skill
+overrides that fall back to the card's own project default when unset.
+
+### Gate step
+
+A workflow step that runs a shell command and checks its exit code instead of
+briefing an agent — no session, no tokens spent, and never held by the usage-limit or
+sign-in gates. It runs in the card's own worktree through the exec host (`bash` on
+WSL/Linux, `cmd.exe` on local Windows), times out after 20 minutes, and keeps only a
+bounded tail of its output. A non-zero exit can retry an earlier agent step for a
+configured number of attempts (a **timeout never does**, even then); once attempts run
+out, or there is nowhere configured to retry to, it parks an inbox item offering **Run
+gate again**, **Send back to agent** or **Skip gate**. A gate step at the end of a round
+is a **pre-merge gate**: nothing lands until it passes or a human skips it. Not to be
+confused with the **[gate](#gate)** on a chain link between two cards. See
+[doc 03](03-how-orchestration-works.md#running-a-gate).
+
+### Gate command trust
+
+A gate step's command does not run on a desktop that has never seen it: trust is keyed
+on the command's exact bytes (a SHA-256 hash) and kept **per machine**
+(`AppSettings.trustedGateCommands`), never synced or relayed to another desktop. The
+first run (or any edit to the command) parks an inbox item with **Trust and run** /
+**Decline**; only the dedicated trust channel may grant it, so an answer arriving any
+other way is refused. A host with no desktop of its own to run the command — the web —
+shows *"Waiting for `<desktop>` to trust this command"* in place of the Trust button.
+See [doc 03](03-how-orchestration-works.md#trust).
+
+### Starter workflow
+
+One of the two workflows a fresh install seeds once (keyed by id, so a later launch
+never overwrites an edit you made): **Implement + test gate**, and **Implement →
+review → test gate**. Both end in a gate running `npm test` — edit it to your own
+project's command before applying either one. See
+[doc 03](03-how-orchestration-works.md#starter-workflows).
 
 ### Nav rail
 
