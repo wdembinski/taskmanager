@@ -2,9 +2,24 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IpcApi } from '@tm/shared/ipc';
 import { CLOUD_BLOB_MAX_BYTES, type TaskAttachment } from '@tm/shared/attachments';
 import type { Automation, AutomationRun } from '@tm/shared/automation';
+import type { Project } from '@tm/shared/model';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
+import type { RepoSkillSummary, Skill } from '@tm/shared/skills';
 import type { CommandResult } from '@tm/protocol/wire';
 import { HttpTransport, RPC_TIMEOUT_MS, type HttpTransportDeps } from './httpTransport';
+
+/** One project, for the `skill:listRepo` direct-tier tests. */
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'p1',
+    name: 'A project',
+    path: '',
+    planPath: '',
+    ticketPrefix: '',
+    color: '',
+    ...overrides,
+  } as Project;
+}
 
 /** One automation, for the direct-read and owner-targeted-relay tests below. */
 const automation = (over: Partial<Automation> = {}): Automation => ({
@@ -388,6 +403,60 @@ describe('HttpTransport: the direct tier', () => {
     );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('reads skill:list from GET /v1/skills with no desktop on record', async () => {
+    const skill: Skill = {
+      id: 's1',
+      name: 'release-notes',
+      description: 'Draft release notes',
+      body: '# body',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ skills: [skill], deletedSkillIds: [] }),
+    });
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => null,
+    });
+
+    await expect(transport.invoke('skill:list')).resolves.toEqual([skill]);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/skills');
+    expect(init.method).toBeUndefined(); // a GET
+    expect(init.headers.authorization).toBe('Bearer token');
+  });
+
+  it("reads skill:listRepo from the mirrored project's own repoSkills, with no network call", async () => {
+    const summary: RepoSkillSummary = {
+      projectId: 'p1',
+      name: 'deploy',
+      description: 'How to deploy this repo',
+      path: '.claude/skills/deploy/SKILL.md',
+    };
+    const fetchImpl = vi.fn();
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getProject: (id) => (id === 'p1' ? project({ id: 'p1', repoSkills: [summary] }) : undefined),
+    });
+
+    await expect(transport.invoke('skill:listRepo', 'p1')).resolves.toEqual([summary]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers [] for skill:listRepo on a project the mirror has never heard of', async () => {
+    const fetchImpl = vi.fn();
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getProject: () => undefined,
+    });
+
+    await expect(transport.invoke('skill:listRepo', 'unknown')).resolves.toEqual([]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('HttpTransport: a relayed invoke is a real round trip', () => {
@@ -408,6 +477,34 @@ describe('HttpTransport: a relayed invoke is a real round trip', () => {
       issuedBy: 'web-1',
       kind: 'ipc-invoke',
       payload: { channel: 'task:activity', args: ['t1'] },
+    });
+  });
+
+  /**
+   * The acceptance test for F7.12 step 1: attaching a skill from the web is a relayed
+   * `ipc-invoke` the DESKTOP's own `task:setSkillRefs` handler answers, same as any other
+   * card edit this app has no local truth for — it lands on the target Client's card, not
+   * on some cloud-side stand-in for one.
+   */
+  it('relays task:setSkillRefs and resolves with the desktop’s updated task', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-9',
+    });
+
+    const call = transport.invoke('task:setSkillRefs', 't1', ['lib:a', 'repo:b']);
+    server.answer('cmd-9', {
+      ok: true,
+      value: { id: 't1', skillRefs: ['lib:a', 'repo:b'] },
+    });
+
+    await expect(call).resolves.toEqual({ id: 't1', skillRefs: ['lib:a', 'repo:b'] });
+    expect(server.queued).toHaveLength(1);
+    expect(server.queued[0]).toMatchObject({
+      id: 'cmd-9',
+      kind: 'ipc-invoke',
+      payload: { channel: 'task:setSkillRefs', args: ['t1', ['lib:a', 'repo:b']] },
     });
   });
 
@@ -594,6 +691,16 @@ describe('HttpTransport: host-only channels', () => {
       call: () => t().invoke('session:stop', 'run-1'),
       says: /live Claude process/,
     },
+    {
+      channel: 'skill:import',
+      call: () => t().invoke('skill:import', { source: 'text', text: '' }),
+      says: /file picker/,
+    },
+    {
+      channel: 'skill:export',
+      call: () => t().invoke('skill:export', ['s1']),
+      says: /file picker/,
+    },
   ];
 
   for (const { channel, call, says } of CASES) {
@@ -625,6 +732,13 @@ describe('HttpTransport: channels that used to be stubbed', () => {
     { channel: 'task:setPriority', call: (x) => x.invoke('task:setPriority', 't1', 'High') },
     { channel: 'task:chat', call: (x) => x.invoke('task:chat', 't1', 'hello') },
     { channel: 'task:run', call: (x) => x.invoke('task:run', 't1') },
+    {
+      channel: 'skill:save',
+      call: (x) =>
+        x.invoke('skill:save', { name: 'deploy', description: 'How to deploy', body: '# body' }),
+    },
+    { channel: 'skill:delete', call: (x) => x.invoke('skill:delete', 's1') },
+    { channel: 'skill:getRepo', call: (x) => x.invoke('skill:getRepo', 'p1', 'deploy') },
     { channel: 'attachment:add', call: (x) => x.invoke('attachment:add', 't1', ['/tmp/a']) },
   ];
 

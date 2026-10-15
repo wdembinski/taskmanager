@@ -19,16 +19,19 @@
  * Three tiers now:
  *  1. **Direct** — `task:create`, `task:setStatus`, `task:move`, `task:setDescription`,
  *     `project:add`, `project:update`, `project:remove`, `settings:get`, `settings:save`,
- *     `automation:list` and `automation:runs` post straight to the write/read endpoints
- *     (`POST`/`PATCH`/`DELETE /v1/tasks` and `/v1/projects`, `GET`/`PUT /v1/settings`, `GET
- *     /v1/automations` and `/v1/automations/:id/runs`) instead of relaying at all. These are
- *     the edits and reads a browser with no desktop Client ever synced still has to be able to
- *     make — creating and working a card, filing it under a project of its own, reading and
- *     changing the account's global settings, and seeing what the account's automations are and
- *     have done is the whole reason cloud web has to stand on its own — and the server applies
- *     each write to the mirror itself and replays it to every desktop Client on record
- *     (`mirror.service.ts`), so a Client that is offline right now still catches up later
- *     instead of the edit never having happened at all.
+ *     `automation:list`, `automation:runs`, `skill:list` and `skill:listRepo` post straight
+ *     to the write/read endpoints (`POST`/`PATCH`/`DELETE /v1/tasks` and `/v1/projects`,
+ *     `GET`/`PUT /v1/settings`, `GET /v1/automations` and `/v1/automations/:id/runs`, `GET
+ *     /v1/skills`) instead of relaying at all — except `skill:listRepo`, which reads
+ *     `project.repoSkills` straight off the mirror the board already has in memory, with no
+ *     network call of its own. These are the edits and reads a browser with no desktop
+ *     Client ever synced still has to be able to make — creating and working a card, filing
+ *     it under a project of its own, reading and changing the account's global settings,
+ *     seeing what the account's automations are and have done, and listing the library and
+ *     repo skills a picker needs to show — is the whole reason cloud web has to stand on its
+ *     own — and the server applies each write to the mirror itself and replays it to every
+ *     desktop Client on record (`mirror.service.ts`), so a Client that is offline right now
+ *     still catches up later instead of the edit never having happened at all.
  *  2. **Relayed** — anything else `@tm/shared/ipcRelay` marks `'relay'`, still an `ipc-invoke`
  *     command held open and polled for through `GET /v1/results`, answered by the desktop's
  *     own handler. `automation:save`, `automation:delete`, `automation:setEnabled` and
@@ -67,6 +70,7 @@ import {
   type CreateTaskRequest,
   type ResultsResponse,
   type SettingsResponse,
+  type SkillsResponse,
   type UpdateProjectRequest,
   type UpdateTaskRequest,
   type UploadTicket,
@@ -119,6 +123,17 @@ export interface HttpTransportDeps {
   /** The desktop Client to relay a command to, or null when none has ever synced this
    *  account — see `targetClient.ts`. */
   getTargetClientId: () => string | null;
+  /**
+   * A project already on the mirror, by id — `skill:listRepo`'s direct-tier read, which has
+   * no endpoint of its own because `project.repoSkills` already rides the board the mirror
+   * pushes down. Fed from a ref for the same reason `getTargetClientId` is: the transport
+   * outlives every render, so this has to read the LATEST board state rather than the one
+   * that was true when the transport was built.
+   *
+   * Optional so a test that doesn't care about skills still gets a working transport,
+   * answering `[]` for every project.
+   */
+  getProject?: (id: string) => Project | undefined;
   /**
    * Whether a desktop client is polling RIGHT NOW — `BoardResponse.clients`, which the board
    * hook already has. Used only to tell "nobody is listening" apart from "nobody has answered
@@ -271,6 +286,23 @@ export class HttpTransport implements Transport {
     if (channel === 'automation:runs') {
       const [automationId, limit] = args as Parameters<IpcApi['automation:runs']>;
       return this.automationRuns(automationId, limit) as ReturnType<IpcApi[K]>;
+    }
+    // Library skills are mirrored server-side too (`GET /v1/skills`), same reasoning as
+    // automations above: a picker has to list them with no desktop Client ever having
+    // synced. `skill:listRepo` reads a project's `.claude/skills` scan straight off
+    // `project.repoSkills`, already on the board this tab holds — no endpoint, no round trip.
+    // Only a skill's BODY (`skill:getRepo`) still needs the desktop, which actually has the
+    // worktree on disk.
+    if (channel === 'skill:list') {
+      return this.readJson<SkillsResponse>('/v1/skills').then((body) => body.skills) as ReturnType<
+        IpcApi[K]
+      >;
+    }
+    if (channel === 'skill:listRepo') {
+      const [projectId] = args as Parameters<IpcApi['skill:listRepo']>;
+      return Promise.resolve(this.deps.getProject?.(projectId)?.repoSkills ?? []) as ReturnType<
+        IpcApi[K]
+      >;
     }
     // Automation edits still relay — the desktop that owns an automation is the only one that
     // evaluates or fires it — but to THAT owner, not this account's default target.
