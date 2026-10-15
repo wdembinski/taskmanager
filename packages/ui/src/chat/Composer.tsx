@@ -38,6 +38,8 @@ import type { ChatAvailability } from '../taskChat';
 import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from '../modelChoice';
 import { ModelField } from '../ModelField';
 import { TemplateMenu } from '../TemplateMenu';
+import { OsDictationHint } from '../dictation/OsDictationHint';
+import type { DictationPath } from '../dictation/dictationModel';
 import { applyTemplateToComposer, templateVarsForTask } from '../templateInsert';
 import { MentionPicker } from './MentionPicker';
 import {
@@ -148,6 +150,8 @@ export interface ComposerProps {
    * that can accept an upload — GitHub has no API for attaching a file to an issue.
    */
   onPickAttachments?: () => Promise<string[]>;
+  /** The host's dictation offer (F9.10) — absent (or `{ kind: 'none' }`) renders no hint. */
+  dictation?: DictationPath;
   onSendChat: () => void;
   onAddNote: () => void;
   /** File the text as the card's progress note — the one line the board shows. */
@@ -173,6 +177,7 @@ export function Composer({
   tracker,
   onSearchPeople,
   onPickAttachments,
+  dictation,
   onSendChat,
   onAddNote,
   onPostStatus,
@@ -405,6 +410,13 @@ export function Composer({
               aria-label="Attach files"
               disabled={isBusy}
               onClick={() => void attach()}
+            />
+          )}
+          {dictation?.kind === 'os-dictation' && (
+            <OsDictationHint
+              platform={dictation.platform}
+              onFocusField={() => textareaRef.current?.focus()}
+              disabled={isBusy}
             />
           )}
           <TemplateMenu surface="chat" onPick={pickTemplate} />

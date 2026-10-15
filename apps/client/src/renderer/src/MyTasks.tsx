@@ -65,6 +65,7 @@ import {
   archivedCountLabel,
   archivedCountTitle,
 } from '@ui/board/ArchivedCardsDialog';
+import { dictationAvailable } from '@ui/dictation/dictationModel';
 import { GitGraphPane } from '@ui/GitGraphPane';
 import { PaneLoading } from '@ui/PaneLoading';
 import { TaskDetail } from '@ui/TaskDetail';
@@ -144,6 +145,9 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
   // The board's frame — including the commit graph's own pane — shared with the browser
   // client. See `boardLayout.ts`; this screen has no styles left of its own.
   const layout = useBoardLayoutStyles();
+  /** The desktop's dictation offer (F9.10) — read once, since `window.navigator.userAgent`
+   *  never changes mid-session. */
+  const dictation = useMemo(() => dictationAvailable('desktop', window), []);
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The repos a card can be delegated to — fetched once and shared by the cards
@@ -1554,6 +1558,7 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
             onStatusChanged={patchTask}
             onStatusSet={foldOnAutoFoldColumn}
             onSubtasksChanged={() => void refresh()}
+            dictation={dictation}
           />
         </div>
       )}
@@ -1585,6 +1590,7 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
         chainCandidates={parentCandidates}
         jiraEnabled={jiraEnabled}
         agentProjects={agentProjects}
+        dictation={dictation}
         onClose={() => setAddOpen(false)}
         onCreated={() => void refresh()}
         // A link that would not draw is reported HERE: the card exists by then, and the

@@ -108,6 +108,8 @@ import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './mod
 import { ModelField } from './ModelField';
 import { TicketTypeFields } from './projects/TicketTypeFields';
 import { TemplateMenu } from './TemplateMenu';
+import { OsDictationHint } from './dictation/OsDictationHint';
+import type { DictationPath } from './dictation/dictationModel';
 import { applyTemplateToText, templateVarsForNewTask } from './templateInsert';
 import { useTransport } from './transport';
 
@@ -526,6 +528,11 @@ export interface AddTaskDialogProps {
    * time from a global that only exists in one of the two apps.
    */
   filesEnabled?: boolean;
+  /**
+   * The host's dictation offer (F9.10) — a capability the caller states, the same way
+   * {@link filesEnabled} does. Absent (or `{ kind: 'none' }`) renders no hint.
+   */
+  dictation?: DictationPath;
   onClose: () => void;
   onCreated: () => void;
   /**
@@ -551,6 +558,7 @@ export function AddTaskDialog({
   jiraEnabled = false,
   agentProjects = [],
   filesEnabled = true,
+  dictation,
   onClose,
   onCreated,
   onNotice,
@@ -1087,6 +1095,13 @@ export function AddTaskDialog({
                       isStep ? 'What this step must deliver…' : 'What this card is about…'
                     }
                   />
+                  {dictation?.kind === 'os-dictation' && (
+                    <OsDictationHint
+                      platform={dictation.platform}
+                      onFocusField={() => textareaRef.current?.focus()}
+                      disabled={saving}
+                    />
+                  )}
                   <TemplateMenu surface="add-task" onPick={pickTemplate} />
                 </div>
               </Field>
