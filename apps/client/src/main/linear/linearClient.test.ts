@@ -302,15 +302,16 @@ describe('LinearClient — mutations', () => {
 });
 
 describe('LinearClient#getViewer', () => {
-  it('round-trips the viewer query', async () => {
+  it('round-trips the viewer query, plus the organization fetched alongside it', async () => {
     const viewer = { id: UUID1, name: 'ada', displayName: 'Ada' };
+    const organization = { name: 'Acme', urlKey: 'acme' };
     const fetchImpl = vi.fn(async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
-      jsonResponse(200, { data: { viewer } }),
+      jsonResponse(200, { data: { viewer, organization } }),
     );
 
     const result = await client(fetchImpl).getViewer();
 
-    expect(result).toEqual(viewer);
+    expect(result).toEqual({ ...viewer, organization });
     const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
     expect(body.query).toContain('Viewer');
   });

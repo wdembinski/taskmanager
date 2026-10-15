@@ -200,12 +200,16 @@ import {
   rematchPullRequests,
 } from './github/githubPrSync';
 import {
+  LinearAuthError,
   LinearClient,
   LinearRateLimitError,
   type LinearComment,
   type LinearIssue,
+  type LinearTeam,
+  type LinearViewer,
 } from './linear/linearClient';
 import { buildIssueFilter } from './linear/linearQueries';
+import { describeLinearProbe } from './linear/linearProbe';
 import {
   issuesToRecheck as linearIssuesToRecheck,
   reconcileLinearIssues,
@@ -2284,20 +2288,49 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
 
   handle('linear:testConnection', async () => {
+    let client: LinearClient;
     try {
-      const viewer = await buildLinearClient().getViewer();
-      // The test is also the cheapest possible moment to learn who you are — see the GitHub
-      // test connection handler's own note on why that's worth caching rather than re-asking.
-      linearViewer = { id: viewer.id, name: viewer.displayName };
-      return {
-        ok: true,
-        displayName: viewer.displayName,
-        message: `Connected as ${viewer.displayName}.`,
-      };
+      client = buildLinearClient();
     } catch (e) {
-      logMain('Linear test connection failed', e);
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }
+
+    let viewer: LinearViewer;
+    try {
+      viewer = await client.getViewer();
+    } catch (e) {
+      logMain('Linear test connection failed', e);
+      const message = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        message: e instanceof LinearAuthError ? `Key rejected: ${message}` : message,
+      };
+    }
+    // The test is also the cheapest possible moment to learn who you are — see the GitHub
+    // test connection handler's own note on why that's worth caching rather than re-asking.
+    linearViewer = { id: viewer.id, name: viewer.displayName };
+
+    let teams: LinearTeam[];
+    try {
+      teams = await client.listTeams();
+    } catch (e) {
+      logMain('Linear test connection — team list failed', e);
+      const message = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        displayName: viewer.displayName,
+        message: `Signed in, but the team list failed: ${message}`,
+      };
+    }
+
+    const { linear } = store.getSettings();
+    return describeLinearProbe({
+      viewer,
+      organization: viewer.organization,
+      teams,
+      teamKeys: linear.teamKeys,
+      enabled: linear.enabled,
+    });
   });
 
   handle('linear:teams', async () => {

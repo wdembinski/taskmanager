@@ -254,10 +254,11 @@ describe('commentsQuery', () => {
 });
 
 describe('viewerQuery', () => {
-  it('has no variables and asks for id, name and displayName', () => {
+  it('has no variables and asks for the viewer plus the organization, in one request', () => {
     const request = viewerQuery();
     expect(request.variables).toEqual({});
     expect(request.query).toContain('viewer { id name displayName }');
+    expect(request.query).toContain('organization { name urlKey }');
   });
 });
 
