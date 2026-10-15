@@ -5,13 +5,22 @@ import type {
   DiffHunk,
   DiffSummaryResult,
   ReviewComment,
+  ReviewSendResult,
 } from '@tm/shared/review';
 import { DIFF_COLLAPSE_LINES } from '@tm/shared/review';
 import {
   EMPTY_REVIEW,
+  canComment,
+  canSend,
   clickLine,
   closeEditor,
+  commentDeleted,
+  commentSaved,
+  commentsArrived,
+  commentsAt,
+  commentsLoadStarted,
   editDraft,
+  editNote,
   fileArrived,
   fileFailed,
   fileLoadStarted,
@@ -20,11 +29,16 @@ import {
   openExistingDraft,
   rangeLines,
   reviewAccepts,
+  reviewSent,
+  saveRefused,
+  saveStarted,
   selectFile,
+  sendStarted,
   summaryArrived,
   summaryFailed,
   summaryLoadStarted,
   toggleExpanded,
+  unsentCount,
   type ReviewState,
 } from './reviewState';
 
@@ -56,6 +70,22 @@ const file = (diffId: string, path: string, hunks: DiffHunk[]): DiffFile => ({
   diffId,
   path,
   hunks,
+});
+
+let nextCommentId = 0;
+const comment = (overrides: Partial<ReviewComment> = {}): ReviewComment => ({
+  id: `c${++nextCommentId}`,
+  taskId: 'a',
+  diffId: 'd1',
+  path: 'a.ts',
+  side: 'new',
+  line: 3,
+  body: 'a comment',
+  excerpt: 'three',
+  createdAt: 1,
+  updatedAt: 1,
+  sentAt: null,
+  ...overrides,
 });
 
 /** A card whose summary has already arrived, listing `paths` under `diffId`. */
@@ -471,6 +501,226 @@ describe('reviewAccepts', () => {
   it('refuses an answer meant for a different card', () => {
     const state = summaryLoadStarted(EMPTY_REVIEW, 'a', 1);
     expect(reviewAccepts(state, 'b', 1)).toBe(false);
+  });
+});
+
+describe('commentsLoadStarted / commentsArrived', () => {
+  it('replaces the list wholesale when accepted', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = commentsLoadStarted(state, 'a', 1);
+    const c = comment();
+
+    state = commentsArrived(state, 'a', 1, [c]);
+
+    expect(state.comments).toEqual([c]);
+  });
+
+  it('drops a late answer once a newer load has started', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = commentsLoadStarted(state, 'a', 1);
+    state = commentsLoadStarted(state, 'a', 2);
+
+    const stale = commentsArrived(state, 'a', 1, [comment()]);
+
+    expect(stale).toBe(state);
+  });
+
+  it('refuses an answer meant for a different card', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = commentsLoadStarted(state, 'a', 1);
+
+    const foreign = commentsArrived(state, 'b', 1, [comment()]);
+
+    expect(foreign).toBe(state);
+  });
+});
+
+describe('add, save and the editor', () => {
+  it('closes the editor and lists the comment once a new draft is saved', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = clickLine(state, { path: 'a.ts', side: 'new', line: 3 }, false);
+    state = saveStarted(state);
+    expect(state.editor).toMatchObject({ saving: true });
+
+    const saved = comment({ line: 3 });
+    state = commentSaved(state, 'a', saved);
+
+    expect(state.editor).toBeNull();
+    expect(commentsAt(state, 'a.ts', 'new', 3)).toEqual([saved]);
+  });
+
+  it('keeps the draft and sets staleDiffId when a save is refused as stale', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = clickLine(state, { path: 'a.ts', side: 'new', line: 3 }, false);
+    state = editDraft(state, 'a draft');
+    state = saveStarted(state);
+
+    state = saveRefused(state, 'a', { status: 'stale', diffId: 'd1', currentDiffId: 'd2' });
+
+    expect(state.editor).toMatchObject({
+      draft: 'a draft',
+      saving: false,
+      error: 'the diff moved on — reload',
+    });
+    expect(state.staleDiffId).toBe('d2');
+  });
+
+  it('replaces the body in place when an edit of an existing draft is saved', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    const original = comment({ line: 3, body: 'first' });
+    state = { ...state, comments: [original] };
+    state = openExistingDraft(state, original);
+    state = editDraft(state, 'edited');
+    state = saveStarted(state);
+
+    const updated: ReviewComment = { ...original, body: 'edited', updatedAt: 2 };
+    state = commentSaved(state, 'a', updated);
+
+    expect(state.editor).toBeNull();
+    expect(state.comments).toEqual([updated]);
+  });
+
+  it('refuses to open a sent comment for editing', () => {
+    const state = summaryLoaded('d1', ['a.ts']);
+    const sent = comment({ sentAt: 5 });
+
+    expect(openExistingDraft(state, sent)).toBe(state);
+  });
+
+  it('sets "already sent" on the editor when a save is refused because the comment went out', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    const original = comment({ line: 3, body: 'first' });
+    state = { ...state, comments: [original] };
+    state = openExistingDraft(state, original);
+    state = saveStarted(state);
+
+    state = saveRefused(state, 'a', { status: 'sent', sentAt: 5 });
+
+    expect(state.editor).toMatchObject({ draft: 'first', saving: false, error: 'already sent' });
+  });
+});
+
+describe('commentDeleted', () => {
+  it('removes the comment and closes its editor if it was open', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    const c = comment({ line: 3 });
+    state = { ...state, comments: [c] };
+    state = openExistingDraft(state, c);
+
+    state = commentDeleted(state, 'a', c.id);
+
+    expect(state.comments).toEqual([]);
+    expect(state.editor).toBeNull();
+  });
+
+  it('is a no-op for a foreign taskId', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    const c = comment({ line: 3 });
+    state = { ...state, comments: [c] };
+
+    expect(commentDeleted(state, 'b', c.id)).toBe(state);
+  });
+});
+
+describe('sendStarted / reviewSent', () => {
+  it('flips sentAt on the returned comments and clears note, sending and sendError on sent/resumed', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    const draft = comment({ line: 3 });
+    state = { ...state, comments: [draft], note: 'ptal', sendError: 'limit' };
+    state = sendStarted(state);
+    expect(state.sending).toBe(true);
+    expect(state.sendError).toBeNull();
+
+    const sent: ReviewSendResult = {
+      status: 'sent',
+      taskId: 'step-1',
+      runId: 'run-1',
+      comments: [{ ...draft, sentAt: 10 }],
+    };
+    state = reviewSent(state, 'a', sent);
+
+    expect(unsentCount(state)).toBe(0);
+    expect(state.note).toBe('');
+    expect(state.sending).toBe(false);
+    expect(state.sendError).toBeNull();
+  });
+
+  it('keeps every draft and the note on a refused send, and sets sendError', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    const draft = comment({ line: 3 });
+    state = { ...state, comments: [draft], note: 'ptal' };
+    state = sendStarted(state);
+
+    const refused: ReviewSendResult = { status: 'refused', taskId: 'a', reason: 'nothing-to-send' };
+    state = reviewSent(state, 'a', refused);
+
+    expect(state.comments).toEqual([draft]);
+    expect(state.note).toBe('ptal');
+    expect(state.sending).toBe(false);
+    expect(state.sendError).toBe('nothing-to-send');
+  });
+
+  it('is a no-op for a foreign taskId', () => {
+    const state = summaryLoaded('d1', ['a.ts']);
+    const sent: ReviewSendResult = { status: 'sent', taskId: 'a', runId: 'run-1', comments: [] };
+
+    expect(reviewSent(state, 'b', sent)).toBe(state);
+  });
+});
+
+describe('comments and note through a card switch or a stale reload', () => {
+  it('clears comments and note when switching to a different card', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = { ...state, comments: [comment()], note: 'ptal' };
+
+    const switched = summaryLoadStarted(state, 'b', 2);
+
+    expect(switched.comments).toEqual([]);
+    expect(switched.note).toBe('');
+  });
+
+  it('keeps comments and note through a stale reload of the same card', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    const c = comment();
+    state = { ...state, comments: [c], note: 'ptal' };
+
+    state = summaryLoadStarted(state, 'a', 2);
+    state = summaryArrived(state, 'a', 2, summary('d2', [entry('a.ts')]));
+
+    expect(state.comments).toEqual([c]);
+    expect(state.note).toBe('ptal');
+  });
+});
+
+describe('editNote', () => {
+  it('is a no-op when the text is unchanged', () => {
+    expect(editNote(EMPTY_REVIEW, '')).toBe(EMPTY_REVIEW);
+  });
+
+  it('updates the note', () => {
+    expect(editNote(EMPTY_REVIEW, 'ptal').note).toBe('ptal');
+  });
+});
+
+describe('canSend / canComment', () => {
+  it('is false when there are no unsent drafts, even with a note', () => {
+    const state = { ...summaryLoaded('d1', ['a.ts']), note: 'ptal' };
+    expect(canSend(state)).toBe(false);
+  });
+
+  it('is true once there is an unsent draft, and false while sending', () => {
+    let state: ReviewState = { ...summaryLoaded('d1', ['a.ts']), comments: [comment()] };
+    expect(canSend(state)).toBe(true);
+
+    state = sendStarted(state);
+    expect(canSend(state)).toBe(false);
+  });
+
+  it('refuses a new comment once the diff is stale', () => {
+    const state = summaryLoaded('d1', ['a.ts']);
+    expect(canComment(state)).toBe(true);
+
+    expect(canComment({ ...state, staleDiffId: 'd2' })).toBe(false);
   });
 });
 
