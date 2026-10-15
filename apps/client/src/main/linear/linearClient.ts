@@ -146,11 +146,15 @@ export interface LinearComment {
   user: { id: string; name: string; displayName: string } | null;
 }
 
-/** Mirrors `linearQueries.ts`'s `viewerQuery` — the authenticated token's own identity. */
+/**
+ * Mirrors `linearQueries.ts`'s `viewerQuery` — the authenticated token's own identity, plus
+ * the workspace it belongs to, fetched in the same request.
+ */
 export interface LinearViewer {
   id: string;
   name: string;
   displayName: string;
+  organization: { name: string; urlKey: string };
 }
 
 /** Mirrors `linearQueries.ts`'s `teamsQuery` selection. */
@@ -337,8 +341,11 @@ export class LinearClient {
 
   /** The authenticated token's own identity — used by "Test connection" and to decide "mine". */
   async getViewer(): Promise<LinearViewer> {
-    const data = await this.request<{ viewer: LinearViewer }>(viewerQuery());
-    return data.viewer;
+    const data = await this.request<{
+      viewer: Omit<LinearViewer, 'organization'>;
+      organization: LinearViewer['organization'];
+    }>(viewerQuery());
+    return { ...data.viewer, organization: data.organization };
   }
 
   /** Every team in the workspace, for the Settings `teamKeys` picker. */

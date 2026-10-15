@@ -220,12 +220,17 @@ export function commentsQuery(issueId: string, after: string | null = null): Lin
   };
 }
 
-/** The authenticated token's own identity — who "mine" means when deciding an unread comment. */
+/**
+ * The authenticated token's own identity — who "mine" means when deciding an unread comment —
+ * plus the workspace it belongs to, in the same request: "Test connection" needs both, and a
+ * key only ever has one workspace, so there is nothing a second round trip would buy it.
+ */
 export function viewerQuery(): LinearRequest {
   return {
     query: `
       query Viewer {
         viewer { id name displayName }
+        organization { name urlKey }
       }
     `,
     variables: {},
