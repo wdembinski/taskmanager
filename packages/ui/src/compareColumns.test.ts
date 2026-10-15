@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskStatus } from '@tm/shared/model';
 import type { VariantLabel, VariantSummaryRow } from '@tm/shared/variants';
-import { compareColumns } from './variantCompare';
+import { compareColumns } from './compareColumns';
 
 const row = (
   id: string,
