@@ -58,7 +58,7 @@ export function gateSpecOf(step: Task): GateStep | undefined {
 
 /** True when an inbox item is the trust prompt for an untrusted gate command (F8.8). */
 export function isGateTrustItem(item: AttentionItem): boolean {
-  return item.options.includes(GATE_TRUST_ACTION);
+  return item.options.includes(GATE_TRUST_ACTION.trust);
 }
 
 function stateOf(step: Task, items: readonly AttentionItem[]): GateStepState {

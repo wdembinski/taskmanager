@@ -89,7 +89,10 @@ describe('gateStepView', () => {
   });
 
   it('awaiting-trust: a trust prompt is not a failure, whatever status it parked in', () => {
-    const trust = item({ kind: 'task-failed', options: [GATE_TRUST_ACTION, 'Decline'] });
+    const trust = item({
+      kind: 'task-failed',
+      options: [GATE_TRUST_ACTION.trust, GATE_TRUST_ACTION.decline],
+    });
     for (const status of ['pending', 'waiting-input'] as const) {
       const v = gateStepView({ step: step({ status }), attention: [trust] })!;
       expect([v.state, v.label, v.tone]).toEqual([
