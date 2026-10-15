@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task, type TaskStatus } from './model';
 import { RUN_REFUSAL_MESSAGE } from './scheduler';
+import type { SessionEvent } from './session';
 import {
   VARIANT_HINTS,
   VARIANT_REFUSAL_MESSAGE,
+  VARIANT_SUMMARY_MAX_CHARS,
   canStartVariants,
+  diffStatOf,
   planVariants,
+  sortVariantRows,
+  variantCost,
   variantGroupState,
+  variantSummaryLine,
   type VariantFields,
+  type VariantLabel,
 } from './variants';
 
 const task = (over: Partial<Task> & VariantFields & { id: string }): Task & VariantFields => ({
@@ -179,5 +186,122 @@ describe('variantGroupState', () => {
     for (const r of results) expect(r).toEqual(results[0]);
     expect(results[0]!.rows.some((r) => r.id === 'L')).toBe(false);
     expect(Object.keys(results[0]!)).toEqual(['state', 'rows']);
+  });
+});
+
+describe('variantSummaryLine', () => {
+  it('returns an empty string for empty text or text with no non-empty line', () => {
+    expect(variantSummaryLine('')).toBe('');
+    expect(variantSummaryLine('\n\n   \n\t\n')).toBe('');
+  });
+
+  it('skips leading blank lines to find the first non-empty one', () => {
+    expect(variantSummaryLine('\n\n  \nFixed the parser.\nMore detail.')).toBe('Fixed the parser.');
+  });
+
+  it('tolerates CRLF line endings', () => {
+    expect(variantSummaryLine('\r\n\r\nFixed the parser.\r\nMore detail.')).toBe(
+      'Fixed the parser.',
+    );
+  });
+
+  it.each([
+    ['# Fixed the parser', 'Fixed the parser'],
+    ['## Fixed the parser', 'Fixed the parser'],
+    ['- Fixed the parser', 'Fixed the parser'],
+    ['* Fixed the parser', 'Fixed the parser'],
+    ['+ Fixed the parser', 'Fixed the parser'],
+    ['1. Fixed the parser', 'Fixed the parser'],
+    ['2) Fixed the parser', 'Fixed the parser'],
+  ])('strips a leading markdown marker: %j → %j', (input, expected) => {
+    expect(variantSummaryLine(input)).toBe(expected);
+  });
+
+  it('collapses internal whitespace', () => {
+    expect(variantSummaryLine('Fixed   the\tparser   today.')).toBe('Fixed the parser today.');
+  });
+
+  it('caps over-long text at VARIANT_SUMMARY_MAX_CHARS with a trailing ellipsis', () => {
+    const long = 'x'.repeat(VARIANT_SUMMARY_MAX_CHARS + 50);
+    const got = variantSummaryLine(long);
+    expect(got).toBe(`${'x'.repeat(VARIANT_SUMMARY_MAX_CHARS)}…`);
+    expect(got.length).toBe(VARIANT_SUMMARY_MAX_CHARS + 1);
+  });
+
+  it('leaves text at or under the cap untouched', () => {
+    const atCap = 'x'.repeat(VARIANT_SUMMARY_MAX_CHARS);
+    expect(variantSummaryLine(atCap)).toBe(atCap);
+  });
+});
+
+describe('variantCost', () => {
+  const resultEvent = (costUsd: number | null): SessionEvent => ({
+    kind: 'result',
+    success: true,
+    resultText: '',
+    costUsd,
+    durationMs: null,
+    stopReason: null,
+    terminalReason: null,
+    usage: null,
+  });
+
+  it('sums costUsd across result events, ignoring nulls', () => {
+    expect(variantCost([resultEvent(0.5), resultEvent(null), resultEvent(1.25)])).toBe(1.75);
+  });
+
+  it('returns null when every result is null', () => {
+    expect(variantCost([resultEvent(null), resultEvent(null)])).toBeNull();
+  });
+
+  it('returns null for history with no result events', () => {
+    expect(variantCost([{ kind: 'stderr', text: 'oops' }])).toBeNull();
+    expect(variantCost([])).toBeNull();
+  });
+
+  it('ignores non-result events mixed in', () => {
+    expect(variantCost([{ kind: 'stderr', text: 'oops' }, resultEvent(2)])).toBe(2);
+  });
+});
+
+describe('diffStatOf', () => {
+  it('sums additions and deletions and counts files', () => {
+    expect(
+      diffStatOf([
+        { additions: 3, deletions: 1 },
+        { additions: 0, deletions: 5 },
+      ]),
+    ).toEqual({ files: 2, added: 3, removed: 6 });
+  });
+
+  it('counts a binary entry as a file with no lines', () => {
+    expect(diffStatOf([{ additions: 0, deletions: 0 }])).toEqual({
+      files: 1,
+      added: 0,
+      removed: 0,
+    });
+  });
+
+  it('is {0, 0, 0} for no entries', () => {
+    expect(diffStatOf([])).toEqual({ files: 0, added: 0, removed: 0 });
+  });
+});
+
+describe('sortVariantRows', () => {
+  it('orders by label A, B, C with unlabelled rows last', () => {
+    const rows: { label: VariantLabel | null; id: string }[] = [
+      { label: 'C', id: '3' },
+      { label: null, id: 'u' },
+      { label: 'A', id: '1' },
+      { label: 'B', id: '2' },
+    ];
+    expect(sortVariantRows(rows).map((r) => r.id)).toEqual(['1', '2', '3', 'u']);
+  });
+
+  it('does not mutate the input array', () => {
+    const rows: { label: VariantLabel | null }[] = [{ label: 'B' }, { label: 'A' }];
+    const copy = [...rows];
+    sortVariantRows(rows);
+    expect(rows).toEqual(copy);
   });
 });

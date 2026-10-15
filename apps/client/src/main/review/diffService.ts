@@ -40,6 +40,7 @@ import {
   type DiffImageSide,
   type DiffSummaryResult,
 } from '@shared/review';
+import { diffStatOf, type VariantDiffStat } from '@shared/variants';
 import type { ExecHost } from '../exec';
 import {
   blobSize,
@@ -242,6 +243,20 @@ export class DiffService {
     }
     const hunks = parsePatch(patch)[0]?.hunks ?? [];
     return { diffId, path: entry.path, hunks };
+  }
+
+  /**
+   * A variant row's diff stat (F10.4): files touched and total added/removed lines, from
+   * the full entry list — no `DIFF_SUMMARY_MAX_FILES` truncation, no size reads, since the
+   * compare view only ever shows the three counts. `{ 0, 0, 0 }` for anything that is not
+   * an ordinary diff (no branch, conflicted, landed) — nothing to compare yet, not a stat
+   * worth distinguishing from zero.
+   */
+  async stat(taskId: string): Promise<VariantDiffStat> {
+    const resolved = await this.resolve(taskId);
+    if (resolved.status !== 'ok') return { files: 0, added: 0, removed: 0 };
+    const entries = await this.entries(resolved);
+    return diffStatOf(entries);
   }
 
   async image(taskId: string, diffId: string, path: string): Promise<DiffImageResult> {
