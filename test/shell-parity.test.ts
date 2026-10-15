@@ -514,6 +514,87 @@ describe('skills and prompt templates both hosts render from the shared sections
   });
 });
 
+describe('workflows both hosts render from the shared builder (F8.13)', () => {
+  /**
+   * Same shape as the skills/prompt templates block above: both hosts mount `WorkflowBuilder`
+   * straight from their own Settings shell. `apps/client/src/renderer/src/Settings.tsx` mounts
+   * it bare (it defaults `canUseFileSystem` to true); `apps/web/src/settings/SettingsScreen.tsx`
+   * must say `canUseFileSystem={false}` explicitly, the same way it does for `SkillsSection`.
+   */
+  const DESKTOP_SETTINGS = 'apps/client/src/renderer/src/Settings.tsx';
+  const WEB_SETTINGS = 'apps/web/src/settings/SettingsScreen.tsx';
+
+  for (const [label, path] of [
+    ['the browser client', WEB_SETTINGS],
+    ['the desktop renderer', DESKTOP_SETTINGS],
+  ] as const) {
+    it(`renders ${label}'s workflows tab from @tm/ui`, () => {
+      expect(
+        importedFrom(read(path), 'WorkflowBuilder'),
+        `${path} must import WorkflowBuilder from @tm/ui/WorkflowBuilder (or its @ui alias). ` +
+          'Both hosts build and apply the same workflow library through one shared builder; an ' +
+          'import from anywhere else is a second implementation.',
+      ).toContain('WorkflowBuilder');
+    });
+  }
+
+  it('mounts the web’s WorkflowBuilder with canUseFileSystem={false}', () => {
+    // The desktop mounts `<WorkflowBuilder />` bare — the shared component defaults to a real
+    // file system. The web has none, so it must say so explicitly rather than inherit a
+    // default that would otherwise offer File…/Export with no machine underneath them to act
+    // on. "Paste JSON…" has a pure local fallback and is unaffected either way.
+    expect(
+      read(WEB_SETTINGS),
+      `${WEB_SETTINGS} must mount <WorkflowBuilder canUseFileSystem={false} …>. Dropping the ` +
+        'prop (or flipping it) would silently restore File…/Export with no machine for either ' +
+        'to act on.',
+    ).toMatch(/<WorkflowBuilder\s+canUseFileSystem=\{false\}/);
+  });
+
+  it('has no browser code that calls workflow:import or workflow:export', () => {
+    // Tests are excluded for the same reason as the skill-file check above: a transport test
+    // may call these channels on purpose to assert the transport refuses them.
+    const sources = filesUnder('apps/web/src', /\.tsx?$/).filter(
+      (path) => !/\.test\.tsx?$/.test(path),
+    );
+    expect(
+      sources.length,
+      'found no non-test sources under apps/web/src — has the tree moved?',
+    ).toBeGreaterThan(10);
+
+    const offenders = sources.filter((path) =>
+      /invoke\(\s*'workflow:(?:import|export)'/.test(read(path)),
+    );
+    expect(
+      offenders,
+      `${offenders.join(', ')} calls workflow:import or workflow:export. Both are host-only — ` +
+        'a workflow file lives on the machine the desktop app runs on, and a browser has none ' +
+        'for either channel to read or write.',
+    ).toEqual([]);
+  });
+
+  it('defines no host-local WorkflowBuilder of its own', () => {
+    // The shared component lives in packages/ui and is reached through the import above — a
+    // host-local copy under apps/web/src would be the fork nothing else here would notice.
+    const copies = filesUnder('apps/web/src', /^WorkflowBuilder\.tsx?$/);
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements the builder that lives in packages/ui. Delete it ` +
+        'and reach it through the shared WorkflowBuilder instead — a host-local copy only ' +
+        'diverges, and nothing else in this repo can see it happen.',
+    ).toEqual([]);
+  });
+
+  it('names workflow file import and export among the host-only sections', () => {
+    expect(
+      read(WEB_SETTINGS),
+      `${WEB_SETTINGS} must keep a "Workflow file import and export" entry in ` +
+        'HOST_ONLY_SECTIONS. Dropping the entry does not remove the limit — it removes the ' +
+        'only explanation of it a browser user is ever offered.',
+    ).toMatch(/title:\s*'Workflow file import and export'/);
+  });
+});
+
 describe('the activity tab both hosts render from the shared screen (F2.13/F2.14)', () => {
   /**
    * `apps/client/src/renderer/src/App.tsx` imports `ActivityScreen` straight from

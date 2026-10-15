@@ -32,6 +32,13 @@ describe('sectionNeedsSettings', () => {
     expect(sectionNeedsSettings('skills')).toBe(false);
   });
 
+  it('lets the Workflows pane render without settings — it loads itself', () => {
+    // `WorkflowBuilder` owns its own `workflow:list` round trip and holds no `AppSettings`
+    // field, same as `SkillsSection` above, so it draws whether or not `settings:get` has
+    // answered.
+    expect(sectionNeedsSettings('workflows')).toBe(false);
+  });
+
   it('classifies every section — no pane is left unclassified', () => {
     // Exhaustive over the union: if a new section is added to `SettingsSection`, this array
     // stops compiling until it is listed, which is the review gate that stops a new pane from
@@ -46,6 +53,7 @@ describe('sectionNeedsSettings', () => {
       people: false,
       desktop: false,
       skills: false,
+      workflows: false,
       promptTemplates: true,
     };
     for (const [section, expected] of Object.entries(all)) {
