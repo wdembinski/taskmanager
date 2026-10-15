@@ -423,6 +423,97 @@ describe('the automations tab both hosts render from the shared view (F1.17)', (
   });
 });
 
+describe('skills and prompt templates both hosts render from the shared sections (F7.12)', () => {
+  /**
+   * Same shape as the automations block above: both hosts mount the two shared sections
+   * straight from their own Settings shell, not through a wrapper. `apps/client/src/renderer/
+   * src/Settings.tsx` is the desktop's 1478-line fork (see `WEB_SETTINGS`'s own file header);
+   * `apps/web/src/settings/SettingsScreen.tsx` is the browser's.
+   */
+  const DESKTOP_SETTINGS = 'apps/client/src/renderer/src/Settings.tsx';
+  const WEB_SETTINGS = 'apps/web/src/settings/SettingsScreen.tsx';
+
+  const SECTIONS = [
+    { name: 'SkillsSection', subpath: 'SkillsSection' },
+    { name: 'PromptTemplatesSection', subpath: 'PromptTemplatesSection' },
+  ] as const;
+
+  for (const [label, path] of [
+    ['the browser client', WEB_SETTINGS],
+    ['the desktop renderer', DESKTOP_SETTINGS],
+  ] as const) {
+    it(`renders ${label}'s skills and prompt templates tabs from @tm/ui`, () => {
+      const source = read(path);
+      for (const section of SECTIONS) {
+        expect(
+          importedFrom(source, section.subpath),
+          `${path} must import ${section.name} from @tm/ui/${section.subpath} (or its @ui ` +
+            'alias). Both hosts edit the same skill library and prompt template list through ' +
+            'one shared section each; an import from anywhere else is a second implementation.',
+        ).toContain(section.name);
+      }
+    });
+  }
+
+  it('mounts the web’s SkillsSection with canUseFileSystem={false}', () => {
+    // The desktop mounts `<SkillsSection />` bare — the shared component defaults to a real
+    // file system. The web has none, so it must say so explicitly rather than inherit a
+    // default that would otherwise offer Files/Folder import and an Export button with no
+    // machine underneath them to act on.
+    expect(
+      read(WEB_SETTINGS),
+      `${WEB_SETTINGS} must mount <SkillsSection canUseFileSystem={false} …>. Dropping the ` +
+        'prop (or flipping it) would silently restore a file-based Import/Export menu the web ' +
+        'has no machine to serve.',
+    ).toMatch(/<SkillsSection\s+canUseFileSystem=\{false\}/);
+  });
+
+  it('has no browser code that imports or exports a skill file', () => {
+    // Tests are excluded for the same reason as the native-picker check above:
+    // `httpTransport.test.ts` calls `skill:import`/`skill:export` on purpose, to assert the
+    // transport refuses them — the opposite of a breach.
+    const sources = filesUnder('apps/web/src', /\.tsx?$/).filter(
+      (path) => !/\.test\.tsx?$/.test(path),
+    );
+    expect(
+      sources.length,
+      'found no non-test sources under apps/web/src — has the tree moved?',
+    ).toBeGreaterThan(10);
+
+    const offenders = sources.filter((path) =>
+      /invoke\(\s*'skill:(?:import|export)'/.test(read(path)),
+    );
+    expect(
+      offenders,
+      `${offenders.join(', ')} calls skill:import or skill:export. Both are host-only — a ` +
+        'SKILL.md file lives on the machine the desktop app runs on, and a browser has none ' +
+        'for either channel to read or write.',
+    ).toEqual([]);
+  });
+
+  it('defines no SkillPicker or TemplateMenu of its own', () => {
+    // Both dialogs live in packages/ui and are reached through the shared sections above —
+    // a host-local copy under apps/web/src would be the fork nothing else here would notice.
+    const copies = filesUnder('apps/web/src', /^(?:SkillPicker|TemplateMenu)\.tsx?$/);
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements a dialog that lives in packages/ui. Delete it and ` +
+        'reach SkillPicker/TemplateMenu through the shared SkillsSection/PromptTemplatesSection ' +
+        'instead — a host-local copy only diverges, and nothing else in this repo can see it ' +
+        'happen.',
+    ).toEqual([]);
+  });
+
+  it('names skill import and export among the host-only sections', () => {
+    expect(
+      read(WEB_SETTINGS),
+      `${WEB_SETTINGS} must keep a "Skill import and export" entry in HOST_ONLY_SECTIONS. ` +
+        'Dropping the entry does not remove the limit — it removes the only explanation of it ' +
+        'a browser user is ever offered.',
+    ).toMatch(/title:\s*'Skill import and export'/);
+  });
+});
+
 describe('the activity tab both hosts render from the shared screen (F2.13/F2.14)', () => {
   /**
    * `apps/client/src/renderer/src/App.tsx` imports `ActivityScreen` straight from
