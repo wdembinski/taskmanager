@@ -2404,6 +2404,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     getProject: (id) => store.getProject(id),
     getSettings: () => store.getSettings(),
     listMergeRequests: () => store.listMergeRequests(),
+    listVariantRows: (leaderId) => store.listVariantRows(leaderId),
     upsertMergeRequest: (mr) => {
       store.upsertMergeRequest(mr);
       // Pushed straight out, for the reason the row is written here at all: the card's

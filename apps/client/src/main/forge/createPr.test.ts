@@ -1,6 +1,11 @@
-import { execFileSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
-import { prBody, prTitle, rowFor } from './createPr';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { Project, Task } from '@shared/model';
+import type { AppSettings } from '@shared/settings';
+import { openPullRequest, prBody, prTitle, rowFor, type CreatePrDeps } from './createPr';
 
 /** What both forges' creates boil down to — the shape `rowFor` reads from. */
 const created = (over: Record<string, unknown> = {}) => ({
@@ -283,5 +288,184 @@ describe("the rendered body through git's own interpret-trailers", () => {
     const seen = trailerKeysSeenByGit(body);
     expect(seen).not.toContain('Ticket ID');
     expect(seen).not.toContain('Tested');
+  });
+});
+
+/**
+ * F10.6: a leader's own pull request routes through `variantWorkOwner`, exactly as the
+ * merge button does — refusing before a pick, and pushing the picked ROW's branch
+ * afterwards, the same `worktreeOwner` rule a step's own PR already follows for its parent.
+ */
+describe('openPullRequest — routed through a variant pick (F10.6)', () => {
+  const originalFetch = globalThis.fetch;
+  const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = originalGitConfig;
+  });
+
+  /** One `git` invocation, synchronous — nothing here needs to be concurrent. */
+  const git = (cwd: string, ...args: string[]) => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    return { code: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  };
+
+  const leader = {
+    id: 'leader-1',
+    projectId: 'personal',
+    title: 'Fix the parser',
+    type: null,
+    issueType: null,
+    externalType: null,
+    description: null,
+    externalDescription: null,
+    externalSource: null,
+    externalKey: null,
+    ticketKey: null,
+    agentProjectId: 'agent-1',
+    agentBranch: null,
+    parentTaskId: null,
+    pickedVariantId: null,
+  } as unknown as Task;
+
+  it('refuses an unpicked leader with "pick a variant first", before touching a worktree', async () => {
+    const row = { id: 'row-A', variantOf: leader.id } as unknown as Task;
+    const inspect = async () => null;
+    const deps: CreatePrDeps = {
+      getTask: (id) => (id === leader.id ? leader : id === row.id ? row : undefined),
+      getProject: () => undefined,
+      getSettings: () => ({}) as unknown as AppSettings,
+      listMergeRequests: () => [],
+      upsertMergeRequest: () => undefined,
+      listVariantRows: () => [row],
+      inspect,
+      syncOntoRemoteBase: async () => ({ status: 'up-to-date' }),
+      tokenFor: () => 'tok',
+      note: () => undefined,
+      now: () => 0,
+    };
+
+    await expect(openPullRequest(deps, leader.id)).rejects.toThrow(/pick a variant first/i);
+  });
+
+  it("pushes the picked ROW's branch, not the leader's (which never had one)", async () => {
+    const ROW_BRANCH = 'feat/variant-a';
+    const work = mkdtempSync(join(tmpdir(), 'tm-createpr-variant-'));
+    try {
+      const bare = join(work, 'origin.git');
+      const repo = join(work, 'repo');
+      git(work, 'init', '--bare', bare);
+      git(work, 'init', repo);
+      git(repo, 'config', 'user.email', 'verify@example.com');
+      git(repo, 'config', 'user.name', 'Verify');
+      git(repo, 'config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'README.md'), '# demo\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'initial');
+      const base = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+      git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/checkout.git');
+
+      git(repo, 'checkout', '-b', ROW_BRANCH);
+      writeFileSync(join(repo, 'variant-a.ts'), 'export const a = true;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'variant A work');
+      const head = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+
+      // Redirect the tokenized URL to the bare repo, in a config of our own — never the
+      // user's own global one — the same trick `scripts/verify-create-pr.mjs` uses.
+      const TOKEN = 'ghp_variantpick0000';
+      const gitConfig = join(work, 'harness.gitconfig');
+      writeFileSync(
+        gitConfig,
+        `[url "file://${bare.replace(/\\/g, '/')}"]\n` +
+          `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/checkout.git\n`,
+        'utf8',
+      );
+      process.env.GIT_CONFIG_GLOBAL = gitConfig;
+
+      const row = {
+        id: 'row-A',
+        projectId: 'personal',
+        variantOf: leader.id,
+        title: leader.title,
+        type: null,
+        issueType: null,
+        externalType: null,
+        description: null,
+        externalDescription: null,
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+        agentProjectId: 'agent-1',
+        agentBranch: ROW_BRANCH,
+        parentTaskId: null,
+      } as unknown as Task;
+      const picked = { ...leader, pickedVariantId: row.id } as unknown as Task;
+      const project = { id: 'agent-1', path: repo, baseBranch: base } as unknown as Project;
+
+      globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+        const sent = JSON.parse(init?.body ?? '{}');
+        const body = {
+          id: 900,
+          number: 12,
+          title: sent.title,
+          state: 'open',
+          draft: false,
+          html_url: 'https://github.com/acme/checkout/pull/12',
+          head: { ref: sent.head, repo: { id: 555 } },
+          base: { ref: sent.base },
+        };
+        return {
+          ok: true,
+          status: 201,
+          statusText: 'Created',
+          json: async () => body,
+          text: async () => JSON.stringify(body),
+          headers: { get: () => null },
+        };
+      }) as unknown as typeof fetch;
+
+      const inspectCalls: Array<{ ownerTaskId: string; branch?: string }> = [];
+      const upserts: Array<{ taskId: string; sourceBranch: string }> = [];
+      const deps: CreatePrDeps = {
+        getTask: (id) => (id === picked.id ? picked : id === row.id ? row : undefined),
+        getProject: (id) => (id === 'agent-1' ? project : undefined),
+        getSettings: () =>
+          ({
+            github: { enabled: true, baseUrl: 'https://api.github.com' },
+          }) as unknown as AppSettings,
+        listMergeRequests: () => [],
+        upsertMergeRequest: (mr) => {
+          upserts.push(mr as unknown as { taskId: string; sourceBranch: string });
+        },
+        listVariantRows: (leaderId) => (!leaderId || leaderId === picked.id ? [row] : []),
+        inspect: async (_p, ownerTaskId, branch) => {
+          inspectCalls.push({ ownerTaskId, branch });
+          return { cwd: repo, branch: branch ?? ROW_BRANCH, base };
+        },
+        syncOntoRemoteBase: async () => ({ status: 'up-to-date' }),
+        tokenFor: () => TOKEN,
+        note: () => undefined,
+        now: () => 1_760_000_000_000,
+      };
+
+      const opened = await openPullRequest(deps, picked.id);
+
+      expect(opened.existed).toBe(false);
+      // Resolved — and asked `inspect` — through the picked ROW, never the leader.
+      expect(inspectCalls).toEqual([{ ownerTaskId: row.id, branch: ROW_BRANCH }]);
+      // The row's own branch landed on the far side, at the commit the row actually made.
+      const landed = git(bare, 'rev-parse', `refs/heads/${ROW_BRANCH}`);
+      expect(landed.code).toBe(0);
+      expect(landed.stdout.trim()).toBe(head);
+      // The merge request is filed under the row, the same `worktreeOwner` rule a step's PR
+      // already follows for its parent.
+      expect(upserts[0]?.taskId).toBe(row.id);
+      expect(upserts[0]?.sourceBranch).toBe(ROW_BRANCH);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 });

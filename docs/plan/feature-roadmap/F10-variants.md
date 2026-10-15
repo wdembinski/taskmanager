@@ -103,7 +103,7 @@ On a hard card the first attempt is often not the best one, and the only way to 
 
   - Requires F6. Columns per variant in the task detail pane (`packages/ui`), Pick buttons, collapsible full diffs; leader tile badge + status strip on the board.
   - Acceptance: pure `compareColumns(summary)` tested (ordering, pickable only with a diff, failed label); component is wiring only. Gates green.
-- [ ] F10.6 Pick a variant and discard the losing runs and worktrees @needs: F10.4 Add the variant summary channel with status cost and diffstat per variant
+- [x] F10.6 Pick a variant and discard the losing runs and worktrees @needs: F10.4 Add the variant summary channel with status cost and diffstat per variant
 
   - `variants:pick`: stop live losers, `cleanup` all their slots, archive `'variant-discarded'`, set `pickedVariantId`, timeline note; merge/PR/auto-release resolve the leader's work through `pickedVariantId` and refuse before a pick.
   - Acceptance: tests — exactly one worktree/branch survives; pick is idempotent; re-pick after merge refused; merging an unpicked leader refused with the "pick a variant first" message; an undeletable loser directory is logged, not fatal. Gates green.

@@ -5007,6 +5007,8 @@ describe('Scheduler.integrateNow — saying that a merge is under way', () => {
       getTaskActivity: () => [],
       addComment: vi.fn(),
       listTaskLinks: () => [],
+      // Not a variant leader, so `variantWorkOwner` always resolves to the card itself.
+      listVariantRows: () => [],
       updateTask: (id: string, patch: Partial<Task>) => {
         if (id === 't1') Object.assign(card, patch);
         return card;
@@ -5190,6 +5192,8 @@ describe('Scheduler — an integration with nothing to merge', () => {
       getTaskActivity: () => [],
       addComment: vi.fn(),
       listTaskLinks: () => [],
+      // Not a variant leader, so `variantWorkOwner` always resolves to the card itself.
+      listVariantRows: () => [],
       updateTask: (id: string, patch: Partial<Task>) => {
         if (id === 't1') Object.assign(card, patch);
         return card;
@@ -5320,6 +5324,143 @@ describe('Scheduler — an integration with nothing to merge', () => {
     expect(worktrees.integrate).not.toHaveBeenCalled();
     // A refusal must give the card back rather than leaving it spinning on a merge.
     expect(scheduler.integratingTaskIds()).toEqual([]);
+  });
+});
+
+/**
+ * F10.6: the Merge button on a variant leader routes through `variantWorkOwner` — refusing
+ * with "pick a variant first" before a pick, and merging the picked ROW's branch afterwards
+ * while leaving `ctx.taskId` (and so `landedAt`, and auto-release) on the LEADER, exactly as
+ * a step's own merge already lands on its parent rather than on the step.
+ */
+describe('Scheduler.integrateNow — routed through a variant pick (F10.6)', () => {
+  function setup(picked: boolean) {
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repo',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      instructions: '',
+    } as unknown as Project;
+    const leader = {
+      id: 'leader-1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the parser',
+      status: 'in-progress',
+      sessionId: 'sess-leader',
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      agentBranch: null,
+      parentTaskId: null,
+      pickedVariantId: picked ? 'row-A' : null,
+    } as unknown as Task;
+    const row = {
+      id: 'row-A',
+      projectId: 'personal',
+      phase: '',
+      title: leader.title,
+      status: 'done',
+      sessionId: 'sess-row-a',
+      order: 1,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      agentBranch: 'orch/row-A',
+      parentTaskId: null,
+      variantOf: leader.id,
+      variantLabel: 'A',
+    } as unknown as Task;
+    const byId = new Map<string, Task>([
+      [leader.id, leader],
+      [row.id, row],
+    ]);
+    const store = {
+      getTask: (id: string) => byId.get(id),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => [...byId.values()],
+      getSubtasks: () => [],
+      getTaskActivity: () => [],
+      addComment: vi.fn(),
+      listTaskLinks: () => [],
+      listVariantRows: (leaderId?: string) =>
+        [...byId.values()].filter(
+          (task) => task.variantOf && (!leaderId || task.variantOf === leaderId),
+        ),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const task = byId.get(id);
+        if (!task) return undefined;
+        Object.assign(task, patch);
+        return task;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const worktrees = {
+      prepare: vi.fn(),
+      inspect: vi.fn(async (_p: Project, owner: string, branch?: string) => ({
+        cwd: `C:/wt/${owner}`,
+        branch: branch ?? `orch/${owner}`,
+        base: 'development',
+      })),
+      integrate: vi.fn(async () => ({ status: 'merged' })),
+      cleanup: vi.fn(),
+    };
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      worktrees as unknown as WorktreeManager,
+    );
+    return { scheduler, leader, row, worktrees, store };
+  }
+
+  const settle = async (): Promise<void> => {
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+  };
+
+  it('refuses an unpicked leader with "pick a variant first"', async () => {
+    const { scheduler, worktrees } = setup(false);
+    expect(await scheduler.integrateNow('leader-1')).toMatch(/pick a variant first/i);
+    expect(worktrees.inspect).not.toHaveBeenCalled();
+    expect(scheduler.integratingTaskIds()).toEqual([]);
+  });
+
+  it("integrates the picked row's branch, and landedAt lands on the leader", async () => {
+    const { scheduler, worktrees, leader, row } = setup(true);
+
+    expect(await scheduler.integrateNow('leader-1')).toBeNull();
+    await settle();
+
+    // Asked `inspect` through the ROW, not the leader — the leader never had a branch.
+    expect(worktrees.inspect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'agent-1' }),
+      row.id,
+      row.agentBranch,
+    );
+    expect(worktrees.integrate).toHaveBeenCalledTimes(1);
+
+    // `ctx.taskId` stayed the leader throughout, so the landing is recorded on IT.
+    expect(leader.landedAt).toBeTypeOf('number');
+    expect(row.landedAt).toBeUndefined();
   });
 });
 
