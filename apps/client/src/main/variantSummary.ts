@@ -50,7 +50,9 @@ export async function buildVariantSummary(
         costUsd: variantCost(history),
         diffStat: await deps.diffStat(row.id),
         summary:
-          lastResult && lastResult.kind === 'result' ? variantSummaryLine(lastResult.resultText) : '',
+          lastResult && lastResult.kind === 'result'
+            ? variantSummaryLine(lastResult.resultText)
+            : '',
       };
     }),
   );

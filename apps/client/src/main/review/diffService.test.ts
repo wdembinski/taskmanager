@@ -292,6 +292,50 @@ describe('task:diffSummary', () => {
   });
 });
 
+describe('stat', () => {
+  it('sums additions and deletions across every entry, uncapped', async () => {
+    const entries: NameStatusEntry[] = [
+      { path: 'src/a.ts', status: 'modified', additions: 3, deletions: 1, binary: false },
+      { path: 'src/b.ts', status: 'added', additions: 5, deletions: 0, binary: false },
+      { path: 'logo.png', status: 'added', additions: 0, deletions: 0, binary: true },
+    ];
+    const { svc } = service(fakeState({ entries }));
+    expect(await svc.stat('t1')).toEqual({ files: 3, added: 8, removed: 1 });
+  });
+
+  it(`does not truncate at ${DIFF_SUMMARY_MAX_FILES} files the way summary does`, async () => {
+    const entries = Array.from({ length: DIFF_SUMMARY_MAX_FILES + 5 }, (_, i): NameStatusEntry => ({
+      path: `f${i}.txt`,
+      status: 'added',
+      additions: 1,
+      deletions: 0,
+      binary: false,
+    }));
+    const { svc } = service(fakeState({ entries }));
+    expect(await svc.stat('t1')).toEqual({
+      files: DIFF_SUMMARY_MAX_FILES + 5,
+      added: DIFF_SUMMARY_MAX_FILES + 5,
+      removed: 0,
+    });
+  });
+
+  it('is {0, 0, 0} when the card never produced a branch', async () => {
+    const { svc } = service(fakeState({ live: false, branchExists: false }));
+    expect(await svc.stat('t1')).toEqual({ files: 0, added: 0, removed: 0 });
+  });
+
+  it('is {0, 0, 0} for a conflicted worktree, without diffing', async () => {
+    const { svc, g } = service(fakeState({ conflicted: ['src/a.ts'] }));
+    expect(await svc.stat('t1')).toEqual({ files: 0, added: 0, removed: 0 });
+    expect(g.calls).toEqual([]);
+  });
+
+  it('is {0, 0, 0} once the card has landed', async () => {
+    const { svc } = service(fakeState({ live: false }), { task: card({ landedAt: 1 }) });
+    expect(await svc.stat('t1')).toEqual({ files: 0, added: 0, removed: 0 });
+  });
+});
+
 describe('task:diffFile', () => {
   async function currentId(s: FakeState): Promise<string> {
     return (await okSummary(service(s).svc)).diffId;

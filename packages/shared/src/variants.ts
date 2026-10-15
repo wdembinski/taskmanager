@@ -306,9 +306,14 @@ export function diffStatOf(
   return { files: entries.length, added, removed };
 }
 
-/** Sorts variant rows by label (A, B, C), unlabelled last — the compare view's column order. */
-export function sortVariantRows<T extends { label: VariantLabel | null }>(
-  rows: readonly T[],
-): T[] {
-  return [...rows].sort((a, b) => (a.label ?? '~').localeCompare(b.label ?? '~'));
+/**
+ * Sorts variant rows by label (A, B, C), unlabelled last — the compare view's column order.
+ * Ranked by position in {@link VARIANT_LABELS} rather than `localeCompare`: locale collation
+ * treats a punctuation placeholder as sorting BEFORE letters, not after, which would put
+ * unlabelled rows first instead of last.
+ */
+export function sortVariantRows<T extends { label: VariantLabel | null }>(rows: readonly T[]): T[] {
+  const rank = (label: VariantLabel | null) =>
+    label === null ? VARIANT_LABELS.length : VARIANT_LABELS.indexOf(label);
+  return [...rows].sort((a, b) => rank(a.label) - rank(b.label));
 }
