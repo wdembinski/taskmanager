@@ -116,6 +116,8 @@ import {
 } from './promptHistory';
 import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { ChainRunner, type ChainTrigger } from './chainRunner';
+import { GateStepRunner, type GateFailureInfo, type GatePrepResult } from './gateStep';
+import { isGateStep } from '@shared/workflow';
 import type { PermissionGate } from './claudeSession';
 import { buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
@@ -328,6 +330,14 @@ export const FAILURE_ACTION = {
    * that did not involve abandoning the work.
    */
   leaveBranch: 'Leave the branch (stop asking)',
+  /** Re-run the gate's own command, in place — the chain's "Retry" for a check rather than
+   *  an agent turn. */
+  runGateAgain: 'Run gate again',
+  /** Loop back to the step the gate's `onFail` names, past its own attempt budget — the
+   *  inbox's manual escalation of what a `retry` outcome already does automatically. */
+  sendBackToAgent: 'Send back to agent',
+  /** Accept the gate's failure and let the chain carry on as though it had passed. */
+  skipGate: 'Skip gate',
 } as const;
 
 /** Actions offered for a failed agent RUN vs. a failed branch INTEGRATION vs. a failed PR open. */
@@ -351,11 +361,18 @@ const PULL_REQUEST_FAILURE_OPTIONS = [
   FAILURE_ACTION.cleanup,
   FAILURE_ACTION.markDone,
 ];
+/** Actions offered for a failed GATE — no worktree/PR actions, since a gate owns neither. */
+const GATE_FAILURE_ACTIONS = [
+  FAILURE_ACTION.runGateAgain,
+  FAILURE_ACTION.sendBackToAgent,
+  FAILURE_ACTION.skipGate,
+];
 
 /** The interactive resolution actions offered for a parked failure, by kind. Pure. */
-export function failureActionsFor(kind: 'run' | 'integration' | 'pull-request'): string[] {
+export function failureActionsFor(kind: PendingFailure['kind']): string[] {
   if (kind === 'integration') return [...INTEGRATION_FAILURE_OPTIONS];
   if (kind === 'pull-request') return [...PULL_REQUEST_FAILURE_OPTIONS];
+  if (kind === 'gate') return [...GATE_FAILURE_ACTIONS];
   return [...RUN_FAILURE_OPTIONS];
 }
 
@@ -1050,12 +1067,14 @@ type LandingContext = PendingIntegration;
 /**
  * A parked failed task awaiting the human's chosen resolution (Phase A). `kind`
  * distinguishes a failed agent RUN (retry the agent), a failed branch INTEGRATION
- * (re-attempt the merge), and a failed PULL REQUEST open (re-attempt opening the PR —
- * never a merge, which is a different outcome from the one the card asked for). Worktree
- * fields are present in worktree mode.
+ * (re-attempt the merge), a failed PULL REQUEST open (re-attempt opening the PR —
+ * never a merge, which is a different outcome from the one the card asked for), and a
+ * failed GATE (F8.6 — run the check again, loop back to the agent, or skip it). Worktree
+ * fields are present in worktree mode, and (for a gate past a chain's last step) carry what
+ * `finishStep` needs to land the branch on "Skip gate" — see {@link GateStepRunner}.
  */
 interface PendingFailure {
-  kind: 'run' | 'integration' | 'pull-request';
+  kind: 'run' | 'integration' | 'pull-request' | 'gate';
   projectId: string;
   taskId: string;
   runId: string;
@@ -1403,6 +1422,15 @@ export class Scheduler {
    * file instead of being spread through `settle` and `applyIntegrationResult`.
    */
   private readonly chain: ChainRunner;
+  /**
+   * Runs every GATE step's own command (F8.6) — owned the way `chain` is, beside `runs`/
+   * `inFlight` rather than inside them: a gate is never a Claude session, so it never
+   * reaches `startTask`, and every path that can start a pending step (`advanceSubtasks`,
+   * `pump`, `requeue`, `startTaskNow`, the limit/auth resumes) checks {@link isGateTask}
+   * first and diverts here instead. `LandingContext` is what `finishStep` needs to land a
+   * chain's branch, the same shape `settle` already builds for an agent step.
+   */
+  private readonly gateSteps: GateStepRunner<LandingContext>;
   /** Once disposed (app quitting), ignore late session events so we never touch a closed DB. */
   private disposed = false;
   /**
@@ -1512,6 +1540,21 @@ export class Scheduler {
       inFlight: (id) => this.inFlight.has(id),
       branchOf: (task) => this.branchFor(task),
       now: () => Date.now(),
+    });
+    this.gateSteps = new GateStepRunner<LandingContext>({
+      getTask: (id) => this.store.getTask(id),
+      getSubtasks: (parentId) => this.store.getSubtasks(parentId),
+      setStatus: (id, status) => this.updateTask(id, { status }, null),
+      setGateAttempts: (id, attempts) => {
+        const task = this.store.setTaskGateAttempts(id, attempts);
+        if (task) this.emitTask({ task, runId: null });
+      },
+      setFailureNote: (id, note) => this.fixNotes.set(id, note),
+      note: (task, text) => this.noteRun(task.projectId, task.id, 'gate', text),
+      prepare: (task) => this.prepareGateStep(task),
+      raiseFailure: (info) => this.raiseGateFailure(info),
+      advance: (parentId) => this.advanceSubtasks(parentId),
+      finishStep: (task, landing) => this.finishStep(task, landing),
     });
   }
 
@@ -1799,6 +1842,14 @@ export class Scheduler {
     // No project resolves (for the step, so none would for the card either) — say so by
     // failing rather than quietly running the card and doing the work the wrong way.
     if (!project) return { refused: 'no-project' };
+
+    // A gate's command is never a Claude session, so neither the account-wide gates below
+    // nor `startTask` apply to it — see `isGateTask`.
+    if (this.isGateTask(target)) {
+      if (this.gateSteps.isRunning(target.id)) return { refused: 'already-running' };
+      void this.gateSteps.start(target);
+      return { runId: randomUUID() };
+    }
 
     // A usage limit or a dead sign-in holds everything account-wide, so this cannot start
     // now — but it is what the human asked for, so it waits in the gate rather than being
@@ -2219,6 +2270,15 @@ export class Scheduler {
       if (run.taskId !== taskId) this.updateTask(run.taskId, { status: 'stopped' }, null);
       stopped = true;
     }
+    // A running GATE step owns no `Run`, so it is never in the loop above — stop it (or,
+    // mid-`prepare()`, drop its reservation) and write `stopped` directly, the same
+    // immediate write the loop above gives every OTHER owned task.
+    for (const id of this.gateSteps.runningIds()) {
+      if (!owned.has(id)) continue;
+      this.gateSteps.stop(id);
+      if (id !== taskId) this.updateTask(id, { status: 'stopped' }, null);
+      stopped = true;
+    }
     // Parked items whose run already ended (a failed task / conflict awaiting a human).
     for (const [itemId, pending] of [...this.pendingIntegrations.entries()]) {
       if (!owned.has(pending.taskId)) continue;
@@ -2413,9 +2473,16 @@ export class Scheduler {
    * still the deciding vote.
    */
   activeRuns(): ActiveRun[] {
-    return [...this.runs.values()]
+    const agentRuns = [...this.runs.values()]
       .filter((r) => !r.settled)
       .map((r) => ({ taskId: r.taskId, runId: r.runId, purpose: r.purpose }));
+    // A running gate owns no `Run`, but it is just as much "something to stop" as an agent
+    // run is — `canStopWork` (and anything else reading this for a live-task set) needs it
+    // too. `runId` is a synthetic tag; nothing looks a gate up by it.
+    const gateRuns = this.gateSteps
+      .runningIds()
+      .map((taskId) => ({ taskId, runId: `gate-${taskId}` }));
+    return [...agentRuns, ...gateRuns];
   }
 
   /** Snapshot of each project's current run state (seed the Board's buttons on mount). */
@@ -2592,6 +2659,13 @@ export class Scheduler {
         // answerable. Sweeping it to `pending`/`failed` would leave the board and the
         // inbox saying different things about the same card.
         if (this.hasAttentionForTask(task.id)) continue;
+        // A gate is a check with no state of its own to have lost — re-running it is
+        // always safe, unlike an agent step, which keeps the "park it for the human" rule
+        // below. See `GateStepRunner.reconcile`.
+        if (this.isGateTask(task)) {
+          this.gateSteps.reconcile(task);
+          continue;
+        }
         if (task.parentTaskId) {
           this.noteRun(
             task.projectId,
@@ -3313,6 +3387,9 @@ export class Scheduler {
     this.pendingConflictFix.clear();
     this.activeProjects.clear();
     this.runs.clear();
+    // Every running gate's command, same as `sessions.stopAll()` does for agent processes —
+    // `gateSteps` itself has no "stop all" of its own, so it is walked here.
+    for (const id of this.gateSteps.runningIds()) this.gateSteps.stop(id);
     this.auxRuns.clear(); // the caller's sessions.stopAll() kills the processes themselves
     this.inFlight.clear();
     this.attention.clear();
@@ -3360,6 +3437,13 @@ export class Scheduler {
       const next = selectNextPending(this.pumpCandidates(projectId), this.inFlight);
       if (!next) break;
       this.variantQueue.delete(next.id); // no-op unless `next` was a queued variant row
+      if (this.isGateTask(next)) {
+        // Never through `startTask` — see `isGateTask`. Its status flips to `running`
+        // synchronously (before this loop's next iteration re-reads candidates), so it
+        // will not be picked again.
+        void this.gateSteps.start(next);
+        continue;
+      }
       this.startTask(project, next);
     }
     // If the queue has fully drained (nothing running, nothing left to start), the
@@ -4974,6 +5058,13 @@ export class Scheduler {
       // paths, and letting the weaker one silently veto the stronger one is how a card
       // stops for good with no note anywhere saying why.
       if (!task || (task.status !== 'blocked-by-limit' && task.status !== 'pending')) continue;
+      // A gate step never parks behind this gate in the first place (`advanceSubtasks`
+      // diverts it before ever reaching here) — this is only a defensive fallback, so a
+      // stray one is run directly rather than through the agent-run machinery below.
+      if (this.isGateTask(task)) {
+        void this.gateSteps.start(task);
+        continue;
+      }
       if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
         // The steps ARE this card's work; give the field back and let the chain run.
         this.updateTask(task.id, { status: 'in-progress' }, null);
@@ -5142,6 +5233,12 @@ export class Scheduler {
       const rebuild = this.resumeOpts(taskId);
       const task = this.store.getTask(taskId);
       if (!task || closed.has(task.status)) continue;
+      // Same defensive fallback as `resumeParked`'s — a gate never parks behind this gate
+      // either, but if one somehow did, run it directly rather than through `startTask`.
+      if (this.isGateTask(task)) {
+        void this.gateSteps.start(task);
+        continue;
+      }
       if (!task.parentTaskId && chainInFlight(this.store.getSubtasks(task.id))) {
         chains.add(task.id);
         // The card itself left the gate here, with no run of its own — its chain's next
@@ -5645,81 +5742,30 @@ export class Scheduler {
       return;
     }
 
-    // A step of an approved plan that still has siblings to run: the chain's branch is
-    // not finished, so there is nothing to integrate yet — mark the step done and start
-    // the next one. Only the FINAL step falls through to the integration below, which
-    // then merges the whole plan's work in one go (the run's branch/base/worktree
-    // already point at the parent's — see `worktreeOwner`).
+    // A step of an approved plan: `finishStep` is the chain's whole "this step is over"
+    // ending — pending sibling → advance, held re-plan, `chain.workWritten`, landing the
+    // branch, or the plain "done" tail — shared with a GATE step's own `settle` so the two
+    // never grow two different answers to "what does finishing a step mean". Only when the
+    // task has since been deleted (`finished` missing — effectively unreachable: nothing
+    // deletes a task mid-run) does this fall through to the ordinary tail below, exactly as
+    // before `finishStep` had a name.
     if (status === 'done') {
       const finished = this.store.getTask(run.taskId);
-      if (finished?.parentTaskId && this.hasPendingSibling(finished.parentTaskId, finished.id)) {
-        this.attempts.delete(run.taskId);
-        this.updateTask(run.taskId, { status: 'done' }, null);
-        this.advanceSubtasks(finished.parentTaskId);
+      if (finished) {
+        const landing: LandingContext | undefined =
+          run.branch && run.base && run.worktree
+            ? {
+                projectId: run.projectId,
+                taskId: run.taskId,
+                runId: run.runId,
+                branch: run.branch,
+                base: run.base,
+                worktree: run.worktree,
+              }
+            : undefined;
+        this.finishStep(finished, landing);
         return;
       }
-      // No pending sibling — but a re-plan for the parent is still being drafted (Phase 19
-      // continued). Approving it with fresh steps would continue the chain right past this
-      // branch, so landing now (merge / PR / the `stacked` release below) would race
-      // whatever the human is about to approve. Mark the step done and park its landing
-      // context under the CARD instead; `landHeld` replays it, via `landWork`, once the
-      // plan resolves one way or the other.
-      if (
-        finished?.parentTaskId &&
-        run.branch &&
-        run.base &&
-        run.worktree &&
-        this.worktrees &&
-        this.replanPending(finished.parentTaskId)
-      ) {
-        this.attempts.delete(run.taskId);
-        this.updateTask(run.taskId, { status: 'done' }, null);
-        this.heldLandings.set(finished.parentTaskId, {
-          projectId: run.projectId,
-          taskId: run.taskId,
-          runId: run.runId,
-          branch: run.branch,
-          base: run.base,
-          worktree: run.worktree,
-        });
-        this.noteRun(
-          run.projectId,
-          run.taskId,
-          run.runId,
-          'Finished. The chain is waiting for the plan in progress before it lands.',
-        );
-        return;
-      }
-      // Past that return, this card's work is WRITTEN: either it has no steps, or the last
-      // of them just finished, and in both cases there is a branch to build on. That is the
-      // `stacked` gate's whole moment, and it is deliberately here — BEFORE integration,
-      // before review, before anyone has said the work is good. A `stacked` successor buys
-      // exactly that head start and accepts exactly that risk; `after-merge` (the default)
-      // waits for the merge below instead.
-      //
-      // Only fired here when there is NO branch to land (non-worktree mode, or worktrees
-      // disabled outright): `landWork` below fires it itself when there is one, at the
-      // moment it actually lands rather than the moment `settle` merely observed the work
-      // was done — see `landWork`'s own doc comment for why that timing matters for a held
-      // landing.
-      if (!(run.branch && run.base && run.worktree && this.worktrees)) {
-        this.chain.workWritten(finished?.parentTaskId ?? run.taskId);
-      }
-    }
-    if (status === 'done' && run.branch && run.base && run.worktree && this.worktrees) {
-      // Capture the integration inputs now — the imminent `exited` event deletes this
-      // run from `runs`, and integration is async.
-      const landed = this.landWork({
-        projectId: run.projectId,
-        taskId: run.taskId,
-        runId: run.runId,
-        branch: run.branch,
-        base: run.base,
-        worktree: run.worktree,
-      });
-      if (landed) return;
-      // The project has since been removed — fall through to the ordinary "done" ending
-      // below, exactly as before `landWork` existed.
     }
     if (status === 'failed') {
       this.handleRunFailure(run, reason ?? 'the task failed');
@@ -5735,6 +5781,69 @@ export class Scheduler {
     // and the outcome lands in the thread.
     this.updateTask(run.taskId, { status: 'in-progress' }, null);
     this.maybeWriteBackPlan(run.taskId);
+  }
+
+  /**
+   * A step is OVER — the chain's one ending, shared by an agent run's `settle` (`status ===
+   * 'done'`) and a gate's own `GateStepDeps.finishStep` (a pass, or the inbox's "Skip gate"),
+   * so landing a branch cannot grow two different rules depending on which kind of step
+   * happened to finish it.
+   *
+   * `landing` is set exactly when there is a branch to build on (worktree mode with a
+   * resolved branch/base/worktree) — the same condition `settle` used to test inline before
+   * this had a name. Four things, in order:
+   *
+   *  1. **A pending sibling**: the chain's branch is not finished yet — mark this step done
+   *     and advance to the next one.
+   *  2. **A re-plan still being drafted** (Phase 19 continued): landing now would race
+   *     whatever the human is about to approve, so the step is marked done and its landing
+   *     is parked on the CARD instead; `landHeld` replays it once the plan resolves.
+   *  3. **No landing at all** (non-worktree mode, or worktrees disabled): the `stacked`
+   *     gate's moment fires here, before anyone has reviewed anything.
+   *  4. **A landing**: hand it to `landWork`, which fires `chain.workWritten` itself — so it
+   *     is never fired twice between here and there.
+   *
+   *  Past all four, the plain "done" tail: clear the retry/limit-guess counters, give the
+   *  spinner back to IN PROGRESS (only a human moves a card further), and write back the plan.
+   */
+  private finishStep(task: Task, landing?: LandingContext): void {
+    if (task.parentTaskId && this.hasPendingSibling(task.parentTaskId, task.id)) {
+      this.attempts.delete(task.id);
+      this.updateTask(task.id, { status: 'done' }, null);
+      this.advanceSubtasks(task.parentTaskId);
+      return;
+    }
+    if (task.parentTaskId && landing && this.worktrees && this.replanPending(task.parentTaskId)) {
+      this.attempts.delete(task.id);
+      this.updateTask(task.id, { status: 'done' }, null);
+      this.heldLandings.set(task.parentTaskId, landing);
+      this.noteRun(
+        landing.projectId,
+        task.id,
+        landing.runId,
+        'Finished. The chain is waiting for the plan in progress before it lands.',
+      );
+      return;
+    }
+    if (!(landing && this.worktrees)) {
+      this.chain.workWritten(task.parentTaskId ?? task.id);
+    }
+    if (landing && this.worktrees) {
+      const landed = this.landWork(landing);
+      if (landed) return;
+      // The project has since been removed — fall through to the plain "done" tail below,
+      // exactly as `settle` did before `landWork`/`finishStep` existed.
+    }
+    this.attempts.delete(task.id); // a success clears the retry counter
+    // …and the run of unconfirmed limit parks: this task just worked, so whatever the last
+    // one of those was reading, it is not a card being parked over and over on a guess.
+    this.limitTextParks.delete(task.id);
+    // The orchestrator finishes WORK; it does not close cards. A run already moved this
+    // card to IN PROGRESS when it started, and that is where it stays: only the human
+    // decides a card is done, by dragging it. What changes here is that the spinner stops
+    // and the outcome lands in the thread.
+    this.updateTask(task.id, { status: 'in-progress' }, null);
+    this.maybeWriteBackPlan(task.id);
   }
 
   /**
@@ -6579,6 +6688,32 @@ export class Scheduler {
         // step's outcome, so the next one should run.
         if (task.parentTaskId) this.advanceSubtasks(task.parentTaskId);
         break;
+      case FAILURE_ACTION.runGateAgain:
+        // Same command, same worktree — just ask the chain to run it again.
+        this.updateTask(f.taskId, { status: 'pending' }, null);
+        if (task.parentTaskId) this.advanceSubtasks(task.parentTaskId);
+        break;
+      case FAILURE_ACTION.sendBackToAgent:
+        this.gateSteps.sendBack(task);
+        break;
+      case FAILURE_ACTION.skipGate: {
+        // Accept the gate's failure as though it had passed — `finishStep` writes
+        // whatever status each of its own branches calls for (done and advance, done and
+        // hold, or land), exactly as a passing gate's own call to it does.
+        const landing: LandingContext | undefined =
+          f.branch && f.base && f.worktree
+            ? {
+                projectId: f.projectId,
+                taskId: f.taskId,
+                runId: f.runId,
+                branch: f.branch,
+                base: f.base,
+                worktree: f.worktree,
+              }
+            : undefined;
+        this.finishStep(task, landing);
+        break;
+      }
       default:
         // Unrecognized (free-text) answer — re-park so the decision isn't lost.
         this.raiseTaskFailed(f);
@@ -6589,6 +6724,12 @@ export class Scheduler {
   /** Re-queue a task to `pending` and start it (via the queue if active, else directly). */
   private requeue(project: Project, taskId: string): void {
     this.updateTask(taskId, { status: 'pending' }, null);
+    const requeued = this.store.getTask(taskId);
+    // Never through `startTask`/the project's own queue or cap — see `isGateTask`.
+    if (requeued && this.isGateTask(requeued)) {
+      void this.gateSteps.start(requeued);
+      return;
+    }
     if (this.activeProjects.has(project.id)) {
       this.pump(project.id);
       return;
@@ -6627,6 +6768,78 @@ export class Scheduler {
     const ownerId = this.worktreeOwner(task);
     const owner = ownerId === task.id ? task : this.store.getTask(ownerId);
     return owner?.agentBranch?.trim() || taskBranch(ownerId);
+  }
+
+  // ---- Gate steps (F8.6) ---------------------------------------------------
+
+  /** True when a task's `stepSpec` makes it a GATE step — its own command runs through
+   *  {@link Scheduler.gateSteps} directly, and it must never reach `startTask`/a Claude
+   *  session, the usage-limit/sign-in gates, or the global concurrency cap: none of those
+   *  are about Claude usage, which a gate's command never spends. */
+  private isGateTask(task: Task): boolean {
+    return !!task.stepSpec && isGateStep(task.stepSpec);
+  }
+
+  /**
+   * Resolve where a gate's command should run — the same worktree/branch its chain's agent
+   * steps share (`worktreeOwner`/`branchFor`), via the same `worktrees.prepare` call
+   * `prepareAndLaunch` makes for an ordinary step, falling back to the shared project
+   * directory exactly as `startTask` does when there is no `WorktreeManager` (unit tests /
+   * degenerate setups). `landing` is set only in worktree mode, matching `settle`'s own
+   * `run.branch && run.base && run.worktree` condition for when there is a chain to land.
+   */
+  private async prepareGateStep(task: Task): Promise<GatePrepResult<LandingContext>> {
+    const project = this.runProjectFor(task);
+    if (!project) return { error: 'This gate no longer resolves to a project to run in.' };
+    const host = hostFor(project.target);
+    if (!this.worktrees) return { cwd: project.path, host };
+
+    let prep: WorktreePrep;
+    try {
+      prep = await this.worktrees.prepare(
+        project,
+        task,
+        this.worktreeOwner(task),
+        this.branchFor(task),
+        this.chain.startPointFor(task),
+        { resumingRebase: this.isResolvingConflict(task) },
+      );
+    } catch (err) {
+      return { error: `Worktree preparation error: ${(err as Error).message ?? err}` };
+    }
+    if (prep.mode === 'failed') return { error: prep.reason };
+    if (prep.mode === 'shared') return { cwd: prep.cwd, host };
+
+    const runId = randomUUID();
+    if (prep.note) this.noteRun(project.id, task.id, runId, prep.note);
+    return {
+      cwd: prep.cwd,
+      host,
+      landing: {
+        projectId: project.id,
+        taskId: task.id,
+        runId,
+        branch: prep.branch,
+        base: prep.base,
+        worktree: prep.cwd,
+      },
+    };
+  }
+
+  /** `GateStepDeps.raiseFailure` — park a failed gate in the inbox, carrying whatever
+   *  `prepare` had already resolved (if anything) so "Skip gate" can still land the chain. */
+  private raiseGateFailure(info: GateFailureInfo<LandingContext>): void {
+    const landing = info.landing;
+    this.raiseTaskFailed({
+      kind: 'gate',
+      projectId: landing?.projectId ?? info.task.projectId,
+      taskId: info.task.id,
+      runId: landing?.runId ?? randomUUID(),
+      reason: info.output ? `${info.reason}\n\n${info.output}` : info.reason,
+      branch: landing?.branch,
+      base: landing?.base,
+      worktree: landing?.worktree,
+    });
   }
 
   /**
@@ -6863,6 +7076,13 @@ export class Scheduler {
     if (this.hasLiveRunFor(steps)) return;
     const next = steps.find((t) => t.status === 'pending');
     if (!next) return;
+    // A gate step's command is never a Claude session, so none of the account-wide gates or
+    // the global concurrency cap below apply to it — it runs the moment it is this chain's
+    // turn, whatever else is holding agent work right now.
+    if (this.isGateTask(next)) {
+      void this.gateSteps.start(next);
+      return;
+    }
     if (this.limitGate.active) {
       this.parkForLimit(next, 'chain');
       return;
@@ -6961,11 +7181,14 @@ export class Scheduler {
   /**
    * True when any of these tasks has a run that has not settled yet — i.e. one that is
    * genuinely still working, as opposed to one whose outcome is decided and whose process
-   * is winding down (which stays in `runs`/`inFlight` until its `exited` arrives).
+   * is winding down (which stays in `runs`/`inFlight` until its `exited` arrives). Counts a
+   * running GATE step too — it owns no `Run`/`runs` entry of its own, so without this a
+   * chain would see it as idle and start a second step beside it.
    */
   private hasLiveRunFor(tasks: readonly Task[]): boolean {
     const ids = new Set(tasks.map((t) => t.id));
-    return [...this.runs.values()].some((r) => !r.settled && ids.has(r.taskId));
+    if ([...this.runs.values()].some((r) => !r.settled && ids.has(r.taskId))) return true;
+    return this.gateSteps.runningIds().some((id) => ids.has(id));
   }
 
   /** True when a step of this chain other than `exceptTaskId` is still waiting to run. */

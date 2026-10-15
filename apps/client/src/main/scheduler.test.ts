@@ -1566,6 +1566,20 @@ describe('failure decision helpers (pure)', () => {
     expect(actions).not.toContain(FAILURE_ACTION.retryIntegration);
     expect(actions).not.toContain(FAILURE_ACTION.retryFresh);
   });
+
+  it('offers only the gate-specific actions for a failed gate — no worktree/PR actions', () => {
+    const actions = failureActionsFor('gate');
+    expect(actions).toEqual([
+      FAILURE_ACTION.runGateAgain,
+      FAILURE_ACTION.sendBackToAgent,
+      FAILURE_ACTION.skipGate,
+    ]);
+    expect(actions).not.toContain(FAILURE_ACTION.retry);
+    expect(actions).not.toContain(FAILURE_ACTION.retryIntegration);
+    expect(actions).not.toContain(FAILURE_ACTION.retryPullRequest);
+    expect(actions).not.toContain(FAILURE_ACTION.cleanup);
+    expect(actions).not.toContain(FAILURE_ACTION.markDone);
+  });
 });
 
 describe('Scheduler run-failure handling', () => {
@@ -3651,6 +3665,225 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       ).toBe(0);
     });
   });
+
+  /**
+   * A GATE step (F8.6) never owns a `Run` or reaches `startTask` — it runs through the
+   * scheduler's own `gateSteps` (a {@link GateStepRunner}) instead. These prove the
+   * SCHEDULER reaches it from every place that must: `advanceSubtasks` diverts a pending
+   * gate ahead of the account-wide gates, `stopTask` and `dispose` stop it directly since
+   * it owns no `Run` to stop the usual way, `reconcileInterruptedTasks` re-runs it rather
+   * than parking it the way an interrupted agent step is, and `applyFailureChoice` reaches
+   * `gateSteps.start`/`sendBack` for its own three actions. The runner's own decision logic
+   * (pass/retry/fail) is `gateStep.test.ts`'s job, not this file's — a fake stands in for
+   * it here so these stay fast unit tests instead of real command runs.
+   */
+  describe('gate steps dispatched into the chain (F8.6)', () => {
+    /** A minimal gate `stepSpec` — just enough for `isGateTask`/`isGateStep` to see it. */
+    const gateStep = () => ({
+      id: 'g1',
+      kind: 'gate' as const,
+      title: 'Run tests',
+      command: 'npm test',
+    });
+
+    type FakeGateSteps = {
+      started: string[];
+      stopped: string[];
+      reconciled: string[];
+      sentBack: string[];
+      running: Set<string>;
+      isRunning(id: string): boolean;
+      runningIds(): string[];
+      start(task: Task): Promise<void>;
+      stop(id: string): void;
+      reconcile(task: Task): void;
+      sendBack(task: Task): void;
+    };
+
+    /** Swap the scheduler's real `gateSteps` for a fake that just records what it was
+     *  asked to do — the same substitution `h.worktrees`/`h.store` already are in this
+     *  file's harness, just reached through a cast since there is no constructor seam
+     *  for it (a gate is wired up internally, the way `this.chain` is). */
+    function installFakeGateSteps(scheduler: Scheduler, running: string[] = []): FakeGateSteps {
+      const fake: FakeGateSteps = {
+        started: [],
+        stopped: [],
+        reconciled: [],
+        sentBack: [],
+        running: new Set(running),
+        isRunning(id) {
+          return this.running.has(id);
+        },
+        runningIds() {
+          return [...this.running];
+        },
+        async start(task) {
+          this.started.push(task.id);
+          this.running.add(task.id);
+        },
+        stop(id) {
+          this.stopped.push(id);
+          this.running.delete(id);
+        },
+        reconcile(task) {
+          this.reconciled.push(task.id);
+        },
+        sendBack(task) {
+          this.sentBack.push(task.id);
+        },
+      };
+      (scheduler as unknown as { gateSteps: FakeGateSteps }).gateSteps = fake;
+      return fake;
+    }
+
+    it('advanceSubtasks sends a pending GATE step straight to gateSteps.start, bypassing the usage-limit gate', () => {
+      const h = setup([
+        { id: 's1', status: 'done' },
+        { id: 's2', status: 'pending', stepSpec: gateStep() },
+      ]);
+      const fake = installFakeGateSteps(h.scheduler);
+      // A limit in force account-wide — a gate's command is never a Claude session, so
+      // none of the account-wide gates below may hold it the way they would an agent step.
+      (
+        h.scheduler as unknown as {
+          limitGate: { engage: (s: unknown, ids: string[]) => void };
+        }
+      ).limitGate.engage(
+        { kind: 'rate-limit', status: 'rejected', rateLimitType: 'five_hour', resetsAt: null },
+        [],
+      );
+
+      (h.scheduler as unknown as { advanceSubtasks: (id: string) => void }).advanceSubtasks('t1');
+
+      expect(fake.started).toEqual(['s2']);
+      expect(h.children[1].status).not.toBe('blocked-by-limit');
+    });
+
+    it('advanceSubtasks leaves a chain alone while its own gate step is still running', () => {
+      const h = setup([
+        { id: 's1', status: 'running', stepSpec: gateStep() },
+        { id: 's2', status: 'pending' },
+      ]);
+      const fake = installFakeGateSteps(h.scheduler, ['s1']);
+
+      (h.scheduler as unknown as { advanceSubtasks: (id: string) => void }).advanceSubtasks('t1');
+
+      expect(fake.started).toEqual([]);
+      expect(h.prepared).toEqual([]); // s2 never starts under a step still in flight
+    });
+
+    it('stopTask stops a running GATE step directly — it owns no Run object', () => {
+      const h = setup([{ id: 's1', status: 'running', stepSpec: gateStep() }]);
+      const fake = installFakeGateSteps(h.scheduler, ['s1']);
+
+      expect(h.scheduler.stopTask('t1')).toBe(true);
+
+      expect(fake.stopped).toEqual(['s1']);
+      expect(h.children[0].status).toBe('stopped');
+    });
+
+    it('dispose stops every gate step still running when the app quits', () => {
+      const h = setup([
+        { id: 's1', status: 'running', stepSpec: gateStep() },
+        { id: 's2', status: 'running', stepSpec: gateStep() },
+      ]);
+      const fake = installFakeGateSteps(h.scheduler, ['s1', 's2']);
+
+      h.scheduler.dispose();
+
+      expect([...fake.stopped].sort()).toEqual(['s1', 's2']);
+    });
+
+    it('reconcileInterruptedTasks re-runs a GATE step found running after a restart, rather than parking it for a human', () => {
+      const h = setup([{ id: 's1', status: 'running', stepSpec: gateStep() }]);
+      const fake = installFakeGateSteps(h.scheduler);
+
+      h.scheduler.reconcileInterruptedTasks();
+
+      expect(fake.reconciled).toEqual(['s1']);
+      // Unlike an agent step, nothing here flips the status to `failed` — a gate is a
+      // check with no state of its own to have lost, so re-running it is always safe.
+      expect(h.children[0].status).toBe('running');
+    });
+
+    /** Park a GATE step's failure the way `raiseTaskFailed`/`raiseGateFailure` would,
+     *  without going through a real command run. */
+    function parkGateFailure(
+      h: ReturnType<typeof setup>,
+      taskId = 's1',
+      landing?: { branch: string; base: string; worktree: string },
+    ): string {
+      const itemId = 'gate-item-1';
+      (h.scheduler as unknown as { attention: Map<string, unknown> }).attention.set(itemId, {
+        id: itemId,
+        runId: 'r1',
+        taskId,
+        projectId: 'agent-1',
+        taskTitle: 'Run tests',
+        kind: 'task-failed',
+        prompt: 'The command failed.',
+        options: [],
+        toolName: null,
+        reason: null,
+        worktreePath: null,
+        branch: null,
+        createdAt: Date.now(),
+      });
+      (h.scheduler as unknown as { pendingFailures: Map<string, unknown> }).pendingFailures.set(
+        itemId,
+        {
+          kind: 'gate',
+          projectId: 'agent-1',
+          taskId,
+          runId: 'r1',
+          reason: 'The command failed.',
+          ...landing,
+        },
+      );
+      return itemId;
+    }
+
+    it('"Run gate again" re-queues the gate step and asks the chain to run it again', async () => {
+      const h = setup([{ id: 's1', status: 'failed', stepSpec: gateStep() }]);
+      const fake = installFakeGateSteps(h.scheduler);
+      const itemId = parkGateFailure(h);
+
+      h.scheduler.answerAttention(itemId, { decision: 'reply', text: FAILURE_ACTION.runGateAgain });
+      await flush();
+
+      expect(fake.started).toEqual(['s1']);
+    });
+
+    it('"Send back to agent" reaches the gate runner\'s own loop-back, not a fresh run of the gate', async () => {
+      const h = setup([{ id: 's1', status: 'failed', stepSpec: gateStep() }]);
+      const fake = installFakeGateSteps(h.scheduler);
+      const itemId = parkGateFailure(h);
+
+      h.scheduler.answerAttention(itemId, {
+        decision: 'reply',
+        text: FAILURE_ACTION.sendBackToAgent,
+      });
+      await flush();
+
+      expect(fake.sentBack).toEqual(['s1']);
+      expect(fake.started).toEqual([]); // the gate itself is not re-run — its agent step is
+    });
+
+    it('"Skip gate" lands the chain exactly as a passing gate would', async () => {
+      const h = setup([{ id: 's1', status: 'failed', stepSpec: gateStep() }]);
+      installFakeGateSteps(h.scheduler);
+      const itemId = parkGateFailure(h, 's1', {
+        branch: 'orch/t1',
+        base: 'main',
+        worktree: 'C:/wt/t1',
+      });
+
+      h.scheduler.answerAttention(itemId, { decision: 'reply', text: FAILURE_ACTION.skipGate });
+      await flush();
+
+      expect(h.integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+    });
+  });
 });
 
 describe('Scheduler.rehydrateAttention — a parked round-replacement survives a restart (Phase 20)', () => {
@@ -3720,6 +3953,69 @@ describe('Scheduler.rehydrateAttention — a parked round-replacement survives a
       scheduler as unknown as { pendingReplacements: Map<string, { round: number }> }
     ).pendingReplacements;
     expect(pendingReplacements.size).toBe(0);
+  });
+});
+
+describe('Scheduler.rehydrateAttention — a parked GATE failure survives a restart (F8.6)', () => {
+  it('restores a gate\'s PendingFailure (kind "gate") so Run again/Send back/Skip stay answerable', () => {
+    const task = {
+      id: 's1',
+      projectId: 'personal',
+      parentTaskId: 't1',
+      status: 'waiting-input',
+    } as unknown as Task;
+    const item = {
+      id: 'i1',
+      runId: 'dead-run',
+      taskId: 's1',
+      projectId: 'personal',
+      taskTitle: 'Run tests',
+      kind: 'task-failed',
+      prompt: 'The command failed.',
+      options: [
+        FAILURE_ACTION.runGateAgain,
+        FAILURE_ACTION.sendBackToAgent,
+        FAILURE_ACTION.skipGate,
+      ],
+      toolName: null,
+      reason: null,
+      createdAt: Date.now(),
+    };
+    const context = {
+      kind: 'gate',
+      projectId: 'personal',
+      taskId: 's1',
+      runId: 'dead-run',
+      reason: 'The command failed.',
+    };
+    const store = {
+      getTask: (id: string) => (id === 's1' ? task : undefined),
+      listAttention: () => [{ item, context }],
+      saveAttention: () => undefined,
+      deleteAttention: () => undefined,
+      getTaskHistory: () => [],
+    } as unknown as Store;
+    const sessions = { start: vi.fn(), stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+    );
+
+    scheduler.rehydrateAttention();
+
+    const pendingFailures = (scheduler as unknown as { pendingFailures: Map<string, unknown> })
+      .pendingFailures;
+    expect(pendingFailures.get('i1')).toEqual(context);
+    // The dead correlator is blanked exactly as every other rehydrated kind's is — a
+    // restart's "Run gate again"/"Send back to agent"/"Skip gate" never reaches a live
+    // session, so there is nothing for a stale runId to mislead into resuming one.
+    expect(emitAttention).toHaveBeenCalledWith(expect.objectContaining({ id: 'i1', runId: '' }));
   });
 });
 
