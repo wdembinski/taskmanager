@@ -6,6 +6,7 @@ import { hostOnlyMessage, isRelayable, oversizedAnswerMessage } from '@tm/shared
 import type { Project } from '@tm/shared/model';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import type { RepoSkillSummary, Skill } from '@tm/shared/skills';
+import type { WorkflowApplyResult, WorkflowDoc } from '@tm/shared/workflow';
 import type { CommandResult } from '@tm/protocol/wire';
 import {
   EMPTY_REVIEW,
@@ -465,6 +466,30 @@ describe('HttpTransport: the direct tier', () => {
     await expect(transport.invoke('skill:listRepo', 'unknown')).resolves.toEqual([]);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('reads workflow:list from GET /v1/workflows with no desktop on record', async () => {
+    const workflow: WorkflowDoc = {
+      version: 1,
+      id: 'w1',
+      name: 'Release checklist',
+      steps: [],
+    };
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ workflows: [workflow], deletedWorkflowIds: [] }),
+    });
+    const { transport } = makeTransport({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      getTargetClientId: () => null,
+    });
+
+    await expect(transport.invoke('workflow:list')).resolves.toEqual([workflow]);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/workflows');
+    expect(init.method).toBeUndefined(); // a GET
+    expect(init.headers.authorization).toBe('Bearer token');
+  });
 });
 
 describe('HttpTransport: a relayed invoke is a real round trip', () => {
@@ -537,6 +562,30 @@ describe('HttpTransport: a relayed invoke is a real round trip', () => {
     expect(server.queued[0]).toMatchObject({
       kind: 'ipc-invoke',
       payload: { channel: 'task:resumeAgent', args: ['t1'] },
+    });
+  });
+
+  /**
+   * `workflow:apply` always relays — see the docstring's "Three tiers now": only the
+   * desktop that owns the store can turn a workflow into the card's own steps.
+   */
+  it('relays workflow:apply and resolves with the desktop’s result', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-11',
+    });
+
+    const call = transport.invoke('workflow:apply', 't1', 'w1');
+    const result: WorkflowApplyResult = { ok: true, steps: [] };
+    server.answer('cmd-11', { ok: true, value: result });
+
+    await expect(call).resolves.toEqual(result);
+    expect(server.queued).toHaveLength(1);
+    expect(server.queued[0]).toMatchObject({
+      id: 'cmd-11',
+      kind: 'ipc-invoke',
+      payload: { channel: 'workflow:apply', args: ['t1', 'w1'] },
     });
   });
 
@@ -709,6 +758,16 @@ describe('HttpTransport: host-only channels', () => {
       call: () => t().invoke('skill:export', ['s1']),
       says: /file picker/,
     },
+    {
+      channel: 'workflow:import',
+      call: () => t().invoke('workflow:import', { source: 'text', text: '' }),
+      says: /file picker/,
+    },
+    {
+      channel: 'workflow:export',
+      call: () => t().invoke('workflow:export', 'w1'),
+      says: /file picker/,
+    },
   ];
 
   for (const { channel, call, says } of CASES) {
@@ -748,6 +807,11 @@ describe('HttpTransport: channels that used to be stubbed', () => {
     { channel: 'skill:delete', call: (x) => x.invoke('skill:delete', 's1') },
     { channel: 'skill:getRepo', call: (x) => x.invoke('skill:getRepo', 'p1', 'deploy') },
     { channel: 'attachment:add', call: (x) => x.invoke('attachment:add', 't1', ['/tmp/a']) },
+    {
+      channel: 'workflow:save',
+      call: (x) => x.invoke('workflow:save', { version: 1, name: 'Release checklist', steps: [] }),
+    },
+    { channel: 'workflow:delete', call: (x) => x.invoke('workflow:delete', 'w1') },
   ];
 
   for (const { channel, call } of RELAYED) {
