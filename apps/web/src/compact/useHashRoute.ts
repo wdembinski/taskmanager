@@ -35,6 +35,16 @@
  *   rather than switching to an object — every existing caller destructures positionally
  *   (`const [route, navigate] = useHashRoute()`), and an object would have made that an
  *   unrelated rename instead of an additive change.
+ * - **`getSnapshot` caches its last `(hash, route)` pair** (`stableRouteFor`, below) rather
+ *   than calling `parseCompactRoute` fresh every time. `parseCompactRoute` returns a brand
+ *   new object literal for the same hash on every call (`{kind:'inbox'}`, a fresh `{kind:
+ *   'board', column}`, …), and `useSyncExternalStore` compares snapshots with `Object.is`: a
+ *   snapshot that is never equal to its own previous value makes React conclude the store is
+ *   still changing and re-render immediately to re-check it, forever — "Maximum update depth
+ *   exceeded" (React error #185), thrown on the very first render of any signed-in screen,
+ *   before a single network request. Nothing in this workspace caught it before this hook was
+ *   first mounted in a real browser (`apps/web/vitest.config.ts` has no DOM environment), so
+ *   the cache is tested directly in `useHashRoute.test.ts` rather than through the hook.
  */
 import { useSyncExternalStore } from 'react';
 import {
@@ -57,8 +67,25 @@ function subscribe(onChange: () => void): () => void {
   return () => window.removeEventListener('hashchange', onChange);
 }
 
+/** The last hash `getSnapshot` parsed, and the route it produced — see the module header. */
+let lastHash: string | null = null;
+let lastRoute: CompactRoute = DEFAULT_COMPACT_ROUTE;
+
+/**
+ * `parseCompactRoute(hash) ?? DEFAULT_COMPACT_ROUTE`, memoized on `hash` so the SAME route
+ * object comes back for the SAME hash across repeated calls — what `useSyncExternalStore`
+ * requires of a snapshot. See the module header for what happens without this.
+ */
+export function stableRouteFor(hash: string): CompactRoute {
+  if (hash !== lastHash) {
+    lastHash = hash;
+    lastRoute = parseCompactRoute(hash) ?? DEFAULT_COMPACT_ROUTE;
+  }
+  return lastRoute;
+}
+
 function getSnapshot(): CompactRoute {
-  return parseCompactRoute(window.location.hash) ?? DEFAULT_COMPACT_ROUTE;
+  return stableRouteFor(window.location.hash);
 }
 
 export function useHashRoute(): [
