@@ -78,6 +78,7 @@ import {
   restingStatus,
 } from '@shared/board';
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
+import { preserveLocalTrust } from './gateTrust';
 import { toMoveActivity, transitionThenRecord } from './moveActivity';
 import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
@@ -1945,7 +1946,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Normalize the JIRA URL once, on the way in, so every consumer sees the same
     // origin — the client, the epic-field and identity caches (both keyed by baseUrl),
     // and the issue links written onto cards.
-    const stored = store.getSettings().jira;
+    const storedSettings = store.getSettings();
+    const stored = storedSettings.jira;
     const baseUrl = normalizeBaseUrl(settings.jira.baseUrl);
     // The discovered API gateway belongs to ONE site and ONE deployment mode, and it is
     // never typed — the probe writes it (see `JiraSettings.apiBaseUrl`). Two rules follow.
@@ -1967,6 +1969,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
           : '',
       },
       cloud: { ...settings.cloud, baseUrl: normalizeBaseUrl(settings.cloud.baseUrl) },
+      // Machine-local trust (F8.8) never travels on this channel — see `preserveLocalTrust`.
+      trustedGateCommands: preserveLocalTrust(storedSettings, settings),
     });
     // Pick up a changed poll interval (or enable/disable) without a restart.
     syncPoller.reschedule();
