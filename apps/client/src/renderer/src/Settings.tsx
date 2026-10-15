@@ -109,6 +109,7 @@ import { SkillsSection } from '@ui/SkillsSection';
 import { SubagentModelField } from '@ui/SubagentModelField';
 import { ReadinessPanel } from './ReadinessPanel';
 import { StatusMapViewer } from '@ui/StatusMapViewer';
+import { WorkflowBuilder } from '@ui/WorkflowBuilder';
 import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from '@ui/theme';
 import { validateBranchName } from '@shared/branchName';
 import { useInitialLoad } from '@ui/useInitialLoad';
@@ -198,6 +199,7 @@ type SettingsSection =
   | 'people'
   | 'agentProfiles'
   | 'skills'
+  | 'workflows'
   | 'promptTemplates';
 
 /**
@@ -650,6 +652,7 @@ export function Settings(): JSX.Element {
         <Tab value="people">People</Tab>
         <Tab value="agentProfiles">Agent profiles</Tab>
         <Tab value="skills">Skills</Tab>
+        <Tab value="workflows">Workflows</Tab>
         <Tab value="promptTemplates">Prompt templates</Tab>
       </TabList>
 
@@ -663,6 +666,11 @@ export function Settings(): JSX.Element {
         <div className={styles.pane}>
           <Subtitle2>Skills</Subtitle2>
           <SkillsSection />
+        </div>
+      ) : section === 'workflows' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Workflows</Subtitle2>
+          <WorkflowBuilder />
         </div>
       ) : section === 'promptTemplates' ? (
         <div className={styles.pane}>
