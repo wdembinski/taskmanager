@@ -82,8 +82,12 @@ interface GateStep {
   which blocks unrelated merges (`merge-only-moves-the-checked-out-branch`); and a validator over
   JSON round-trips losslessly. Repo-file discovery is an open question, not v1.
 - Instantiated step: a normal step task plus `Task.stepSpec` (JSON snapshot of its `WorkflowStep`,
-  with `retryFrom` resolved to the target step's task id), `Task.workflowId`, `Task.gateAttempts`.
-  Editing a workflow later never changes cards it was already applied to.
+  with a gate's `onFail.retryFrom` resolved to `retryFromIndex` — a POSITION among the round's
+  steps, not a task id, since no step has a task id yet at instantiation time. A retry resolves
+  that position back to the actual sibling task AT RUN TIME, by position and step id together
+  (`resolveRetryTarget`, grouped by `workflowId`/`planRound` and ordered by `order`)),
+  `Task.workflowId`, `Task.gateAttempts`. Editing a workflow later never changes cards it was
+  already applied to.
 
 ### Engine
 
@@ -222,7 +226,7 @@ command".
   - `apps/client/src/main/gateRunner.ts`: shell per target, cwd existence check, timeout with `terminate()`, bounded tail, typed result.
   - Acceptance: `gateRunner.test.ts` with a fake `ExecHost`: exit codes, timeout kills, missing cwd, spawn error — each returns a result, none throws.
 
-- [ ] F8.6 Dispatch gate steps from the step chain and loop failures back to the agent step @needs: F8.3 Turn a workflow into a card's step rows with a pure instantiator, F8.4 Store workflows and per-step specs in the desktop store, F8.5 Run a gate command in the card's worktree through the exec host
+- [x] F8.6 Dispatch gate steps from the step chain and loop failures back to the agent step @needs: F8.3 Turn a workflow into a card's step rows with a pure instantiator, F8.4 Store workflows and per-step specs in the desktop store, F8.5 Run a gate command in the card's worktree through the exec host
 
   - `scheduler.ts` `advanceSubtasks` dispatches by kind; gates bypass limit/auth parks; retry resets steps and sets `failureNote`; fail raises the inbox item with Run again / Send back / Skip; Stop terminates; boot reconcile; every outcome writes a status. Keep the logic in a deps-injected `gateStep.ts` so it is testable without the scheduler.
   - Acceptance: `gateStep.test.ts`; `scripts/verify-workflow-gates.mjs` with a stub `claude` on PATH drives fail → loop back → pass end-to-end and is shown to fail when the reset is removed (prove red before green).
