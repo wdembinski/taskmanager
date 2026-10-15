@@ -37,6 +37,7 @@ import {
 import { AttachmentStrip } from './AttachmentStrip';
 import type { AttentionIndex } from './attentionIndex';
 import { gateStepView } from './gateStepView';
+import { useGateTrustHost } from './gateTrustHost';
 import { splitStepPhases, subtaskProgress } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { SkillPicker } from './SkillPicker';
@@ -623,6 +624,7 @@ interface GateRowProps {
  */
 function GateRow({ step, index, attention, onOpen }: GateRowProps): JSX.Element | null {
   const transport = useTransport();
+  const trustHost = useGateTrustHost();
   const styles = useStyles();
   const [showOutput, setShowOutput] = useState(false);
   /** The step's own timeline, read when the expander opens — null until then. */
@@ -647,7 +649,7 @@ function GateRow({ step, index, attention, onOpen }: GateRowProps): JSX.Element 
     };
   }, [showOutput, activity, step.id, transport]);
 
-  const view = gateStepView({ step, attention, activity: activity ?? [] });
+  const view = gateStepView({ step, attention, activity: activity ?? [], trustHost });
   if (!view) return null;
   return (
     <div>
@@ -688,6 +690,9 @@ function GateRow({ step, index, attention, onOpen }: GateRowProps): JSX.Element 
             {view.label}
           </Badge>
         )}
+        {/* This host cannot press Trust itself (F8.13) — say so beside the badge rather
+            than leaving "Awaiting trust" to read as a desktop that is simply slow. */}
+        {view.waiting && <Caption1 className={styles.hint}>{view.waiting}</Caption1>}
       </div>
       {showOutput &&
         (view.output ? (

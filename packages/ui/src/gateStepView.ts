@@ -30,6 +30,12 @@ export interface GateStepView {
   attempt: string | null;
   /** The newest output tail the engine recorded for this gate, or null when none exists yet. */
   output: string | null;
+  /**
+   * `awaiting-trust` on a host that cannot itself trust the command (F8.13) — the web, which
+   * has no desktop to run Trust on — carries the sentence to show in place of the Trust
+   * button. Null everywhere else, including `awaiting-trust` on a host that CAN trust it.
+   */
+  waiting: string | null;
 }
 
 const LABEL: Record<GateStepState, string> = {
@@ -59,6 +65,36 @@ export function gateSpecOf(step: Task): GateStep | undefined {
 /** True when an inbox item is the trust prompt for an untrusted gate command (F8.8). */
 export function isGateTrustItem(item: AttentionItem): boolean {
   return item.options.includes(GATE_TRUST_ACTION.trust);
+}
+
+/** True when `options` is exactly the trust/decline pair a parked gate offers (F8.8). */
+function isTrustPair(options: readonly string[]): boolean {
+  return (
+    options.length === 2 &&
+    options[0] === GATE_TRUST_ACTION.trust &&
+    options[1] === GATE_TRUST_ACTION.decline
+  );
+}
+
+/**
+ * What to say in place of the Trust button when THIS host cannot press it (F8.13) — the web,
+ * which has no desktop app of its own to run the command on.
+ */
+export function gateTrustWaitingText(hostName: string | null): string {
+  return hostName
+    ? `Waiting for ${hostName} to trust this command`
+    : 'Waiting for the desktop app to trust this command';
+}
+
+/**
+ * The buttons an inbox item's `options` should actually offer. Unchanged except for the one
+ * case this host cannot act on: a trust prompt with `canTrust` false drops Trust and keeps
+ * Decline, which still relays fine via `attention:answer` — it is only "run it on this
+ * machine" that a browser can't promise.
+ */
+export function gateTrustChoices(options: readonly string[], canTrust: boolean): string[] {
+  if (!canTrust && isTrustPair(options)) return [GATE_TRUST_ACTION.decline];
+  return [...options];
 }
 
 function stateOf(step: Task, items: readonly AttentionItem[]): GateStepState {
@@ -106,6 +142,8 @@ export interface GateStepViewInput {
   attention?: readonly AttentionItem[];
   /** This step's own timeline, once loaded — the expander fetches it on demand. */
   activity?: readonly TaskActivityEntry[];
+  /** Whether THIS host can trust a gate command, and what to call it when it can't (F8.13). */
+  trustHost?: { canTrust: boolean; name: string | null };
 }
 
 /** The row for a gate step, or null when `step` is not a gate. */
@@ -113,6 +151,7 @@ export function gateStepView({
   step,
   attention = [],
   activity = [],
+  trustHost,
 }: GateStepViewInput): GateStepView | null {
   const spec = gateSpecOf(step);
   if (!spec) return null;
@@ -129,5 +168,9 @@ export function gateStepView({
     command: spec.command,
     attempt: max !== undefined && used > 0 ? `attempt ${used}/${max}` : null,
     output: failure?.prompt || latestGateNote(activity),
+    waiting:
+      state === 'awaiting-trust' && trustHost?.canTrust === false
+        ? gateTrustWaitingText(trustHost.name)
+        : null,
   };
 }

@@ -729,6 +729,32 @@ describe('the theme both hosts mount', () => {
   }
 });
 
+describe('the web says which desktop a gate trust prompt is waiting on (F8.13)', () => {
+  /**
+   * The web has no desktop of its own behind a gate's "Trust and run" button — only the one
+   * it is relaying through — so it must wrap its authed tree in `GateTrustHostProvider` with
+   * `canTrust: false`. The desktop needs no such wrapper at all: the provider's own default
+   * (`packages/ui/src/gateTrustHost.tsx`) IS the desktop's answer, `{ canTrust: true, name:
+   * null }`, so its absence from `DESKTOP_APP` is correct rather than untested.
+   */
+  it('mounts GateTrustHostProvider with canTrust: false', () => {
+    const source = read(WEB_APP);
+    expect(
+      importedFrom(source, 'gateTrustHost'),
+      `${WEB_APP} must import GateTrustHostProvider from @tm/ui/gateTrustHost (or its @ui ` +
+        'alias) — a gate trust prompt relayed through this tab has no desktop of its own to ' +
+        'press Trust on.',
+    ).toContain('GateTrustHostProvider');
+
+    expect(
+      source,
+      `${WEB_APP} must mount <GateTrustHostProvider value={{ canTrust: false, … }}>. Mounting ` +
+        'it with canTrust left true (or omitting it) would silently restore a Trust button ' +
+        'that cannot actually run anything from a browser tab.',
+    ).toMatch(/<GateTrustHostProvider\s+value=\{\{\s*canTrust:\s*false,/);
+  });
+});
+
 describe('agent projects: the web configures a project’s identity, never its repo', () => {
   /**
    * Narrowed a second time. The first narrowing (see git history of this block) let a

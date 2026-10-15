@@ -33,6 +33,7 @@ import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
+import { GateTrustHostProvider } from '@tm/ui/gateTrustHost';
 import { Performance } from '@tm/ui/Performance';
 import { ProjectAdmin } from '@tm/ui/projects/ProjectAdmin';
 import { Projects } from '@tm/ui/projects/Projects';
@@ -59,7 +60,7 @@ import { SkewBanner } from './board/SkewBanner';
 import { StaleBanner } from './board/StaleBanner';
 import { boardIsReady, syncBusyLabel, syncCurtainText, syncStatusLabel } from './board/syncGate';
 import { UnreachableBanner } from './board/UnreachableBanner';
-import { versionSkew } from './board/targetClient';
+import { describeClient, versionSkew } from './board/targetClient';
 import { useCloudBoard } from './board/useCloudBoard';
 import { CompactApp } from './compact/CompactApp';
 import { useHashRoute } from './compact/useHashRoute';
@@ -308,96 +309,115 @@ function SignedInBoard({
   // to be mounted (F3.7).
   const [route, navigate] = useHashRoute();
   const layoutMode = useLayoutMode();
+
   if (layoutMode === 'compact') {
     return (
       <TransportProvider transport={board.transport}>
-        <CompactApp
-          board={board}
-          presence={presence}
-          skew={skew}
-          attentionCount={attentionCount}
-          now={now}
-          busy={busy}
-          apiBase={config.cloudApiBase}
-          getAccessToken={() => auth.getAccessToken()}
-          onSignOut={onSignOut}
-        />
+        {/* The web has no desktop of its own to run a gate command on — only the one this
+            tab is relaying through — so every gate's Trust button is replaced with a
+            sentence naming it (F8.13). The desktop needs no equivalent wrapper:
+            GateTrustHostProvider's absence there is itself the `{ canTrust: true, name:
+            null }` default (`gateTrustHost.tsx`). */}
+        <GateTrustHostProvider
+          value={{
+            canTrust: false,
+            name: board.targetClient ? describeClient(board.targetClient) : null,
+          }}
+        >
+          <CompactApp
+            board={board}
+            presence={presence}
+            skew={skew}
+            attentionCount={attentionCount}
+            now={now}
+            busy={busy}
+            apiBase={config.cloudApiBase}
+            getAccessToken={() => auth.getAccessToken()}
+            onSignOut={onSignOut}
+          />
+        </GateTrustHostProvider>
       </TransportProvider>
     );
   }
 
   return (
     <TransportProvider transport={board.transport}>
-      <AppShell
-        nav={
-          // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
-          // unavailable), so anything that reaches here is a real destination. Sign out lives
-          // in the rail's own Account dropdown rather than the status bar — this is the only
-          // host with an account to sign back out of, so it is also the only one passing it.
-          <NavRail
-            items={NAV.map((item) =>
-              item.id === 'attention' && attentionCount > 0
-                ? {
-                    ...item,
-                    badge: (
-                      <CounterBadge
-                        count={attentionCount}
-                        color="danger"
-                        size="small"
-                        appearance="filled"
-                      />
-                    ),
-                  }
-                : item,
-            )}
-            selected={screen}
-            onSelect={(id) => setScreen(id as Screen)}
-            accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
-          />
-        }
-        banners={
-          // The shell's own banner strip, which is where the desktop's outage bars go too —
-          // above the screen rather than inside it, so the board below is the board and
-          // nothing shifts the columns down but a thing that had to be said. The ordering
-          // rule itself — unreachable outranks stale outranks skew — now lives in
-          // `connectionState.ts`'s `worstConnectionState`, computed above, so the compact
-          // strip can apply the exact same rule rather than a second copy of it.
-          connectionBanner(connection)
-        }
-        status={
-          <StatusBar attention={attentionCount > 0}>
-            {presence === 'unknown' ? (
-              // Still finding out whether a desktop exists — the dot and its caption both
-              // presuppose an answer this tab doesn't have yet, so a busy indicator replaces
-              // both rather than guessing "offline" from one empty response.
-              <StatusBusy label="Checking for a desktop app…" />
-            ) : (
-              <>
-                {/* The dot's question is the only one that decides whether an edit made here
+      <GateTrustHostProvider
+        value={{
+          canTrust: false,
+          name: board.targetClient ? describeClient(board.targetClient) : null,
+        }}
+      >
+        <AppShell
+          nav={
+            // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
+            // unavailable), so anything that reaches here is a real destination. Sign out lives
+            // in the rail's own Account dropdown rather than the status bar — this is the only
+            // host with an account to sign back out of, so it is also the only one passing it.
+            <NavRail
+              items={NAV.map((item) =>
+                item.id === 'attention' && attentionCount > 0
+                  ? {
+                      ...item,
+                      badge: (
+                        <CounterBadge
+                          count={attentionCount}
+                          color="danger"
+                          size="small"
+                          appearance="filled"
+                        />
+                      ),
+                    }
+                  : item,
+              )}
+              selected={screen}
+              onSelect={(id) => setScreen(id as Screen)}
+              accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
+            />
+          }
+          banners={
+            // The shell's own banner strip, which is where the desktop's outage bars go too —
+            // above the screen rather than inside it, so the board below is the board and
+            // nothing shifts the columns down but a thing that had to be said. The ordering
+            // rule itself — unreachable outranks stale outranks skew — now lives in
+            // `connectionState.ts`'s `worstConnectionState`, computed above, so the compact
+            // strip can apply the exact same rule rather than a second copy of it.
+            connectionBanner(connection)
+          }
+          status={
+            <StatusBar attention={attentionCount > 0}>
+              {presence === 'unknown' ? (
+                // Still finding out whether a desktop exists — the dot and its caption both
+                // presuppose an answer this tab doesn't have yet, so a busy indicator replaces
+                // both rather than guessing "offline" from one empty response.
+                <StatusBusy label="Checking for a desktop app…" />
+              ) : (
+                <>
+                  {/* The dot's question is the only one that decides whether an edit made here
                     goes anywhere: a command is delivered to a desktop Client, so with none
                     polling there is nothing to apply it. */}
-                <StatusDot ok={presence === 'online'} />
-                {/* Named, not counted. "2 clients" told you the size of a set you could
+                  <StatusDot ok={presence === 'online'} />
+                  {/* Named, not counted. "2 clients" told you the size of a set you could
                     neither see nor choose from, while every edit made here goes to exactly
                     ONE of them — so the bar says which, and offers the others when there are
                     any. */}
-                <Caption1>
-                  {presence === 'online' && board.targetClient ? (
-                    <ClientPicker
-                      clients={board.state.clients}
-                      selected={board.targetClient}
-                      onSelect={board.selectTargetClient}
-                      className={styles.linkButton}
-                    />
-                  ) : board.targetClientId !== null ? (
-                    'Desktop app offline — edits are queued'
-                  ) : (
-                    'No desktop app has ever synced this account'
-                  )}
-                </Caption1>
-              </>
-            )}
-            {/* A poll that comes back proves this tab's own connection, whether or not it
+                  <Caption1>
+                    {presence === 'online' && board.targetClient ? (
+                      <ClientPicker
+                        clients={board.state.clients}
+                        selected={board.targetClient}
+                        onSelect={board.selectTargetClient}
+                        className={styles.linkButton}
+                      />
+                    ) : board.targetClientId !== null ? (
+                      'Desktop app offline — edits are queued'
+                    ) : (
+                      'No desktop app has ever synced this account'
+                    )}
+                  </Caption1>
+                </>
+              )}
+              {/* A poll that comes back proves this tab's own connection, whether or not it
                 carried any deltas — which is a different claim from the dot's. Once the
                 board has latched ready, a later paged catch-up shows here as "syncing…"
                 rather than pulling the board back behind the curtain.
@@ -406,92 +426,95 @@ function SignedInBoard({
                 (and only cleared on a read that actually comes back) by every poll failure,
                 even one well after the board has latched ready, where `syncStatusLabel` would
                 otherwise still say a stale "synced Ns ago" from the last read that worked. */}
-            <Caption1>
-              ·{' '}
-              {board.pollError
-                ? 'not syncing'
-                : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
-            </Caption1>
-            {/* Data this tab has asked for but does not have yet — a relayed call still in
+              <Caption1>
+                ·{' '}
+                {board.pollError
+                  ? 'not syncing'
+                  : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
+              </Caption1>
+              {/* Data this tab has asked for but does not have yet — a relayed call still in
                 flight, or a paged catch-up still draining — distinct from the age caption
                 above, which is only about the last read that already landed. */}
-            {busy && (
-              <StatusBusy
-                label={syncBusyLabel(board.syncProgress, board.pendingRelays) ?? undefined}
-              />
-            )}
-            {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
-            <StatusSpacer />
-            <Caption1>v{__APP_VERSION__}</Caption1>
-          </StatusBar>
-        }
-      >
-        {/* Each screen is unmounted rather than hidden when you leave it — every one of
+              {busy && (
+                <StatusBusy
+                  label={syncBusyLabel(board.syncProgress, board.pendingRelays) ?? undefined}
+                />
+              )}
+              {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
+              <StatusSpacer />
+              <Caption1>v{__APP_VERSION__}</Caption1>
+            </StatusBar>
+          }
+        >
+          {/* Each screen is unmounted rather than hidden when you leave it — every one of
             them polls, and a Performance pane nobody is looking at should not be relaying a
             `usage:summary` every second. The desktop's own `App` folds them the same way. */}
-        {screen === 'mytasks' &&
-          (boardIsReady(board.syncProgress) ? (
-            <BoardScreen
-              state={board.state}
-              onMoveTask={(taskId, column) => void board.moveTask(taskId, column)}
-              onStatusNoted={board.noteStatus}
-              // The open-card rotation round trip (F3.7): seeded once from whatever card
-              // the hash route named when this wide layout mounted, and written back on
-              // every change so a rotation down to compact and back lands on the same
-              // card and section rather than resetting to nothing selected.
-              initialSelectedTaskId={openCardId(route)}
-              onSelectedTaskChange={(taskId) =>
-                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]), { replace: true })
-              }
-              hostUnreachable={hostUnreachable}
+          {screen === 'mytasks' &&
+            (boardIsReady(board.syncProgress) ? (
+              <BoardScreen
+                state={board.state}
+                onMoveTask={(taskId, column) => void board.moveTask(taskId, column)}
+                onStatusNoted={board.noteStatus}
+                // The open-card rotation round trip (F3.7): seeded once from whatever card
+                // the hash route named when this wide layout mounted, and written back on
+                // every change so a rotation down to compact and back lands on the same
+                // card and section rather than resetting to nothing selected.
+                initialSelectedTaskId={openCardId(route)}
+                onSelectedTaskChange={(taskId) =>
+                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]), { replace: true })
+                }
+                hostUnreachable={hostUnreachable}
+              />
+            ) : (
+              <SyncCurtain
+                {...syncCurtainText(board.syncProgress)}
+                error={board.syncProgress.lastError}
+              />
+            ))}
+          {screen === 'projects' && <ProjectAdmin />}
+          {screen === 'tickets' && <Projects />}
+          {screen === 'issues' && (
+            <WebIssuesScreen
+              pollError={board.pollError}
+              presence={presence}
+              targetClientId={board.targetClientId}
+              onOpenTask={(taskId) => {
+                setScreen('mytasks');
+                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+              }}
             />
-          ) : (
-            <SyncCurtain
-              {...syncCurtainText(board.syncProgress)}
-              error={board.syncProgress.lastError}
+          )}
+          {screen === 'automations' && (
+            <AutomationsScreen clients={board.state.clients} now={now} />
+          )}
+          {screen === 'fleet' && <Fleet state={board.state} apiDeps={apiDeps} />}
+          {screen === 'performance' && <Performance />}
+          {screen === 'activity' && (
+            <WebActivityScreen
+              pollError={board.pollError}
+              presence={presence}
+              targetClientId={board.targetClientId}
+              lastSeen={lastSeen}
+              onSeen={onSeen}
+              onOpenTask={(taskId) => {
+                setScreen('mytasks');
+                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+              }}
             />
-          ))}
-        {screen === 'projects' && <ProjectAdmin />}
-        {screen === 'tickets' && <Projects />}
-        {screen === 'issues' && (
-          <WebIssuesScreen
-            pollError={board.pollError}
-            presence={presence}
-            targetClientId={board.targetClientId}
-            onOpenTask={(taskId) => {
-              setScreen('mytasks');
-              navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-            }}
-          />
-        )}
-        {screen === 'automations' && <AutomationsScreen clients={board.state.clients} now={now} />}
-        {screen === 'fleet' && <Fleet state={board.state} apiDeps={apiDeps} />}
-        {screen === 'performance' && <Performance />}
-        {screen === 'activity' && (
-          <WebActivityScreen
-            pollError={board.pollError}
-            presence={presence}
-            targetClientId={board.targetClientId}
-            lastSeen={lastSeen}
-            onSeen={onSeen}
-            onOpenTask={(taskId) => {
-              setScreen('mytasks');
-              navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-            }}
-          />
-        )}
-        {screen === 'attention' && <Attention />}
-        {/* The mirrored `projects` rows, which this hook already holds for the board — so the
+          )}
+          {screen === 'attention' && <Attention />}
+          {/* The mirrored `projects` rows, which this hook already holds for the board — so the
             Settings screen's Projects tab still lists what is configured when no desktop is
             awake to answer its own `agentProject:list`. */}
-        {screen === 'settings' && (
-          <SettingsScreen
-            projects={board.state.projects}
-            apiBase={config.cloudApiBase}
-            getAccessToken={() => auth.getAccessToken()}
-          />
-        )}
-      </AppShell>
+          {screen === 'settings' && (
+            <SettingsScreen
+              projects={board.state.projects}
+              apiBase={config.cloudApiBase}
+              getAccessToken={() => auth.getAccessToken()}
+            />
+          )}
+        </AppShell>
+      </GateTrustHostProvider>
     </TransportProvider>
   );
 }
