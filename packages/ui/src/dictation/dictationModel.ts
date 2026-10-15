@@ -83,6 +83,65 @@ export function recognizerFor(win: object | undefined): RecognizerSupport {
   };
 }
 
+/** Where dictation is being offered — the two hosts need different recognizer policies. */
+export type DictationHost = 'desktop' | 'web';
+
+/** An OS whose built-in dictation `osDictationHint` can point at. Linux has none, so it is
+ *  never a member of this type — it only ever resolves to `{ kind: 'none' }`. */
+export type OsDictationPlatform = 'windows' | 'mac';
+
+/** What dictation path, if any, a host should offer. */
+export type DictationPath =
+  | { kind: 'web-speech'; create(): Recognizer }
+  | { kind: 'os-dictation'; platform: OsDictationPlatform }
+  | { kind: 'none' };
+
+/**
+ * The host-aware dictation policy F9.9's mic button is gated on. On **desktop** this never
+ * returns `web-speech`, even when `webkitSpeechRecognition` exists on `win` — the F9.7 spike
+ * found Electron's packaged renderer reaches `onerror: "network"` immediately, since Electron
+ * ships no Google speech-service API key the way Chrome does. Desktop instead reads the OS off
+ * `win.navigator.userAgent`: Windows and macOS both have a built-in dictation shortcut, so they
+ * resolve to `os-dictation`; anything else (Linux, which is how the project's own WSL run shows
+ * up here) has none, so it resolves to `none`. On **web**, this is exactly `recognizerFor(win)`
+ * — Web Speech works there (F9's open question 3) — narrowed to `web-speech`/`none`.
+ */
+export function dictationAvailable(host: DictationHost, win: object | undefined): DictationPath {
+  if (host === 'desktop') {
+    if (win === undefined) return { kind: 'none' };
+    const userAgent = (win as { navigator?: { userAgent?: string } }).navigator?.userAgent ?? '';
+    if (userAgent.includes('Windows')) return { kind: 'os-dictation', platform: 'windows' };
+    if (userAgent.includes('Mac OS X') || userAgent.includes('Macintosh')) {
+      return { kind: 'os-dictation', platform: 'mac' };
+    }
+    return { kind: 'none' };
+  }
+
+  const support = recognizerFor(win);
+  return support.supported ? { kind: 'web-speech', create: support.create } : { kind: 'none' };
+}
+
+/** The shortcut and tooltip text for an `os-dictation` path's hint. Both tooltips note that
+ *  the OS, not this app, handles the audio — there is nothing for this app's mic tooltip
+ *  vendor-attribution convention (F9's open question 3) to say here. */
+export function osDictationHint(platform: OsDictationPlatform): {
+  shortcut: string;
+  tooltip: string;
+} {
+  if (platform === 'windows') {
+    return {
+      shortcut: 'Win+H',
+      tooltip:
+        'Dictate with Windows voice typing — press Win+H. Audio is handled by the OS, not this app.',
+    };
+  }
+  return {
+    shortcut: 'Fn Fn',
+    tooltip:
+      'Dictate with macOS Dictation — press Fn twice. Audio is handled by the OS, not this app.',
+  };
+}
+
 /** Appends `next` onto `base` with a single space, trimming `next` first — the seam between
  *  an already-finalized transcript and whatever is joined onto it. */
 function joinSeam(base: string, next: string): string {
