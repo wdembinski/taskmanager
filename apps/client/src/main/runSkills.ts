@@ -13,7 +13,7 @@
  * the human which ones it had to drop.
  */
 import type { Task } from '@shared/model';
-import { formatSkillRef, parseSkillRef, type Skill } from '@shared/skills';
+import { effectiveSkillRefs, parseSkillRef, type Skill } from '@shared/skills';
 import type { HistoryBudget } from './promptHistory';
 import type { RepoSkill } from './repoSkills';
 import { boundSkills, SKILLS_CHAR_BUDGET, type ResolvedSkill } from './skillsPrompt';
@@ -37,31 +37,12 @@ export interface RunSkillLookups {
 }
 
 /**
- * The card's `skillRefs` followed by the step's own, `null` treated as `[]`, each
- * canonicalised through `parseSkillRef`/`formatSkillRef` so whitespace or formatting
- * variants of the same ref compare equal — and deduplicated keeping the FIRST occurrence,
- * so a card's ref always wins its own duplicate on the step.
- *
- * A ref that fails to parse is kept as its trimmed raw text (still deduplicated against
- * other occurrences of the same bad text) rather than dropped here — `resolveRunSkills` is
- * what turns it into a reported `dangling` entry; this function only orders and dedupes.
+ * `effectiveSkillRefs` (`@shared/skills`), kept under its original name so this module's own
+ * callers — `resolveRunSkills` below, the scheduler — and `runSkills.test.ts` stay untouched
+ * now that the UI needs the same "what a step runs with" logic and the definition moved to
+ * shared to give it one.
  */
-export function runSkillRefs(
-  card: Pick<Task, 'skillRefs'>,
-  step: Pick<Task, 'skillRefs'>,
-): string[] {
-  const combined = [...(card.skillRefs ?? []), ...(step.skillRefs ?? [])];
-  const seen = new Set<string>();
-  const refs: string[] = [];
-  for (const raw of combined) {
-    const parsed = parseSkillRef(raw);
-    const canonical = parsed ? formatSkillRef(parsed) : raw.trim();
-    if (seen.has(canonical)) continue;
-    seen.add(canonical);
-    refs.push(canonical);
-  }
-  return refs;
-}
+export const runSkillRefs = effectiveSkillRefs;
 
 /**
  * Resolve a run's skills: `runSkillRefs(card, step)`, each looked up through `lookups` and

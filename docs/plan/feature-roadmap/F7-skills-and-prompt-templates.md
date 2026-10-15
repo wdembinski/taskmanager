@@ -246,6 +246,91 @@ module (library skills already cover the editable case — `Skill` in `skills.ts
 F7's "Export" writes a `SKILL.md` through a separate, explicit action, not through this
 discovery path).
 
+## F7.9 — decisions taken (step 1 of 6)
+
+Six build steps are approved for F7.9. Step 1 is the one piece of this step that is code,
+plus the decisions steps 2–4 (the pure picker state, the shared `SkillPicker`, and wiring it
+into the dialog/panel/steps) build on — settled here so a headless session three steps away
+does not re-derive them with no one to ask.
+
+### One definition of "what a step runs with", moved to shared
+
+`runSkillRefs` (card ∪ step, dedupe, card wins order) used to live only in
+`apps/client/src/main/runSkills.ts`, built for the engine's own run-time resolution. The
+picker now needs the identical union to decide which refs on a step are the step's own versus
+inherited from the card — so the logic moved to `packages/shared/src/skills.ts` as
+`effectiveSkillRefs(card, step)` (`skills.ts:255-269`), with the per-ref canonicalisation it
+relied on pulled out as `canonicalSkillRef(raw)` (`skills.ts:242-245`): parse-and-reformat
+through `parseSkillRef`/`formatSkillRef` when a ref parses, trimmed raw text when it does not.
+
+`runSkills.ts` now reads `export const runSkillRefs = effectiveSkillRefs;` — a bare alias,
+not a wrapper — so `runSkills.test.ts` and the scheduler's own call sites
+(`scheduler.ts:3617`, `scheduler.ts:3633`) needed no edits at all. `resolveRunSkills` keeps
+calling `runSkillRefs(card, step)` exactly as before; only the import changed.
+
+### The picker saves the task's own refs only — inherited refs are display, not state
+
+A step's `effectiveSkillRefs(card, step)` mixes the card's refs with the step's own, but
+`task:setSkillRefs` only ever writes one task's `skillRefs` column. The picker's pure state
+(step 2) therefore tracks ONLY the refs that are the open task's own — a step's picker never
+includes a ref that is present solely because the parent card carries it. An inherited ref
+still renders in the list (checked, disabled, captioned "from card"), but toggling it is a
+no-op in the pure layer: there is no task whose own `skillRefs` that toggle could write to
+without silently detaching it from the card and attaching it to the step instead, which is not
+what checking an already-checked, disabled box means to a human. This no-op is step 2's
+acceptance test.
+
+### A missing ref renders as a removable "missing" row, never dropped
+
+`resolveRunSkills` already treats an unresolvable ref as `dangling` rather than throwing
+(`runSkills.ts` — `DanglingSkill`), and the picker mirrors that rather than silently losing
+the ref. Every ref on the task that has no matching option — a deleted library skill, or a
+`repo:<name>` the project's current `.claude/skills/` no longer has — still occupies a row,
+labelled by its raw canonical ref text since there is no name or description left to show.
+It is removable like any other own ref; it just has nothing to check it against. This is what
+lets a human detach a dangling ref from a card without that ref having been silently dropped
+from the list the moment its target disappeared.
+
+### Repo skills are scoped to one agent project, picked contextually
+
+`skill:listRepo(projectId)` (F7.7) answers for one project; the picker always calls it with
+whichever project that surface already treats as authoritative for repo-skill lookups, rather
+than adding a project selector of its own:
+
+- A step row or the agent panel reads it from the parent card's `agentProjectId`
+  (`TaskAgentPanel.tsx:340` already resolves this field for its own assigned-project display).
+- The assign dialog reads it from its own local `projectId` state (`AssignAgentDialog.tsx:156`)
+  — the project the human has currently selected in that same dialog, before any `task:assign*`
+  call exists to read `agentProjectId` back from.
+
+A task with no agent project yet (an unassigned card's dialog, before a project is chosen)
+simply has no repo skills to offer — only library skills are listable — rather than the picker
+blocking on a project pick first.
+
+### Save timing: immediate for the panel and step rows, deferred for the dialog
+
+The panel and step rows are editing an EXISTING task, so a skill toggle there calls
+`task:setSkillRefs` immediately, the same shape `TaskAgentPanel.tsx` already uses for
+`task:setAgentOptions` (`TaskAgentPanel.tsx:571,594,616`) — no separate "Save" step, no dirty
+state to track across a re-render.
+
+The assign dialog is different: it is choosing skills for a task that either does not exist
+yet (new-task flow) or is about to be reassigned, so it keeps the picker's selection in local
+state exactly like its existing `projectId`/`model`/`notes` fields (`AssignAgentDialog.tsx:156-
+173`) and only calls `task:setSkillRefs` once, right before `task:assignAgent` /
+`task:startVariants` (`AssignAgentDialog.tsx:300,314-320`) — and only when the selection
+actually changed from what the task already had, so confirming a dialog that never touched
+skills never issues a no-op write.
+
+### Editing is allowed while a step is live
+
+Skills are re-resolved at every spawn, not cached for a run's lifetime (F7.6's
+`resolveRunSkills` runs fresh each time `writeContractFile` is called, including on a chat
+resume). The existing timeline note already tells a human "Changes to this card's skills take
+effect on its next run" (`runSkills.ts` — `skillsTimelineNote`'s closing sentence). The picker
+therefore needs no "locked while running" guard anywhere it appears: a card or step mid-run is
+exactly as editable as one that is idle, and the next spawn is what picks the edit up.
+
 ## Tasks
 
 ### F7 · Phase 1 — Skill and template model

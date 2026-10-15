@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import type { Task } from './model';
 import {
+  canonicalSkillRef,
+  effectiveSkillRefs,
   formatSkillRef,
   isValidSkillName,
   parseSkillMarkdown,
@@ -138,6 +141,45 @@ describe('parseSkillRef', () => {
   it('trims only surrounding junk, not internal content', () => {
     expect(parseSkillRef('  lib:abc-123  ')).toEqual({ kind: 'library', id: 'abc-123' });
     expect(parseSkillRef('  repo:tdd  ')).toEqual({ kind: 'repo', name: 'tdd' });
+  });
+});
+
+describe('canonicalSkillRef', () => {
+  it('reformats a parseable ref through formatSkillRef', () => {
+    expect(canonicalSkillRef(' lib:abc-123 ')).toBe('lib:abc-123');
+    expect(canonicalSkillRef(' repo:tdd ')).toBe('repo:tdd');
+  });
+
+  it('falls back to trimmed raw text for an unparseable ref', () => {
+    expect(canonicalSkillRef(' nope ')).toBe('nope');
+  });
+});
+
+describe('effectiveSkillRefs', () => {
+  const task = (skillRefs: string[] | null): Pick<Task, 'skillRefs'> => ({ skillRefs });
+
+  it('is empty when neither card nor step has any refs', () => {
+    expect(effectiveSkillRefs(task(null), task(null))).toEqual([]);
+    expect(effectiveSkillRefs(task([]), task([]))).toEqual([]);
+  });
+
+  it('unions card and step, card refs first', () => {
+    expect(effectiveSkillRefs(task(['lib:a']), task(['repo:tdd']))).toEqual(['lib:a', 'repo:tdd']);
+  });
+
+  it('dedupes across card and step, the card occurrence winning the order', () => {
+    expect(effectiveSkillRefs(task(['lib:a']), task(['lib:a', 'repo:tdd']))).toEqual([
+      'lib:a',
+      'repo:tdd',
+    ]);
+  });
+
+  it('dedupes whitespace variants of the same ref', () => {
+    expect(effectiveSkillRefs(task([' lib:a']), task(['lib:a ']))).toEqual(['lib:a']);
+  });
+
+  it('keeps an unparseable ref, deduped on its trimmed text', () => {
+    expect(effectiveSkillRefs(task(['nope']), task([' nope ']))).toEqual(['nope']);
   });
 });
 
