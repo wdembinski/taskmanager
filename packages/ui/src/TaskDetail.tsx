@@ -73,7 +73,7 @@ import {
   timelineLoadStarted,
   type TimelineState,
 } from './taskTimeline';
-import { TrackerMark, shortTicketKey, trackerName, trackerOf } from './tracker';
+import { TrackerMark, shortTicketKey, ticketLinkTitle, trackerName, trackerOf } from './tracker';
 import { runPhase } from '@tm/shared/board';
 import { useDelayedFlag } from './useDelayedFlag';
 import { useTransport } from './transport';
@@ -1044,7 +1044,7 @@ export function TaskDetail({
                     href={task.externalUrl}
                     target="_blank"
                     rel="noreferrer noopener"
-                    title={`Open ${task.externalKey} in ${trackerName(task) ?? 'the tracker'}`}
+                    title={ticketLinkTitle(task) ?? undefined}
                   >
                     <Badge
                       appearance="outline"
