@@ -111,13 +111,17 @@ function failReasonSentence(reason: GateFailReason, task: Task, exitCode: number
   }
 }
 
-/** What `raiseFailure` is told about a gate step that is failing outright. */
-export interface GateFailureInfo {
+/** What `raiseFailure` is told about a gate step that is failing outright. `landing` is
+ *  whatever `prepare` had already resolved before the failure, when there was any — carried
+ *  through so a human resolution raised on it (the inbox's "Skip gate") can still land the
+ *  chain's branch the same way a passing gate would have. */
+export interface GateFailureInfo<Landing = unknown> {
   task: Task;
   reason: string;
   command: string;
   exitCode: number | null;
   output: string;
+  landing?: Landing;
 }
 
 /** What `prepare` hands back for a gate ready to run, or the reason it is not. `Landing` is
@@ -137,12 +141,13 @@ export interface GateStepDeps<Landing = unknown> {
   setFailureNote(id: string, note: string): void;
   /** Files a note on the card's own timeline. */
   note(task: Task, text: string): void;
-  /** Resolve the worktree/host a gate's command runs through, or why it cannot. */
-  prepare(task: Task): GatePrepResult<Landing>;
+  /** Resolve the worktree/host a gate's command runs through, or why it cannot — async, like
+   *  `WorktreeManager.prepare` itself, which is what the scheduler's own thunk calls. */
+  prepare(task: Task): Promise<GatePrepResult<Landing>>;
   /** Defaults to `gateRunner.startGate`; overridden in tests with a fake `GateRun`. */
   startGate?: (host: ExecHost, req: GateRunRequest, deps?: GateRunnerDeps) => GateRun;
   /** Park this gate step in the inbox as a failure the human must resolve. */
-  raiseFailure(info: GateFailureInfo): void;
+  raiseFailure(info: GateFailureInfo<Landing>): void;
   /** Start the next pending step of this chain — `Scheduler.advanceSubtasks`. */
   advance(parentId: string): void;
   /** The chain's "this card's steps are all done" ending — `Scheduler.finishParentChain`. */
@@ -159,7 +164,15 @@ export interface GateStepDeps<Landing = unknown> {
  * the DB with nothing in this map is exactly what {@link GateStepRunner.reconcile} is for.
  */
 export class GateStepRunner<Landing = unknown> {
-  private readonly running = new Map<string, GateRun>();
+  /**
+   * `'starting'` reserves a slot for the span of the (async) `prepare()` call, before there
+   * is any `GateRun` to hold — so `isRunning`/a second `start()` sees this step as already
+   * running for the WHOLE window, not just once its command has actually spawned. Without
+   * this, two calls arriving before the first's `prepare()` resolves (the outer scheduler's
+   * own guards are keyed off `isRunning`) would both pass the check below and spawn the
+   * command twice.
+   */
+  private readonly running = new Map<string, GateRun | 'starting'>();
 
   constructor(private readonly deps: GateStepDeps<Landing>) {}
 
@@ -173,12 +186,18 @@ export class GateStepRunner<Landing = unknown> {
 
   /** Run a gate step's command. A no-op if it is already running — the guard that keeps a
    *  second `advanceSubtasks`/reconcile pass from spawning the command twice. */
-  start(task: Task): void {
+  async start(task: Task): Promise<void> {
     if (this.running.has(task.id)) return;
+    this.running.set(task.id, 'starting');
     this.deps.setStatus(task.id, 'running');
 
-    const prep = this.deps.prepare(task);
+    const prep = await this.deps.prepare(task);
+    // `stop()` may have landed while `prepare()` was still in flight — there was no
+    // `GateRun` yet for it to terminate, so it dropped the reservation instead (see `stop`).
+    // Honour that now rather than spawning a command nobody wants anymore.
+    if (!this.running.has(task.id)) return;
     if ('error' in prep) {
+      this.running.delete(task.id);
       this.deps.setStatus(task.id, 'failed');
       this.deps.raiseFailure({
         task,
@@ -201,7 +220,17 @@ export class GateStepRunner<Landing = unknown> {
 
   /** Stop a running gate's command. A no-op if nothing is running for this id. */
   stop(id: string): void {
-    this.running.get(id)?.stop();
+    const run = this.running.get(id);
+    if (run === undefined) return;
+    if (run === 'starting') {
+      // Nothing spawned yet to terminate — drop the reservation; `start` checks for exactly
+      // that once its `prepare()` resolves, and writes the status itself since no `GateRun`
+      // will ever settle to do it.
+      this.running.delete(id);
+      this.deps.setStatus(id, 'stopped');
+      return;
+    }
+    run.stop();
   }
 
   /**
@@ -212,7 +241,15 @@ export class GateStepRunner<Landing = unknown> {
    */
   reconcile(task: Task): void {
     this.deps.note(task, 'the app closed while this gate was running — running it again');
-    this.start(task);
+    void this.start(task);
+  }
+
+  /** The inbox's **Send back to agent** on a gate that has already failed — see the
+   *  module-level {@link sendBack} this delegates to. A method (rather than the scheduler
+   *  importing the free function itself) so `Scheduler` only ever reaches the gate through
+   *  this one object, the same way it only ever reaches `ChainRunner` through `this.chain`. */
+  sendBack(task: Task): void {
+    sendBack(this.deps, task);
   }
 
   /** What a settled run means for the chain — every branch writes a status, per
@@ -233,6 +270,7 @@ export class GateStepRunner<Landing = unknown> {
         command,
         exitCode: result.exitCode,
         output: result.output,
+        landing,
       });
       return;
     }
@@ -266,6 +304,7 @@ export class GateStepRunner<Landing = unknown> {
           command,
           exitCode: result.exitCode,
           output: result.output,
+          landing,
         });
         return;
       }
@@ -298,6 +337,7 @@ export class GateStepRunner<Landing = unknown> {
       command,
       exitCode: result.exitCode,
       output: result.output,
+      landing,
     });
   }
 }

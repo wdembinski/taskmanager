@@ -129,9 +129,11 @@ function makeDeps(
     setFailureNote: (id, note) => calls.setFailureNote.push({ id, note }),
     note: (task, text) => calls.note.push({ taskId: task.id, text }),
     prepare: () =>
-      opts.prepError !== undefined
-        ? { error: opts.prepError }
-        : { cwd: '/work', host: {} as never, landing: opts.prepLanding },
+      Promise.resolve(
+        opts.prepError !== undefined
+          ? { error: opts.prepError }
+          : { cwd: '/work', host: {} as never, landing: opts.prepLanding },
+      ),
     raiseFailure: (info) => calls.raiseFailure.push(info),
     advance: (parentId) => calls.advance.push(parentId),
     finishStep: (task, landing) => calls.finishStep.push({ taskId: task.id, landing }),
@@ -140,9 +142,10 @@ function makeDeps(
 }
 
 /** Starts the gate, hands back the `GateRun` the fake `startGate` produced, and resolves
- *  it with `result` — awaiting the returned promise guarantees `settle` has already run,
- *  because it was `.then`'d onto the very same promise before this function's own `await`
- *  joined the microtask queue behind it. */
+ *  it with `result` — awaiting `start()` first guarantees `settle` is already `.then`'d onto
+ *  `run.result` (attached synchronously inside `start`, once its own `await prepare()` has
+ *  resolved), so the SECOND await here, of the same already-resolved promise, always runs
+ *  after it: two handlers on one promise fire in the order they were attached. */
 async function runToSettled(
   deps: GateStepDeps,
   task: Task,
@@ -152,7 +155,7 @@ async function runToSettled(
   const startGate = vi.fn(() => run);
   deps.startGate = startGate;
   const runner = new GateStepRunner(deps);
-  runner.start(task);
+  await runner.start(task);
   await run.result;
   return { runner, startGate };
 }
@@ -331,7 +334,7 @@ describe('GateStepRunner.start → stopped and prep/run errors', () => {
     expect(calls.raiseFailure[0].reason).toBe('ENOENT');
   });
 
-  it('fails immediately when prepare itself refuses, without ever starting a run', async () => {
+  it('fails when prepare itself refuses, without ever starting a run', async () => {
     const gate = gateStepTask();
     const { deps, calls } = makeDeps({
       siblings: [gate],
@@ -340,7 +343,7 @@ describe('GateStepRunner.start → stopped and prep/run errors', () => {
     const startGate = vi.fn();
     deps.startGate = startGate;
     const runner = new GateStepRunner(deps);
-    runner.start(gate);
+    await runner.start(gate);
 
     expect(startGate).not.toHaveBeenCalled();
     expect(calls.setStatus).toContainEqual({ id: 'gate-1', status: 'failed' });
@@ -355,34 +358,63 @@ describe('GateStepRunner — stop, double-start, reconcile', () => {
     return { run, startGate };
   }
 
-  it('stop() calls the live GateRun.stop()', () => {
-    const gate = gateStepTask();
-    const { deps } = makeDeps({ siblings: [gate] });
-    const { run, startGate } = pendingGateRun();
-    deps.startGate = startGate;
-    const runner = new GateStepRunner(deps);
-
-    runner.start(gate);
-    expect(runner.isRunning(gate.id)).toBe(true);
-    runner.stop(gate.id);
-
-    expect(run.stop).toHaveBeenCalledTimes(1);
-  });
-
-  it('refuses a second start while the first is still running', () => {
+  it('isRunning is true for the whole async prepare window, before any GateRun exists', () => {
     const gate = gateStepTask();
     const { deps } = makeDeps({ siblings: [gate] });
     const { startGate } = pendingGateRun();
     deps.startGate = startGate;
     const runner = new GateStepRunner(deps);
 
-    runner.start(gate);
-    runner.start(gate);
+    void runner.start(gate); // fire-and-forget — `prepare()` has not resolved yet
+    expect(runner.isRunning(gate.id)).toBe(true);
+    expect(startGate).not.toHaveBeenCalled(); // confirms we're still in the 'starting' window
+  });
+
+  it('stop() calls the live GateRun.stop()', async () => {
+    const gate = gateStepTask();
+    const { deps } = makeDeps({ siblings: [gate] });
+    const { run, startGate } = pendingGateRun();
+    deps.startGate = startGate;
+    const runner = new GateStepRunner(deps);
+
+    await runner.start(gate);
+    expect(runner.isRunning(gate.id)).toBe(true);
+    runner.stop(gate.id);
+
+    expect(run.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop() during the prepare window drops the reservation and writes "stopped" directly', async () => {
+    const gate = gateStepTask();
+    const { deps, calls } = makeDeps({ siblings: [gate] });
+    const { startGate } = pendingGateRun();
+    deps.startGate = startGate;
+    const runner = new GateStepRunner(deps);
+
+    const started = runner.start(gate); // still awaiting `prepare()` — nothing spawned yet
+    runner.stop(gate.id);
+    await started;
+
+    expect(runner.isRunning(gate.id)).toBe(false);
+    expect(startGate).not.toHaveBeenCalled(); // the stop beat `prepare()` — never spawned
+    expect(calls.setStatus).toContainEqual({ id: 'gate-1', status: 'stopped' });
+  });
+
+  it('refuses a second start while the first is still running', async () => {
+    const gate = gateStepTask();
+    const { deps } = makeDeps({ siblings: [gate] });
+    const { startGate } = pendingGateRun();
+    deps.startGate = startGate;
+    const runner = new GateStepRunner(deps);
+
+    const first = runner.start(gate);
+    runner.start(gate); // synchronously reserved already — a true no-op
+    await first;
 
     expect(startGate).toHaveBeenCalledTimes(1);
   });
 
-  it('reconcile notes that it is re-running the gate, then starts it', () => {
+  it('reconcile notes that it is re-running the gate, then starts it', async () => {
     const gate = gateStepTask();
     const { deps, calls } = makeDeps({ siblings: [gate] });
     const { startGate } = pendingGateRun();
@@ -390,6 +422,7 @@ describe('GateStepRunner — stop, double-start, reconcile', () => {
     const runner = new GateStepRunner(deps);
 
     runner.reconcile(gate);
+    await Promise.resolve(); // let `start`'s internal `await prepare()` resolve
 
     expect(calls.note).toEqual([
       { taskId: 'gate-1', text: 'the app closed while this gate was running — running it again' },

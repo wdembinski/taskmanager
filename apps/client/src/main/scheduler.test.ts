@@ -1566,6 +1566,20 @@ describe('failure decision helpers (pure)', () => {
     expect(actions).not.toContain(FAILURE_ACTION.retryIntegration);
     expect(actions).not.toContain(FAILURE_ACTION.retryFresh);
   });
+
+  it('offers only the gate-specific actions for a failed gate — no worktree/PR actions', () => {
+    const actions = failureActionsFor('gate');
+    expect(actions).toEqual([
+      FAILURE_ACTION.runGateAgain,
+      FAILURE_ACTION.sendBackToAgent,
+      FAILURE_ACTION.skipGate,
+    ]);
+    expect(actions).not.toContain(FAILURE_ACTION.retry);
+    expect(actions).not.toContain(FAILURE_ACTION.retryIntegration);
+    expect(actions).not.toContain(FAILURE_ACTION.retryPullRequest);
+    expect(actions).not.toContain(FAILURE_ACTION.cleanup);
+    expect(actions).not.toContain(FAILURE_ACTION.markDone);
+  });
 });
 
 describe('Scheduler run-failure handling', () => {
