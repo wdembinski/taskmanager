@@ -4,8 +4,16 @@
  * history, `outdated` is never stored), plus every write's own validation.
  */
 import { describe, expect, it } from 'vitest';
-import type { Task } from '@shared/model';
-import type { DiffFile, DiffHunk, DiffLine, ReviewComment } from '@shared/review';
+import type { ChatSendResult, Task } from '@shared/model';
+import { formatReviewMessage } from '@shared/review';
+import type {
+  DiffFile,
+  DiffHunk,
+  DiffLine,
+  DiffSummary,
+  DiffSummaryResult,
+  ReviewComment,
+} from '@shared/review';
 import type { Store } from '../store';
 import { ReviewService, type ReviewServiceDeps } from './reviewService';
 
@@ -112,11 +120,38 @@ type FilesForFixture = {
   files: Map<string, { file: DiffFile; oldPath?: string } | null>;
 };
 
-/** A fake `filesFor` driven by a mutable `{ diffId, files }` fixture the test can swap mid-run. */
+/** `review:add`/`update`/`delete`/`list` never call `diffs.summary` or `chat` — only `send` does. */
+function unexercised(name: string): never {
+  throw new Error(`${name} is not exercised by this test`);
+}
+
+function summaryFixture(overrides: Partial<DiffSummary> = {}): DiffSummary {
+  return {
+    diffId: 'diff-1',
+    baseRef: 'main',
+    baseSha: 'base1',
+    headSha: 'head1',
+    includesWorkingTree: false,
+    files: [],
+    truncated: false,
+    ...overrides,
+  };
+}
+
+/**
+ * A fake `filesFor`/`summary` pair driven by a mutable fixture the test can swap mid-run.
+ * `state.summary` starts unset — a `send` test must set it before calling, same as `chat`
+ * below, so a test that forgets fails loudly instead of resolving against a guessed default.
+ */
 function fakeDiffs(initial: FilesForFixture | null) {
-  const state: { current: FilesForFixture | null; failWith: Error | null } = {
+  const state: {
+    current: FilesForFixture | null;
+    failWith: Error | null;
+    summary: DiffSummaryResult | null;
+  } = {
     current: initial,
     failWith: null,
+    summary: null,
   };
   const calls: Array<{ taskId: string; paths: readonly string[] }> = [];
   const filesFor = async (taskId: string, paths: readonly string[]): Promise<FilesForResult> => {
@@ -131,14 +166,19 @@ function fakeDiffs(initial: FilesForFixture | null) {
     for (const path of paths) files.set(path, state.current.files.get(path) ?? null);
     return { diffId: state.current.diffId, files };
   };
-  return { filesFor, calls, state };
+  const summary = async (): Promise<DiffSummaryResult> =>
+    state.summary ?? unexercised('diffs.summary');
+  return { filesFor, summary, calls, state };
 }
 
-type SummaryResult = Awaited<ReturnType<ReviewServiceDeps['diffs']['summary']>>;
-
-/** `review:add`/`update`/`delete`/`list` never call `diffs.summary` or `chat` — only `send` does. */
-function unexercised(name: string): never {
-  throw new Error(`${name} is not exercised by this test`);
+/** Records every call so a test can assert how many times `chat` ran, and with what. */
+function fakeChat(result: ChatSendResult | ((taskId: string, message: string) => ChatSendResult)) {
+  const calls: Array<{ taskId: string; message: string }> = [];
+  const chat: ReviewServiceDeps['chat'] = (taskId, message) => {
+    calls.push({ taskId, message });
+    return typeof result === 'function' ? result(taskId, message) : result;
+  };
+  return { chat, calls };
 }
 
 function makeService(
@@ -146,17 +186,15 @@ function makeService(
     comments?: ReviewComment[];
     knownTasks?: Set<string>;
     diffs?: ReturnType<typeof fakeDiffs>;
-    summary?: () => Promise<SummaryResult> | SummaryResult;
     chat?: ReviewServiceDeps['chat'];
   } = {},
 ) {
   const store = fakeStore(opts.comments ?? [], opts.knownTasks);
   const diffs = opts.diffs ?? fakeDiffs(null);
-  const summary = opts.summary ?? (() => unexercised('diffs.summary'));
   const chat = opts.chat ?? (() => unexercised('chat'));
   const svc = new ReviewService({
     store,
-    diffs: { filesFor: diffs.filesFor, summary: async () => summary() },
+    diffs: { filesFor: diffs.filesFor, summary: diffs.summary },
     chat,
   });
   return { svc, store, diffs };
@@ -513,5 +551,200 @@ describe('review:list', () => {
       const stored = store.listReviewComments('t1')[0];
       expect('outdated' in stored).toBe(false);
     });
+  });
+});
+
+describe('review:send', () => {
+  /** A `filesFor` fixture whose file matches `seedComment()`'s anchor exactly — `outdated: false`. */
+  function matchingDiffs() {
+    return fakeDiffs({
+      diffId: 'diff-1',
+      files: new Map([
+        [
+          'src/a.ts',
+          { file: file([hunk([line({ text: 'const x = 1;', oldLine: 5, newLine: 5 })])]) },
+        ],
+      ]),
+    });
+  }
+
+  function okSummary(overrides: Partial<DiffSummary> = {}): DiffSummaryResult {
+    return { status: 'ok', summary: summaryFixture(overrides) };
+  }
+
+  it('on a running card, sends the formatted batch, stamps every draft, and returns the chat result', async () => {
+    const seed = seedComment();
+    const diffs = matchingDiffs();
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-1' });
+    const { svc, store } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+    const result = await svc.send('t1', 'overall note');
+
+    expect(chatResult.calls).toHaveLength(1);
+    expect(chatResult.calls[0]).toEqual({
+      taskId: 't1',
+      message: formatReviewMessage(
+        [{ ...seed, outdated: false }],
+        summaryFixture(),
+        'overall note',
+      ),
+    });
+    expect(result).toEqual({
+      status: 'sent',
+      taskId: 't1',
+      runId: 'run-1',
+      comments: [{ ...seed, sentAt: expect.any(Number) }],
+    });
+    expect(store.listReviewComments('t1')[0].sentAt).not.toBeNull();
+  });
+
+  it('on a settled card, stamps the drafts and answers resumed', async () => {
+    const seed = seedComment();
+    const diffs = matchingDiffs();
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'resumed', taskId: 't1', runId: 'run-2' });
+    const { svc, store } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+    const result = await svc.send('t1');
+
+    expect(result.status).toBe('resumed');
+    if (result.status !== 'resumed') throw new Error(result.status);
+    expect(result.runId).toBe('run-2');
+    expect(result.comments).toHaveLength(1);
+    expect(store.listReviewComments('t1')[0].sentAt).not.toBeNull();
+  });
+
+  it.each(['never-ran', 'limit'] as const)(
+    'passes a %s chat refusal straight through, stamping nothing',
+    async (reason) => {
+      const seed = seedComment();
+      const diffs = matchingDiffs();
+      diffs.state.summary = okSummary();
+      const chatResult = fakeChat({ status: 'refused', taskId: 't1', reason });
+      const { svc, store } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+      const result = await svc.send('t1');
+
+      expect(result).toEqual({ status: 'refused', taskId: 't1', reason });
+      expect(store.listReviewComments('t1')[0].sentAt).toBeNull();
+      const listed = await svc.list('t1');
+      expect(listed.every((c) => c.sentAt === null)).toBe(true);
+    },
+  );
+
+  it('calls chat exactly once for two concurrent sends, the other refusing nothing-to-send', async () => {
+    const seed = seedComment();
+    const diffs = matchingDiffs();
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-3' });
+    const { svc, store } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+    const [first, second] = await Promise.all([svc.send('t1'), svc.send('t1')]);
+
+    expect(chatResult.calls).toHaveLength(1);
+    const results = [first, second];
+    const sent = results.find((r) => r.status === 'sent');
+    const refused = results.find((r) => r.status === 'refused');
+    if (!sent || sent.status !== 'sent') throw new Error('expected one sent result');
+    if (!refused || refused.status !== 'refused') throw new Error('expected one refused result');
+    expect(refused.reason).toBe('nothing-to-send');
+    expect(sent.comments).toHaveLength(1);
+    expect(store.listReviewComments('t1')[0].sentAt).not.toBeNull();
+  });
+
+  it('calls chat exactly once for two concurrent sends that both carry a note', async () => {
+    const seed = seedComment();
+    const diffs = matchingDiffs();
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-4' });
+    const { svc } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+    await Promise.all([svc.send('t1', 'shared note'), svc.send('t1', 'shared note')]);
+
+    expect(chatResult.calls).toHaveLength(1);
+    expect(chatResult.calls[0].message).toContain('shared note');
+  });
+
+  it('does not quote an already-sent comment again', async () => {
+    const already = seedComment({ id: 'c1', sentAt: 100, body: 'first note' });
+    const draft = seedComment({
+      id: 'c2',
+      line: 9,
+      excerpt: 'const y = 2;',
+      body: 'second note',
+    });
+    const diffs = fakeDiffs({
+      diffId: 'diff-1',
+      files: new Map([
+        [
+          'src/a.ts',
+          {
+            file: file([
+              hunk([
+                line({ text: 'const x = 1;', oldLine: 5, newLine: 5 }),
+                line({ text: 'const y = 2;', oldLine: 9, newLine: 9 }),
+              ]),
+            ]),
+          },
+        ],
+      ]),
+    });
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-5' });
+    const { svc } = makeService({ comments: [already, draft], diffs, chat: chatResult.chat });
+
+    await svc.send('t1');
+
+    expect(chatResult.calls[0].message).toEqual(
+      formatReviewMessage([{ ...draft, outdated: false }], summaryFixture(), undefined),
+    );
+    expect(chatResult.calls[0].message).toContain('second note');
+    expect(chatResult.calls[0].message).not.toContain('first note');
+  });
+
+  it('sends an outdated draft with the outdated suffix', async () => {
+    const seed = seedComment();
+    const diffs = fakeDiffs({
+      diffId: 'diff-1',
+      files: new Map([
+        [
+          'src/a.ts',
+          { file: file([hunk([line({ text: 'const x = 2;', oldLine: 5, newLine: 5 })])]) },
+        ],
+      ]),
+    });
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-6' });
+    const { svc } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+    await svc.send('t1');
+
+    expect(chatResult.calls[0].message).toContain('outdated');
+    expect(chatResult.calls[0].message).toEqual(
+      formatReviewMessage([{ ...seed, outdated: true }], summaryFixture(), undefined),
+    );
+  });
+
+  it('refuses landed without calling chat', async () => {
+    const seed = seedComment();
+    const diffs = matchingDiffs();
+    diffs.state.summary = { status: 'landed', forgeUrl: null };
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-7' });
+    const { svc, store } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+    const result = await svc.send('t1');
+
+    expect(result).toEqual({ status: 'refused', taskId: 't1', reason: 'landed' });
+    expect(chatResult.calls).toHaveLength(0);
+    expect(store.listReviewComments('t1')[0].sentAt).toBeNull();
+  });
+
+  it('refuses unknown-task without touching diffs or chat', async () => {
+    const { svc } = makeService({ knownTasks: new Set() });
+
+    const result = await svc.send('t1');
+
+    expect(result).toEqual({ status: 'refused', taskId: 't1', reason: 'unknown-task' });
   });
 });
