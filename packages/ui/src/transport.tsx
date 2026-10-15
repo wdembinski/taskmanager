@@ -19,6 +19,17 @@ import type { TaskAttachment } from '@tm/shared/attachments';
 import type { IpcApi, IpcEvents } from '@tm/shared/ipc';
 
 export interface Transport {
+  /**
+   * Which surface this transport is talking to — a host fact, same as `attachmentUrl` and
+   * `attachFiles` below, for anything that varies by host rather than by channel.
+   *
+   * Optional, and absent means `'desktop'`: apps/client's provider is `window.api`, satisfied
+   * structurally with no `host` property at all, and that has to read as desktop rather than
+   * as "unknown," because the first caller is dictation availability — a feature that must stay
+   * hidden on a host that hasn't said it can record. Only `apps/web/src/board/httpTransport.ts`
+   * sets `host: 'web'`.
+   */
+  host?: 'desktop' | 'web';
   /** Request/response call to whatever is on the other end of this channel name. */
   invoke<K extends keyof IpcApi>(channel: K, ...args: Parameters<IpcApi[K]>): ReturnType<IpcApi[K]>;
   /** Subscribe to a pushed event; returns an unsubscribe function. */
