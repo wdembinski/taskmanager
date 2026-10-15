@@ -3,6 +3,7 @@ import type { DataSource, Repository } from 'typeorm';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import { buildProject } from '@tm/shared/projectBuilders';
 import type { Automation, AutomationRun } from '@tm/shared/automation';
+import type { Task } from '@tm/shared/model';
 import { EventBus } from '../events/eventBus';
 import { PresenceRegistry } from '../presence/presence.registry';
 import { PresenceService } from '../presence/presence.service';
@@ -956,6 +957,79 @@ describe('MirrorService.sync workflow step fields', () => {
     const mirrored = board.deltas.tasks.find((t) => t.id === 'task-gate-1');
     expect(mirrored?.stepSpec?.kind).toBe('gate');
     expect(mirrored?.gateAttempts).toBe(2);
+  });
+});
+
+describe('MirrorService.sync Linear task mirroring (F4.13)', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository(store.clientRows),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  it('mirrors a Linear card whole — unchanged on a board read', async () => {
+    const { service } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
+
+    // The shape `issueToTask` (apps/client/src/main/linear/linearSync.ts) actually writes:
+    // the tracker-agnostic external* fields F4.12's card chip and detail pane read, with a
+    // Linear key/URL and `externalParentKey` null — Linear issues carry no epic link today.
+    const linearTask: Task = {
+      id: 'task-linear-1',
+      projectId: project.id,
+      phase: '',
+      title: 'Fix the flaky upload test',
+      status: 'in-progress',
+      sessionId: null,
+      order: 0,
+      dependsOn: [],
+      source: 'linear',
+      isContract: false,
+      isScaffold: false,
+      externalSource: 'linear',
+      externalKey: 'ENG-42',
+      externalId: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+      externalUrl: 'https://linear.app/acme/issue/ENG-42/fix-the-flaky-upload-test',
+      externalStatus: 'In Progress',
+      externalStatusCategory: 'In Progress',
+      externalPriority: 'High',
+      externalType: null,
+      externalLabel: 'bug',
+      externalParentKey: null,
+      externalEpicName: null,
+      externalSprint: null,
+      externalDescription: 'Uploads intermittently fail on large files.',
+    };
+
+    await service.sync(accountId, {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: {
+        tasks: [linearTask],
+        projects: [project],
+        deletedTaskIds: [],
+        deletedProjectIds: [],
+      },
+      ackedCommandIds: [],
+    });
+
+    const board = await service.board(accountId, undefined, undefined, false);
+    const mirrored = board.deltas.tasks.find((t) => t.id === linearTask.id);
+    expect(mirrored).toEqual(linearTask);
   });
 });
 
