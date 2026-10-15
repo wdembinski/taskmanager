@@ -17,6 +17,7 @@ import type {
 } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
 import type { Skill } from '@tm/shared/skills';
+import type { WorkflowDoc } from '@tm/shared/workflow';
 import type { CadenceDirective } from './cadence';
 
 /**
@@ -743,4 +744,20 @@ export interface PersonalAccessTokenList {
 export interface SkillsResponse {
   skills: Skill[];
   deletedSkillIds: string[];
+}
+
+/**
+ * Response to `GET /v1/workflows` — every workflow mirrored for this account, live and
+ * tombstoned, read as a whole rather than through `MirrorDelta`. Same shape and the same
+ * reasoning as {@link SkillsResponse}: a workflow travels over its own bounded, per-id
+ * `PUT`/`DELETE /v1/workflows/:id` pair and this whole-set `GET`, never inside
+ * `SyncRequest.deltas` (see `WorkflowDoc`'s own docstring in `@tm/shared/workflow`).
+ *
+ * `deletedWorkflowIds` rather than a `Tombstone` row, for the same reason as
+ * `deletedSkillIds`: the tombstone lives on its own mirror row (`deletedAt`), not the
+ * shared `tombstones` table — see `workflowMirror.entity.ts`.
+ */
+export interface WorkflowsResponse {
+  workflows: WorkflowDoc[];
+  deletedWorkflowIds: string[];
 }

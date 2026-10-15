@@ -297,6 +297,20 @@ describe('workflowDocBytes', () => {
     const withAscii = workflowDocBytes(workflowDoc({ name: 'x' }));
     expect(workflowDocBytes(doc)).toBe(withAscii + 2);
   });
+
+  it('measures a doc padded to exactly WORKFLOW_DOC_MAX bytes as exactly that many', () => {
+    const base = workflowDoc({ name: '' });
+    const baseBytes = workflowDocBytes(base);
+    const padded = workflowDoc({ name: 'x'.repeat(WORKFLOW_DOC_MAX - baseBytes) });
+    expect(workflowDocBytes(padded)).toBe(WORKFLOW_DOC_MAX);
+  });
+
+  it('measures a doc one byte over WORKFLOW_DOC_MAX as exactly one over', () => {
+    const base = workflowDoc({ name: '' });
+    const baseBytes = workflowDocBytes(base);
+    const overBudget = workflowDoc({ name: 'x'.repeat(WORKFLOW_DOC_MAX - baseBytes + 1) });
+    expect(workflowDocBytes(overBudget)).toBe(WORKFLOW_DOC_MAX + 1);
+  });
 });
 
 describe('workflowTooLargeMessage', () => {

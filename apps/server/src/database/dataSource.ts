@@ -33,6 +33,7 @@ import { SkillMirror } from '../entities/skillMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
+import { WorkflowMirror } from '../entities/workflowMirror.entity';
 import { buildMssqlConnectionOptions } from './typeormOptions';
 
 dotenv.config({ path: '.env' });
@@ -57,6 +58,7 @@ export const AppDataSource = new DataSource({
     SkillMirror,
     TaskMirror,
     Tombstone,
+    WorkflowMirror,
   ],
   migrations: [join(__dirname, '..', 'migrations', '*.{ts,js}')],
   logging: process.env.NODE_ENV === 'development',
