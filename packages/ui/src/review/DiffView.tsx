@@ -26,6 +26,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
+import { AddRegular } from '@fluentui/react-icons';
 import { isCollapsedByDefault } from '@tm/shared/review';
 import type {
   DiffFileEntry,
@@ -33,12 +34,15 @@ import type {
   DiffImage,
   DiffImageSide,
   DiffLine,
+  DiffSide,
   DiffSummary,
+  ReviewComment,
   WordSegment,
 } from '@tm/shared/review';
 import { MONO, fontPx } from '../theme';
 import { useTransport } from '../transport';
-import type { FileLoad } from './reviewState';
+import { CommentThread } from './CommentThread';
+import { rangeLines, renderedIndex, type CommentEditor, type FileLoad } from './reviewState';
 import { pairWordDiffs, statusLetter } from './reviewView';
 
 const useStyles = makeStyles({
@@ -91,9 +95,26 @@ const useStyles = makeStyles({
     fontFamily: MONO,
     fontSize: fontPx(12),
     whiteSpace: 'pre-wrap',
+    // The "+" costs nothing at rest and appears when you reach for it — same trick as
+    // `TaskCard`'s own chain handle (memory *board-colour-budget*'s neighbour: no colour
+    // here either, just an affordance that shows up on hover).
+    '&:hover [data-add-comment]': { opacity: 1, pointerEvents: 'auto' },
   },
   lineAdd: { backgroundColor: tokens.colorPaletteGreenBackground1 },
   lineDel: { backgroundColor: tokens.colorPaletteRedBackground1 },
+  // The open editor's range, applied LAST in `mergeClasses` so it wins over the add/del tint —
+  // the human is looking at what they selected, not at what changed.
+  lineSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  addCell: { position: 'relative', width: '20px', flexShrink: 0 },
+  addButton: {
+    position: 'absolute',
+    top: '1px',
+    left: '0',
+    minWidth: 'unset',
+    padding: 0,
+    opacity: 0,
+    pointerEvents: 'none',
+  },
   gutter: {
     flexShrink: 0,
     width: '44px',
@@ -108,6 +129,21 @@ const useStyles = makeStyles({
   images: { display: 'flex', gap: '12px', padding: '10px', flexWrap: 'wrap' },
   imageFigure: { margin: 0, display: 'flex', flexDirection: 'column', gap: '4px' },
   imagePreview: { maxWidth: '320px', maxHeight: '320px', borderRadius: tokens.borderRadiusSmall },
+  unanchored: {
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+    backgroundColor: tokens.colorNeutralBackground2,
+  },
+  unanchoredLabel: { padding: '6px 8px 0', color: tokens.colorNeutralForeground3 },
+  orphanSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    padding: '10px',
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: tokens.colorNeutralBackground3,
+  },
+  orphanTitle: { color: tokens.colorNeutralForeground3 },
+  orphanPath: { fontFamily: MONO, color: tokens.colorNeutralForeground2 },
 });
 
 export interface DiffViewProps {
@@ -117,7 +153,19 @@ export interface DiffViewProps {
   files: Readonly<Record<string, FileLoad>>;
   expanded: readonly string[];
   selectedPath: string | null;
+  /** Every draft and sent comment on this card's review, in no particular order. */
+  comments: readonly ReviewComment[];
+  /** The open editor, or `null` — only one is ever open at a time. */
+  editor: CommentEditor | null;
+  /** Whether a new comment can be started at all (loaded ok, diff not stale). */
+  canComment: boolean;
   onToggleExpanded: (path: string) => void;
+  onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  onEditDraft: (text: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onEdit: (comment: ReviewComment) => void;
+  onDelete: (id: string) => void;
 }
 
 export function DiffView({
@@ -127,7 +175,16 @@ export function DiffView({
   files,
   expanded,
   selectedPath,
+  comments,
+  editor,
+  canComment,
   onToggleExpanded,
+  onClickLine,
+  onEditDraft,
+  onSave,
+  onCancel,
+  onEdit,
+  onDelete,
 }: DiffViewProps): JSX.Element {
   const styles = useStyles();
   const rows = useRef<Record<string, HTMLDivElement | null>>({});
@@ -136,6 +193,9 @@ export function DiffView({
     if (!selectedPath) return;
     rows.current[selectedPath]?.scrollIntoView({ block: 'nearest' });
   }, [selectedPath]);
+
+  const knownPaths = new Set(summary.files.map((entry) => entry.path));
+  const orphaned = comments.filter((c) => !knownPaths.has(c.path));
 
   return (
     <div className={styles.root}>
@@ -152,12 +212,89 @@ export function DiffView({
             entry={entry}
             expanded={expanded.includes(entry.path)}
             load={files[entry.path]}
+            comments={comments.filter((c) => c.path === entry.path)}
+            editor={editor?.path === entry.path ? editor : null}
+            canComment={canComment}
             onToggleExpanded={onToggleExpanded}
+            onClickLine={onClickLine}
+            onEditDraft={onEditDraft}
+            onSave={onSave}
+            onCancel={onCancel}
+            onEdit={onEdit}
+            onDelete={onDelete}
+          />
+        </div>
+      ))}
+      {orphaned.length > 0 && (
+        <OrphanedComments
+          comments={orphaned}
+          editor={editor !== null && !knownPaths.has(editor.path) ? editor : null}
+          onEditDraft={onEditDraft}
+          onSave={onSave}
+          onCancel={onCancel}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Comments on a path the current diff no longer has at all — a rename, a revert, a path
+ * that fell out of the summary. There is no file header left to list them under, so they
+ * get their own section instead of being silently dropped. */
+function OrphanedComments({
+  comments,
+  editor,
+  onEditDraft,
+  onSave,
+  onCancel,
+  onEdit,
+  onDelete,
+}: {
+  comments: readonly ReviewComment[];
+  editor: CommentEditor | null;
+  onEditDraft: (text: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onEdit: (comment: ReviewComment) => void;
+  onDelete: (id: string) => void;
+}): JSX.Element {
+  const styles = useStyles();
+  const byPath = new Map<string, ReviewComment[]>();
+  for (const c of comments) {
+    const group = byPath.get(c.path) ?? [];
+    group.push(c);
+    byPath.set(c.path, group);
+  }
+  return (
+    <div className={styles.orphanSection}>
+      <Caption1 className={styles.orphanTitle}>Comments on files no longer in the diff</Caption1>
+      {[...byPath.entries()].map(([path, group]) => (
+        <div key={path}>
+          <Caption1 className={styles.orphanPath}>{path}</Caption1>
+          <CommentThread
+            comments={group}
+            editor={editor?.path === path ? editor : null}
+            onEditDraft={onEditDraft}
+            onSave={onSave}
+            onCancel={onCancel}
+            onEdit={onEdit}
+            onDelete={onDelete}
           />
         </div>
       ))}
     </div>
   );
+}
+
+interface CommentHandlers {
+  onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  onEditDraft: (text: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onEdit: (comment: ReviewComment) => void;
+  onDelete: (id: string) => void;
 }
 
 function FileSection({
@@ -166,18 +303,39 @@ function FileSection({
   entry,
   expanded,
   load,
+  comments,
+  editor,
+  canComment,
   onToggleExpanded,
+  ...handlers
 }: {
   taskId: string;
   diffId: string;
   entry: DiffFileEntry;
   expanded: boolean;
   load: FileLoad | undefined;
+  comments: readonly ReviewComment[];
+  editor: CommentEditor | null;
+  canComment: boolean;
   onToggleExpanded: (path: string) => void;
-}): JSX.Element {
+} & CommentHandlers): JSX.Element {
   const styles = useStyles();
   const renamed = entry.oldPath !== undefined && entry.oldPath !== entry.path;
   const collapsedByDefault = isCollapsedByDefault(entry);
+
+  // Only a LOADED text file has rendered rows to anchor against — everything else (not yet
+  // fetched, binary, too large, stale) answers every one of this path's comments as
+  // unanchored, so they are never silently missing while the human hasn't expanded yet.
+  const loadedFile = load?.status === 'loaded' ? load.file : null;
+  const unanchored = loadedFile
+    ? comments.filter((c) => renderedIndex(loadedFile, c.side, c.line) === null)
+    : comments;
+  const anchored = loadedFile ? comments.filter((c) => !unanchored.includes(c)) : [];
+  const editorAnchored =
+    editor !== null &&
+    loadedFile !== null &&
+    renderedIndex(loadedFile, editor.anchor.side, editor.anchor.line) !== null;
+  const unanchoredEditor = editor !== null && !editorAnchored ? editor : null;
 
   return (
     <div className={styles.file}>
@@ -192,7 +350,34 @@ function FileSection({
           {expanded ? 'Collapse' : collapsedByDefault ? 'Load anyway' : 'Expand'}
         </Button>
       </div>
-      {expanded && <FileBody taskId={taskId} diffId={diffId} entry={entry} load={load} />}
+      {(unanchored.length > 0 || unanchoredEditor !== null) && (
+        <div className={styles.unanchored}>
+          <Caption1 className={styles.unanchoredLabel}>
+            {loadedFile ? 'Outdated — no longer in this diff' : 'Comments on this file'}
+          </Caption1>
+          <CommentThread
+            comments={unanchored}
+            editor={unanchoredEditor}
+            onEditDraft={handlers.onEditDraft}
+            onSave={handlers.onSave}
+            onCancel={handlers.onCancel}
+            onEdit={handlers.onEdit}
+            onDelete={handlers.onDelete}
+          />
+        </div>
+      )}
+      {expanded && (
+        <FileBody
+          taskId={taskId}
+          diffId={diffId}
+          entry={entry}
+          load={load}
+          comments={anchored}
+          editor={editorAnchored ? editor : null}
+          canComment={canComment}
+          {...handlers}
+        />
+      )}
     </div>
   );
 }
@@ -202,12 +387,19 @@ function FileBody({
   diffId,
   entry,
   load,
+  comments,
+  editor,
+  canComment,
+  ...handlers
 }: {
   taskId: string;
   diffId: string;
   entry: DiffFileEntry;
   load: FileLoad | undefined;
-}): JSX.Element {
+  comments: readonly ReviewComment[];
+  editor: CommentEditor | null;
+  canComment: boolean;
+} & CommentHandlers): JSX.Element {
   const styles = useStyles();
 
   if (entry.image) {
@@ -252,34 +444,124 @@ function FileBody({
     );
   }
 
+  const highlighted = editor ? new Set(rangeLines(load.file, editor)) : null;
+
   return (
     <div>
       {load.file.hunks.map((hunk, i) => (
-        <Hunk key={i} hunk={hunk} />
+        <Hunk
+          key={i}
+          path={entry.path}
+          hunk={hunk}
+          comments={comments}
+          editor={editor}
+          canComment={canComment}
+          highlighted={highlighted}
+          {...handlers}
+        />
       ))}
     </div>
   );
 }
 
-function Hunk({ hunk }: { hunk: DiffHunk }): JSX.Element {
+/** For an `add`/`context` row, a comment anchors to the NEW side; a `del` row has no new side
+ * to anchor to, so it is the OLD side instead — whichever side still carries the line. */
+function canonicalTarget(line: DiffLine): { side: DiffSide; line: number } | null {
+  if (line.kind === 'del') {
+    return line.oldLine !== undefined ? { side: 'old', line: line.oldLine } : null;
+  }
+  return line.newLine !== undefined ? { side: 'new', line: line.newLine } : null;
+}
+
+function commentsForLine(
+  comments: readonly ReviewComment[],
+  line: DiffLine,
+): readonly ReviewComment[] {
+  return comments.filter(
+    (c) =>
+      (c.side === 'old' && line.oldLine === c.line) ||
+      (c.side === 'new' && line.newLine === c.line),
+  );
+}
+
+function Hunk({
+  path,
+  hunk,
+  comments,
+  editor,
+  canComment,
+  highlighted,
+  onClickLine,
+  onEditDraft,
+  onSave,
+  onCancel,
+  onEdit,
+  onDelete,
+}: {
+  path: string;
+  hunk: DiffHunk;
+  comments: readonly ReviewComment[];
+  editor: CommentEditor | null;
+  canComment: boolean;
+  highlighted: ReadonlySet<DiffLine> | null;
+} & CommentHandlers): JSX.Element {
   const styles = useStyles();
   const words = pairWordDiffs(hunk.lines);
   return (
     <div>
       <Caption1 className={styles.hunkHeader}>{hunk.header}</Caption1>
-      {hunk.lines.map((line, i) => (
-        <DiffLineRow key={i} line={line} words={words[i]} />
-      ))}
+      {hunk.lines.map((line, i) => {
+        const target = canonicalTarget(line);
+        const rowEditor =
+          editor !== null &&
+          target !== null &&
+          editor.anchor.side === target.side &&
+          editor.anchor.line === target.line
+            ? editor
+            : null;
+        return (
+          <div key={i}>
+            <DiffLineRow
+              path={path}
+              line={line}
+              words={words[i]}
+              target={target}
+              canComment={canComment}
+              selected={highlighted?.has(line) ?? false}
+              onClickLine={onClickLine}
+            />
+            <CommentThread
+              comments={commentsForLine(comments, line)}
+              editor={rowEditor}
+              onEditDraft={onEditDraft}
+              onSave={onSave}
+              onCancel={onCancel}
+              onEdit={onEdit}
+              onDelete={onDelete}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 function DiffLineRow({
+  path,
   line,
   words,
+  target,
+  canComment,
+  selected,
+  onClickLine,
 }: {
+  path: string;
   line: DiffLine;
   words: readonly WordSegment[] | null;
+  target: { side: DiffSide; line: number } | null;
+  canComment: boolean;
+  selected: boolean;
+  onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
 }): JSX.Element {
   const styles = useStyles();
   return (
@@ -288,8 +570,23 @@ function DiffLineRow({
         styles.line,
         line.kind === 'add' && styles.lineAdd,
         line.kind === 'del' && styles.lineDel,
+        selected && styles.lineSelected,
       )}
     >
+      <span className={styles.addCell}>
+        {target && (
+          <Button
+            className={styles.addButton}
+            data-add-comment=""
+            size="small"
+            appearance="subtle"
+            icon={<AddRegular />}
+            disabled={!canComment}
+            aria-label={`Comment on line ${target.line}`}
+            onClick={(e) => onClickLine(path, target.side, target.line, e.shiftKey)}
+          />
+        )}
+      </span>
       <span className={styles.gutter}>{line.oldLine ?? ''}</span>
       <span className={styles.gutter}>{line.newLine ?? ''}</span>
       <span className={styles.text}>

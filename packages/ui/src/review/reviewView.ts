@@ -15,9 +15,12 @@ import type {
   DiffFileStatus,
   DiffLine,
   DiffSummary,
+  ReviewSendRefusal,
   WordSegment,
 } from '@tm/shared/review';
 import { wordDiff } from '@tm/shared/review';
+import { formatAge } from '../countdown';
+import { REFUSAL_HINT } from '../taskChat';
 import { filesToLoad, isCollapsedByDefault, type ReviewState } from './reviewState';
 
 /** A leaf: one changed file. */
@@ -200,4 +203,28 @@ export function fetchablePaths(state: ReviewState): readonly string[] {
     state.summary.summary.files.filter((entry) => entry.binary).map((entry) => entry.path),
   );
   return filesToLoad(state).filter((path) => !binaryPaths.has(path));
+}
+
+/** The refusals `review:send` can return on top of a plain chat refusal. */
+const SEND_SPECIFIC_REFUSAL: Partial<Record<ReviewSendRefusal, string>> = {
+  'nothing-to-send': 'Every draft has already been sent.',
+  landed: 'This work has already merged — there is no diff left to send a review against.',
+  conflicted: 'This worktree is mid-rebase or has conflicts — resolve that before sending.',
+  'no-branch': 'This card hasn’t produced a branch yet.',
+};
+
+/**
+ * Why `review:send` refused, as a sentence for the pane's warning banner. The four reasons
+ * specific to sending a review are answered here; everything else is a plain `ChatRefusal`,
+ * so it reuses `taskChat.ts`'s own `REFUSAL_HINT` rather than keeping a second copy of those
+ * sentences that could drift from the composer's.
+ */
+export function sendRefusalText(reason: ReviewSendRefusal): string {
+  return SEND_SPECIFIC_REFUSAL[reason] ?? REFUSAL_HINT[reason as keyof typeof REFUSAL_HINT];
+}
+
+/** "Sent 3m ago" / "Sent just now" — a comment card's stamp once `sentAt` is set. */
+export function formatSentStamp(sentAt: number, now: number): string {
+  const age = formatAge(sentAt, now);
+  return age === 'now' ? 'Sent just now' : `Sent ${age} ago`;
 }
