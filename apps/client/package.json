@@ -20,6 +20,7 @@
     "check:abi": "node scripts/check-native-abi.mjs",
     "ensure:abi": "node scripts/ensure-native-abi.mjs",
     "verify:github": "node scripts/verify-github.mjs",
+    "verify:linear": "node scripts/verify-linear.mjs",
     "verify:tickets": "node scripts/verify-tickets.mjs",
     "verify:connections": "node scripts/verify-connections.mjs",
     "verify:activity-log": "node scripts/verify-activity-log.mjs",
