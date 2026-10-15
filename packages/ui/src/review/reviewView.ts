@@ -21,7 +21,7 @@ import type {
 import { wordDiff } from '@tm/shared/review';
 import { formatAge } from '../countdown';
 import { REFUSAL_HINT } from '../taskChat';
-import { filesToLoad, isCollapsedByDefault, type ReviewState } from './reviewState';
+import { filesToLoad, isCollapsedByDefault, type FileLoad, type ReviewState } from './reviewState';
 
 /** A leaf: one changed file. */
 export interface FileTreeFile {
@@ -221,6 +221,34 @@ const SEND_SPECIFIC_REFUSAL: Partial<Record<ReviewSendRefusal, string>> = {
  */
 export function sendRefusalText(reason: ReviewSendRefusal): string {
   return SEND_SPECIFIC_REFUSAL[reason] ?? REFUSAL_HINT[reason as keyof typeof REFUSAL_HINT];
+}
+
+/**
+ * The sentence `DiffView.tsx`'s `FileBody` shows in place of a file's content, for every
+ * `FileLoad` that is not a spinner and not the loaded diff itself. `null` for `idle` with no
+ * error, `loading` and `loaded` — those are drawn by the caller instead.
+ */
+export function fileLoadNotice(load: FileLoad | undefined): string | null {
+  if (load === undefined) return null;
+  switch (load.status) {
+    case 'idle':
+      return load.error === undefined ? null : `Couldn't load this file: ${load.error}`;
+    case 'loading':
+    case 'loaded':
+      return null;
+    case 'tooLarge':
+      return (
+        `This file is too large to show here (${load.bytes.toLocaleString()} bytes) — ` +
+        `open it in your editor.`
+      );
+    case 'stale':
+      return 'The files changed since this was loaded — reload to see the latest.';
+    case 'tooLargeForBrowser':
+      return (
+        `This file is too large to send to the browser (${load.bytes.toLocaleString()} bytes) ` +
+        `— open it on the desktop.`
+      );
+  }
 }
 
 /** "Sent 3m ago" / "Sent just now" — a comment card's stamp once `sentAt` is set. */

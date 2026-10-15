@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { oversizedAnswerMessage } from '@tm/shared/ipcRelay';
 import type {
   DiffFile,
   DiffFileEntry,
@@ -302,6 +303,32 @@ describe('fileArrived / fileFailed variants', () => {
 
     const stale = fileFailed(state, 'a', 'd1', 'a.ts', 2, 'network error');
     expect(stale).toBe(state);
+  });
+
+  it('classifies the relay oversized-answer error as tooLargeForBrowser', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = fileLoadStarted(state, 'a', 'd1', 'a.ts', 2);
+    state = fileFailed(state, 'a', 'd1', 'a.ts', 2, oversizedAnswerMessage(5_000_000));
+
+    expect(state.files['a.ts']).toEqual({ status: 'tooLargeForBrowser', bytes: 5_000_000 });
+  });
+
+  it('keeps any other error as idle, rather than misreading it as oversized', () => {
+    let state = summaryLoaded('d1', ['a.ts']);
+    state = fileLoadStarted(state, 'a', 'd1', 'a.ts', 2);
+    state = fileFailed(state, 'a', 'd1', 'a.ts', 2, 'network error');
+
+    expect(state.files['a.ts']).toEqual({ status: 'idle', error: 'network error' });
+  });
+
+  it('never refetches a tooLargeForBrowser path, the same as tooLarge', () => {
+    let state = summaryLoaded('d1', ['a.ts', 'b.ts']);
+    state = toggleExpanded(state, 'b.ts');
+    state = fileLoadStarted(state, 'a', 'd1', 'b.ts', 2);
+    state = fileFailed(state, 'a', 'd1', 'b.ts', 2, oversizedAnswerMessage(123));
+
+    expect(state.files['b.ts']).toEqual({ status: 'tooLargeForBrowser', bytes: 123 });
+    expect(filesToLoad(state)).not.toContain('b.ts');
   });
 });
 

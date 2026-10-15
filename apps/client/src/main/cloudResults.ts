@@ -31,6 +31,7 @@
  *    the whole point — lets every result and every card queued behind it through.
  */
 import type { CommandResult } from '@protocol/wire';
+import { oversizedAnswerMessage } from '@shared/ipcRelay';
 
 /**
  * How many bytes of relayed answers one `/v1/sync` request may carry.
@@ -123,7 +124,7 @@ function unsendable(commandId: string, bytes: number): CommandResult {
   return {
     commandId,
     ok: false,
-    error: `The desktop's answer was too large to send (${bytes} bytes).`,
+    error: oversizedAnswerMessage(bytes),
   };
 }
 

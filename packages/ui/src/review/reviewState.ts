@@ -36,13 +36,15 @@ import type {
   ReviewSendResult,
 } from '@tm/shared/review';
 import { DIFF_COLLAPSE_LINES } from '@tm/shared/review';
+import { parseOversizedAnswer } from '@tm/shared/ipcRelay';
 
 export type FileLoad =
   | { status: 'idle'; error?: string } // never fetched, or a failed fetch (message kept)
   | { status: 'loading'; seq: number }
   | { status: 'loaded'; file: DiffFile }
   | { status: 'tooLarge'; bytes: number } // DiffFile.tooLarge was set
-  | { status: 'stale'; currentDiffId: string }; // answered DiffStale
+  | { status: 'stale'; currentDiffId: string } // answered DiffStale
+  | { status: 'tooLargeForBrowser'; bytes: number }; // the relay itself refused the answer
 
 export interface CommentAnchor {
   path: string;
@@ -248,7 +250,11 @@ export function fileArrived(
   };
 }
 
-/** A file's load failed. Same guards as {@link fileArrived}; sets the path to `idle { error }`. */
+/**
+ * A file's load failed. Same guards as {@link fileArrived}; sets the path to `idle { error }`,
+ * unless the relay itself refused the answer for being too large to ever send — then it becomes
+ * `tooLargeForBrowser`, which `filesToLoad` never refetches since it is not `idle`.
+ */
 export function fileFailed(
   s: ReviewState,
   taskId: string | null,
@@ -260,7 +266,10 @@ export function fileFailed(
   if (taskId !== s.taskId || diffId !== s.diffId || !isLoadingThisSeq(s.files[path], seq)) {
     return s;
   }
-  return { ...s, files: { ...s.files, [path]: { status: 'idle', error } } };
+  const bytes = parseOversizedAnswer(error);
+  const fileLoad: FileLoad =
+    bytes === null ? { status: 'idle', error } : { status: 'tooLargeForBrowser', bytes };
+  return { ...s, files: { ...s.files, [path]: fileLoad } };
 }
 
 function flattenLines(file: DiffFile): readonly DiffLine[] {
