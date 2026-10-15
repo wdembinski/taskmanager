@@ -14,6 +14,8 @@
  *    to stay comfortably under it.
  */
 
+import type { ChatRefusal } from './model';
+
 export const DIFF_FILE_MAX_BYTES = 256_000; // one file's patch text
 export const DIFF_IMAGE_MAX_BYTES = 512_000; // one image side, base64
 export const DIFF_SUMMARY_MAX_FILES = 1000; // summary lists at most this many
@@ -506,6 +508,25 @@ export type ReviewUpdateResult =
   { status: 'ok'; comment: ReviewComment } | DiffStale | ReviewCommentSent;
 
 export type ReviewDeleteResult = { status: 'ok' } | ReviewCommentSent;
+
+/**
+ * Why `review:send` could not deliver the batched follow-up. `ChatRefusal` covers everything
+ * `chatWithAgent` itself can refuse with; the three on top of it are specific to sending a
+ * review: `nothing-to-send` when every draft is already sent (the double-send case), and
+ * `landed`/`conflicted`/`no-branch` when the diff behind the message could not be resolved,
+ * so there is no header (head SHA, `diffId`, `baseRef`) to write.
+ */
+export type ReviewSendRefusal =
+  ChatRefusal | 'nothing-to-send' | 'landed' | 'conflicted' | 'no-branch';
+
+/**
+ * What `review:send` did. `taskId` is whatever `chatWithAgent` returns: the task that
+ * actually received the message, which is a live step rather than the card itself when the
+ * card is running an approved plan. `comments` holds the rows `markReviewSent` just stamped.
+ */
+export type ReviewSendResult =
+  | { status: 'sent' | 'resumed'; taskId: string; runId: string; comments: ReviewComment[] }
+  | { status: 'refused'; taskId: string; reason: ReviewSendRefusal };
 
 function rowIndex(rows: DiffLine[], side: DiffSide, line: number): number {
   return rows.findIndex((row) => (side === 'old' ? row.oldLine : row.newLine) === line);

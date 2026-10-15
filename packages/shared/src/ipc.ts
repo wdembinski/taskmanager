@@ -79,6 +79,7 @@ import type {
   ReviewCommentInput,
   ReviewCommentPatch,
   ReviewDeleteResult,
+  ReviewSendResult,
   ReviewUpdateResult,
 } from './review';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
@@ -812,6 +813,15 @@ export interface IpcApi {
   ) => Promise<ReviewUpdateResult>;
   /** Remove a draft comment. Refused `sent` once it has gone out in a review message. */
   'review:delete': (taskId: string, id: string) => Promise<ReviewDeleteResult>;
+  /**
+   * Batch every open draft comment on a card into one follow-up and send it down the same
+   * chat path a human's own message takes — landing on the card's live step when it is
+   * running an approved plan. `note` becomes the message's optional overall note. Refused
+   * `nothing-to-send` once every draft has already gone out, or `landed`/`conflicted`/
+   * `no-branch` when there is no diff left to put in the message's header, on top of
+   * whatever `task:chat` itself can refuse with.
+   */
+  'review:send': (taskId: string, note?: string) => Promise<ReviewSendResult>;
 
   /**
    * Delegate a My Tasks card to an agent: persist the assignment (agent project +

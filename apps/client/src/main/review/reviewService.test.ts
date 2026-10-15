@@ -93,6 +93,16 @@ function fakeStore(seed: ReviewComment[] = [], knownTasks: Set<string> = new Set
       rows.splice(idx, 1);
       return true;
     },
+    markReviewSent: (taskId: string, ids: readonly string[], at: number) => {
+      const stamped: ReviewComment[] = [];
+      for (const id of ids) {
+        const idx = rows.findIndex((r) => r.id === id && r.taskId === taskId);
+        if (idx === -1 || rows[idx].sentAt !== null) continue;
+        rows[idx] = { ...rows[idx], sentAt: at };
+        stamped.push(rows[idx]);
+      }
+      return stamped;
+    },
   };
 }
 
@@ -124,16 +134,31 @@ function fakeDiffs(initial: FilesForFixture | null) {
   return { filesFor, calls, state };
 }
 
+type SummaryResult = Awaited<ReturnType<ReviewServiceDeps['diffs']['summary']>>;
+
+/** `review:add`/`update`/`delete`/`list` never call `diffs.summary` or `chat` — only `send` does. */
+function unexercised(name: string): never {
+  throw new Error(`${name} is not exercised by this test`);
+}
+
 function makeService(
   opts: {
     comments?: ReviewComment[];
     knownTasks?: Set<string>;
     diffs?: ReturnType<typeof fakeDiffs>;
+    summary?: () => Promise<SummaryResult> | SummaryResult;
+    chat?: ReviewServiceDeps['chat'];
   } = {},
 ) {
   const store = fakeStore(opts.comments ?? [], opts.knownTasks);
   const diffs = opts.diffs ?? fakeDiffs(null);
-  const svc = new ReviewService({ store, diffs: { filesFor: diffs.filesFor } });
+  const summary = opts.summary ?? (() => unexercised('diffs.summary'));
+  const chat = opts.chat ?? (() => unexercised('chat'));
+  const svc = new ReviewService({
+    store,
+    diffs: { filesFor: diffs.filesFor, summary: async () => summary() },
+    chat,
+  });
   return { svc, store, diffs };
 }
 

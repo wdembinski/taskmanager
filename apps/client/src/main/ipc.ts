@@ -1105,11 +1105,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   handle('task:diffImage', async (taskId, diffId, path) => diffs.image(taskId, diffId, path));
 
   // --- Review comments (F6) ---------------------------------------------------
-  const reviews = new ReviewService({ store, diffs });
+  const reviews = new ReviewService({
+    store,
+    diffs,
+    chat: (id, msg) => scheduler.chatWithAgent(id, msg),
+  });
   handle('review:list', async (taskId) => reviews.list(taskId));
   handle('review:add', async (input) => reviews.add(input));
   handle('review:update', async (taskId, id, patch) => reviews.update(taskId, id, patch));
   handle('review:delete', async (taskId, id) => reviews.delete(taskId, id));
+  handle('review:send', async (taskId, note) => reviews.send(taskId, note));
 
   // --- Agent delegation (a My Tasks card → an agent project) ------------------
 
