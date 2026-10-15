@@ -61,15 +61,19 @@ import { autoIntegrateOn, projectAutoIntegrate } from '@tm/shared/integrate';
 import { autoReleaseOn } from '@tm/shared/release';
 import { autoCreatePrOn } from '@tm/shared/pullRequest';
 import { mrAbbrev, mrIsSettled, mrNoun, mrRef, type MergeRequest } from '@tm/shared/mergeRequest';
+import { effectiveSkillRefs } from '@tm/shared/skills';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { AssignAgentDialog } from './AssignAgentDialog';
 import { stepPosition } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { cardModelCaption } from './modelChoice';
 import { useModelLabels } from './ModelField';
+import { skillsLineLabels } from './skillPickerState';
+import { SkillPicker } from './SkillPicker';
 import { STATUS_LABEL } from './taskStatus';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { Markdown } from './chat/MarkdownView';
+import { useSkillOptions } from './useSkillOptions';
 import { useTransport } from './transport';
 import { UNREAD_ORANGE as ASK_ORANGE } from '@tm/shared/accent';
 
@@ -88,6 +92,7 @@ const useStyles = makeStyles({
   icon: { fontSize: '18px', display: 'flex', color: '#ffffff' },
   grow: { flex: 1, minWidth: 0 },
   hint: { color: tokens.colorNeutralForeground3 },
+  skillsRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
   ask: {
     display: 'flex',
     flexDirection: 'column',
@@ -146,6 +151,9 @@ export interface TaskAgentPanelProps {
   task: Task;
   /** This card's steps, in order — the chain whose parked step the panel must surface. */
   subtasks?: Task[];
+  /** The card a shown STEP belongs to — its `skillRefs` are the step's inherited ones. Null
+   *  for an ordinary card, which has no parent to inherit from. */
+  parentTask?: Task | null;
   /** Every agent project (from `project:list`), owned by the board so it's fetched once. */
   agentProjects: Project[];
   /** Every project a card can be FILED under — passed straight through to `AssignAgentDialog`. */
@@ -219,6 +227,7 @@ export interface TaskAgentPanelProps {
 export function TaskAgentPanel({
   task,
   subtasks = [],
+  parentTask = null,
   agentProjects,
   filingProjects = [],
   items = [],
@@ -338,6 +347,12 @@ export function TaskAgentPanel({
    */
   const resumesChain = ownSteps.some((s) => s.status === 'stopped');
   const assigned = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
+  // The skills this card (or, for a step, this step together with its card) actually runs
+  // with — `effectiveSkillRefs` reads `parentTask ?? {}` as the card side, so a plain card
+  // (no parent) just gets its own refs back.
+  const skillOptionsState = useSkillOptions(task.agentProjectId ?? null);
+  const effectiveSkills = effectiveSkillRefs(parentTask ?? {}, task);
+  const skillLabels = skillsLineLabels(effectiveSkills, skillOptionsState.options);
   // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
   // without being started. "Has it run" is the test rather than the status, because a
   // staged card and a queued one are both `pending`.
@@ -666,6 +681,20 @@ export function TaskAgentPanel({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLinkPrBusy(false);
+    }
+  }
+
+  /** Replace THIS task's (card's or step's) own `skillRefs` — never the inherited ones, which
+   *  the picker itself never lets you toggle (see `skillPickerState.ts`'s `toggleSkillRef`). */
+  async function saveSkillRefs(nextOwn: string[]): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      onTaskChanged(await transport.invoke('task:setSkillRefs', taskId, nextOwn));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1011,6 +1040,20 @@ export function TaskAgentPanel({
           {assigned ? ` · ${assigned.path}` : ''}
         </Caption1>
       )}
+
+      <div className={styles.skillsRow}>
+        {skillLabels.length > 0 && (
+          <Caption1 className={styles.hint}>Skills · {skillLabels.join(' · ')}</Caption1>
+        )}
+        <SkillPicker
+          options={skillOptionsState.options}
+          own={task.skillRefs ?? []}
+          inherited={parentTask?.skillRefs ?? undefined}
+          onChange={(next) => void saveSkillRefs(next)}
+          disabled={busy}
+          loading={skillOptionsState.loading}
+        />
+      </div>
 
       {error && (
         <MessageBar intent="error">

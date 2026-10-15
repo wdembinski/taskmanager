@@ -67,9 +67,16 @@ import {
   PERMISSION_MODES,
   seedPermissionMode,
 } from './agentPickers';
+import { SkillPicker } from './SkillPicker';
 import { TemplateMenu } from './TemplateMenu';
 import { applyTemplateToText, templateVarsForTask } from './templateInsert';
+import { useSkillOptions } from './useSkillOptions';
 import { useTransport } from './transport';
+
+/** Same length, same refs in the same order — whether the picker has anything unsaved. */
+function sameSkillRefs(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((ref, i) => ref === b[i]);
+}
 
 const useStyles = makeStyles({
   /**
@@ -164,6 +171,8 @@ export function AssignAgentDialog({
   // `variantCountNote`. Reset on open, same as every other field below.
   const [count, setCount] = useState<AssignCount>(1);
   const [notes, setNotes] = useState('');
+  // The card's own skillRefs, seeded on open — see the effect below.
+  const [skillRefs, setSkillRefs] = useState<string[]>([]);
   // The branch, and the Conventional Commits type it is proposed from. `branchTouched`
   // is what stops re-proposing over a name the human has edited.
   const [branchType, setBranchType] = useState<BranchType>('feat');
@@ -186,6 +195,7 @@ export function AssignAgentDialog({
     setError(null);
     setNotes('');
     setCount(1);
+    setSkillRefs(card.skillRefs ?? []);
     const resolved = seedAssignProject(card, projects);
     setProjectId(resolved?.id ?? '');
     // The card's own model ONLY: reading the project's in as a seed made a fresh assignment
@@ -297,6 +307,9 @@ export function AssignAgentDialog({
     setBusy(true);
     setError(null);
     try {
+      if (!sameSkillRefs(skillRefs, task.skillRefs ?? [])) {
+        await transport.invoke('task:setSkillRefs', task.id, skillRefs);
+      }
       const updated = await transport.invoke('task:assignAgent', task.id, {
         ...buildAssignInput(),
         start,
@@ -316,6 +329,9 @@ export function AssignAgentDialog({
     setBusy(true);
     setError(null);
     try {
+      if (!sameSkillRefs(skillRefs, task.skillRefs ?? [])) {
+        await transport.invoke('task:setSkillRefs', task.id, skillRefs);
+      }
       const result = await transport.invoke(
         'task:startVariants',
         task.id,
@@ -331,6 +347,9 @@ export function AssignAgentDialog({
     }
   }
 
+  // Repo skills follow the project picked ABOVE, not the card's prior one — switching repo
+  // mid-dialog switches what the picker can offer, same as the model/mode defaults do.
+  const skillState = useSkillOptions(projectId || null);
   const selected = agentProjects.find((p) => p.id === projectId) ?? null;
   // What this card's steps actually resolve to right now, so the planning field's
   // "Same as steps execution (…)" sentinel names it accurately rather than a stale guess.
@@ -522,6 +541,15 @@ export function AssignAgentDialog({
                       />
                       {task && <TemplateMenu surface="assign" onPick={pickTemplate} />}
                     </div>
+                  </Field>
+
+                  <Field label="Skills">
+                    <SkillPicker
+                      options={skillState.options}
+                      own={skillRefs}
+                      onChange={setSkillRefs}
+                      loading={skillState.loading}
+                    />
                   </Field>
 
                   <Body1 className={styles.hint}>

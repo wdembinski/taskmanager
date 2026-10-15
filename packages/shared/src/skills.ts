@@ -17,6 +17,7 @@
  * comes back with `warnings` instead, which is how an import surfaces "this worked, but…"
  * to a human rather than failing the whole operation over one bad frontmatter line.
  */
+import type { Task } from './model';
 
 /** A library skill — owned end to end by this app, synced through its own endpoint
  *  (`/v1/skills`) rather than riding `SyncRequest` (see `one-answer-wedges-the-mirror`). */
@@ -229,6 +230,42 @@ export function parseSkillRef(raw: string): SkillRef | null {
     return isValidSkillName(rest) ? { kind: 'repo', name: rest } : null;
   }
   return null;
+}
+
+/**
+ * `raw`, canonicalised the way {@link effectiveSkillRefs} compares and dedupes refs: parsed
+ * and reformatted through {@link parseSkillRef}/{@link formatSkillRef} when it parses, so
+ * whitespace or formatting variants of the same ref compare equal, or its trimmed text when
+ * it does not parse at all — kept rather than dropped, since a dangling/unparseable ref still
+ * needs a stable identity to dedupe against and to render as a removable "missing" row.
+ */
+export function canonicalSkillRef(raw: string): string {
+  const parsed = parseSkillRef(raw);
+  return parsed ? formatSkillRef(parsed) : raw.trim();
+}
+
+/**
+ * The card's `skillRefs` followed by the step's own, `null` treated as `[]`, each put through
+ * {@link canonicalSkillRef} and deduplicated keeping the FIRST occurrence — so a card's ref
+ * always wins its own duplicate on the step. This is "what a step runs with": the engine
+ * (`resolveRunSkills` in `apps/client/src/main/runSkills.ts`, via its `runSkillRefs` alias)
+ * and the UI (the skill picker's inherited-vs-own display) both read it, so the two can never
+ * disagree about which refs are in force for a run.
+ */
+export function effectiveSkillRefs(
+  card: Pick<Task, 'skillRefs'>,
+  step: Pick<Task, 'skillRefs'>,
+): string[] {
+  const combined = [...(card.skillRefs ?? []), ...(step.skillRefs ?? [])];
+  const seen = new Set<string>();
+  const refs: string[] = [];
+  for (const raw of combined) {
+    const canonical = canonicalSkillRef(raw);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    refs.push(canonical);
+  }
+  return refs;
 }
 
 /** The result of reading a `SKILL.md`-shaped file. Total: every input produces one of

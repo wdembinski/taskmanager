@@ -1074,6 +1074,7 @@ export function TaskDetail({
       <TaskAgentPanel
         task={task}
         subtasks={subtasks}
+        parentTask={parentTask}
         agentProjects={agentProjects}
         filingProjects={boards}
         items={panelItems}
