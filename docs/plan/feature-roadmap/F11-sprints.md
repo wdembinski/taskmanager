@@ -1,6 +1,6 @@
 # F11 — Sprints
 
-> **Status:** proposed · **Where:** client + server + web · **Depends on:** — · **Unlocks:** working the roadmap one sprint, or one milestone, at a time
+> **Status:** superseded by [F24 — Planning](F24-planning.md) (cycles replace sprints; F24's mapping table lists which F11 tasks carry over) · **Where:** client + server + web · **Depends on:** — · **Unlocks:** working the roadmap one sprint, or one milestone, at a time
 > Only the `- [ ]` checkboxes under **Tasks** become cards when this file is imported as a plan; everything else is context.
 >
 > **Layout rule for this file:** every task's description bullets sit after a **blank line**. The plan
