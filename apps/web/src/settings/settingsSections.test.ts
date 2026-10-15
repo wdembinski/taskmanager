@@ -18,11 +18,12 @@ describe('sectionNeedsSettings', () => {
   });
 
   it('still gates the panes that render AppSettings fields', () => {
-    // These five ARE forms over the blob, so they genuinely cannot draw until it loads.
+    // These six ARE forms over the blob, so they genuinely cannot draw until it loads.
     expect(sectionNeedsSettings('general')).toBe(true);
     expect(sectionNeedsSettings('board')).toBe(true);
     expect(sectionNeedsSettings('features')).toBe(true);
     expect(sectionNeedsSettings('jira')).toBe(true);
+    expect(sectionNeedsSettings('linear')).toBe(true);
     expect(sectionNeedsSettings('promptTemplates')).toBe(true);
   });
 
@@ -42,6 +43,7 @@ describe('sectionNeedsSettings', () => {
       features: true,
       projects: false,
       jira: true,
+      linear: true,
       tokens: false,
       people: false,
       desktop: false,

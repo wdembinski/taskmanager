@@ -100,6 +100,7 @@ import type { AppSettings, FeatureSettings } from '@tm/shared/settings';
 import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import { statusesByColumn } from '@tm/shared/columnStatuses';
 import { selectAgentProjects } from '../board/boardSelectors';
+import { describeLinearSettings } from './linearSettingsView';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
 import { sectionNeedsSettings, type SettingsSection } from './settingsSections';
 import { TokensSection } from './TokensSection';
@@ -374,6 +375,7 @@ export function SettingsScreen({
         <Tab value="features">Features</Tab>
         <Tab value="projects">Projects</Tab>
         <Tab value="jira">JIRA</Tab>
+        <Tab value="linear">Linear</Tab>
         <Tab value="tokens">Personal access tokens</Tab>
         <Tab value="people">People</Tab>
         <Tab value="skills">Skills</Tab>
@@ -785,6 +787,28 @@ export function SettingsScreen({
         </div>
       )}
 
+      {section === 'linear' && settings && (
+        <div className={styles.pane}>
+          <Subtitle2>Linear</Subtitle2>
+          <MessageBar intent="info">
+            <MessageBarBody>
+              These settings are edited on the desktop app’s Linear tab — the connection test and
+              the team/state pickers need the desktop’s own API key, which never leaves that
+              machine.
+            </MessageBarBody>
+          </MessageBar>
+
+          <div className={styles.grid}>
+            {describeLinearSettings(settings.linear).map((row) => (
+              <div key={row.label}>
+                <Caption1 className={styles.hint}>{row.label}</Caption1>
+                <Body1>{row.value}</Body1>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {section === 'tokens' && (
         <div className={styles.pane}>
           <TokensSection apiBase={apiBase} getAccessToken={getAccessToken} />
@@ -847,7 +871,7 @@ export function SettingsScreen({
  */
 const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
   {
-    title: 'JIRA and GitLab credentials',
+    title: 'JIRA, GitLab and Linear credentials',
     why:
       'a token typed here would cross the network inside a relayed command and land in the ' +
       'server’s audit trail. The desktop app writes it straight into your machine’s own ' +

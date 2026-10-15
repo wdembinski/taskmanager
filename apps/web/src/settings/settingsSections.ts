@@ -25,6 +25,7 @@ export type SettingsSection =
   | 'features'
   | 'projects'
   | 'jira'
+  | 'linear'
   | 'tokens'
   | 'people'
   | 'desktop'
@@ -40,6 +41,7 @@ const SECTIONS_NEEDING_SETTINGS: ReadonlySet<SettingsSection> = new Set<Settings
   'board',
   'features',
   'jira',
+  'linear',
   'promptTemplates',
 ]);
 
