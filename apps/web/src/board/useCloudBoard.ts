@@ -142,6 +142,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
         getAccessToken: () => auth.getAccessToken(),
         getTargetClientId: () =>
           resolveTargetClientId(window.localStorage, stateRef.current.clients),
+        getProject: (id) => stateRef.current.projects[id],
         // Read through the ref for the same reason the target is: the transport outlives
         // every poll, and this has to be the freshest answer at the moment a call times out
         // rather than the one that was true when it was built. Deliberately immediate and
