@@ -34,6 +34,7 @@ import {
 import { ArrowLeftRegular, DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import { InboxItem, KindBadge } from './Attention';
+import { invokeAttentionAnswer } from './attentionAnswer';
 import { questionDeadline, sortByUrgency } from './attentionUrgency';
 import { CompactAnswerView } from './CompactAnswerView';
 import { formatAge, formatCountdown } from './countdown';
@@ -179,7 +180,7 @@ export function CompactInbox(): JSX.Element {
     async (id: string, a: AttentionAnswer): Promise<void> => {
       dispatch({ type: 'answerStarted', id });
       try {
-        await transport.invoke('attention:answer', id, a);
+        await invokeAttentionAnswer(transport, id, a);
         dispatch({ type: 'answerSucceeded', id });
       } catch (e) {
         dispatch({ type: 'answerFailed', id });
