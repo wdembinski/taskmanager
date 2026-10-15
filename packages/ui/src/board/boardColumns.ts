@@ -3,6 +3,7 @@
  * mapping lives in `@tm/shared/board` (shared with the main process); this module adds
  * the renderer-only concerns: display metadata and the "Show Done" toggle.
  */
+import { tokens } from '@fluentui/react-components';
 import type { BoardColumn, Task, TaskStatus } from '@tm/shared/model';
 import type { RunState } from '@tm/shared/board';
 import {
@@ -10,11 +11,14 @@ import {
   chainNeedsAttention,
   columnForStatus,
   columnForTask,
+  isRunStatus,
   restingStatus,
   statusForColumn,
 } from '@tm/shared/board';
 import { priorityRank } from '@tm/shared/priority';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
+import { variantGroupState, type VariantGroupState } from '@tm/shared/variants';
+import { STATUS_INDICATOR_COLOR } from '../theme';
 
 export type { BoardColumn } from '@tm/shared/model';
 export {
@@ -73,6 +77,20 @@ export function cardBadgeStatus(task: Task, run: RunState): TaskStatus | null {
   return secondary ?? (run.phase === 'blocked' ? 'blocked-by-limit' : null);
 }
 
+/**
+ * The colour one variant row earns on its leader's status strip (F10.5): the row's own
+ * indicator colour — the same vocabulary the step dots elsewhere on the card already use —
+ * while a run still owns it, and a flat grey once it has settled, whatever the outcome.
+ *
+ * Settled rows deliberately give up `STATUS_INDICATOR_COLOR`'s green/red: a strip where
+ * "done" and "failed" each kept their own colour would read as verdicts worth comparing at a
+ * glance on the BOARD, when that comparison is the compare view's job, not this one. The
+ * segment still running or waiting on the human is the only one worth the eye here.
+ */
+export function variantStripTone(status: TaskStatus): string {
+  return isRunStatus(status) ? STATUS_INDICATOR_COLOR[status] : tokens.colorNeutralForeground4;
+}
+
 /** A card as the board renders it: the card itself plus the steps that travel with it. */
 export interface BoardCard {
   task: Task;
@@ -84,6 +102,11 @@ export interface BoardCard {
    * array hung there would be clobbered on every poll.
    */
   mergeRequests: MergeRequest[];
+  /**
+   * This card's variant group (F10), derived from its hidden rows. `{state: 'none', rows: []}`
+   * for every card that never started one — see {@link variantGroupState}.
+   */
+  variants: VariantGroupState;
 }
 
 /**
@@ -98,6 +121,10 @@ export interface BoardCard {
  * Run through {@link boardRows} first, so a variant row (F10) never becomes a card of its
  * own either — unlike an orphaned step, a variant row whose leader is missing stays hidden
  * rather than being promoted, since it was never meant to be seen outside the compare view.
+ *
+ * `variants` is read off the UNFILTERED `tasks`, not `rows` — a card's own variant rows are
+ * exactly what {@link boardRows} just filtered out, so indexing the rows it kept would find
+ * none of them.
  */
 export function groupSubtasks(
   tasks: readonly Task[],
@@ -114,12 +141,20 @@ export function groupSubtasks(
     else children.set(parentId, [task]);
   }
   for (const list of children.values()) list.sort((a, b) => a.order - b.order);
+  const variantRows = new Map<string, Task[]>();
+  for (const t of tasks) {
+    if (!t.variantOf) continue;
+    const list = variantRows.get(t.variantOf);
+    if (list) list.push(t);
+    else variantRows.set(t.variantOf, [t]);
+  }
   return rows
     .filter((t) => !t.parentTaskId || !ids.has(t.parentTaskId))
     .map((task) => ({
       task,
       subtasks: children.get(task.id) ?? [],
       mergeRequests: mrsByTask.get(task.id) ?? [],
+      variants: variantGroupState(task, variantRows.get(task.id) ?? []),
     }));
 }
 

@@ -1,3 +1,4 @@
+import { tokens } from '@fluentui/react-components';
 import { describe, expect, it } from 'vitest';
 import type { BoardColumn, Task, TaskStatus } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
@@ -5,6 +6,8 @@ import type { TaskLink } from '@tm/shared/taskChain';
 import { chainComponent } from '@tm/shared/taskChain';
 import type { RunState } from '@tm/shared/board';
 import { runPhase } from '@tm/shared/board';
+import type { VariantGroupState } from '@tm/shared/variants';
+import { STATUS_INDICATOR_COLOR } from '../theme';
 import {
   COLUMN_META,
   cardBadgeStatus,
@@ -22,6 +25,7 @@ import {
   statusForColumn,
   stepPosition,
   subtaskProgress,
+  variantStripTone,
   visibleColumns,
 } from './boardColumns';
 
@@ -142,6 +146,26 @@ describe('cardBadgeStatus', () => {
     const run = runPhase(parent, steps);
     expect(run.phase).toBe('queued');
     expect(cardBadgeStatus(parent, run)).toBeNull();
+  });
+});
+
+describe('variantStripTone', () => {
+  it('colours a row a run still owns', () => {
+    expect(variantStripTone('running')).toBe(STATUS_INDICATOR_COLOR.running);
+    expect(variantStripTone('waiting-input')).toBe(STATUS_INDICATOR_COLOR['waiting-input']);
+    expect(variantStripTone('blocked-by-limit')).toBe(STATUS_INDICATOR_COLOR['blocked-by-limit']);
+  });
+
+  it('greys out every settled outcome alike, not just done', () => {
+    const grey = tokens.colorNeutralForeground4;
+    expect(variantStripTone('done')).toBe(grey);
+    expect(variantStripTone('failed')).toBe(grey);
+    expect(variantStripTone('stopped')).toBe(grey);
+    expect(variantStripTone('cancelled')).toBe(grey);
+  });
+
+  it('greys out a row that has not started yet', () => {
+    expect(variantStripTone('pending')).toBe(tokens.colorNeutralForeground4);
   });
 });
 
@@ -332,6 +356,50 @@ describe('groupSubtasks', () => {
     const cards = groupSubtasks([card('orphan-variant', { variantOf: 'gone', variantLabel: 'A' })]);
     expect(cards).toEqual([]);
   });
+
+  describe('variants (F10.5 — the board’s own badge and strip)', () => {
+    it('gives an ordinary card the empty group, not undefined', () => {
+      const [plain] = groupSubtasks([card('solo')]);
+      expect(plain.variants).toEqual({ state: 'none', rows: [] });
+    });
+
+    it('gives the leader its rows in A, B, C order with the derived state', () => {
+      const [leader] = groupSubtasks([
+        card('leader', { status: 'in-progress' }),
+        card('c', { variantOf: 'leader', variantLabel: 'C', status: 'done' }),
+        card('a', { variantOf: 'leader', variantLabel: 'A', status: 'running' }),
+        card('b', { variantOf: 'leader', variantLabel: 'B', status: 'pending' }),
+      ]);
+      expect(leader.variants.state).toBe('running');
+      expect(leader.variants.rows.map((r) => r.label)).toEqual(['A', 'B', 'C']);
+    });
+
+    it('ignores an archived row, as though it were never started', () => {
+      const [leader] = groupSubtasks([
+        card('leader'),
+        card('a', { variantOf: 'leader', variantLabel: 'A', status: 'done' }),
+        card('b', {
+          variantOf: 'leader',
+          variantLabel: 'B',
+          status: 'running',
+          archivedAt: 100,
+        }),
+      ]);
+      expect(leader.variants.rows.map((r) => r.label)).toEqual(['A']);
+      expect(leader.variants.state).toBe('done');
+    });
+
+    it('never reads or writes the leader’s own status', () => {
+      // The leader's column is the human's — see `cardBadgeStatus` and the memory
+      // *card-state-is-the-humans*. A running variant group must not move the card.
+      const [leader] = groupSubtasks([
+        card('leader', { status: 'pending' }),
+        card('a', { variantOf: 'leader', variantLabel: 'A', status: 'running' }),
+      ]);
+      expect(leader.variants.state).toBe('running');
+      expect(leader.task.status).toBe('pending');
+    });
+  });
 });
 
 describe('focusCards — chain focus mode', () => {
@@ -487,12 +555,16 @@ describe('stepPosition', () => {
   });
 });
 
+/** No variant group — the state every ordinary card carries. */
+const NO_VARIANTS: VariantGroupState = { state: 'none', rows: [] };
+
 describe('sortCards', () => {
   /** A plain card (no steps) with an id, order and priority. */
   const c = (id: string, order: number, priority: string | null, over: Partial<Task> = {}) => ({
     task: card(id, { order, externalPriority: priority, ...over }),
     subtasks: [] as Task[],
     mergeRequests: [] as MergeRequest[],
+    variants: NO_VARIANTS,
   });
 
   const ids = (cards: ReturnType<typeof sortCards>): string[] => cards.map((x) => x.task.id);
@@ -544,6 +616,7 @@ describe('sortCards', () => {
       task: card('parent', { order: 9, externalPriority: 'Lowest' }),
       subtasks: [card('s1', { parentTaskId: 'parent', status: 'failed' })],
       mergeRequests: [] as MergeRequest[],
+      variants: NO_VARIANTS,
     };
     expect(ids(sortCards([c('high', 0, 'Highest'), parked]))).toEqual(['parent', 'high']);
   });
@@ -589,6 +662,7 @@ describe('sortCards', () => {
       task: card('mr-card', { order: 9, externalPriority: 'Lowest' }),
       subtasks: [] as Task[],
       mergeRequests: [loudMr],
+      variants: NO_VARIANTS,
     };
     expect(ids(sortCards([c('high', 0, 'Highest'), withMr]))).toEqual(['mr-card', 'high']);
 

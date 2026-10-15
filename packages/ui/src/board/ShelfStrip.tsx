@@ -116,7 +116,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
               Nothing parked — drag a card here, or use its menu.
             </Caption1>
           ) : (
-            props.cards.map(({ task, subtasks, mergeRequests }) => (
+            props.cards.map(({ task, subtasks, mergeRequests, variants }) => (
               <div key={task.id} className={layout.shelfCard}>
                 <TaskCard
                   task={task}
@@ -128,6 +128,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
                   showSprint={props.showSprint}
                   subtasks={subtasks}
                   mergeRequests={mergeRequests}
+                  variants={variants}
                   statusKeywords={props.statusKeywords}
                   attentionTaskIds={props.attentionTaskIds}
                   liveRunTaskIds={props.liveRunTaskIds}
