@@ -325,20 +325,31 @@ const serviceOffline = new DiffService(makeDeps({ inspectReturns: null }));
   );
 
   state = { ...state, expanded };
-  const toFetch = fetchablePaths(state);
-  check(
-    'fetchablePaths equals the expanded set before any file has loaded',
-    toFetch.length === expanded.length,
-  );
 
-  // Load each expanded file for real, through diffService.file, same as DiffView does.
+  // `fetchablePaths` hands back ONE path at a time (F6.13's "one file at a time, lazily"
+  // rule) and nothing while another file is still `loading` — the same drain loop
+  // `ReviewPane`'s own fetch effect runs, since it re-fires on every state change.
   let seq = 2;
-  for (const path of toFetch) {
+  let fetchedCount = 0;
+  for (;;) {
+    const toFetch = fetchablePaths(state);
+    if (toFetch.length === 0) break;
+    check('fetchablePaths returns at most one path at a time', toFetch.length === 1);
+    const [path] = toFetch;
     seq += 1;
     state = fileLoadStarted(state, taskOk.id, summary.diffId, path, seq);
+    check(
+      `fetchablePaths returns nothing while ${path} is loading`,
+      fetchablePaths(state).length === 0,
+    );
     const fileResult = await serviceOk.file(taskOk.id, summary.diffId, path);
     state = fileArrived(state, taskOk.id, summary.diffId, path, seq, fileResult);
+    fetchedCount += 1;
   }
+  check(
+    'the drain loop fetched every expanded, non-binary path exactly once',
+    fetchedCount === expanded.length,
+  );
 
   check(
     'a.txt loaded with hunks',

@@ -192,17 +192,27 @@ export function defaultExpanded(summary: DiffSummary, limit = 5): readonly strin
 }
 
 /**
- * The expanded paths `ReviewPane` should fetch as a patch right now: {@link filesToLoad} minus
- * any binary entry. A binary file is never fetched through `task:diffReadFile` — there is no
- * text patch to show — and an image goes through `task:diffImage` instead, which `ImageDiff`
- * fetches for itself.
+ * The expanded paths `ReviewPane` should fetch as a patch right now: at most one of
+ * {@link filesToLoad} minus any binary entry, and none at all while another file is already
+ * `loading` — "one file at a time, lazily on expand", the design's own rule (F6.13). A binary
+ * file is never fetched through `task:diffReadFile` — there is no text patch to show — and an
+ * image goes through `task:diffImage` instead, which `ImageDiff` fetches for itself.
+ *
+ * `ReviewPane`'s fetch effect re-runs on every state change, so returning one path here is
+ * enough to drain a whole queue: each fetch flips its path to `loading`, which is what makes
+ * this function return `[]` until that one lands, and the next idle path only becomes
+ * reachable once it does.
  */
 export function fetchablePaths(state: ReviewState): readonly string[] {
   if (state.summary?.status !== 'ok') return [];
+  const anyLoading = Object.values(state.files).some((load) => load.status === 'loading');
+  if (anyLoading) return [];
   const binaryPaths = new Set(
     state.summary.summary.files.filter((entry) => entry.binary).map((entry) => entry.path),
   );
-  return filesToLoad(state).filter((path) => !binaryPaths.has(path));
+  return filesToLoad(state)
+    .filter((path) => !binaryPaths.has(path))
+    .slice(0, 1);
 }
 
 /** The refusals `review:send` can return on top of a plain chat refusal. */

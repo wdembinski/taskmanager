@@ -270,6 +270,13 @@ export interface TaskDetailProps {
    */
   readOnlyNotice?: string;
   /**
+   * Why the Changes pane's comments and Send review are paused — the web app's own
+   * `activityGate` reduced to its `unreachable` message, passed straight to `ReviewPane`.
+   * Same degrade-by-absence rule as `readOnlyNotice`: the desktop is always reachable from
+   * itself, so this is never set there, and the pane renders exactly as it always has.
+   */
+  hostUnreachable?: string;
+  /**
    * The board's single attention index. Passed in rather than subscribed to here: this
    * pane and the agent panel inside it were each mounting their own subscription, holding
    * two copies of the same state that could disagree.
@@ -353,6 +360,7 @@ export function TaskDetail({
   statusKeywords,
   priorityDisplay = 'color',
   readOnlyNotice,
+  hostUnreachable,
   attention,
   liveRunTaskIds,
   mergingTaskIds,
@@ -1162,7 +1170,7 @@ export function TaskDetail({
   const changesContent = !isStep && (
     <>
       <VariantCompare leaderId={task.id} />
-      <ReviewPane taskId={task.id} />
+      <ReviewPane taskId={task.id} unreachable={hostUnreachable} />
       <MergeRequests
         mergeRequests={mergeRequests}
         onMarkRead={(id) => void transport.invoke('mr:markRead', id)}

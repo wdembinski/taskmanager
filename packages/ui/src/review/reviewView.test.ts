@@ -224,6 +224,23 @@ describe('fetchablePaths', () => {
     };
     expect(fetchablePaths(loaded)).toEqual(['b.ts']);
   });
+
+  it('returns at most one path even with several expanded', () => {
+    const state = summaryLoaded(
+      [entry('a.ts'), entry('b.ts'), entry('c.ts')],
+      ['a.ts', 'b.ts', 'c.ts'],
+    );
+    expect(fetchablePaths(state)).toEqual(['a.ts']);
+  });
+
+  it('returns nothing while any file is already loading', () => {
+    const state = summaryLoaded([entry('a.ts'), entry('b.ts')], ['a.ts', 'b.ts']);
+    const loading = {
+      ...state,
+      files: { ...state.files, 'a.ts': { status: 'loading' as const, seq: 1 } },
+    };
+    expect(fetchablePaths(loading)).toEqual([]);
+  });
 });
 
 describe('fileLoadNotice', () => {

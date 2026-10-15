@@ -66,9 +66,17 @@ import { ReviewPaneView } from './ReviewPaneView';
 
 export interface ReviewPaneProps {
   taskId: string;
+  /**
+   * Set when the desktop host cannot be reached — `TaskDetail`'s own `hostUnreachable`
+   * (F6.13). While set: the file-fetch effect and the `task:changed` reload both stop, so
+   * whatever `state` is already on screen is the last thing this pane actually loaded, not a
+   * fetch stuck mid-flight. Clearing it reloads the summary once, the same way a fresh mount
+   * would.
+   */
+  unreachable?: string;
 }
 
-export function ReviewPane({ taskId }: ReviewPaneProps): JSX.Element {
+export function ReviewPane({ taskId, unreachable }: ReviewPaneProps): JSX.Element {
   const transport = useTransport();
   const [state, setState] = useState<ReviewState>(EMPTY_REVIEW);
   const [error, setError] = useState<string | null>(null);
@@ -111,16 +119,30 @@ export function ReviewPane({ taskId }: ReviewPaneProps): JSX.Element {
   }, [loadSummary]);
 
   // A commit, a merge or a released tag all land through this one event — see
-  // `GitGraphPane.tsx`'s own note on why a diff reloads on it rather than on a timer.
+  // `GitGraphPane.tsx`'s own note on why a diff reloads on it rather than on a timer. Skipped
+  // while `unreachable` is set: a card the desktop cannot hear from has nothing new to reload,
+  // and the whole point is to keep the last loaded state on screen rather than refetch against
+  // a host that will not answer.
   useEffect(
     () =>
       transport.on('task:changed', (change) => {
+        if (unreachable !== undefined) return;
         if (change.task.id === taskId) void loadSummary();
       }),
-    [transport, taskId, loadSummary],
+    [transport, taskId, loadSummary, unreachable],
   );
 
+  // Reload once the host becomes reachable again — the same read a fresh mount would do, now
+  // that there is reason to believe it will actually land.
+  const wasUnreachable = useRef(unreachable !== undefined);
   useEffect(() => {
+    const isUnreachable = unreachable !== undefined;
+    if (wasUnreachable.current && !isUnreachable) void loadSummary();
+    wasUnreachable.current = isUnreachable;
+  }, [unreachable, loadSummary]);
+
+  useEffect(() => {
+    if (unreachable !== undefined) return;
     const diffId = state.diffId;
     if (diffId === null) return;
     for (const path of fetchablePaths(state)) {
@@ -134,7 +156,7 @@ export function ReviewPane({ taskId }: ReviewPaneProps): JSX.Element {
           ),
       );
     }
-  }, [state, taskId, transport]);
+  }, [state, taskId, transport, unreachable]);
 
   const loadComments = useCallback(async () => {
     const mySeq = ++seq.current;
@@ -243,6 +265,7 @@ export function ReviewPane({ taskId }: ReviewPaneProps): JSX.Element {
       taskId={taskId}
       state={state}
       error={error}
+      unreachable={unreachable}
       onReload={() => void loadSummary()}
       onSelectFile={(path) => setState((s) => selectFile(s, path))}
       onToggleExpanded={(path) => setState((s) => toggleExpanded(s, path))}

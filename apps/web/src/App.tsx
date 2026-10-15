@@ -43,6 +43,7 @@ import { TransportProvider } from '@tm/ui/transport';
 import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
 import { Fleet } from './agents/Fleet';
 import { AutomationsScreen } from './automations/AutomationsScreen';
+import { activityGate } from './activity/activityGate';
 import { useWebLastSeen } from './activity/useWebLastSeen';
 import { WebActivityScreen } from './activity/WebActivityScreen';
 import { WebIssuesScreen } from './issues/WebIssuesScreen';
@@ -283,6 +284,17 @@ function SignedInBoard({
     skew && board.targetClient ? { skew, client: board.targetClient } : null,
   );
 
+  // The Changes pane's own read of the same three signals (F6.13) — `WebActivityScreen` and
+  // `WebIssuesScreen` already reuse `activityGate` for the identical reason: there is a live
+  // desktop to read from, or there isn't, and every screen that needs to know asks the same
+  // gate rather than keeping its own copy of the rule.
+  const reviewGate = activityGate({
+    pollError: board.pollError,
+    presence,
+    targetClientId: board.targetClientId,
+  });
+  const hostUnreachable = reviewGate.kind === 'unreachable' ? reviewGate.message : undefined;
+
   /** What `Fleet` writes through — plain REST, not the transport (see its own docstring). */
   const apiDeps = useMemo(
     () => ({ apiBase: config.cloudApiBase, getAccessToken: () => auth.getAccessToken() }),
@@ -431,6 +443,7 @@ function SignedInBoard({
               onSelectedTaskChange={(taskId) =>
                 navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]), { replace: true })
               }
+              hostUnreachable={hostUnreachable}
             />
           ) : (
             <SyncCurtain

@@ -749,6 +749,15 @@ describe('canSend / canComment', () => {
 
     expect(canComment({ ...state, staleDiffId: 'd2' })).toBe(false);
   });
+
+  it('refuses both while readOnly, even when every other condition is met', () => {
+    const state = { ...summaryLoaded('d1', ['a.ts']), comments: [comment()] };
+    expect(canSend(state)).toBe(true);
+    expect(canComment(state)).toBe(true);
+
+    expect(canSend(state, true)).toBe(false);
+    expect(canComment(state, true)).toBe(false);
+  });
 });
 
 describe('isCollapsedByDefault', () => {

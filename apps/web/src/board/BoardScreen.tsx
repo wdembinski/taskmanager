@@ -157,6 +157,13 @@ export interface BoardScreenProps {
   initialSelectedTaskId?: string | null;
   /** Every change to the wide pane's own selection — see `initialSelectedTaskId`. */
   onSelectedTaskChange?: (taskId: string | null) => void;
+  /**
+   * Why the Changes pane's comments and Send review are paused — `activityGate`'s own
+   * `unreachable` message, computed by `App.tsx`/`CompactApp.tsx` from the same
+   * `pollError`/`presence`/`targetClientId` the status bar already reads. Passed straight
+   * through to `TaskDetail`'s `hostUnreachable` (`taskDetailProps`, below).
+   */
+  hostUnreachable?: string;
 }
 
 export function BoardScreen({
@@ -166,6 +173,7 @@ export function BoardScreen({
   compact,
   initialSelectedTaskId = null,
   onSelectedTaskChange,
+  hostUnreachable,
 }: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   const styles = useStyles();
@@ -656,6 +664,7 @@ export function BoardScreen({
     onUnlinkChain: (linkId: string) => void extras.removeLink(linkId).catch(reportError),
     onOpenTask: compact?.card ? compact.onOpenCard : setSelectedTaskId,
     readOnlyNotice: RELAY_NOTICE,
+    hostUnreachable,
     // The pane's State dropdown has already sent its own `task:setStatus` through the
     // transport by the time this runs (`TaskDetailsCell`), so this only records the
     // optimistic overlay a drag gets — it must not send a second command. The task it hands
