@@ -7,8 +7,14 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <title>VIPPER Task Manager Cloud</title>
-    <!-- Matches pageBackground('light') (@tm/ui/theme) and the manifest's own background_color/theme_color — manifest.test.ts holds all three in step. A static document can't follow the resolved scheme, so it is pinned to the light canvas. -->
-    <meta name="theme-color" content="#F7F8FA" />
+    <!-- SEMANTIC.light.canvas / SEMANTIC.dark.canvas (@tm/ui/tokens) — manifest.test.ts holds
+         both metas to those values. A static <meta> can't read the resolved appearance
+         setting, but it CAN read the OS's own light/dark media query, which is the one thing
+         a browser chrome paints before this page's own script has run at all. The manifest's
+         background_color/theme_color stay pinned to the light canvas (same file, below) since
+         a .webmanifest has no media-query mechanism of its own. -->
+    <meta name="theme-color" content="#F7F8FA" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#202326" media="(prefers-color-scheme: dark)" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/png" sizes="48x48" href="/icons/icon-48.png" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />

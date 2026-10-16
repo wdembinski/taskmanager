@@ -3,8 +3,11 @@
  *
  * It mounts the React tree into <div id="root"> and wraps everything in Fluent
  * UI's <FluentProvider>, which supplies the design tokens (colors, spacing,
- * fonts) that all Fluent components read. We use the dark theme to match a
- * developer tool aesthetic; a light/dark toggle can come later.
+ * fonts) that all Fluent components read. The theme follows the user's resolved
+ * `appearance` setting (light/dark/system) via `useResolvedAppearance`, which also
+ * stamps `data-scheme`/`data-glass` onto `document.documentElement` so the document
+ * styles (`useGlobalStyles`) never disagree with the `FluentProvider` mounted beside
+ * them.
  *
  * Note there is NO data-fetching library here (unlike the iam frontend's
  * TanStack Query): this app's "server" is the local engine, reached through
@@ -13,11 +16,13 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
+import type { AppSettings } from '@shared/settings';
 import { App } from './App';
 import { isFileDrag } from '@ui/AttachmentStrip';
 import { RootErrorBoundary } from './RootErrorBoundary';
-import { appDarkTheme, BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@ui/theme';
+import { BASE_FONT_PX, TOASTER_ID, scaleTheme, themeFor, useGlobalStyles } from '@ui/theme';
 import { tokenCssVars } from '@ui/tokens';
+import { useResolvedAppearance } from '@ui/useResolvedAppearance';
 import { TransportProvider } from '@ui/transport';
 import './index.css';
 
@@ -47,24 +52,27 @@ for (const type of ['dragover', 'drop'] as const) {
 }
 
 /**
- * The provider, sized to the user's font-size setting.
+ * The provider, sized to the user's font-size setting and themed to their resolved
+ * appearance.
  *
- * Two mechanisms, because one cannot reach everything. `scaleTheme` multiplies Fluent's
- * type ramp, which covers every `Text`, `Button`, `Field` and `Badge` in the app without
- * touching a component. `--app-font-scale` covers the sizes written as literal px in
- * `makeStyles`, which tokens cannot reach — those call `fontPx()`. Both are derived from
+ * Two mechanisms size it, because one cannot reach everything. `scaleTheme` multiplies
+ * Fluent's type ramp, which covers every `Text`, `Button`, `Field` and `Badge` in the app
+ * without touching a component. `--app-font-scale` covers the sizes written as literal px
+ * in `makeStyles`, which tokens cannot reach — those call `fontPx()`. Both are derived from
  * the same number, so they can never disagree.
  *
- * Read here rather than passed down because it must wrap the whole tree, and re-read on
- * `settings:changed` so the size takes effect as you pick it rather than on next launch.
+ * `appearance`/`transparency` start at `'dark'`/`'system'` — the window's own
+ * `backgroundColor` (`main/index.ts`) resolves the same pair the same way before this ever
+ * mounts, so an existing install never flashes a different scheme while this first read is
+ * in flight. Re-read on `settings:changed` so a change takes effect as you pick it rather
+ * than on next launch; `useResolvedAppearance` re-resolves the two settings into a scheme
+ * on top of that, and keeps `document.documentElement` in step with it.
  */
 function ThemedApp(): JSX.Element {
-  // The app's global rules — dark colour-scheme, page background, scrollbars, spinner colour.
-  // Called here because this component always renders, and `makeStaticStyles` emits its CSS
-  // on first use. `index.css` beside this file keeps only the window's drag regions.
-  useGlobalStyles();
   const [fontSizePx, setFontSizePx] = useState(BASE_FONT_PX);
   const [toasts, setToasts] = useState(true);
+  const [appearance, setAppearance] = useState<AppSettings['appearance']>('dark');
+  const [transparency, setTransparency] = useState<AppSettings['transparency']>('system');
 
   useEffect(() => {
     const read = (): void => {
@@ -73,6 +81,8 @@ function ThemedApp(): JSX.Element {
         .then((s) => {
           setFontSizePx(s.fontSizePx || BASE_FONT_PX);
           setToasts(s.toastsEnabled);
+          setAppearance(s.appearance);
+          setTransparency(s.transparency);
         })
         .catch(() => undefined);
     };
@@ -80,15 +90,21 @@ function ThemedApp(): JSX.Element {
     return window.api.on('settings:changed', read);
   }, []);
 
+  const { scheme } = useResolvedAppearance({ appearance, transparency });
+  // The app's global rules — the resolved scheme's colour-scheme, page background,
+  // scrollbars, spinner colour. Called here because this component always renders, and
+  // `makeStaticStyles` emits its CSS on first use. `index.css` beside this file keeps only
+  // the window's drag regions.
+  useGlobalStyles();
+
   return (
     <FluentProvider
-      theme={scaleTheme(appDarkTheme, fontSizePx)}
+      theme={scaleTheme(themeFor(scheme), fontSizePx)}
       style={
         {
           height: '100vh',
           '--app-font-scale': fontSizePx / BASE_FONT_PX,
-          // Dark because it is the only mounted scheme until F13.4's resolver picks one.
-          ...tokenCssVars('dark'),
+          ...tokenCssVars(scheme),
         } as React.CSSProperties
       }
     >

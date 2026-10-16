@@ -306,13 +306,17 @@ export const GRAPH_INK = graphInk('dark');
 /**
  * The document's backdrop for a given scheme — what a consumer that cannot read the
  * `--tm-page-bg` custom property {@link useGlobalStyles} stamps on `:root` should paint
- * instead. There are exactly two such consumers: the Electron window's own `backgroundColor`,
- * chosen before `createWindow` ever mounts a renderer, and `apps/web`'s manifest
- * `background_color`/`theme_color` plus its `index.html` `theme-color` meta — a PWA manifest
- * is static JSON and a `<meta>` is static markup, neither can read a CSS variable, and
- * `manifest.test.ts` holds all three to this function so they can't drift from it or each
- * other. Matches `SEMANTIC[scheme].canvas` — the same canvas `tokenCssVars` and
+ * instead. Matches `SEMANTIC[scheme].canvas` — the same canvas `tokenCssVars` and
  * `useGlobalStyles` paint from.
+ *
+ * Neither of the two consumers this was written for calls it any more, and both for the
+ * same reason — a package built on `@fluentui/react-components` has no business in either.
+ * The Electron window's own `backgroundColor` (`main/index.ts`) reads `WINDOW_CANVAS`
+ * (`@shared/canvas`) directly, since the main process has no Fluent and no DOM; `apps/web`'s
+ * manifest/`index.html` (`manifest.test.ts`) read `SEMANTIC` directly for the same reason a
+ * static JSON file and a static `<meta>` always could have. Kept as the named value for
+ * `SEMANTIC[scheme].canvas` on the renderer side of that line, where `@tm/ui` is already in
+ * scope.
  */
 export function pageBackground(scheme: ColorScheme): string {
   return SEMANTIC[scheme].canvas;

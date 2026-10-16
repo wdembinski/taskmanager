@@ -1,24 +1,23 @@
 /**
  * The web app manifest, the icons it points at, `index.html`'s own links and
  * `staticwebapp.config.json`'s MIME mapping are four files that have to agree with each
- * other and with `pageBackground('light')` (`@tm/ui/theme`) for the installed app to look
- * like one product rather than a static bundle with a mismatched splash colour. None of the
- * four can import from another — a `.webmanifest` is static JSON and `index.html` is static
- * markup — so this is the only place a drift between them would be caught, the same role
+ * other and with `SEMANTIC` (`@tm/ui/tokens`) for the installed app to look like one
+ * product rather than a static bundle with a mismatched splash colour. None of the four can
+ * import from another — a `.webmanifest` is static JSON and `index.html` is static markup —
+ * so this is the only place a drift between them would be caught, the same role
  * `test/repo-invariants.test.ts` plays for the version.
  *
- * Pinned to the light canvas rather than `pageBackground('dark')`: neither file can read the
- * resolved appearance setting (`index.html`'s `<meta>` and `manifest.webmanifest` are both
- * static), so there is no "follow the user's scheme" option here — F13.4 picks light as the
- * one fixed value.
+ * The manifest itself stays pinned to `SEMANTIC.light.canvas`: a `.webmanifest` has no
+ * media-query mechanism, so there is no "follow the user's scheme" option for it — F13.4
+ * picks light as its one fixed value. `index.html`'s `<meta name="theme-color">` is
+ * different: a `<meta>` CAN carry a `media` attribute, so it gets both — one for each
+ * scheme — and this file holds both of those to `SEMANTIC`'s canvas too.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pageBackground } from '@tm/ui/theme';
-
-const PAGE_BACKGROUND = pageBackground('light');
+import { SEMANTIC } from '@tm/ui/tokens';
 
 const webRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -60,10 +59,10 @@ describe('manifest.webmanifest', () => {
     expect(manifest.display).toBe('standalone');
   });
 
-  it('paints an installed window in PAGE_BACKGROUND, not a colour of its own', () => {
+  it('paints an installed window in SEMANTIC.light.canvas, not a colour of its own', () => {
     const manifest = readManifest();
-    expect(manifest.background_color).toBe(PAGE_BACKGROUND);
-    expect(manifest.theme_color).toBe(PAGE_BACKGROUND);
+    expect(manifest.background_color).toBe(SEMANTIC.light.canvas);
+    expect(manifest.theme_color).toBe(SEMANTIC.light.canvas);
   });
 
   it('lists the 192 and 512 icons installability requires, each a real PNG of that size', () => {
@@ -88,11 +87,27 @@ describe('index.html', () => {
     return readFileSync(join(webRoot, 'index.html'), 'utf8');
   }
 
-  it('links the manifest and a favicon, with a theme-color matching it', () => {
+  it('links the manifest and a favicon', () => {
     const markup = html();
     expect(markup).toContain('rel="manifest" href="/manifest.webmanifest"');
     expect(markup).toContain('rel="icon"');
-    expect(markup).toContain(`content="${PAGE_BACKGROUND}"`);
+  });
+
+  it('carries a theme-color meta for each scheme, matching SEMANTIC', () => {
+    // A static document can't read the resolved appearance setting, but a <meta> CAN carry
+    // a media query, so it gets one per OS scheme rather than being pinned to one like the
+    // manifest above.
+    const markup = html();
+    expect(markup).toMatch(
+      new RegExp(
+        `<meta name="theme-color" content="${SEMANTIC.light.canvas}" media="\\(prefers-color-scheme: light\\)" */?>`,
+      ),
+    );
+    expect(markup).toMatch(
+      new RegExp(
+        `<meta name="theme-color" content="${SEMANTIC.dark.canvas}" media="\\(prefers-color-scheme: dark\\)" */?>`,
+      ),
+    );
   });
 });
 
