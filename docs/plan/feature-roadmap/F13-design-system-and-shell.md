@@ -452,6 +452,60 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     title only; a running ticket shows the pill; an overdue date is flagged, a future one is not;
     priority and type never produce a part. Gates green.
 
+  - **Facts checked** (ahead of design, so it isn't re-derived next): `runPhase`
+    (`packages/shared/src/board.ts:460`), `columnForTask` / `BoardColumn` (`board.ts:228`),
+    `mrRef` / `MergeRequestState` (`@tm/shared/mergeRequest:215,24`), `assigneeDisplayParts` /
+    `AssigneeDisplay` / `delegatedAgentName` (`packages/ui/src/projects/assigneeParts.ts`,
+    `AssigneeDisplay.tsx`, `@tm/shared/tickets:67`), `Task.ticketKey` / `externalKey` / `dueAt`,
+    the `SEMANTIC` shape and `tokenCssVars`'s `--tm-*` names, all five Fluent icons (installed
+    `@fluentui/react-icons@2.0.331`), and the no-barrel `tsup` build all match the card's own
+    description exactly.
+  - One claim needs correcting: `tokenCssVars` is **already** stamped on both hosts' provider
+    roots (`apps/client/src/renderer/src/main.tsx:91`, `apps/web/src/main.tsx:58`), beside
+    `--app-font-scale` — not "nothing stamps them yet". Both hosts hard-code
+    `tokenCssVars('dark')` today (F13.4 is what makes it follow the resolved scheme instead),
+    so every `--tm-*` var always carries its dark value regardless of which Fluent theme a
+    component sits under. The card's `var(--tm-x, <fluent-fallback>)` pattern still stands —
+    the fallback just never actually engages before F13.4, since the var is always set — but a
+    row built on it will read dark-scheme colours inside a light Fluent theme until F13.4
+    ships. Pre-existing condition of every surface already reading a `--tm-*` var, not
+    something this card introduces or needs to work around.
+  - The attached v9 mockups (`issues-list-light/dark.svg`) draw the row precisely enough to
+    read exact values from the markup. Several aren't in the card's own description and
+    Design should decide on, not re-derive:
+    - Row: 34px tall, 7px corner radius; selected fill `#EBF3FC`/`#1D2B38` (= `selectedTint`)
+      with a 3px, 18px-tall (centred, ~53% of row height) bar — matches `accentBar` exactly.
+    - Selected title is also recoloured and bolded (`#0F548C`/`#9CCBF2`, weight 600), not just
+      the background tint and bar — "selected = tint + bar" alone is incomplete.
+    - The key and the empty-assignee ring (see below) share a colour with no entry in the
+      current token table: `#AEB4BC` light / `#5A6169` dark, visibly fainter than `textFaint`
+      (`#646B74`/`#8A929B`). Either `textFaint` is close enough and the mockup is only
+      approximate, or this role wants its own token.
+    - Status glyph: a 5.5px outline circle, `#454B54`/`#BAC0C7` stroke when the ticket carries
+      more state, the same faint tone as the key for a plain Todo ring with no wedge. In
+      Progress adds a small (~90°) filled wedge, In Review a larger (~270°,
+      `large-arc-flag=1`) one — reads as `CircleRegular` → a hinted fill → a half fill,
+      consistent with the card's icon list. Neither mockup shows a Done or Blocked row, so
+      `CheckmarkCircleFilled` / `PresenceBlockedRegular` have no visual reference yet.
+    - MR ref: plain mono text, no pill, faint (`#7C838D`/`#8A929B`), right-aligned — unlike the
+      run indicator, which is a pill.
+    - Run pill: dark-mode bg and ink match `run.pill` / `run.ink` from `tokens.ts` exactly
+      (`rgba(34,228,255,.12)` / `#22E4FF`). Light-mode bg also matches `run.pill` (`#E6FAFE`),
+      but the mockup's light-mode dot/text (`#0BA5C2`/`#06606F`) is a near miss on `run.ink`
+      (`#07748C`) — treat `tokens.ts` as authoritative (it is the one F13.2 already checked for
+      contrast) rather than colour-picking the SVG.
+    - Due date: plain faint text normally, bold `#F28C28` for "Today" — the mockups' orange
+      from open question 1, not the shipped `UNREAD_ORANGE` (`#F2A900`). No row shows a
+      past-due date, only "Today", so only that one state has a visual reference.
+    - Avatar has three states, not two. Besides the agent glyph (filled `selectedTint`-ish
+      circle, brand-coloured `AgentsRegular`-shaped glyph) and human initials (filled
+      `canvas`-ish circle, two letters), several Todo rows with neither draw a dashed outline
+      ring (`stroke-dasharray 2 2`, the same faint tone as the key) rather than nothing.
+      `assigneeDisplayParts` returns `null` for that case today and `AssigneeDisplay` renders
+      nothing ("neither is not this component's problem", by its own doc comment). Reusing it
+      as-is means `IssueRow` renders nothing where the mockup shows a ring; drawing the ring
+      is new behaviour the card didn't ask for — Design's call.
+
 - [ ] F13.13 Open the F12 panel as a peek on Space and as a full-screen issue on Enter @needs: F13.11 Render the sidebar in both hosts with tree keyboard navigation, F13.12 Build the shared issue row with the selected state
 
   - A `peek` layout (flat surface on the right, list still focusable) and a `full` layout (the
