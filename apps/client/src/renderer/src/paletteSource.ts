@@ -55,6 +55,7 @@ export const DESKTOP_SCREENS: ReadonlyArray<{ id: DesktopPaletteTab; title: stri
  *  shows. */
 export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSection; title: string }> = [
   { id: 'general', title: 'General' },
+  { id: 'appearance', title: 'Appearance' },
   { id: 'board', title: 'Board' },
   { id: 'features', title: 'Features' },
   { id: 'jira', title: 'JIRA' },

@@ -3,8 +3,31 @@
  * scheme and glass mode a window should actually paint — the one place that decision is
  * made, so the desktop and the web shell can never disagree about what `'system'` means.
  */
-import type { AppSettings } from '@tm/shared/settings';
+import type { AppSettings, AppearanceSetting, TransparencySetting } from '@tm/shared/settings';
 import type { ColorScheme } from './tokens';
+
+/**
+ * The Theme picker's options and hint, named once so Settings (desktop) and SettingsScreen
+ * (web) can never word or order them differently — see each host's "Appearance" section.
+ */
+export const APPEARANCE_OPTIONS: ReadonlyArray<{ value: AppearanceSetting; label: string }> = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+];
+
+export const APPEARANCE_HINT =
+  'System follows the OS’s own light/dark setting and switches live if it changes. Light and Dark override it everywhere this app draws.';
+
+/** The Transparency picker's options and hint — same reasoning as {@link APPEARANCE_OPTIONS}. */
+export const TRANSPARENCY_OPTIONS: ReadonlyArray<{ value: TransparencySetting; label: string }> = [
+  { value: 'system', label: 'System' },
+  { value: 'reduced', label: 'Reduced' },
+  { value: 'full', label: 'Full' },
+];
+
+export const TRANSPARENCY_HINT =
+  'System follows the OS’s reduced-transparency setting. Reduced always turns glass off; Full keeps it even when the OS asks for less.';
 
 export interface AppearanceEnv {
   prefersDark: boolean;

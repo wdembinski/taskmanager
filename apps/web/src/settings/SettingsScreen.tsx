@@ -102,6 +102,18 @@ import {
 import type { AppSettings, FeatureSettings } from '@tm/shared/settings';
 import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import { statusesByColumn } from '@tm/shared/columnStatuses';
+import {
+  APPEARANCE_HINT,
+  APPEARANCE_OPTIONS,
+  TRANSPARENCY_HINT,
+  TRANSPARENCY_OPTIONS,
+} from '@tm/ui/appearance';
+import {
+  onAppearancePrefsChange,
+  readAppearancePrefs,
+  writeAppearancePrefs,
+  type AppearancePrefs,
+} from '../appearancePrefs';
 import { selectAgentProjects } from '../board/boardSelectors';
 import { describeLinearSettings } from './linearSettingsView';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
@@ -241,6 +253,28 @@ export function SettingsScreen({
    */
   const [relayedProjects, setRelayedProjects] = useState<Project[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
+
+  /**
+   * This tab's own theme/transparency, read from `localStorage` rather than `settings` — see
+   * `appearancePrefs.ts`. They apply the moment they're picked (`main.tsx`'s own subscription
+   * re-resolves the scheme), so there is no Save button for these two and no relay: the keys
+   * never leave the browser.
+   */
+  const [appearancePrefs, setAppearancePrefsState] = useState<AppearancePrefs>(() =>
+    readAppearancePrefs(window.localStorage),
+  );
+  useEffect(
+    () =>
+      onAppearancePrefsChange(() =>
+        setAppearancePrefsState(readAppearancePrefs(window.localStorage)),
+      ),
+    [],
+  );
+  function patchAppearancePrefs(change: Partial<AppearancePrefs>): void {
+    const next = { ...appearancePrefs, ...change };
+    setAppearancePrefsState(next);
+    writeAppearancePrefs(window.localStorage, next);
+  }
 
   const load = useCallback(async () => {
     setSettings(await transport.invoke('settings:get'));
@@ -538,6 +572,57 @@ export function SettingsScreen({
           </div>
 
           {actions}
+
+          {/* Theme/transparency are per-browser (`appearancePrefs.ts`), not part of
+              `settings` — they apply the moment you pick them, with no Save button and no
+              relay to the desktop. */}
+          <Subtitle2>Appearance</Subtitle2>
+          <Body1 className={styles.hint}>
+            This browser's own look — saved on this device, applied immediately.
+          </Body1>
+          <div className={styles.grid}>
+            <Field label="Theme" hint={APPEARANCE_HINT}>
+              <Dropdown
+                value={
+                  APPEARANCE_OPTIONS.find((o) => o.value === appearancePrefs.appearance)?.label ??
+                  ''
+                }
+                selectedOptions={[appearancePrefs.appearance]}
+                onOptionSelect={(_e, d) =>
+                  patchAppearancePrefs({
+                    appearance: d.optionValue as AppearancePrefs['appearance'],
+                  })
+                }
+              >
+                {APPEARANCE_OPTIONS.map((o) => (
+                  <Option key={o.value} value={o.value}>
+                    {o.label}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+
+            <Field label="Transparency" hint={TRANSPARENCY_HINT}>
+              <Dropdown
+                value={
+                  TRANSPARENCY_OPTIONS.find((o) => o.value === appearancePrefs.transparency)
+                    ?.label ?? ''
+                }
+                selectedOptions={[appearancePrefs.transparency]}
+                onOptionSelect={(_e, d) =>
+                  patchAppearancePrefs({
+                    transparency: d.optionValue as AppearancePrefs['transparency'],
+                  })
+                }
+              >
+                {TRANSPARENCY_OPTIONS.map((o) => (
+                  <Option key={o.value} value={o.value}>
+                    {o.label}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+          </div>
         </div>
       )}
 

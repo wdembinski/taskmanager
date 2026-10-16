@@ -91,6 +91,12 @@ import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
 import { COLUMN_META, statusForColumn } from '@ui/board/boardColumns';
 import { STATUS_LABEL } from '@ui/taskStatus';
 import {
+  APPEARANCE_HINT,
+  APPEARANCE_OPTIONS,
+  TRANSPARENCY_HINT,
+  TRANSPARENCY_OPTIONS,
+} from '@ui/appearance';
+import {
   MAPPABLE_COLUMNS,
   rowsToStatusMap,
   statusMapToRows,
@@ -208,6 +214,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 
 export type SettingsSection =
   | 'general'
+  | 'appearance'
   | 'board'
   | 'features'
   | 'jira'
@@ -1447,6 +1454,53 @@ export function Settings({
                 )}
               </div>
             </Field>
+          </div>
+        </div>
+      ) : section === 'appearance' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Appearance</Subtitle2>
+
+          <div className={styles.grid}>
+            <Field label="Theme" hint={APPEARANCE_HINT}>
+              <Dropdown
+                value={APPEARANCE_OPTIONS.find((o) => o.value === settings.appearance)?.label ?? ''}
+                selectedOptions={[settings.appearance]}
+                onOptionSelect={(_e, d) =>
+                  patch({ appearance: d.optionValue as AppSettings['appearance'] })
+                }
+              >
+                {APPEARANCE_OPTIONS.map((o) => (
+                  <Option key={o.value} value={o.value}>
+                    {o.label}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+
+            <Field label="Transparency" hint={TRANSPARENCY_HINT}>
+              <Dropdown
+                value={
+                  TRANSPARENCY_OPTIONS.find((o) => o.value === settings.transparency)?.label ?? ''
+                }
+                selectedOptions={[settings.transparency]}
+                onOptionSelect={(_e, d) =>
+                  patch({ transparency: d.optionValue as AppSettings['transparency'] })
+                }
+              >
+                {TRANSPARENCY_OPTIONS.map((o) => (
+                  <Option key={o.value} value={o.value}>
+                    {o.label}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={save}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
           </div>
         </div>
       ) : section === 'gitlab' ? (
