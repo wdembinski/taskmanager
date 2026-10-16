@@ -612,7 +612,9 @@ describe('workflows both hosts render from the shared builder (F8.13)', () => {
 describe('the activity tab both hosts render from the shared screen (F2.13/F2.14)', () => {
   /**
    * `apps/client/src/renderer/src/App.tsx` imports `ActivityScreen` straight from
-   * `@tm/ui/activity/ActivityScreen` and lists `id: 'activity'` in its NAV (F2.13). The web
+   * `@tm/ui/activity/ActivityScreen` (F2.13). Since F9.4 (`e876e6f2`) its NAV is built from
+   * `DESKTOP_SCREENS.map(...)` rather than its own `{ id: … }` literals, so the `id: 'activity'`
+   * entry itself now lives in `paletteSource.ts`, alongside the automations one above. The web
    * half (F2.14) is a wrapper, the same shape as the automations tab above: `WEB_APP` lists
    * the NAV entry, but the `ActivityScreen` import itself lives one file over, in
    * `apps/web/src/activity/WebActivityScreen.tsx` — the gate that decides whether there is a
@@ -636,13 +638,27 @@ describe('the activity tab both hosts render from the shared screen (F2.13/F2.14
   }
 
   it("lists an activity tab in both hosts' NAV", () => {
-    for (const path of [WEB_APP, DESKTOP_APP]) {
-      expect(
-        read(path),
-        `${path} must list { id: 'activity', … } in its NAV — a screen nothing links to is a ` +
-          'file, not a tab.',
-      ).toMatch(/id:\s*'activity'/);
-    }
+    expect(
+      read(WEB_APP),
+      `${WEB_APP} must list { id: 'activity', … } in its NAV — a screen nothing links to is a ` +
+        'file, not a tab.',
+    ).toMatch(/id:\s*'activity'/);
+
+    /**
+     * Since F9.4 (`e876e6f2`) the desktop rail is built from `DESKTOP_SCREENS.map(...)`
+     * (`App.tsx:148`) rather than listing its own `{ id: … }` literals, so the literal this
+     * test looks for now lives in `paletteSource.ts`. The `.toMatch` below guards that the
+     * rail still derives from the list — if it stops, reading the list alone would prove
+     * nothing about what ids the rail actually carries.
+     */
+    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
+
+    const DESKTOP_SCREENS_PATH = 'apps/client/src/renderer/src/paletteSource.ts';
+    expect(
+      read(DESKTOP_SCREENS_PATH),
+      `${DESKTOP_SCREENS_PATH} must list { id: 'activity', … } in DESKTOP_SCREENS — a screen ` +
+        'nothing links to is a file, not a tab.',
+    ).toMatch(/id:\s*'activity'/);
   });
 
   it('leaves no local ActivityScreen behind in a host tree', () => {
