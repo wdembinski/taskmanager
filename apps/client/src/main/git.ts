@@ -31,8 +31,8 @@ export interface GitResult {
  * its own host and the identical argv runs inside the distro instead.
  *
  * `env` is added to this process' environment for the one command, and is only ever passed
- * by {@link pushBranch} and {@link fetchRef} — see {@link NO_PROMPT_ENV} for the single thing
- * it is for. Omitted everywhere else, so no other git call's environment changes at all.
+ * by {@link pushBranch} and {@link fetchRefspecs} — see {@link NO_PROMPT_ENV} for the single
+ * thing it is for. Omitted everywhere else, so no other git call's environment changes at all.
  */
 export async function git(
   cwd: string,
@@ -1035,25 +1035,51 @@ export async function pushBranch(
   };
 }
 
+/** The namespace this app owns for review state. See {@link reviewRef}. */
+export const REVIEW_REF_PREFIX = 'refs/tm/review/';
+
 /**
- * Fetch `branch` from `remoteOrUrl` into the local ref `localRef`, without touching the
- * work tree or the index — the read-side counterpart of {@link pushBranch}, sharing its
- * "never prompt, redact secrets" contract for the same tokenized-URL path. The `+` on the
- * refspec force-updates `localRef` regardless of whether it would fast-forward: it is
- * scratch space the caller owns (e.g. the base ref for computing a lease's expected SHA),
- * not a branch with history of its own to protect.
+ * The ref a review's `head` or `base` snapshot lives at — `refs/tm/review/<subjectId>/<side>`.
+ * This is the single source of truth for the namespace's shape: F15.6 writes these refs and
+ * the pruning code (see {@link deleteRefs}) deletes everything under {@link REVIEW_REF_PREFIX}
+ * without knowing `subjectId` or `side` individually.
  */
-export async function fetchRef(
+export function reviewRef(subjectId: string, side: 'head' | 'base'): string {
+  return `${REVIEW_REF_PREFIX}${subjectId}/${side}`;
+}
+
+/**
+ * Fetch each of `specs` (git refspecs, e.g. `+refs/heads/main:refs/tm/review/x/base`) from
+ * `remoteOrUrl` in one call, without touching HEAD, the index, the work tree or any branch —
+ * only the refs named on the right-hand side of `specs` change. That guarantee is what makes
+ * this safe to call while the checkout is dirty or mid-rebase, and it is also why this never
+ * runs a bare `git fetch <remote>`: with no refspec of its own, that falls back to the
+ * configured ones and moves `refs/remotes/*`, exactly the side effect named refspecs exist to
+ * avoid.
+ *
+ * `--no-tags`: fetching explicit refspecs still auto-follows tags into `refs/tags` unless
+ * told not to, which would write refs outside the destinations `specs` actually named. Every
+ * caller here fetches into a scratch or remote-tracking ref and none of them reads tags
+ * (`worktreeManager.ts`'s pre-PR base and upstream fetches, `ipc.ts`'s diff fetch,
+ * {@link remoteBranchSha}), so there is nothing for a tag to be useful for.
+ *
+ * Shares {@link pushBranch}'s "never prompt, redact secrets" contract for the same
+ * tokenized-URL path. An empty `specs` is refused outright — see the guard below — rather
+ * than silently becoming the bare-fetch case this function exists to avoid.
+ */
+export async function fetchRefspecs(
   cwd: string,
   remoteOrUrl: string,
-  branch: string,
-  localRef: string,
+  specs: readonly string[],
   opts: PushOptions = {},
 ): Promise<GitResult> {
+  if (specs.length === 0) {
+    return { code: 1, stdout: '', stderr: 'fetchRefspecs: no refspecs given' };
+  }
   const target = opts.url || remoteOrUrl;
   const res = await git(
     cwd,
-    ['-c', 'credential.interactive=never', 'fetch', target, `+refs/heads/${branch}:${localRef}`],
+    ['-c', 'credential.interactive=never', 'fetch', '--no-tags', target, ...specs],
     opts.host,
     NO_PROMPT_ENV,
   );
@@ -1062,6 +1088,77 @@ export async function fetchRef(
     stdout: redactSecrets(res.stdout, opts.secrets),
     stderr: redactSecrets(res.stderr, opts.secrets),
   };
+}
+
+/**
+ * Fetch `branch` from `remoteOrUrl` into the local ref `localRef`. The `+` on the refspec
+ * force-updates `localRef` regardless of whether it would fast-forward: it is scratch space
+ * the caller owns (e.g. the base ref for computing a lease's expected SHA), not a branch with
+ * history of its own to protect. See {@link fetchRefspecs} for the guarantees this relies on.
+ */
+export async function fetchRef(
+  cwd: string,
+  remoteOrUrl: string,
+  branch: string,
+  localRef: string,
+  opts: PushOptions = {},
+): Promise<GitResult> {
+  return fetchRefspecs(cwd, remoteOrUrl, [`+refs/heads/${branch}:${localRef}`], opts);
+}
+
+/**
+ * Delete every ref under `prefix` (e.g. {@link REVIEW_REF_PREFIX}). Refuses, without running
+ * git, any `prefix` that does not start with `refs/tm/` — this is the one guard that stops a
+ * bad caller from pointing it at `refs/heads/` or similar and wiping real branches.
+ *
+ * Matches with `for-each-ref`'s own path-component rule, so `refs/tm/review/gh-1-7` does not
+ * also match `refs/tm/review/gh-1-70`. Deletes one ref at a time with `update-ref -d`: hosts
+ * run commands with no stdin (see {@link ExecHost.exec}), so `update-ref --stdin` isn't
+ * available here. Stops at the first failure and returns it; zero matching refs is success.
+ */
+export async function deleteRefs(cwd: string, prefix: string, host?: ExecHost): Promise<GitResult> {
+  if (!prefix.startsWith('refs/tm/')) {
+    return {
+      code: 1,
+      stdout: '',
+      stderr: `deleteRefs: refusing prefix outside refs/tm/: ${prefix}`,
+    };
+  }
+  const listed = await git(cwd, ['for-each-ref', '--format=%(refname)', prefix], host);
+  if (listed.code !== 0) return listed;
+  const refs = listed.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const ref of refs) {
+    const res = await git(cwd, ['update-ref', '-d', ref], host);
+    if (res.code !== 0) return res;
+  }
+  return { code: 0, stdout: '', stderr: '' };
+}
+
+/**
+ * Every configured remote, by name, with its fetch and push URLs — parsed from
+ * `git remote -v`'s `<name>\t<url> (fetch|push)` lines, grouped by name in first-seen order.
+ * `[]` on a non-zero exit: the same "empty means none" contract as {@link remoteUrl}.
+ */
+export async function listRemotes(
+  cwd: string,
+  host?: ExecHost,
+): Promise<{ name: string; fetchUrl: string; pushUrl: string }[]> {
+  const res = await git(cwd, ['remote', '-v'], host);
+  if (res.code !== 0) return [];
+  const byName = new Map<string, { name: string; fetchUrl: string; pushUrl: string }>();
+  for (const line of res.stdout.split('\n')) {
+    const match = /^(\S+)\t(\S+)\s+\((fetch|push)\)$/.exec(line.trim());
+    if (!match) continue;
+    const [, name, url, kind] = match;
+    const entry = byName.get(name) ?? { name, fetchUrl: '', pushUrl: '' };
+    if (kind === 'fetch') entry.fetchUrl = url;
+    else entry.pushUrl = url;
+    byName.set(name, entry);
+  }
+  return [...byName.values()];
 }
 
 /**
