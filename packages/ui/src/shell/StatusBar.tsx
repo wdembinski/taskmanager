@@ -14,7 +14,7 @@ import { ACCENT, fontPx } from '../theme';
 
 const useStyles = makeStyles({
   /**
-   * Blue is the resting state; it turns the app's own "wants you" orange the moment
+   * The gradient is the resting state; it turns the app's own "wants you" orange the moment
    * something is waiting on a human, so the signal is visible from across a room even when
    * the Attention screen is not open.
    */
@@ -24,8 +24,8 @@ const useStyles = makeStyles({
     gap: '8px',
     padding: '3px 12px',
     flexShrink: 0,
-    backgroundColor: ACCENT.statusBlue,
-    color: '#ffffff',
+    backgroundImage: 'var(--tm-status-gradient)',
+    color: 'var(--tm-status-gradient-ink)',
     // The bar is one line of small text on a saturated fill, which is exactly where
     // Fluent's default weight goes muddy. A touch more size and weight, stated once here
     // so every item in the bar gets it.
@@ -33,10 +33,15 @@ const useStyles = makeStyles({
     fontWeight: 600,
   },
   /**
-   * The attention fill. Near-black ink rather than white: white on this orange is ~2.2:1,
-   * which is the "hard to read when it goes orange" complaint — #1b1b1b is ~8.6:1.
+   * The attention fill. `statusGradientInk` and `attentionInk` are F13.2's own contrast
+   * pair per fill — the gradient's ink is near-white, the orange's is near-black — so
+   * `backgroundImage: 'none'` matters here or the gradient image paints over the orange.
    */
-  footerAttention: { backgroundColor: ACCENT.unread, color: ACCENT.unreadInk },
+  footerAttention: {
+    backgroundImage: 'none',
+    backgroundColor: 'var(--tm-attention)',
+    color: 'var(--tm-attention-ink)',
+  },
   /**
    * The live/dead dot, with a dark ring so it separates from BOTH fills it is ever drawn
    * on. The ring matters because a single colour cannot have good contrast against a
@@ -49,8 +54,8 @@ const useStyles = makeStyles({
     flexShrink: 0,
     boxShadow: '0 0 0 1.5px rgba(0, 0, 0, 0.45)',
   },
-  // NOT `colorPaletteGreenBackground3` (#0e700e), which was the bug: ~1.6:1 against the
-  // bar's blue and ~3.2:1 against its orange — invisible on both.
+  // NOT `colorPaletteGreenBackground3`, which was the bug: too low contrast against both
+  // the bar's gradient and its orange — invisible on both.
   ok: { backgroundColor: ACCENT.liveGreen },
   bad: { backgroundColor: ACCENT.liveRed },
   grow: { flex: 1 },
