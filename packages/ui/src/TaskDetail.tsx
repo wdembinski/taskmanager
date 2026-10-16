@@ -364,8 +364,9 @@ export interface TaskDetailProps {
   /** The host's dictation offer (F9.10), passed straight through to `Composer`. */
   dictation?: DictationPath;
   /**
-   * The ticket registries for this card's project (F12.6 passes them from
-   * `useTicketRegistries`). Absent, the Ticket section still renders with empty pickers.
+   * The ticket registries for this card's project (both boards pass them from
+   * `useTicketRegistries`, wired through by F12.6). Absent — a host that hasn't wired
+   * it through yet — the Ticket section still renders with empty pickers.
    */
   people?: Person[];
   /** See {@link people}. */
@@ -373,9 +374,10 @@ export interface TaskDetailProps {
   /** See {@link people}. */
   labels?: TicketLabel[];
   /**
-   * This card's ticket links, for the Links section (F12.5). Absent — every host before
-   * F12.6 wires `useTicketRegistries` through — the section loads and keeps its own copy
-   * live instead (`useTicketLinks`), the same way `TicketLinksEditor` always has.
+   * This card's ticket links, for the Links section (F12.5). Both boards pass them from
+   * `useTicketRegistries` (F12.6). Absent — every other host, such as Projects before
+   * F12.7 — the section loads and keeps its own copy live instead (`useTicketLinks`),
+   * the same way `TicketLinksEditor` always has.
    */
   ticketLinks?: readonly TicketLink[];
 }
@@ -806,9 +808,10 @@ export function TaskDetail({
     [chainTasksById, task?.projectId],
   );
 
-  // Resolved once here — self-loaded only when no host has wired `ticketLinks` through yet
-  // (F12.6) — so `TaskLinksSection` below never opens a second subscription for the same
-  // list; it just receives this array back as its own `ticketLinks` prop.
+  // Resolved once here — self-loaded only when the host hasn't wired `ticketLinks`
+  // through (both boards now do, via F12.6; Projects still doesn't, until F12.7) — so
+  // `TaskLinksSection` below never opens a second subscription for the same list; it
+  // just receives this array back as its own `ticketLinks` prop.
   const resolvedTicketLinks = useTicketLinks(ticketLinks);
   // Whether the Links section will have anything to show, decided the same way it decides
   // internally — so the Ticket section below knows to offer the add row itself instead,

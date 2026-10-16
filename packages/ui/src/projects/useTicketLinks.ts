@@ -1,10 +1,10 @@
 /**
  * This ticket's own copy of `ticketLink:list` — unless a caller already holds one.
  *
- * `TaskDetail`'s Links section needs to work on today's board, where nothing upstream of it
- * loads ticket links yet. Passing `provided` (a `useTicketRegistries().links`, once F12.6
- * wires it through) skips the fetch entirely and this hook becomes the identity function;
- * until then, it loads and subscribes itself, the same way `TicketLinksEditor` always has.
+ * Both boards now pass `provided` (a `useTicketRegistries().links`, wired through by
+ * F12.6), which skips the fetch entirely and makes this hook the identity function. It
+ * is still the fallback for every other host — Projects, until F12.7 wires it through
+ * too — which loads and subscribes itself, the same way `TicketLinksEditor` always has.
  */
 import { useEffect, useState } from 'react';
 import type { TicketLink } from '@tm/shared/model';
