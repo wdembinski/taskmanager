@@ -16,6 +16,7 @@ import {
   resolveSyncInterval,
   shouldAutoFoldOnMove,
   withColumnHidden,
+  withExistingInstallAppearance,
   type AppSettings,
 } from './settings';
 
@@ -183,6 +184,31 @@ describe('DEFAULT_SETTINGS / DEFAULT_BOARD_DISPLAY (Phase 24 fields)', () => {
   });
 });
 
+// `appearance`/`transparency` (F13.3) — a blob written before they existed has neither
+// field, and this is what a fresh install's default fills in as (an EXISTING install is
+// migrated to dark instead — see `withExistingInstallAppearance` below).
+describe('DEFAULT_SETTINGS.appearance / transparency', () => {
+  it('ships both as system out of the box', () => {
+    expect(DEFAULT_SETTINGS.appearance).toBe('system');
+    expect(DEFAULT_SETTINGS.transparency).toBe('system');
+  });
+});
+
+describe('withExistingInstallAppearance', () => {
+  it('writes dark when appearance is absent — an existing install predates the setting', () => {
+    expect(withExistingInstallAppearance({ fontSizePx: 16 })).toEqual({
+      fontSizePx: 16,
+      appearance: 'dark',
+    });
+  });
+
+  it('writes nothing when appearance is already present, including system', () => {
+    expect(withExistingInstallAppearance({ appearance: 'dark' })).toBeNull();
+    expect(withExistingInstallAppearance({ appearance: 'light' })).toBeNull();
+    expect(withExistingInstallAppearance({ appearance: 'system' })).toBeNull();
+  });
+});
+
 // Linear's own settings group (F4.1) — a blob written before it has no `linear` field at
 // all, and this is what a missing field fills in as.
 describe('DEFAULT_SETTINGS.linear', () => {
@@ -223,6 +249,8 @@ describe('DEFAULT_SETTINGS.gantt', () => {
 const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'defaultExecTarget',
   'fontSizePx',
+  'appearance',
+  'transparency',
   'toastsEnabled',
   'cloud',
   'boardScopeId',
@@ -411,6 +439,18 @@ describe('pickGlobalSettings', () => {
       trustedGateCommands: ['deadbeef'],
     });
     expect(picked).not.toHaveProperty('trustedGateCommands');
+  });
+
+  // `appearance`/`transparency` are facts about THIS machine's display, not the account —
+  // a replay carrying another machine's choice must never relight or de-glass this one.
+  it('drops appearance and transparency — they never reach the cloud replay', () => {
+    const picked = pickGlobalSettings({
+      ...DEFAULT_SETTINGS,
+      appearance: 'light',
+      transparency: 'reduced',
+    });
+    expect(picked).not.toHaveProperty('appearance');
+    expect(picked).not.toHaveProperty('transparency');
   });
 
   it('copies only keys that are present — a partial patch stays partial', () => {
