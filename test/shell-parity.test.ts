@@ -57,8 +57,29 @@ const DESKTOP_BOARD = 'apps/client/src/renderer/src/MyTasks.tsx';
 const WEB_MAIN = 'apps/web/src/main.tsx';
 const DESKTOP_MAIN = 'apps/client/src/renderer/src/main.tsx';
 
+/**
+ * Since F9.4 (`e876e6f2`) the desktop rail is mapped from `DESKTOP_SCREENS`, shared with
+ * the command palette, rather than listing its own `{ id: … }` literals in `DESKTOP_APP`.
+ */
+const DESKTOP_SCREENS_SRC = 'apps/client/src/renderer/src/paletteSource.ts';
+
 function read(path: string): string {
   return readFileSync(join(repoRoot, ...path.split('/')), 'utf8');
+}
+
+/**
+ * Where a host's NAV rail is actually listed, for the ids F9.4 moved off `DESKTOP_APP`
+ * itself. `WEB_APP` still lists its own `{ id: … }` literals, so the web side reads `path`
+ * directly; the desktop side reads `DESKTOP_SCREENS_SRC` instead, but only after confirming
+ * `DESKTOP_APP` still builds its rail from `DESKTOP_SCREENS.map(...)` — if that derivation
+ * stops, reading the list alone would prove nothing about what ids the rail actually carries.
+ */
+function navListing(path: string): string {
+  if (path === DESKTOP_APP) {
+    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
+    return read(DESKTOP_SCREENS_SRC);
+  }
+  return read(path);
 }
 
 /**
@@ -419,19 +440,9 @@ describe('the automations tab both hosts render from the shared view (F1.17)', (
         'a file, not a tab.',
     ).toMatch(/id:\s*'automations'/);
 
-    /**
-     * Since F9.4 (`e876e6f2`) the desktop rail is built from `DESKTOP_SCREENS.map(...)`
-     * (`App.tsx:148`) rather than listing its own `{ id: … }` literals, so the literal this
-     * test looks for now lives in `paletteSource.ts`. The `.toMatch` below guards that the
-     * rail still derives from the list — if it stops, reading the list alone would prove
-     * nothing about what ids the rail actually carries.
-     */
-    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
-
-    const DESKTOP_SCREENS_PATH = 'apps/client/src/renderer/src/paletteSource.ts';
     expect(
-      read(DESKTOP_SCREENS_PATH),
-      `${DESKTOP_SCREENS_PATH} must list { id: 'automations', … } in DESKTOP_SCREENS — a view ` +
+      navListing(DESKTOP_APP),
+      `${DESKTOP_SCREENS_SRC} must list { id: 'automations', … } in DESKTOP_SCREENS — a view ` +
         'nothing links to is a file, not a tab.',
     ).toMatch(/id:\s*'automations'/);
   });
@@ -644,19 +655,9 @@ describe('the activity tab both hosts render from the shared screen (F2.13/F2.14
         'file, not a tab.',
     ).toMatch(/id:\s*'activity'/);
 
-    /**
-     * Since F9.4 (`e876e6f2`) the desktop rail is built from `DESKTOP_SCREENS.map(...)`
-     * (`App.tsx:148`) rather than listing its own `{ id: … }` literals, so the literal this
-     * test looks for now lives in `paletteSource.ts`. The `.toMatch` below guards that the
-     * rail still derives from the list — if it stops, reading the list alone would prove
-     * nothing about what ids the rail actually carries.
-     */
-    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
-
-    const DESKTOP_SCREENS_PATH = 'apps/client/src/renderer/src/paletteSource.ts';
     expect(
-      read(DESKTOP_SCREENS_PATH),
-      `${DESKTOP_SCREENS_PATH} must list { id: 'activity', … } in DESKTOP_SCREENS — a screen ` +
+      navListing(DESKTOP_APP),
+      `${DESKTOP_SCREENS_SRC} must list { id: 'activity', … } in DESKTOP_SCREENS — a screen ` +
         'nothing links to is a file, not a tab.',
     ).toMatch(/id:\s*'activity'/);
   });
@@ -708,19 +709,9 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
         'file, not a tab.',
     ).toMatch(/id:\s*'issues'/);
 
-    /**
-     * Since F9.4 (`e876e6f2`) the desktop rail is built from `DESKTOP_SCREENS.map(...)`
-     * (`App.tsx:148`) rather than listing its own `{ id: … }` literals, so the literal this
-     * test looks for now lives in `paletteSource.ts`. The `.toMatch` below guards that the
-     * rail still derives from the list — if it stops, reading the list alone would prove
-     * nothing about what ids the rail actually carries.
-     */
-    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
-
-    const DESKTOP_SCREENS_PATH = 'apps/client/src/renderer/src/paletteSource.ts';
     expect(
-      read(DESKTOP_SCREENS_PATH),
-      `${DESKTOP_SCREENS_PATH} must list { id: 'issues', … } in DESKTOP_SCREENS — a screen ` +
+      navListing(DESKTOP_APP),
+      `${DESKTOP_SCREENS_SRC} must list { id: 'issues', … } in DESKTOP_SCREENS — a screen ` +
         'nothing links to is a file, not a tab.',
     ).toMatch(/id:\s*'issues'/);
   });
