@@ -35,7 +35,6 @@ import {
   hasRepo,
   PERSONAL_PROJECT_ID,
   type ManualStatus,
-  type Person,
   type Project,
   type Task,
 } from '@shared/model';
@@ -68,6 +67,7 @@ import {
 import { dictationAvailable } from '@ui/dictation/dictationModel';
 import { GitGraphPane } from '@ui/GitGraphPane';
 import { PaneLoading } from '@ui/PaneLoading';
+import { useTicketRegistries } from '@ui/projects/useTicketRegistries';
 import { TaskDetail } from '@ui/TaskDetail';
 import { useInitialLoad } from '@ui/useInitialLoad';
 import { KanbanColumn } from '@ui/board/KanbanColumn';
@@ -194,8 +194,6 @@ export function MyTasks({
   scopeIdsRef.current = scopeIds;
   /** Board metadata by project id — the name/colour a mixed board draws per card. */
   const boardsById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
-  /** The person roster, for the assignee avatar (Phase 24) — app-wide, like `agentProjects`. */
-  const [people, setPeople] = useState<Person[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -320,7 +318,7 @@ export function MyTasks({
   const seed = useCallback(async () => {
     const appSettings = await window.api.invoke('settings:get');
     const initialScope = appSettings.boardScopeId || 'all';
-    const [board, projects, mrs, chain, files, gone, boardScopeList, roster] = await Promise.all([
+    const [board, projects, mrs, chain, files, gone, boardScopeList] = await Promise.all([
       window.api.invoke('board:tasks', initialScope),
       window.api.invoke('project:list'),
       window.api.invoke('mr:mergeRequests'),
@@ -328,7 +326,6 @@ export function MyTasks({
       window.api.invoke('attachment:list'),
       window.api.invoke('board:archived', initialScope),
       window.api.invoke('board:scopes'),
-      window.api.invoke('person:list'),
     ]);
     setScope(initialScope);
     setTasks(board);
@@ -342,7 +339,6 @@ export function MyTasks({
     setAttachments(files);
     setArchived(gone);
     setScopes(boardScopeList);
-    setPeople(roster);
   }, []);
 
   /**
@@ -449,7 +445,6 @@ export function MyTasks({
     // Ditto, and one more reason on top: an attachment also vanishes when its CARD is
     // deleted and the row cascades away, which no per-file patch would hear about.
     const offAttachments = window.api.on('attachment:changed', setAttachments);
-    const offPeople = window.api.on('person:changed', setPeople);
     // Pushed by a sync that kept cards it could not confirm had left. It arrives from the
     // POLLER as often as from the button, so it cannot be the return value of `sync()`.
     //
@@ -464,7 +459,6 @@ export function MyTasks({
       offMrs();
       offLinks();
       offAttachments();
-      offPeople();
       offNotice();
     };
   }, [patchTask, refreshArchived]);
@@ -473,6 +467,14 @@ export function MyTasks({
     () => tasks?.find((t) => t.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId],
   );
+
+  /**
+   * The four app-wide registries a ticket can point at, scoped to the SELECTED card's
+   * project — see `useTicketRegistries`. `people` is app-wide regardless (an assignee can
+   * be anyone, not just someone on the selected card's own project), so the board's own
+   * `peopleById` reads it too: a card's avatar must not depend on which card is selected.
+   */
+  const registries = useTicketRegistries(selectedTask?.projectId ?? null);
 
   // Waits for `tasks` to load (the caller may have switched tabs before the board's own
   // first fetch lands) before selecting, then tells the caller it's done so a later visit
@@ -610,7 +612,10 @@ export function MyTasks({
   /** id → task for the whole board, so an arrow can ask its gate about the predecessor. */
   const tasksById = useMemo(() => new Map((tasks ?? []).map((t) => [t.id, t])), [tasks]);
   /** id → person, for a native ticket's assignee avatar. */
-  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
+  const peopleById = useMemo(
+    () => new Map(registries.people.map((p) => [p.id, p])),
+    [registries.people],
+  );
 
   /**
    * Where each chained card stands: what it is still waiting on, which of those are waiting
@@ -1154,8 +1159,11 @@ export function MyTasks({
     return (
       <PaneLoading
         label="Loading tasks…"
-        error={initial.error}
-        onRetry={initial.retry}
+        error={initial.error ?? registries.error}
+        onRetry={() => {
+          initial.retry();
+          registries.retry();
+        }}
         shape="board"
       />
     );
@@ -1549,6 +1557,13 @@ export function MyTasks({
             subtasks={chain}
             parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
+            // The ticket registries, scoped to the selected card's own project — see
+            // `registries` above. Passing `ticketLinks` through means `useTicketLinks`
+            // inside the pane no longer fetches its own copy.
+            people={registries.people}
+            milestones={registries.milestones}
+            labels={registries.labels}
+            ticketLinks={registries.links}
             afterMergePipeline={settings?.features.afterMergePipeline}
             mrRebaseButton={settings?.features.mrRebaseButton}
             mrMergeButton={settings?.features.mrMergeButton}
