@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
-import { linkedTicketRows } from './linkedTickets';
+import type { TicketLinkRefusal } from '@tm/shared/ticketLinks';
+import { linkAddRefusal, linkedTicketRows } from './linkedTickets';
 
 const task = (over: Partial<Task> & { id: string }): Task => ({
   projectId: PERSONAL_PROJECT_ID,
@@ -185,5 +186,21 @@ describe('linkedTicketRows', () => {
     expect(linkedTicketRows(b, links, index(a, b))?.groups).toEqual([
       { phrase: 'relates to', rows: [expect.objectContaining({ key: 'TM-1' })] },
     ]);
+  });
+});
+
+describe('linkAddRefusal', () => {
+  it('gives null on an ok result', () => {
+    expect(linkAddRefusal({ status: 'ok', links: [] })).toBeNull();
+  });
+
+  const reasons: Array<[TicketLinkRefusal, string]> = [
+    ['missing', 'one of those tickets no longer exists'],
+    ['self', 'a ticket cannot link to itself'],
+    ['duplicate', 'that relationship is already recorded'],
+  ];
+
+  it.each(reasons)('gives the message for a %s refusal', (reason, message) => {
+    expect(linkAddRefusal({ status: 'refused', reason })).toBe(message);
   });
 });

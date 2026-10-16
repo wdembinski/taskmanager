@@ -81,15 +81,6 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
-  BeakerRegular,
-  BookmarkRegular,
-  BugRegular,
-  NoteRegular,
-  PersonRegular,
-  SparkleRegular,
-  TaskListSquareLtrRegular,
-} from '@fluentui/react-icons';
-import {
   Controls,
   Handle,
   MarkerType,
@@ -105,12 +96,13 @@ import {
 } from '@xyflow/react';
 import type { Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
-import { isEpic, typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
+import { isEpic, typeIconKeyFor } from '@tm/shared/tickets';
 import { PaneLoading } from '../PaneLoading';
 import { FLUO } from '../theme';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { GraphLinkPicker, type EditingGraphLink } from './GraphLinkPicker';
+import { issueTypeGlyph } from './issueTypeGlyph';
 
 const useStyles = makeStyles({
   root: {
@@ -177,19 +169,6 @@ const useStyles = makeStyles({
   },
 });
 
-/** Same key→glyph map as `BacklogTable`'s own `TYPE_ICON` — a ticket's type reads the same
- *  outline glyph everywhere in the app; see `board-colour-budget`: colour is for things that
- *  MOVE, and a node's type never does. */
-const TYPE_ICON: Record<TypeIconKey, JSX.Element> = {
-  epic: <SparkleRegular />,
-  story: <BookmarkRegular />,
-  task: <TaskListSquareLtrRegular />,
-  bug: <BugRegular />,
-  subtask: <PersonRegular />,
-  feature: <BeakerRegular />,
-  note: <NoteRegular />,
-};
-
 type TicketNodeData = { ticket: Task };
 
 function TicketNode({ data }: NodeProps<Node<TicketNodeData>>): JSX.Element {
@@ -199,7 +178,7 @@ function TicketNode({ data }: NodeProps<Node<TicketNodeData>>): JSX.Element {
     <div className={styles.card}>
       <Handle type="target" position={Position.Left} />
       <div className={styles.head}>
-        <span className={styles.type}>{TYPE_ICON[typeIconKeyFor(ticket)]}</span>
+        <span className={styles.type}>{issueTypeGlyph(typeIconKeyFor(ticket))}</span>
         <span className={styles.key}>{ticket.ticketKey ?? '—'}</span>
       </div>
       <Caption1 className={styles.title}>{ticket.title}</Caption1>
@@ -222,7 +201,7 @@ function EpicZoneNode({ data }: NodeProps<Node<EpicZoneData>>): JSX.Element {
     <div className={styles.zone} style={{ width, height }}>
       <Handle type="target" position={Position.Left} />
       <div className={styles.zoneHead}>
-        <span className={styles.type}>{TYPE_ICON[typeIconKeyFor(epic)]}</span>
+        <span className={styles.type}>{issueTypeGlyph(typeIconKeyFor(epic))}</span>
         <span className={styles.key}>{epic.ticketKey ?? '—'}</span>
         <Caption1 className={styles.zoneTitle}>{epic.title}</Caption1>
       </div>

@@ -42,6 +42,7 @@ import type {
   Task,
   TaskActivityEntry,
   TicketLabel,
+  TicketLink,
 } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
@@ -75,7 +76,10 @@ import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
+import { linkedTicketRows } from './projects/linkedTickets';
+import { TaskLinksSection } from './projects/TaskLinksSection';
 import { TaskTicketSection } from './projects/TaskTicketSection';
+import { useTicketLinks } from './projects/useTicketLinks';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
 import {
   EMPTY_TIMELINE,
@@ -368,6 +372,12 @@ export interface TaskDetailProps {
   milestones?: Milestone[];
   /** See {@link people}. */
   labels?: TicketLabel[];
+  /**
+   * This card's ticket links, for the Links section (F12.5). Absent — every host before
+   * F12.6 wires `useTicketRegistries` through — the section loads and keeps its own copy
+   * live instead (`useTicketLinks`), the same way `TicketLinksEditor` always has.
+   */
+  ticketLinks?: readonly TicketLink[];
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
@@ -411,6 +421,7 @@ export function TaskDetail({
   people = NO_PEOPLE,
   milestones = NO_MILESTONES,
   labels = NO_LABELS,
+  ticketLinks,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -742,6 +753,13 @@ export function TaskDetail({
   // them away from it; instead the pill below offers to go there on request (Teams'
   // rule for the same problem).
   const scrollRef = useRef<HTMLDivElement>(null);
+  /**
+   * `TaskChain`'s own wrapper, for the Links section's chain-pointer row to scroll to. Only
+   * ever mounted where `stepsContent` is — the wide layout, or the compact `steps` tab — so
+   * on the compact `details` tab (where the Links section itself lives) this stays null and
+   * the pointer row is shown but inert; switching tabs there is not this ticket's job.
+   */
+  const chainSectionRef = useRef<HTMLDivElement>(null);
   // Updated by `onScroll` below on every user scroll; read (not subscribed to) by the
   // turns effect so scrolling itself never re-renders the pane.
   const atBottomRef = useRef(true);
@@ -786,6 +804,18 @@ export function TaskDetail({
   const projectTickets = useMemo(
     () => Array.from(chainTasksById.values()).filter((t) => t.projectId === task?.projectId),
     [chainTasksById, task?.projectId],
+  );
+
+  // Resolved once here — self-loaded only when no host has wired `ticketLinks` through yet
+  // (F12.6) — so `TaskLinksSection` below never opens a second subscription for the same
+  // list; it just receives this array back as its own `ticketLinks` prop.
+  const resolvedTicketLinks = useTicketLinks(ticketLinks);
+  // Whether the Links section will have anything to show, decided the same way it decides
+  // internally — so the Ticket section below knows to offer the add row itself instead,
+  // for a native ticket with neither a ticket link nor a chain link.
+  const linksSection = useMemo(
+    () => (task ? linkedTicketRows(task, resolvedTicketLinks, chainTasksById, chainLinks) : null),
+    [task, resolvedTicketLinks, chainTasksById, chainLinks],
   );
 
   if (!task) {
@@ -1196,8 +1226,18 @@ export function TaskDetail({
               agentProjects={agentProjects}
               labels={labels}
               milestones={milestones}
+              addLink={linksSection === null ? { candidates: projectTickets } : undefined}
             />
           )}
+          <TaskLinksSection
+            task={task}
+            ticketLinks={resolvedTicketLinks}
+            chainLinks={chainLinks}
+            tasksById={chainTasksById}
+            candidates={projectTickets}
+            onOpenTask={onOpenTask}
+            chainRef={chainSectionRef}
+          />
         </>
       )}
     </>
@@ -1215,13 +1255,15 @@ export function TaskDetail({
       {/* Beside Steps, and deliberately after it: a card's own steps are the work
           inside it, and the chain is where that work sits among everything else.
           Never on a STEP's pane — a step cannot be chained at either end. */}
-      <TaskChain
-        task={task}
-        links={chainLinks}
-        tasksById={chainTasksById}
-        onOpen={(id) => onOpenTask?.(id)}
-        onUnlink={(linkId) => onUnlinkChain?.(linkId)}
-      />
+      <div ref={chainSectionRef}>
+        <TaskChain
+          task={task}
+          links={chainLinks}
+          tasksById={chainTasksById}
+          onOpen={(id) => onOpenTask?.(id)}
+          onUnlink={(linkId) => onUnlinkChain?.(linkId)}
+        />
+      </div>
     </>
   );
 

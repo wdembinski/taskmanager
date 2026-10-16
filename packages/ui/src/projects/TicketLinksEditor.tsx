@@ -4,9 +4,10 @@
  * own handler always phrase the same row identically from whichever end it names — see that
  * module's header for why it is pure and shared rather than reimplemented here.
  *
- * A refusal from `ticketLink:add` — the two are already linked that way, or a link to itself
- * — comes back as DATA (`TicketLinkResult`), not a thrown rejection, and is shown as a
- * message rather than swallowed as an error.
+ * `TicketLinkAddRow` owns drawing a new link on its own — the type/ticket pickers, the busy
+ * flag and the refusal message — so `TaskLinksSection` and a native ticket's empty Ticket
+ * section (`TaskTicketSection`) can mount the same controls without going through this
+ * drawer-only editor at all.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -25,13 +26,10 @@ import { DeleteRegular } from '@fluentui/react-icons';
 import { columnForTask } from '@tm/shared/board';
 import type { Task, TicketLink, TicketLinkType } from '@tm/shared/model';
 import { TICKET_LINK_TYPES } from '@tm/shared/tickets';
-import {
-  linksFor,
-  TICKET_LINK_REFUSAL_MESSAGE,
-  TICKET_LINK_VOCABULARY,
-} from '@tm/shared/ticketLinks';
+import { linksFor, TICKET_LINK_VOCABULARY } from '@tm/shared/ticketLinks';
 import { columnBadge } from '../taskStatus';
 import { useTransport } from '../transport';
+import { linkAddRefusal } from './linkedTickets';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '6px' },
@@ -44,7 +42,7 @@ const useStyles = makeStyles({
 
 /** A candidate ticket has to name at least what the picker, `labelFor` and the row's own
  *  status badge (`columnForTask`) read. */
-type LinkCandidate = Pick<Task, 'id' | 'title' | 'ticketKey' | 'status' | 'preRunStatus'>;
+export type LinkCandidate = Pick<Task, 'id' | 'title' | 'ticketKey' | 'status' | 'preRunStatus'>;
 
 export interface TicketLinksEditorProps {
   ticket: Pick<Task, 'id'>;
@@ -56,13 +54,99 @@ function labelFor(t: Pick<Task, 'title' | 'ticketKey'>): string {
   return t.ticketKey ? `${t.ticketKey} ${t.title}` : t.title;
 }
 
+export interface TicketLinkAddRowProps {
+  ticket: Pick<Task, 'id'>;
+  candidates: LinkCandidate[];
+  disabled?: boolean;
+}
+
+/** Nothing to link this ticket to — every candidate is itself. */
+export function TicketLinkAddRow({
+  ticket,
+  candidates,
+  disabled = false,
+}: TicketLinkAddRowProps): JSX.Element | null {
+  const styles = useStyles();
+  const transport = useTransport();
+  const [type, setType] = useState<TicketLinkType>('blocks');
+  const [otherId, setOtherId] = useState('');
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const others = candidates.filter((c) => c.id !== ticket.id);
+
+  async function add(): Promise<void> {
+    if (!otherId) return;
+    setBusy(true);
+    setRefusal(null);
+    try {
+      const result = await transport.invoke('ticketLink:add', ticket.id, otherId, type);
+      const message = linkAddRefusal(result);
+      if (message) {
+        setRefusal(message);
+      } else {
+        setOtherId('');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (others.length === 0) return null;
+
+  return (
+    <div className={styles.root}>
+      {refusal && (
+        <MessageBar intent="warning">
+          <MessageBarBody>{refusal}</MessageBarBody>
+        </MessageBar>
+      )}
+      <div className={styles.addRow}>
+        <Dropdown
+          className={styles.picker}
+          size="small"
+          value={TICKET_LINK_VOCABULARY[type].outward}
+          selectedOptions={[type]}
+          disabled={disabled}
+          onOptionSelect={(_e, d) => {
+            if (d.optionValue) setType(d.optionValue as TicketLinkType);
+          }}
+        >
+          {TICKET_LINK_TYPES.map((t) => (
+            <Option key={t} value={t}>
+              {TICKET_LINK_VOCABULARY[t].outward}
+            </Option>
+          ))}
+        </Dropdown>
+        <Dropdown
+          className={styles.picker}
+          size="small"
+          placeholder="Ticket…"
+          value={otherId ? labelFor(others.find((c) => c.id === otherId)!) : ''}
+          selectedOptions={otherId ? [otherId] : []}
+          disabled={disabled}
+          onOptionSelect={(_e, d) => {
+            if (d.optionValue) setOtherId(d.optionValue);
+          }}
+        >
+          {others.map((c) => (
+            <Option key={c.id} value={c.id} text={labelFor(c)}>
+              {labelFor(c)}
+            </Option>
+          ))}
+        </Dropdown>
+        <Button size="small" disabled={disabled || busy || !otherId} onClick={() => void add()}>
+          Add link
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function TicketLinksEditor({ ticket, candidates }: TicketLinksEditorProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [links, setLinks] = useState<TicketLink[]>([]);
-  const [type, setType] = useState<TicketLinkType>('blocks');
-  const [otherId, setOtherId] = useState('');
-  const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -78,23 +162,6 @@ export function TicketLinksEditor({ ticket, candidates }: TicketLinksEditorProps
   }, [transport]);
 
   const views = linksFor(links, ticket.id);
-  const others = candidates.filter((c) => c.id !== ticket.id);
-
-  async function add(): Promise<void> {
-    if (!otherId) return;
-    setBusy(true);
-    setRefusal(null);
-    try {
-      const result = await transport.invoke('ticketLink:add', ticket.id, otherId, type);
-      if (result.status === 'refused') {
-        setRefusal(TICKET_LINK_REFUSAL_MESSAGE[result.reason]);
-      } else {
-        setOtherId('');
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function remove(id: string): Promise<void> {
     setBusy(true);
@@ -107,12 +174,6 @@ export function TicketLinksEditor({ ticket, candidates }: TicketLinksEditorProps
 
   return (
     <div className={styles.root}>
-      {refusal && (
-        <MessageBar intent="warning">
-          <MessageBarBody>{refusal}</MessageBarBody>
-        </MessageBar>
-      )}
-
       {views.length === 0 ? (
         <Caption1 className={styles.hint}>No linked tickets.</Caption1>
       ) : (
@@ -145,44 +206,7 @@ export function TicketLinksEditor({ ticket, candidates }: TicketLinksEditorProps
         })
       )}
 
-      {others.length > 0 && (
-        <div className={styles.addRow}>
-          <Dropdown
-            className={styles.picker}
-            size="small"
-            value={TICKET_LINK_VOCABULARY[type].outward}
-            selectedOptions={[type]}
-            onOptionSelect={(_e, d) => {
-              if (d.optionValue) setType(d.optionValue as TicketLinkType);
-            }}
-          >
-            {TICKET_LINK_TYPES.map((t) => (
-              <Option key={t} value={t}>
-                {TICKET_LINK_VOCABULARY[t].outward}
-              </Option>
-            ))}
-          </Dropdown>
-          <Dropdown
-            className={styles.picker}
-            size="small"
-            placeholder="Ticket…"
-            value={otherId ? labelFor(others.find((c) => c.id === otherId)!) : ''}
-            selectedOptions={otherId ? [otherId] : []}
-            onOptionSelect={(_e, d) => {
-              if (d.optionValue) setOtherId(d.optionValue);
-            }}
-          >
-            {others.map((c) => (
-              <Option key={c.id} value={c.id} text={labelFor(c)}>
-                {labelFor(c)}
-              </Option>
-            ))}
-          </Dropdown>
-          <Button size="small" disabled={busy || !otherId} onClick={() => void add()}>
-            Add link
-          </Button>
-        </div>
-      )}
+      <TicketLinkAddRow ticket={ticket} candidates={candidates} disabled={busy} />
     </div>
   );
 }
