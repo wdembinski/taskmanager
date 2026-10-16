@@ -96,16 +96,23 @@ function captureGlobalStyles() {
  */
 const REQUIRED_SELECTORS = [
   ':root',
+  ':root[data-scheme="light"]',
   'body',
   '*::-webkit-scrollbar',
   '*::-webkit-scrollbar-thumb',
   ':hover::-webkit-scrollbar-thumb',
 ];
 
-/** Written the way Griffel emits them: no space after the colon. */
+/**
+ * Written the way Griffel emits them: no space after the colon. The page background and
+ * scrollbar thumb colours are custom properties now (`--tm-page-bg`, `--tm-thumb`, …) rather
+ * than literals, so what this checks for is that the VARIABLES are declared and READ, not any
+ * particular hex.
+ */
 const REQUIRED_DECLARATIONS = [
   'color-scheme:dark',
-  'background-color:#1f1f1f',
+  '--tm-page-bg:#202326',
+  'background-color:var(--tm-page-bg)',
   'overflow:hidden',
   'scrollbar-width:thin',
   'scrollbar-color:transparent transparent',
@@ -142,7 +149,9 @@ const missingDeclarations = REQUIRED_DECLARATIONS.filter((d) => !emitted.include
 console.log('--- verdict ---');
 console.log(`selectors in: ${selectors.length}   rules out: ${rules.length}`);
 console.log(`dropped by Griffel: ${dropped.length ? dropped.join(' | ') : '(none)'}`);
-console.log(`missing selectors:  ${missingSelectors.length ? missingSelectors.join(' | ') : '(none)'}`);
+console.log(
+  `missing selectors:  ${missingSelectors.length ? missingSelectors.join(' | ') : '(none)'}`,
+);
 console.log(
   `missing declarations: ${missingDeclarations.length ? missingDeclarations.join(' | ') : '(none)'}`,
 );

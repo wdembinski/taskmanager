@@ -1,17 +1,24 @@
 /**
  * The web app manifest, the icons it points at, `index.html`'s own links and
  * `staticwebapp.config.json`'s MIME mapping are four files that have to agree with each
- * other and with `PAGE_BACKGROUND` (`@tm/ui/theme`) for the installed app to look like one
- * product rather than a static bundle with a mismatched splash colour. None of the four can
- * import from another — a `.webmanifest` is static JSON and `index.html` is static markup —
- * so this is the only place a drift between them would be caught, the same role
+ * other and with `pageBackground('light')` (`@tm/ui/theme`) for the installed app to look
+ * like one product rather than a static bundle with a mismatched splash colour. None of the
+ * four can import from another — a `.webmanifest` is static JSON and `index.html` is static
+ * markup — so this is the only place a drift between them would be caught, the same role
  * `test/repo-invariants.test.ts` plays for the version.
+ *
+ * Pinned to the light canvas rather than `pageBackground('dark')`: neither file can read the
+ * resolved appearance setting (`index.html`'s `<meta>` and `manifest.webmanifest` are both
+ * static), so there is no "follow the user's scheme" option here — F13.4 picks light as the
+ * one fixed value.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PAGE_BACKGROUND } from '@tm/ui/theme';
+import { pageBackground } from '@tm/ui/theme';
+
+const PAGE_BACKGROUND = pageBackground('light');
 
 const webRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 

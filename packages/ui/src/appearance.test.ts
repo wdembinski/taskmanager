@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { resolveAppearance, type AppearanceEnv } from './appearance';
+import {
+  applyDocumentAppearance,
+  readAppearanceEnv,
+  resolveAppearance,
+  type AppearanceElement,
+  type AppearanceEnv,
+  type AppearanceWindow,
+} from './appearance';
 
 const env = (overrides: Partial<AppearanceEnv> = {}): AppearanceEnv => ({
   prefersDark: false,
@@ -135,5 +142,83 @@ describe('resolveAppearance — glass', () => {
         env({ prefersReducedTransparency: true }),
       ),
     ).toMatchObject({ glass: 'opaque' });
+  });
+});
+
+/** A fake `window` — just the two `matchMedia` queries and `CSS.supports` this reads. */
+function fakeWin(overrides: {
+  prefersDark?: boolean;
+  prefersReducedTransparency?: boolean;
+  backdropFilterSupported?: boolean;
+}): AppearanceWindow {
+  const {
+    prefersDark = false,
+    prefersReducedTransparency = false,
+    backdropFilterSupported = true,
+  } = overrides;
+  return {
+    matchMedia: (query: string) => {
+      if (query === '(prefers-color-scheme: dark)') return { matches: prefersDark };
+      if (query === '(prefers-reduced-transparency: reduce)') {
+        return { matches: prefersReducedTransparency };
+      }
+      throw new Error(`unexpected query: ${query}`);
+    },
+    CSS: { supports: () => backdropFilterSupported },
+  };
+}
+
+describe('readAppearanceEnv', () => {
+  it('reads both media queries off the given window', () => {
+    expect(readAppearanceEnv(fakeWin({ prefersDark: true }))).toMatchObject({
+      prefersDark: true,
+      prefersReducedTransparency: false,
+    });
+    expect(
+      readAppearanceEnv(fakeWin({ prefersDark: false, prefersReducedTransparency: true })),
+    ).toMatchObject({
+      prefersDark: false,
+      prefersReducedTransparency: true,
+    });
+  });
+
+  it('reads backdrop-filter support through CSS.supports', () => {
+    expect(readAppearanceEnv(fakeWin({ backdropFilterSupported: true }))).toMatchObject({
+      backdropFilterSupported: true,
+    });
+    expect(readAppearanceEnv(fakeWin({ backdropFilterSupported: false }))).toMatchObject({
+      backdropFilterSupported: false,
+    });
+  });
+
+  it('treats a missing CSS.supports as unsupported rather than throwing', () => {
+    const win: AppearanceWindow = {
+      matchMedia: () => ({ matches: false }),
+    };
+    expect(readAppearanceEnv(win).backdropFilterSupported).toBe(false);
+  });
+
+  it('always reports no native material', () => {
+    expect(readAppearanceEnv(fakeWin({})).nativeMaterial).toBeNull();
+  });
+});
+
+describe('applyDocumentAppearance', () => {
+  it('writes scheme and glass onto the element dataset', () => {
+    const el: AppearanceElement = { dataset: {} };
+    applyDocumentAppearance(el, { scheme: 'light', glass: 'native' });
+    expect(el.dataset).toEqual({ scheme: 'light', glass: 'native' });
+  });
+
+  it('writes dark explicitly rather than leaving the attribute unset', () => {
+    const el: AppearanceElement = { dataset: {} };
+    applyDocumentAppearance(el, { scheme: 'dark', glass: 'opaque' });
+    expect(el.dataset.scheme).toBe('dark');
+  });
+
+  it('overwrites a previous scheme on the same element', () => {
+    const el: AppearanceElement = { dataset: { scheme: 'light', glass: 'css' } };
+    applyDocumentAppearance(el, { scheme: 'dark', glass: 'opaque' });
+    expect(el.dataset).toEqual({ scheme: 'dark', glass: 'opaque' });
   });
 });

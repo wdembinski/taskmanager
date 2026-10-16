@@ -54,3 +54,56 @@ export function resolveAppearance(
 
   return { scheme, glass };
 }
+
+/**
+ * The subset of `Window` {@link readAppearanceEnv} needs — named rather than typed as
+ * `Window` itself so a test can hand it a plain object instead of standing up a real one.
+ */
+export interface AppearanceWindow {
+  matchMedia(query: string): { matches: boolean };
+  CSS?: { supports?(property: string, value: string): boolean };
+}
+
+/**
+ * Reads this machine's environment into an {@link AppearanceEnv} — the two media queries
+ * `resolveAppearance` needs, plus whether this window can even paint `backdrop-filter`.
+ *
+ * `nativeMaterial` is always `null` here: knowing whether Mica or Acrylic actually took
+ * effect means asking the Electron main process, which is desktop-only and a different
+ * mechanism than anything a `window` exposes — until F13.7 wires that up, every caller of
+ * this function is in the same position a browser tab permanently is.
+ *
+ * `win.CSS` is optional because `Window` does not guarantee `CSS.supports` in every
+ * environment this runs in (older WebViews); treated as unsupported rather than throwing.
+ */
+export function readAppearanceEnv(win: AppearanceWindow): AppearanceEnv {
+  return {
+    prefersDark: win.matchMedia('(prefers-color-scheme: dark)').matches,
+    prefersReducedTransparency: win.matchMedia('(prefers-reduced-transparency: reduce)').matches,
+    backdropFilterSupported: win.CSS?.supports?.('backdrop-filter', 'blur(1px)') ?? false,
+    nativeMaterial: null,
+  };
+}
+
+/**
+ * The subset of an `Element` {@link applyDocumentAppearance} needs — named for the same
+ * reason as {@link AppearanceWindow}: a test can hand it `{ dataset: {} }` rather than a real
+ * DOM node.
+ */
+export interface AppearanceElement {
+  dataset: Record<string, string | undefined>;
+}
+
+/**
+ * Stamps a resolved appearance onto an element's `data-*` attributes — `useGlobalStyles`
+ * (`theme.ts`) reads `data-scheme` to decide which scheme's custom properties apply;
+ * `data-glass` is for the glass pane primitive (F13.5) to read once it exists.
+ *
+ * Always writes `data-scheme` explicitly, even for `'dark'`: `useGlobalStyles` defaults to
+ * dark with no attribute at all, so writing `'dark'` here is a no-op for the CSS but keeps
+ * the DOM honest about which scheme is actually mounted, for anything else that inspects it.
+ */
+export function applyDocumentAppearance(el: AppearanceElement, resolved: ResolvedAppearance): void {
+  el.dataset.scheme = resolved.scheme;
+  el.dataset.glass = resolved.glass;
+}
