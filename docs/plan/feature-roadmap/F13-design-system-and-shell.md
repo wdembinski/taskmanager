@@ -422,15 +422,66 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
 
 - [ ] F13.10 Write the pure sidebar model with the milestone, epic and ticket tree
 
-  - `packages/ui/src/shell/sidebarModel.ts`: `buildSidebar({ workspaces, projects, milestones,
-    tickets, attentionCount, archivedCount, folds })` → sections (workspace, Inbox / My issues /
-    Reviews, team tree, Archived, This machine, New issue). The tree groups tickets under epics
-    under milestones, with "No milestone" and "No epic" buckets named as `backlogView.ts`'s
-    `NO_EPIC_GROUP` already is; closed milestones last; archived ones excluded (F14's predicate
-    when it exists, nothing hidden before it).
-  - Acceptance: `sidebarModel.test.ts` — ordering, the two buckets, an epic in another
-    milestone, a ticket whose epic is missing, folds, counts, Reviews absent until enabled.
-    Gates green.
+  - `packages/ui/src/shell/sidebarModel.ts` exports `NO_MILESTONE_GROUP = 'No milestone'`,
+    a sibling of `backlogView.ts`'s `NO_EPIC_GROUP` (`packages/ui/src/projects/backlogView.ts:13`)
+    rather than a restated string, and `buildSidebar(input: SidebarInput): SidebarSection[]`.
+  - `SidebarInput`: `workspaces: readonly { id: string; name: string }[]` (only "This machine"
+    until F19), `activeWorkspaceId?: string | null` (default: first), `projects: readonly
+    Pick<Project, 'id' | 'name'>[]` (`Project` at `packages/shared/src/model.ts:201`) for the
+    "This machine" entries, `teamName?: string` (the selected ticket project's name),
+    `milestones: readonly Milestone[]` (`model.ts:1320`) and `tickets: readonly Task[]`
+    (`model.ts:692`, epics included — `isEpic`, `packages/shared/src/tickets.ts:49`, tests
+    `issueType === 'epic'`) of the selected ticket project, `attentionCount: number`,
+    `archivedCount: number`, `folds: readonly string[]` (folded tree-node ids),
+    `reviewsEnabled?: boolean` (F15; default `false` → no Reviews row), and
+    `isMilestoneArchived?: (m: Milestone) => boolean` (F14's predicate; default hides nothing).
+  - `SidebarSection` is a discriminated union on `kind`, always returned in this order:
+    `workspace` (the list plus the active id) → `views` (Inbox with `count: attentionCount`,
+    My issues, and Reviews only when `reviewsEnabled`) → `team` (`name`, `tree:
+    SidebarTreeNode[]`) → `archived` (`count: archivedCount`) → `machine` (one item per
+    project) → `newIssue` (`shortcut: 'C'`).
+  - `SidebarTreeNode`: `{ id, kind: 'milestone' | 'epic' | 'ticket', label, ticketKey?,
+    taskId?, milestoneId?, closed?, count, folded, children }`. Ids are stable and unique:
+    `milestone:<id>` / `milestone:none`, `epic:<milestoneId|none>:<epicId|none>` (an epic can
+    appear under two milestones, so its id is qualified by the milestone it is grouped
+    under), `ticket:<taskId>`. `folded = folds.has(id)`; children are returned regardless of
+    `folded` — the renderer (F13.11) decides what a fold hides, so a folded node's `count`
+    stays correct without the model needing to know anything about rendering. `count` is the
+    number of non-epic tickets under the node: a milestone node counts all tickets placed in
+    it (every leaf under every one of its epic groups, plus its own "No epic" bucket); an
+    epic node counts its direct children.
+  - Placement rule: a ticket's own `milestoneId` (`Task.milestoneId`, `model.ts:1206`) decides
+    its milestone; its `epicTaskId` (`model.ts:1204`) decides the epic group inside that
+    milestone — independently of what milestone the epic ticket itself is planned for. So a
+    ticket in M2 whose epic is planned for M1 shows under M2 › that epic, and the epic also
+    heads its own (possibly empty) group under M1, the same "a header never vanishes" rule
+    `groupTickets` already keeps (`backlogView.ts:76-123`). A `milestoneId` naming a milestone
+    not in `milestones` lands in the `No milestone` bucket, the same rule `groupTickets` uses
+    for a missing epic. An `epicTaskId` naming a ticket that is not an epic in `tickets`, or
+    not in `tickets` at all, lands in that milestone's `No epic` bucket instead of being
+    dropped.
+  - Milestone order: open (`closed: false`) milestones first, by `dueAt` ascending with
+    undated (`dueAt: null`) ones last — the same convention `sortBacklog`'s `'due'` key uses
+    (`backlogView.ts:60-73`) — then by `createdAt` ascending, then by `name`; then the `No
+    milestone` bucket, only when it has at least one ticket; then closed milestones last, in
+    that same internal order. A milestone that is archived (`isMilestoneArchived` true) is
+    dropped from the tree together with every ticket placed into it — `No milestone` and `No
+    epic` buckets are themselves never archived.
+  - Inside a milestone: epic groups are ordered by the epic ticket's key ordinal (reusing
+    `sortBacklog(…, 'key')`'s ordinal, not a string compare — `backlogView.ts:46-49`), with
+    the milestone's `No epic` bucket last and only when non-empty; tickets inside each group
+    (and inside `No epic`) are ordered the same way, by key ordinal. `sortBacklog` and
+    `isEpic` are imported from `@tm/ui`'s `backlogView.ts` and `@tm/shared/tickets`
+    respectively rather than reimplemented, and `NO_EPIC_GROUP` is imported rather than
+    restated, matching the sibling-constant note above.
+  - Acceptance: `sidebarModel.test.ts` — section order and shape (including Reviews absent by
+    default and present only with `reviewsEnabled: true`); milestone ordering (open-by-due,
+    undated-last, closed-last) and the id scheme, including an epic id qualified by two
+    different milestones for the same epic; the two named buckets (`No milestone`, `No epic`)
+    appearing only when non-empty; a ticket whose `milestoneId` is unknown and one whose
+    `epicTaskId` is unknown or non-epic; an epic ticket itself never appearing as a ticket
+    leaf; counts staying correct on a folded node; an archived milestone (and its tickets)
+    dropped from the tree. Gates green.
 
 - [ ] F13.11 Render the sidebar in both hosts with tree keyboard navigation @needs: F13.8 Replace the two NAV lists with one shared shell navigation and the slim activity bar, F13.10 Write the pure sidebar model with the milestone, epic and ticket tree
 
