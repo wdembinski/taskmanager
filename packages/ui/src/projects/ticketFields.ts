@@ -1,10 +1,12 @@
 /**
- * Pure helpers `TicketDrawer`'s form is built from: parsing what a human typed into a text
- * field back into a ticket's real column types, and diffing a draft against the ticket it
- * started from to produce the {@link TicketPatch} `ticket:update` actually wants.
+ * Pure helpers `TicketFieldsSection`'s form is built from: parsing what a human typed into a
+ * text field back into a ticket's real column types, and diffing ONE field's new value
+ * against the ticket it started from to produce the single-field {@link TicketPatch}
+ * `ticket:update` actually wants — each field saves itself the moment it changes, so there
+ * is no whole-form draft to diff any more.
  *
- * Kept apart from the drawer component for the same reason `backlogView.ts` is: none of it
- * needs a DOM, so the parsing edge cases and the diffing rule are testable without one.
+ * Kept apart from the component for the same reason `backlogView.ts` is: none of it needs a
+ * DOM, so the parsing edge cases and the diffing rule are testable without one.
  */
 import type { IssueType, Task, TicketPatch } from '@tm/shared/model';
 import { normalizeLabels } from '@tm/shared/tickets';
@@ -58,7 +60,8 @@ export function inputToDate(value: string): number | null {
   return new Date(Number(y), Number(m) - 1, Number(d)).getTime();
 }
 
-/** The ticket drawer's form state — every editable ticket field, as the controls hold it. */
+/** `TicketFieldsSection`'s form state — every editable ticket field, named as the controls
+ *  hold it, and the key space {@link ticketPatchFor} saves one of at a time. */
 export interface TicketDraft {
   issueType: IssueType;
   /** `''` for none — a `Dropdown` cannot carry `null`. */
@@ -75,65 +78,70 @@ export interface TicketDraft {
   reporterId: string;
 }
 
-/** Seed a draft from a ticket's current fields — what the drawer opens showing. */
-export function draftFromTicket(ticket: Task): TicketDraft {
-  return {
-    issueType: ticket.issueType ?? 'task',
-    epicTaskId: ticket.epicTaskId ?? '',
-    milestoneId: ticket.milestoneId ?? '',
-    labelsText: normalizeLabels(ticket.labels).join(', '),
-    storyPointsText: ticket.storyPoints == null ? '' : String(ticket.storyPoints),
-    estimateDaysText: ticket.estimateDays == null ? '' : String(ticket.estimateDays),
-    startAtInput: dateToInput(ticket.startAt ?? null),
-    dueAtInput: dateToInput(ticket.dueAt ?? null),
-    assigneeId: ticket.assigneeId ?? '',
-    reporterId: ticket.reporterId ?? '',
-  };
-}
-
 function sameLabels(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((label, i) => label === b[i]);
 }
 
 /**
- * The draft, diffed against the ticket it started from — only what actually changed, so
- * closing the drawer untouched sends `{}` and `ticket:update` has nothing to write.
+ * One field's new value, diffed against the ticket it started from — `{}` when it matches
+ * what is already saved, so a field nobody touched (or a picker closed without a real change)
+ * sends `ticket:update` nothing to write.
  *
  * A field the human cleared comes back as an explicit `null`, never `undefined`: `TicketPatch`
  * is a `Partial`, so an absent key already means "leave it alone" — `undefined` here would be
  * read exactly that way and the clear would silently not happen.
+ *
+ * The `as` casts below are internal: the exported signature ties `value`'s type to `field` via
+ * `TicketDraft[K]`, so every call site is checked — the switch itself just cannot carry that
+ * narrowing through a generic `K` without one.
  */
-export function ticketPatchFrom(draft: TicketDraft, ticket: Task): TicketPatch {
-  const patch: TicketPatch = {};
-
-  if (draft.issueType !== (ticket.issueType ?? 'task')) patch.issueType = draft.issueType;
-
-  const epicTaskId = draft.epicTaskId || null;
-  if (epicTaskId !== (ticket.epicTaskId ?? null)) patch.epicTaskId = epicTaskId;
-
-  const milestoneId = draft.milestoneId || null;
-  if (milestoneId !== (ticket.milestoneId ?? null)) patch.milestoneId = milestoneId;
-
-  const labels = splitLabels(draft.labelsText);
-  if (!sameLabels(labels, normalizeLabels(ticket.labels))) patch.labels = labels;
-
-  const storyPoints = parsePoints(draft.storyPointsText);
-  if (storyPoints !== (ticket.storyPoints ?? null)) patch.storyPoints = storyPoints;
-
-  const estimateDays = parseDays(draft.estimateDaysText);
-  if (estimateDays !== (ticket.estimateDays ?? null)) patch.estimateDays = estimateDays;
-
-  const startAt = inputToDate(draft.startAtInput);
-  if (startAt !== (ticket.startAt ?? null)) patch.startAt = startAt;
-
-  const dueAt = inputToDate(draft.dueAtInput);
-  if (dueAt !== (ticket.dueAt ?? null)) patch.dueAt = dueAt;
-
-  const assigneeId = draft.assigneeId || null;
-  if (assigneeId !== (ticket.assigneeId ?? null)) patch.assigneeId = assigneeId;
-
-  const reporterId = draft.reporterId || null;
-  if (reporterId !== (ticket.reporterId ?? null)) patch.reporterId = reporterId;
-
-  return patch;
+export function ticketPatchFor<K extends keyof TicketDraft>(
+  field: K,
+  value: TicketDraft[K],
+  ticket: Task,
+): TicketPatch {
+  switch (field) {
+    case 'issueType': {
+      const issueType = value as TicketDraft['issueType'];
+      return issueType !== (ticket.issueType ?? 'task') ? { issueType } : {};
+    }
+    case 'epicTaskId': {
+      const epicTaskId = (value as string) || null;
+      return epicTaskId !== (ticket.epicTaskId ?? null) ? { epicTaskId } : {};
+    }
+    case 'milestoneId': {
+      const milestoneId = (value as string) || null;
+      return milestoneId !== (ticket.milestoneId ?? null) ? { milestoneId } : {};
+    }
+    case 'labelsText': {
+      const labels = splitLabels(value as string);
+      return sameLabels(labels, normalizeLabels(ticket.labels)) ? {} : { labels };
+    }
+    case 'storyPointsText': {
+      const storyPoints = parsePoints(value as string);
+      return storyPoints !== (ticket.storyPoints ?? null) ? { storyPoints } : {};
+    }
+    case 'estimateDaysText': {
+      const estimateDays = parseDays(value as string);
+      return estimateDays !== (ticket.estimateDays ?? null) ? { estimateDays } : {};
+    }
+    case 'startAtInput': {
+      const startAt = inputToDate(value as string);
+      return startAt !== (ticket.startAt ?? null) ? { startAt } : {};
+    }
+    case 'dueAtInput': {
+      const dueAt = inputToDate(value as string);
+      return dueAt !== (ticket.dueAt ?? null) ? { dueAt } : {};
+    }
+    case 'assigneeId': {
+      const assigneeId = (value as string) || null;
+      return assigneeId !== (ticket.assigneeId ?? null) ? { assigneeId } : {};
+    }
+    case 'reporterId': {
+      const reporterId = (value as string) || null;
+      return reporterId !== (ticket.reporterId ?? null) ? { reporterId } : {};
+    }
+    default:
+      return {};
+  }
 }
