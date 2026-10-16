@@ -42,6 +42,7 @@ import type {
   Task,
   TaskActivityEntry,
   TicketLabel,
+  TicketLink,
 } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
@@ -75,6 +76,7 @@ import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
+import { TaskLinksSection } from './projects/TaskLinksSection';
 import { TaskTicketSection } from './projects/TaskTicketSection';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
 import {
@@ -368,6 +370,12 @@ export interface TaskDetailProps {
   milestones?: Milestone[];
   /** See {@link people}. */
   labels?: TicketLabel[];
+  /**
+   * This card's ticket links, for the Links section (F12.5). Absent — every host before
+   * F12.6 wires `useTicketRegistries` through — the section loads and keeps its own copy
+   * live instead (`useTicketLinks`), the same way `TicketLinksEditor` always has.
+   */
+  ticketLinks?: readonly TicketLink[];
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
@@ -411,6 +419,7 @@ export function TaskDetail({
   people = NO_PEOPLE,
   milestones = NO_MILESTONES,
   labels = NO_LABELS,
+  ticketLinks,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -742,6 +751,13 @@ export function TaskDetail({
   // them away from it; instead the pill below offers to go there on request (Teams'
   // rule for the same problem).
   const scrollRef = useRef<HTMLDivElement>(null);
+  /**
+   * `TaskChain`'s own wrapper, for the Links section's chain-pointer row to scroll to. Only
+   * ever mounted where `stepsContent` is — the wide layout, or the compact `steps` tab — so
+   * on the compact `details` tab (where the Links section itself lives) this stays null and
+   * the pointer row is shown but inert; switching tabs there is not this ticket's job.
+   */
+  const chainSectionRef = useRef<HTMLDivElement>(null);
   // Updated by `onScroll` below on every user scroll; read (not subscribed to) by the
   // turns effect so scrolling itself never re-renders the pane.
   const atBottomRef = useRef(true);
@@ -1198,6 +1214,14 @@ export function TaskDetail({
               milestones={milestones}
             />
           )}
+          <TaskLinksSection
+            task={task}
+            ticketLinks={ticketLinks}
+            chainLinks={chainLinks}
+            tasksById={chainTasksById}
+            onOpenTask={onOpenTask}
+            chainRef={chainSectionRef}
+          />
         </>
       )}
     </>
@@ -1215,13 +1239,15 @@ export function TaskDetail({
       {/* Beside Steps, and deliberately after it: a card's own steps are the work
           inside it, and the chain is where that work sits among everything else.
           Never on a STEP's pane — a step cannot be chained at either end. */}
-      <TaskChain
-        task={task}
-        links={chainLinks}
-        tasksById={chainTasksById}
-        onOpen={(id) => onOpenTask?.(id)}
-        onUnlink={(linkId) => onUnlinkChain?.(linkId)}
-      />
+      <div ref={chainSectionRef}>
+        <TaskChain
+          task={task}
+          links={chainLinks}
+          tasksById={chainTasksById}
+          onOpen={(id) => onOpenTask?.(id)}
+          onUnlink={(linkId) => onUnlinkChain?.(linkId)}
+        />
+      </div>
     </>
   );
 
