@@ -675,9 +675,11 @@ describe('the activity tab both hosts render from the shared screen (F2.13/F2.14
 describe('the issues tab both hosts render from the shared screen (F5.10)', () => {
   /**
    * `apps/client/src/renderer/src/App.tsx` imports `IssuesScreen` straight from
-   * `@ui/issues/IssuesScreen` and lists `id: 'issues'` in its NAV — step 1 of this ticket. The
-   * web half is a wrapper, the same shape as the activity tab above: `WEB_APP` lists the NAV
-   * entry, but the `IssuesScreen` import itself lives one file over, in
+   * `@ui/issues/IssuesScreen` — step 1 of this ticket. Since F9.4 (`e876e6f2`) its NAV is
+   * built from `DESKTOP_SCREENS.map(...)` rather than its own `{ id: … }` literals, so the
+   * `id: 'issues'` entry itself now lives in `paletteSource.ts`, alongside the activity one
+   * above. The web half is a wrapper, the same shape as the activity tab above: `WEB_APP`
+   * lists the NAV entry, but the `IssuesScreen` import itself lives one file over, in
    * `apps/web/src/issues/WebIssuesScreen.tsx` — which reuses `activityGate` rather than
    * growing a second gate, since Issues has the same one source (a live desktop) that
    * Activity does.
@@ -700,13 +702,27 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
   }
 
   it("lists an issues tab in both hosts' NAV", () => {
-    for (const path of [WEB_APP, DESKTOP_APP]) {
-      expect(
-        read(path),
-        `${path} must list { id: 'issues', … } in its NAV — a screen nothing links to is a ` +
-          'file, not a tab.',
-      ).toMatch(/id:\s*'issues'/);
-    }
+    expect(
+      read(WEB_APP),
+      `${WEB_APP} must list { id: 'issues', … } in its NAV — a screen nothing links to is a ` +
+        'file, not a tab.',
+    ).toMatch(/id:\s*'issues'/);
+
+    /**
+     * Since F9.4 (`e876e6f2`) the desktop rail is built from `DESKTOP_SCREENS.map(...)`
+     * (`App.tsx:148`) rather than listing its own `{ id: … }` literals, so the literal this
+     * test looks for now lives in `paletteSource.ts`. The `.toMatch` below guards that the
+     * rail still derives from the list — if it stops, reading the list alone would prove
+     * nothing about what ids the rail actually carries.
+     */
+    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
+
+    const DESKTOP_SCREENS_PATH = 'apps/client/src/renderer/src/paletteSource.ts';
+    expect(
+      read(DESKTOP_SCREENS_PATH),
+      `${DESKTOP_SCREENS_PATH} must list { id: 'issues', … } in DESKTOP_SCREENS — a screen ` +
+        'nothing links to is a file, not a tab.',
+    ).toMatch(/id:\s*'issues'/);
   });
 
   it('leaves no local IssuesScreen behind in a host tree', () => {
