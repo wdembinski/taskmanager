@@ -1,7 +1,8 @@
 /**
  * Headless proof of the workflows table and the three stepSpec/workflowId/gateAttempts
  * columns on tasks (F8.4, @shared/workflow) -- the storage a workflow step is
- * instantiated from and the gate attempt counter it carries.
+ * instantiated from and the gate attempt counter it carries -- plus the one-time seed of
+ * the two starter workflows (F8.14, @shared/workflowStarters) into that same table.
  *
  *     node scripts/verify-workflow-migration.mjs
  *
@@ -37,10 +38,19 @@
  * stepSpec: null, workflowId: null, gateAttempts: 0 -- not backfilled -- and that
  * setTaskGateAttempts and saveWorkflow both work immediately afterwards.
  *
+ * On the starter seed: a fresh database gets both starters; deleting one and reopening
+ * does not bring it back (the seed is a one-time flag, not a pin); a user-edited starter
+ * (same id, different content) survives a reopen unchanged, rather than being reverted to
+ * the shipped doc; and a database from before this shipped -- no workflows table, no seed
+ * flag -- gets both starters the next time it is opened, same as any other migration.
+ *
  * It fails loudly if a migration entry is removed: the store cannot even open, because
  * its INSERT names a column the table lacks. Prove that yourself by deleting the
  * ['stepSpec', 'TEXT'], ['workflowId', 'TEXT'] or ['gateAttempts', 'INTEGER NOT NULL
- * DEFAULT 0'] line from store.ts, one at a time, and re-running.
+ * DEFAULT 0'] line from store.ts, one at a time, and re-running. Prove the starter-seed
+ * checks the same way: comment out the `for (const starter of STARTER_WORKFLOWS)` loop (or
+ * its body) in store.ts and re-run -- the fresh-DB and upgrade checks below fail -- then
+ * restore it.
  */
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -249,6 +259,76 @@ const corruptRead = store.getTask(corruptCard.id);
 check('a corrupt stepSpec reads back null without throwing', corruptRead?.stepSpec === null);
 
 store.close();
+
+// ───────────────────────────── Starter workflows ─────────────────────────────
+// The two ids from @shared/workflowStarters -- hardcoded rather than imported, since the
+// driver here is plain JS calling into the bundled store, not a TS file of its own (see
+// the PERSONAL_PROJECT_ID comment in verify-pr-watch.mjs for the same tradeoff).
+const STARTER_IMPLEMENT_TEST_WORKFLOW_ID = 'starter-implement-test';
+const STARTER_IMPLEMENT_REVIEW_TEST_WORKFLOW_ID = 'starter-implement-review-test';
+
+const startersDbPath = join(work, 'starters.db');
+const freshStarters = createStore(startersDbPath);
+check(
+  'fresh DB: seeds the implement+test starter',
+  freshStarters.getWorkflow(STARTER_IMPLEMENT_TEST_WORKFLOW_ID) !== undefined,
+);
+check(
+  'fresh DB: seeds the implement+review+test starter',
+  freshStarters.getWorkflow(STARTER_IMPLEMENT_REVIEW_TEST_WORKFLOW_ID) !== undefined,
+);
+
+// Deleting a starter and reopening must not bring it back -- the seed flag means "run the
+// INSERTs once", not "keep these two pinned forever".
+freshStarters.deleteWorkflow(STARTER_IMPLEMENT_TEST_WORKFLOW_ID);
+freshStarters.close();
+const afterDelete = createStore(startersDbPath);
+check(
+  'reopening a DB that already seeded does not resurrect a deleted starter',
+  afterDelete.getWorkflow(STARTER_IMPLEMENT_TEST_WORKFLOW_ID) === undefined,
+);
+check(
+  "the delete didn't touch the other starter",
+  afterDelete.getWorkflow(STARTER_IMPLEMENT_REVIEW_TEST_WORKFLOW_ID) !== undefined,
+);
+
+// A user-edited starter (same id, different content) is likewise never overwritten back to
+// the shipped doc on a later reopen.
+const editedStarter = afterDelete.saveWorkflow({
+  version: 1,
+  id: STARTER_IMPLEMENT_REVIEW_TEST_WORKFLOW_ID,
+  name: 'My customized starter',
+  steps: [{ id: 'write', kind: 'agent', title: 'Write it', brief: 'Go.' }],
+});
+check('a starter can be edited', editedStarter.ok === true);
+afterDelete.close();
+const afterEdit = createStore(startersDbPath);
+const reopenedEdit = afterEdit.getWorkflow(STARTER_IMPLEMENT_REVIEW_TEST_WORKFLOW_ID);
+check(
+  "reopening doesn't overwrite a user's edit back to the shipped starter",
+  reopenedEdit?.name === 'My customized starter',
+);
+afterEdit.close();
+
+// An existing DB from before this feature shipped -- no workflows table, no seed flag --
+// gets both starters on its next open, same as any other migration.
+const preSeedDbPath = join(work, 'pre-seed.db');
+const preSeedBefore = createStore(preSeedDbPath);
+preSeedBefore.close();
+const preSeedRaw = new Database(preSeedDbPath);
+preSeedRaw.exec('DROP TABLE workflows');
+preSeedRaw.exec(`DELETE FROM app_state WHERE key = 'workflowStartersSeeded'`);
+preSeedRaw.close();
+const preSeedAfter = createStore(preSeedDbPath);
+check(
+  'an upgraded DB with no seed flag gets the implement+test starter',
+  preSeedAfter.getWorkflow(STARTER_IMPLEMENT_TEST_WORKFLOW_ID) !== undefined,
+);
+check(
+  'an upgraded DB with no seed flag gets the implement+review+test starter',
+  preSeedAfter.getWorkflow(STARTER_IMPLEMENT_REVIEW_TEST_WORKFLOW_ID) !== undefined,
+);
+preSeedAfter.close();
 
 // ───────────────────────────── Upgraded DB (drop-column recipe) ─────────────────────────────
 const upgradeDbPath = join(work, 'upgrade.db');
