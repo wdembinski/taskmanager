@@ -234,6 +234,24 @@ export function resolveSyncInterval(saved: {
   return Math.min(...legacy);
 }
 
+/**
+ * Migrate a settings blob that predates `appearance` onto dark — the app painted only dark
+ * before this setting existed, and `'system'` would silently relight every existing install
+ * the next time its OS happens to be in light mode, which nobody asked for.
+ *
+ * Mirrors `resolveSyncInterval`'s own shape: a pure function of the saved blob, called once
+ * by the migration in `store.ts` and written back only when it actually changes something —
+ * `null` when `saved` already has an `appearance` (nothing to write), the patched object
+ * otherwise. A fresh install has no row at all, so it never reaches this function and
+ * `getSettings` fills `'system'` from {@link DEFAULT_SETTINGS} instead.
+ */
+export function withExistingInstallAppearance(
+  saved: Partial<AppSettings>,
+): Partial<AppSettings> | null {
+  if (saved.appearance !== undefined) return null;
+  return { ...saved, appearance: 'dark' };
+}
+
 /** The out-of-the-box GitLab config: off, pointed at gitlab.com. */
 export const DEFAULT_GITLAB_SETTINGS: GitLabSettings = {
   enabled: false,
@@ -696,6 +714,16 @@ export function shouldAutoFoldOnMove(
   return features.autoFoldReviewDone && (column === 'in-review' || column === 'done');
 }
 
+/** `system` follows the OS; `light`/`dark` is an explicit override. */
+export type AppearanceSetting = 'system' | 'light' | 'dark';
+
+/**
+ * `system` follows the OS's reduced-transparency preference; `reduced` always turns glass
+ * off; `full` is an explicit opt-in that keeps glass on even when the OS asks for less of
+ * it — see `resolveAppearance` in `@tm/ui/appearance`, the one place this is read.
+ */
+export type TransparencySetting = 'system' | 'reduced' | 'full';
+
 /**
  * The Projects screen's Gantt timeline, saved for the same reason `foldedStepCards` is: the
  * screen is unmounted every time you leave it, and a collapse you had to redo on every visit
@@ -839,6 +867,20 @@ export interface AppSettings {
    * 14 is Fluent's own base, so the default changes nothing.
    */
   fontSizePx: number;
+  /**
+   * Which colour scheme the app paints in. **Local**: it is a fact about THIS machine's
+   * display, not an account-scoped preference — the same account open on a desktop next
+   * to a sunny window and a laptop in a dim room may want different answers, and `system`
+   * already means "ask this machine's OS" rather than "ask the account".
+   */
+  appearance: AppearanceSetting;
+  /**
+   * Whether the chrome behind panes is glass (native material or a CSS blur) or a flat
+   * fill. **Local**, for the same reason `appearance` is — the OS's own reduced-
+   * transparency preference, and whether this machine's GPU can paint a blur at all, are
+   * facts about the machine the window is open on, never about the account.
+   */
+  transparency: TransparencySetting;
   /** Whether transient toasts are shown at all. Everything they say is also on screen. */
   toastsEnabled: boolean;
   /**
@@ -970,6 +1012,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showGitGraph: false,
   branchPrefix: '',
   fontSizePx: 14,
+  // A fresh install has no existing-dark-theme habit to preserve, so it follows the OS
+  // both ways — see `withExistingInstallAppearance` for the migration that keeps an
+  // existing install on dark instead.
+  appearance: 'system',
+  transparency: 'system',
   toastsEnabled: true,
   autoIntegrate: false,
   board: DEFAULT_BOARD_DISPLAY,
@@ -1049,10 +1096,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * per device.
  *
  * Everything NOT listed is either MACHINE-local — `defaultExecTarget` (a path only that
- * machine has), `fontSizePx` (that window's type scale), `cloud` (this desktop's own
- * connection to the server), `toastsEnabled` (that app's toasts), `runInBackground` (this
- * machine's own process-lifetime choice), `trustedGateCommands` (a gate command trusted on
- * THIS desktop, not the account — see the field's own doc) — or per-SURFACE view-state:
+ * machine has), `fontSizePx` (that window's type scale), `appearance` (this machine's own
+ * colour scheme), `transparency` (whether this machine's window chrome is glass), `cloud`
+ * (this desktop's own connection to the server), `toastsEnabled` (that app's toasts),
+ * `runInBackground` (this machine's own process-lifetime choice), `trustedGateCommands` (a
+ * gate command trusted on THIS desktop, not the account — see the field's own doc) — or
+ * per-SURFACE view-state:
  * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` / `shownLaterStepCards` name
  * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline, and
  * `shelvedCardIds` / `shelfFolded` the same for the parked shelf. A browser and a desktop

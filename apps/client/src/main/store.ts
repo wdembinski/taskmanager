@@ -98,6 +98,7 @@ import {
   DEFAULT_LINEAR_SETTINGS,
   DEFAULT_SETTINGS,
   resolveSyncInterval,
+  withExistingInstallAppearance,
 } from '@shared/settings';
 import { ACTIVITY_BACKFILL_KEY, backfillActivityLog } from './activityBackfill';
 import { mergeActivity } from './activityMerge';
@@ -2653,6 +2654,31 @@ export function createStore(dbPath: string): Store {
             ?.pollIntervalMinutes;
           delete (migrated.gitlab as { pollIntervalMinutes?: number } | undefined)
             ?.pollIntervalMinutes;
+          db.prepare(
+            `INSERT INTO app_state (key, value) VALUES ('settings', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+          ).run(JSON.stringify(migrated));
+        }
+      } catch {
+        // Malformed settings row — `getSettings` already falls back to the defaults.
+      }
+    }
+  }
+
+  /**
+   * Fold an existing install onto dark appearance (open question 4) — the app painted only
+   * dark before `appearance` existed, so a fresh `'system'` default would silently relight
+   * an existing install the next time its OS happens to be in light mode. A fresh install
+   * (no row at all) skips this and gets `'system'` from `DEFAULT_SETTINGS` via `getSettings`.
+   */
+  {
+    const row = db.prepare(`SELECT value FROM app_state WHERE key = 'settings'`).get() as
+      { value: string } | undefined;
+    if (row) {
+      try {
+        const saved = JSON.parse(row.value) as Partial<AppSettings>;
+        const migrated = withExistingInstallAppearance(saved);
+        if (migrated) {
           db.prepare(
             `INSERT INTO app_state (key, value) VALUES ('settings', ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
