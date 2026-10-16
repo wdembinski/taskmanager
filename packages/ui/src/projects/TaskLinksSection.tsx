@@ -17,31 +17,15 @@
  */
 import { useState, type RefObject } from 'react';
 import { Badge, Button, Caption1, Text, makeStyles, tokens } from '@fluentui/react-components';
-import {
-  BookmarkRegular,
-  BugRegular,
-  DeleteRegular,
-  PersonRegular,
-  SparkleRegular,
-  TaskListSquareLtrRegular,
-} from '@fluentui/react-icons';
-import type { IssueType, Task, TicketLink } from '@tm/shared/model';
+import { DeleteRegular } from '@fluentui/react-icons';
+import type { Task, TicketLink } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { columnBadge } from '../taskStatus';
 import { useTransport } from '../transport';
+import { issueTypeGlyph } from './issueTypeGlyph';
 import { linkedTicketRows, type ChainPointer, type LinkedTicketRow } from './linkedTickets';
 import { TicketLinkAddRow, type LinkCandidate } from './TicketLinksEditor';
 import { useTicketLinks } from './useTicketLinks';
-
-/** Keyed the same way `BacklogTable`'s own `TYPE_ICON` resolves one — `IssueType` only; a
- *  missing or non-native linked ticket draws no glyph rather than guessing one. */
-const TYPE_ICON: Record<IssueType, JSX.Element> = {
-  epic: <SparkleRegular />,
-  story: <BookmarkRegular />,
-  task: <TaskListSquareLtrRegular />,
-  bug: <BugRegular />,
-  subtask: <PersonRegular />,
-};
 
 const useStyles = makeStyles({
   box: { display: 'flex', flexDirection: 'column', gap: '8px' },
@@ -128,7 +112,7 @@ export function TaskLinksSection({
     return (
       <div key={r.linkId} className={styles.row}>
         <div className={styles.rowLabel}>
-          {r.issueType && <span className={styles.type}>{TYPE_ICON[r.issueType]}</span>}
+          {r.issueType && <span className={styles.type}>{issueTypeGlyph(r.issueType)}</span>}
           <button
             type="button"
             className={r.missing ? `${styles.open} ${styles.openDead}` : styles.open}

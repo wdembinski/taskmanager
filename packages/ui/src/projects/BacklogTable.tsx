@@ -30,20 +30,10 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import {
-  AddRegular,
-  BeakerRegular,
-  BugRegular,
-  BookmarkRegular,
-  NoteRegular,
-  PersonRegular,
-  SearchRegular,
-  SparkleRegular,
-  TaskListSquareLtrRegular,
-} from '@fluentui/react-icons';
+import { AddRegular, SearchRegular } from '@fluentui/react-icons';
 import { columnForTask } from '@tm/shared/board';
 import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
-import { delegatedAgentName, typeIconKeyFor, type TypeIconKey } from '@tm/shared/tickets';
+import { delegatedAgentName, typeIconKeyFor } from '@tm/shared/tickets';
 import { startReadiness, type StartReadiness } from '@tm/shared/ticketLinks';
 import { PriorityGlyph } from '../PriorityGlyph';
 import { PaneLoading } from '../PaneLoading';
@@ -52,6 +42,7 @@ import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { AssigneeDisplay } from './AssigneeDisplay';
 import { type BacklogSortKey, backlogRows } from './backlogView';
+import { issueTypeGlyph } from './issueTypeGlyph';
 import { NewTicketDialog } from './NewTicketDialog';
 import { TicketDrawer } from './TicketDrawer';
 
@@ -69,22 +60,6 @@ const useStyles = makeStyles({
   empty: { color: tokens.colorNeutralForeground3, padding: '8px 0' },
   clickableRow: { cursor: 'pointer' },
 });
-
-/**
- * The card's own type icon, keyed the same way `TaskCard.typeIcon` resolves one, so a ticket
- * reads the same glyph here as it would on a board. Not imported from there directly: that
- * function reads `externalType`/`type`, board-card fields a native ticket doesn't carry the
- * same way — `typeIconKeyFor` (`@tm/shared/tickets`) is the pure, ticket-aware equivalent.
- */
-const TYPE_ICON: Record<TypeIconKey, JSX.Element> = {
-  epic: <SparkleRegular />,
-  story: <BookmarkRegular />,
-  task: <TaskListSquareLtrRegular />,
-  bug: <BugRegular />,
-  subtask: <PersonRegular />,
-  feature: <BeakerRegular />,
-  note: <NoteRegular />,
-};
 
 export interface BacklogTableProps {
   projectId: string;
@@ -314,7 +289,7 @@ export function BacklogTable({
                       onClick={() => setSelectedTicketId(ticket.id)}
                     >
                       <TableCell className={styles.typeCell}>
-                        {TYPE_ICON[typeIconKeyFor(ticket)]}
+                        {issueTypeGlyph(typeIconKeyFor(ticket))}
                       </TableCell>
                       <TableCell>{ticket.ticketKey ?? '—'}</TableCell>
                       <TableCell>{ticket.title}</TableCell>
