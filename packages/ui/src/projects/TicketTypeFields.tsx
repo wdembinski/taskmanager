@@ -29,6 +29,8 @@ export interface TicketTypeFieldsProps {
   onEpicTaskIdChange: (epicTaskId: string) => void;
   /** Applied to both `Field`s, so a caller laying them out in a row can size them evenly. */
   className?: string;
+  /** Disables both pickers — a read-only host, not the epic-under-epic rule below. */
+  disabled?: boolean;
 }
 
 export function TicketTypeFields({
@@ -38,6 +40,7 @@ export function TicketTypeFields({
   onIssueTypeChange,
   onEpicTaskIdChange,
   className,
+  disabled = false,
 }: TicketTypeFieldsProps): JSX.Element {
   return (
     <>
@@ -45,6 +48,7 @@ export function TicketTypeFields({
         <Dropdown
           value={issueType}
           selectedOptions={[issueType]}
+          disabled={disabled}
           onOptionSelect={(_e, d) => {
             if (!d.optionValue) return;
             const next = d.optionValue as IssueType;
@@ -64,7 +68,7 @@ export function TicketTypeFields({
 
       <Field label="Epic" className={className}>
         <Dropdown
-          disabled={issueType === 'epic'}
+          disabled={disabled || issueType === 'epic'}
           value={epicCandidates.find((e) => e.id === epicTaskId)?.title ?? 'None'}
           selectedOptions={[epicTaskId || NO_EPIC]}
           onOptionSelect={(_e, d) => {

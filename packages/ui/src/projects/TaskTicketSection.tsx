@@ -39,6 +39,9 @@ export interface TaskTicketSectionProps {
   milestones: Milestone[];
   /** Set when the Links section is absent — candidates for this ticket's first link. */
   addLink?: { candidates: LinkCandidate[] };
+  /** Set when the host relaying ticket writes is unreachable — every field and the add-link
+   *  row below are disabled, the manager popovers hidden, but the fold still reads. */
+  readOnly?: boolean;
 }
 
 export function TaskTicketSection({
@@ -49,6 +52,7 @@ export function TaskTicketSection({
   labels,
   milestones,
   addLink,
+  readOnly = false,
 }: TaskTicketSectionProps): JSX.Element {
   const styles = useStyles();
   const [open, toggle] = useDeviceFold('tm.taskDetail.ticketOpen', false);
@@ -66,12 +70,13 @@ export function TaskTicketSection({
           agentProjects={agentProjects}
           labels={labels}
           milestones={milestones}
+          readOnly={readOnly}
         />
       )}
       {open && addLink && (
         <div className={styles.linksBox}>
           <Caption1>Links</Caption1>
-          <TicketLinkAddRow ticket={ticket} candidates={addLink.candidates} />
+          <TicketLinkAddRow ticket={ticket} candidates={addLink.candidates} disabled={readOnly} />
         </div>
       )}
     </div>

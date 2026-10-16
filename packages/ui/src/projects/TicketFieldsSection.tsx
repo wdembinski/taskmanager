@@ -74,6 +74,9 @@ export interface TicketFieldsSectionProps {
   labels: TicketLabel[];
   /** This project's milestones. */
   milestones: Milestone[];
+  /** Set when the host relaying ticket writes is unreachable — every field is disabled and
+   *  the label/milestone manager popovers hidden, but the values are still shown. */
+  readOnly?: boolean;
 }
 
 function labelColor(labels: TicketLabel[], name: string): string | undefined {
@@ -87,6 +90,7 @@ export function TicketFieldsSection({
   agentProjects,
   labels,
   milestones,
+  readOnly = false,
 }: TicketFieldsSectionProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -156,6 +160,7 @@ export function TicketFieldsSection({
           onIssueTypeChange={(v) => void saveField('issueType', v)}
           onEpicTaskIdChange={(v) => void saveField('epicTaskId', v)}
           className={styles.cell}
+          disabled={readOnly}
         />
       </div>
 
@@ -171,6 +176,7 @@ export function TicketFieldsSection({
               className={styles.cell}
               value={milestones.find((m) => m.id === ticket.milestoneId)?.name ?? 'None'}
               selectedOptions={[ticket.milestoneId ?? NONE]}
+              disabled={readOnly}
               onOptionSelect={(_e, d) => {
                 if (d.optionValue !== undefined) void saveField('milestoneId', d.optionValue);
               }}
@@ -185,21 +191,23 @@ export function TicketFieldsSection({
                 ))}
               <Option value={NONE}>None</Option>
             </Dropdown>
-            <Popover trapFocus>
-              <PopoverTrigger disableButtonEnhancement>
-                <Button
-                  size="small"
-                  appearance="subtle"
-                  icon={<SettingsRegular />}
-                  title="Manage milestones"
-                  aria-label="Manage milestones"
-                />
-              </PopoverTrigger>
-              <PopoverSurface>
-                <Subtitle2>Milestones</Subtitle2>
-                <MilestoneList projectId={ticket.projectId} milestones={milestones} />
-              </PopoverSurface>
-            </Popover>
+            {!readOnly && (
+              <Popover trapFocus>
+                <PopoverTrigger disableButtonEnhancement>
+                  <Button
+                    size="small"
+                    appearance="subtle"
+                    icon={<SettingsRegular />}
+                    title="Manage milestones"
+                    aria-label="Manage milestones"
+                  />
+                </PopoverTrigger>
+                <PopoverSurface>
+                  <Subtitle2>Milestones</Subtitle2>
+                  <MilestoneList projectId={ticket.projectId} milestones={milestones} />
+                </PopoverSurface>
+              </Popover>
+            )}
           </div>
         </Field>
       </div>
@@ -214,25 +222,28 @@ export function TicketFieldsSection({
           <Input
             className={styles.cell}
             value={labelsDraft.value}
+            disabled={readOnly}
             onChange={(_e, d) => labelsDraft.set(d.value)}
             onBlur={() => saveDraft('labelsText', labelsDraft)}
             placeholder="backend, needs-design"
           />
-          <Popover trapFocus>
-            <PopoverTrigger disableButtonEnhancement>
-              <Button
-                size="small"
-                appearance="subtle"
-                icon={<SettingsRegular />}
-                title="Manage labels"
-                aria-label="Manage labels"
-              />
-            </PopoverTrigger>
-            <PopoverSurface>
-              <Subtitle2>Labels</Subtitle2>
-              <LabelRegistry projectId={ticket.projectId} labels={labels} />
-            </PopoverSurface>
-          </Popover>
+          {!readOnly && (
+            <Popover trapFocus>
+              <PopoverTrigger disableButtonEnhancement>
+                <Button
+                  size="small"
+                  appearance="subtle"
+                  icon={<SettingsRegular />}
+                  title="Manage labels"
+                  aria-label="Manage labels"
+                />
+              </PopoverTrigger>
+              <PopoverSurface>
+                <Subtitle2>Labels</Subtitle2>
+                <LabelRegistry projectId={ticket.projectId} labels={labels} />
+              </PopoverSurface>
+            </Popover>
+          )}
         </div>
         {previewLabels.length > 0 && (
           <div className={styles.chips}>
@@ -262,6 +273,7 @@ export function TicketFieldsSection({
         >
           <Input
             value={storyPointsDraft.value}
+            disabled={readOnly}
             onChange={(_e, d) => storyPointsDraft.set(d.value)}
             onBlur={() => saveDraft('storyPointsText', storyPointsDraft)}
             placeholder="Not estimated"
@@ -275,6 +287,7 @@ export function TicketFieldsSection({
         >
           <Input
             value={estimateDaysDraft.value}
+            disabled={readOnly}
             onChange={(_e, d) => estimateDaysDraft.set(d.value)}
             onBlur={() => saveDraft('estimateDaysText', estimateDaysDraft)}
             placeholder="Not estimated"
@@ -292,6 +305,7 @@ export function TicketFieldsSection({
           <Input
             type="date"
             value={startAtDraft.value}
+            disabled={readOnly}
             onChange={(_e, d) => startAtDraft.set(d.value)}
             onBlur={() => saveDraft('startAtInput', startAtDraft)}
           />
@@ -305,6 +319,7 @@ export function TicketFieldsSection({
           <Input
             type="date"
             value={dueAtDraft.value}
+            disabled={readOnly}
             onChange={(_e, d) => dueAtDraft.set(d.value)}
             onBlur={() => saveDraft('dueAtInput', dueAtDraft)}
           />
@@ -321,6 +336,7 @@ export function TicketFieldsSection({
           <Dropdown
             value={people.find((p) => p.id === ticket.assigneeId)?.name ?? 'Unassigned'}
             selectedOptions={[ticket.assigneeId ?? NONE]}
+            disabled={readOnly}
             onOptionSelect={(_e, d) => {
               if (d.optionValue !== undefined) void saveField('assigneeId', d.optionValue);
             }}
@@ -351,6 +367,7 @@ export function TicketFieldsSection({
           <Dropdown
             value={people.find((p) => p.id === ticket.reporterId)?.name ?? 'None'}
             selectedOptions={[ticket.reporterId ?? NONE]}
+            disabled={readOnly}
             onOptionSelect={(_e, d) => {
               if (d.optionValue !== undefined) void saveField('reporterId', d.optionValue);
             }}

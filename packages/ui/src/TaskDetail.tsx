@@ -817,6 +817,10 @@ export function TaskDetail({
     () => (task ? linkedTicketRows(task, resolvedTicketLinks, chainTasksById, chainLinks) : null),
     [task, resolvedTicketLinks, chainTasksById, chainLinks],
   );
+  // Every ticket write goes through the same relay `hostUnreachable` already names as down
+  // — so the Ticket and Links sections pause for exactly the reason `readOnlyNotice`'s bar
+  // above them already states, and need no notice of their own.
+  const ticketReadOnly = hostUnreachable !== undefined;
 
   if (!task) {
     return (
@@ -1227,6 +1231,7 @@ export function TaskDetail({
               labels={labels}
               milestones={milestones}
               addLink={linksSection === null ? { candidates: projectTickets } : undefined}
+              readOnly={ticketReadOnly}
             />
           )}
           <TaskLinksSection
@@ -1237,6 +1242,7 @@ export function TaskDetail({
             candidates={projectTickets}
             onOpenTask={onOpenTask}
             chainRef={chainSectionRef}
+            readOnly={ticketReadOnly}
           />
         </>
       )}

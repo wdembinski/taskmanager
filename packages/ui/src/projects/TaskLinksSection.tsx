@@ -79,6 +79,9 @@ export interface TaskLinksSectionProps {
   /** `TaskChain`'s own wrapper, so the chain pointer row can scroll to it — null when that
    *  section is not mounted (a compact tab showing `details`, not `steps`). */
   chainRef?: RefObject<HTMLElement>;
+  /** Set when the host relaying ticket writes is unreachable — rows still open the linked
+   *  ticket, but Remove is hidden and the add row at the bottom is disabled. */
+  readOnly?: boolean;
 }
 
 export function TaskLinksSection({
@@ -89,6 +92,7 @@ export function TaskLinksSection({
   candidates = [],
   onOpenTask,
   chainRef,
+  readOnly = false,
 }: TaskLinksSectionProps): JSX.Element | null {
   const styles = useStyles();
   const transport = useTransport();
@@ -132,15 +136,17 @@ export function TaskLinksSection({
             </Badge>
           )}
         </div>
-        <Button
-          size="small"
-          appearance="subtle"
-          icon={<DeleteRegular />}
-          disabled={busyId === r.linkId}
-          aria-label={`Remove link to ${r.key}`}
-          title={`Remove link to ${r.key}`}
-          onClick={() => void remove(r.linkId)}
-        />
+        {!readOnly && (
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<DeleteRegular />}
+            disabled={busyId === r.linkId}
+            aria-label={`Remove link to ${r.key}`}
+            title={`Remove link to ${r.key}`}
+            onClick={() => void remove(r.linkId)}
+          />
+        )}
       </div>
     );
   }
@@ -165,7 +171,7 @@ export function TaskLinksSection({
           <Caption1>{chainPointerText(section.chain)} — see Chain</Caption1>
         </button>
       )}
-      <TicketLinkAddRow ticket={task} candidates={candidates} />
+      <TicketLinkAddRow ticket={task} candidates={candidates} disabled={readOnly} />
     </div>
   );
 }
