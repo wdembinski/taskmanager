@@ -420,7 +420,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
   - Acceptance: F13.2's pairs cover white on every gradient stop and ink on orange; no hex
     literal left in `StatusBar.tsx`; gates green.
 
-- [ ] F13.10 Write the pure sidebar model with the milestone, epic and ticket tree
+- [x] F13.10 Write the pure sidebar model with the milestone, epic and ticket tree
 
   - `packages/ui/src/shell/sidebarModel.ts` exports `NO_MILESTONE_GROUP = 'No milestone'`,
     a sibling of `backlogView.ts`'s `NO_EPIC_GROUP` (`packages/ui/src/projects/backlogView.ts:13`)
