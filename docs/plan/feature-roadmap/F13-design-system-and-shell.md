@@ -541,7 +541,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     tree's key handling is a pure reducer with tests (expand, collapse, move into children,
     skip folded). Gates green.
 
-- [ ] F13.12 Build the shared issue row with the selected state
+- [x] F13.12 Build the shared issue row with the selected state
 
   - `packages/ui/src/issues/IssueRow.tsx` and a pure `issueRowParts(task, ctx)` deciding which
     optional parts show: run pill (from the live-run index, "Step n of m"), MR (`!iid`), due
@@ -550,6 +550,152 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
   - Acceptance: `issueRowParts.test.ts` — an idle ticket with nothing else shows key, glyph and
     title only; a running ticket shows the pill; an overdue date is flagged, a future one is not;
     priority and type never produce a part. Gates green.
+
+  - **Facts checked** (ahead of design, so it isn't re-derived next): `runPhase`
+    (`packages/shared/src/board.ts:460`), `columnForTask` / `BoardColumn` (`board.ts:228`),
+    `mrRef` / `MergeRequestState` (`@tm/shared/mergeRequest:215,24`), `assigneeDisplayParts` /
+    `AssigneeDisplay` / `delegatedAgentName` (`packages/ui/src/projects/assigneeParts.ts`,
+    `AssigneeDisplay.tsx`, `@tm/shared/tickets:67`), `Task.ticketKey` / `externalKey` / `dueAt`,
+    the `SEMANTIC` shape and `tokenCssVars`'s `--tm-*` names, all five Fluent icons (installed
+    `@fluentui/react-icons@2.0.331`), and the no-barrel `tsup` build all match the card's own
+    description exactly.
+  - One claim needs correcting: `tokenCssVars` is **already** stamped on both hosts' provider
+    roots (`apps/client/src/renderer/src/main.tsx:91`, `apps/web/src/main.tsx:58`), beside
+    `--app-font-scale` — not "nothing stamps them yet". Both hosts hard-code
+    `tokenCssVars('dark')` today (F13.4 is what makes it follow the resolved scheme instead),
+    so every `--tm-*` var always carries its dark value regardless of which Fluent theme a
+    component sits under. The card's `var(--tm-x, <fluent-fallback>)` pattern still stands —
+    the fallback just never actually engages before F13.4, since the var is always set — but a
+    row built on it will read dark-scheme colours inside a light Fluent theme until F13.4
+    ships. Pre-existing condition of every surface already reading a `--tm-*` var, not
+    something this card introduces or needs to work around.
+  - The attached v9 mockups (`issues-list-light/dark.svg`) draw the row precisely enough to
+    read exact values from the markup. Several aren't in the card's own description and
+    Design should decide on, not re-derive:
+    - Row: 34px tall, 7px corner radius; selected fill `#EBF3FC`/`#1D2B38` (= `selectedTint`)
+      with a 3px, 18px-tall (centred, ~53% of row height) bar — matches `accentBar` exactly.
+    - Selected title is also recoloured and bolded (`#0F548C`/`#9CCBF2`, weight 600), not just
+      the background tint and bar — "selected = tint + bar" alone is incomplete.
+    - The key and the empty-assignee ring (see below) share a colour with no entry in the
+      current token table: `#AEB4BC` light / `#5A6169` dark, visibly fainter than `textFaint`
+      (`#646B74`/`#8A929B`). Either `textFaint` is close enough and the mockup is only
+      approximate, or this role wants its own token.
+    - Status glyph: a 5.5px outline circle, `#454B54`/`#BAC0C7` stroke when the ticket carries
+      more state, the same faint tone as the key for a plain Todo ring with no wedge. In
+      Progress adds a small (~90°) filled wedge, In Review a larger (~270°,
+      `large-arc-flag=1`) one — reads as `CircleRegular` → a hinted fill → a half fill,
+      consistent with the card's icon list. Neither mockup shows a Done or Blocked row, so
+      `CheckmarkCircleFilled` / `PresenceBlockedRegular` have no visual reference yet.
+    - MR ref: plain mono text, no pill, faint (`#7C838D`/`#8A929B`), right-aligned — unlike the
+      run indicator, which is a pill.
+    - Run pill: dark-mode bg and ink match `run.pill` / `run.ink` from `tokens.ts` exactly
+      (`rgba(34,228,255,.12)` / `#22E4FF`). Light-mode bg also matches `run.pill` (`#E6FAFE`),
+      but the mockup's light-mode dot/text (`#0BA5C2`/`#06606F`) is a near miss on `run.ink`
+      (`#07748C`) — treat `tokens.ts` as authoritative (it is the one F13.2 already checked for
+      contrast) rather than colour-picking the SVG.
+    - Due date: plain faint text normally, bold `#F28C28` for "Today" — the mockups' orange
+      from open question 1, not the shipped `UNREAD_ORANGE` (`#F2A900`). No row shows a
+      past-due date, only "Today", so only that one state has a visual reference.
+    - Avatar has three states, not two. Besides the agent glyph (filled `selectedTint`-ish
+      circle, brand-coloured `AgentsRegular`-shaped glyph) and human initials (filled
+      `canvas`-ish circle, two letters), several Todo rows with neither draw a dashed outline
+      ring (`stroke-dasharray 2 2`, the same faint tone as the key) rather than nothing.
+      `assigneeDisplayParts` returns `null` for that case today and `AssigneeDisplay` renders
+      nothing ("neither is not this component's problem", by its own doc comment). Reusing it
+      as-is means `IssueRow` renders nothing where the mockup shows a ring; drawing the ring
+      is new behaviour the card didn't ask for — Design's call.
+
+  - **Design decisions, taken against the facts above — step 3 writes these, it does not
+    re-derive them:**
+    - **No new token, and no new row behaviour.** The faint key/empty-ring tone and the
+      selected title's recolour both get folded onto tokens that already exist rather than
+      minted fresh: the key and status glyph read `--tm-text-faint` /
+      `SEMANTIC[scheme].textFaint`, and the selected title reads `--tm-brand` /
+      `.brand` (`#0F6CBD`/`#4FA3E8`), not the mockup's own near-miss hexes
+      (`#AEB4BC`/`#5A6169`, `#0F548C`/`#9CCBF2`) — the same call the facts step already made
+      for `run.ink` against the mockup's light-mode dot. And the dashed "neither" ring stays
+      undrawn: `avatar` is exactly `assigneeDisplayParts(ctx.assignee, ctx.agentName) ??
+      undefined`, so a Todo row with no assignee and no agent renders no avatar part at all,
+      matching `AssigneeDisplay`'s own "neither is not this component's problem" stance
+      instead of growing it a third, row-only state. If the ring is wanted later it is
+      `AssigneeDisplay`'s own change to make (every caller gains it at once), not a fork kept
+      alive only inside `IssueRow`.
+    - **The status glyph is one icon per column, one colour throughout — not five
+      hand-traced wedges.** `STATUS_GLYPH: Record<BoardColumn, JSX.Element>` maps
+      `columnForTask(task)`'s five values directly (`board.ts:228`): `todo` →
+      `CircleRegular`, `in-progress` → `CircleHalfFillRegular`, `in-review` →
+      `CircleHintRegular`, `blocked` → `PresenceBlockedRegular`, `done` →
+      `CheckmarkCircleFilled`, every one in `textMuted` regardless of column. The mockup
+      draws the ring in two different strokes (faint for a bare Todo ring, a darker
+      `textMuted` once any wedge appears) and traces the wedges as raw arc paths — reasonable
+      for a static SVG, but readable with Fluent's own half-fill and hinted-fill icon
+      variants instead, which already encode "some progress" / "more progress" without this
+      component drawing geometry. One tone (not two) also matches the colour-budget rule the
+      facts step leaned on for `run.ink`: the glyph's SHAPE carries the state; its colour
+      stays out of the budget colour spends on things that move. Neither mockup shows a Done
+      or Blocked row, so those two icons are chosen to match the card's own icon list, not a
+      visual reference — same as the facts step already flagged.
+    - **`run`'s label is computed, never read off `runPhase`'s own `label` string.**
+      `runPhase(task, ctx.subtasks ?? [], ctx.liveRunTaskIds, ctx.mergingTaskIds)`
+      (`board.ts:460`) stays the one source of truth for "is anything moving", but its
+      `label` is prose for a different reader ("Running step 2 of 5", "Paused — usage limit
+      (step 3 of 5)") — not the row's "Step 2 of 4". So: no `run` part unless `.spinner` is
+      true; then branch on `.phase`. `'merging'` → `'Merging'`. Otherwise, when `subtasks`
+      is non-empty, pull `n`/`m` out of `.label` with `/step (\d+) of (\d+)/i` and render
+      `` `Step ${n} of ${m}` `` — reusing the index `runPhase` already found for its
+      `running`/`starting` branches instead of re-walking `subtasks` with a second copy of
+      its predicates (its `TERMINAL` set is private to `board.ts`, so duplicating the walk
+      would mean either exporting it or drifting from it over time). When the regex finds
+      nothing (no subtasks, or a phase whose label carries none), fall back to `'Starting'`
+      for `phase === 'starting'` and `'Running'` for everything else `.spinner` leaves — which
+      for `runPhase` is only `running`/`starting`/`merging`, so that fallback never actually
+      fires for `merging` or for a bare `running: true` task.status in practice, but costs
+      nothing to keep as the exhaustive default.
+    - **`mr` trusts `ctx.mergeRequests` as already scoped to this task.** `issueRowParts`
+      does not re-run the key/branch matching `matchTaskId` does in either forge's
+      reconciler — that is the container's job (F13.13/F13.15), the same division
+      `issueRowParts`'s other optional parts already keep from their containers. Given that
+      list, it picks `mergeRequests.find(m => m.state === 'opened') ?? mergeRequests.find(m
+      => m.state === 'merged')`; `closed`/`locked` rows are never chosen (and produce no part
+      if that's all there is). `ref: mrRef(mr)` (`mergeRequest.ts:215`), `url: mr.webUrl`.
+    - **`due`'s "flagged" test compares local calendar days, computed from the injected
+      `now`, never `Date.now()`.** Both `ctx.now` and `task.dueAt` (`model.ts:1235`, epoch
+      ms) are floored to local midnight (`new Date(x).setHours(0,0,0,0)`); flagged when the
+      due day's floor is `<=` today's floor, except when `columnForTask(task) === 'done'` —
+      finished work is never overdue, however old its `dueAt`. Label is `'Today'` exactly
+      when the two floors are equal, otherwise `new Date(dueAt).toLocaleDateString(undefined,
+      { month: 'short', day: 'numeric' })` — including on a flagged, *past* day (e.g. an
+      overdue ticket reads "Oct 10", styled `attention`, not "Today"); neither mockup shows
+      that state, so this is read off the card's own rule, not a visual reference.
+    - **Right-cluster order is run → mr → due → avatar**, matching the mockup's own pixel
+      order once the two mutually-exclusive middle slots (no row shows `mr` and `due`
+      together) are read as one slot: the run pill sits leftmost of the cluster
+      (`x="828"`, mockup `TM-71`), the avatar is always rightmost (`cx="991"`, every row),
+      and `mr`/`due` share the slot between them, right-aligned against the avatar. The two
+      ARE allowed to coexist in real data (an in-review ticket can also carry a due date);
+      `mr` sits closer to the title than `due` because the mockup's one row that shows
+      `mr` (`TM-176`) has no `due` to compare against, so the title-to-avatar reading order
+      (what's blocking it, then when it's due, then who owns it) is the tie-break.
+    - **`IssueRowContext` carries no story about WHICH task's subtasks/MRs these are** —
+      `subtasks`, `mergeRequests`, `liveRunTaskIds` and `mergingTaskIds` are exactly the
+      slices `runPhase` and the `mr` rule above need, already filtered to this row's task by
+      the container. `issueRowParts` itself touches no store, no IPC channel and no other
+      task's data — it stays as pure as `runPhase` itself.
+    - **`IssueRow`'s own state is one `useMemo` and three DOM handlers**, nothing else:
+      `parts = useMemo(() => issueRowParts(task, ctx), [task, ctx])`; `onClick` →
+      `onSelect?.(task.id)`; `onDoubleClick` and an Enter `onKeyDown` both → `onOpen?.(task.id)`
+      (space, roving focus, and virtualised list wiring are F13.13/F13.15's job — the row
+      takes `id` as a prop rather than computing one so the container can own that scheme).
+      Selected styling is two rules, not a single combined one: the fill
+      (`background: var(--tm-selected-tint)`) and title recolour/weight apply whenever
+      `selected`; the bar is the row's `::before` (`width: 3px`, `height: 60%`, `top: 20%`,
+      `border-radius`, `background: var(--tm-accent-bar)`) shown only alongside that same
+      fill — there is no "bar without tint" or "tint without bar" state, so the two are one
+      Griffel rule keyed on `selected`, not two independently-toggled styles. Hover is a
+      second, non-exclusive rule (a neutral subtle background) that still applies when
+      `selected` — the mockup shows no hover-while-selected state, so this stays the
+      simplest composition (both backgrounds painted, selected's tint winning by being the
+      more opaque of the two) rather than a special-cased third style.
 
 - [ ] F13.13 Open the F12 panel as a peek on Space and as a full-screen issue on Enter @needs: F13.11 Render the sidebar in both hosts with tree keyboard navigation, F13.12 Build the shared issue row with the selected state
 
