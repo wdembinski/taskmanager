@@ -62,6 +62,8 @@ export interface SemanticTokens {
   statusGradient: string;
   /** The three stops behind {@link SemanticTokens.statusGradient}, for F13.2's contrast pairs. */
   statusGradientStops: readonly [string, string, string];
+  /** Text/glyph colour on {@link SemanticTokens.statusGradient}. */
+  statusGradientInk: string;
   /** The status bar's fill when anything waits on a human; see open question 1. */
   attention: string;
   /** Text/glyph colour on {@link SemanticTokens.attention}. */
@@ -94,6 +96,7 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     accentBar: '#0F6CBD',
     statusGradient: 'linear-gradient(90deg, #0F6CBD, #2A72CA, #5260D3)',
     statusGradientStops: ['#0F6CBD', '#2A72CA', '#5260D3'],
+    statusGradientInk: '#FFFFFF',
     attention: UNREAD_ORANGE,
     attentionInk: '#1b1b1b',
     run: {
@@ -125,6 +128,7 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     accentBar: '#4FA3E8',
     statusGradient: 'linear-gradient(90deg, #0F6CBD, #2A72CA, #5260D3)',
     statusGradientStops: ['#0F6CBD', '#2A72CA', '#5260D3'],
+    statusGradientInk: '#FFFFFF',
     attention: UNREAD_ORANGE,
     attentionInk: '#1b1b1b',
     run: {

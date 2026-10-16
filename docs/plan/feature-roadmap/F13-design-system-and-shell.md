@@ -126,6 +126,7 @@ below are taken from the v9 mockups and checked for contrast in F13.2.
 | `selectedTint` | `#EBF3FC` | `#1D2B38` | the selected row's fill |
 | `accentBar` | `#0F6CBD` | `#4FA3E8` | the selected row's short left bar |
 | `statusGradient` | `#0F6CBD → #2A72CA → #5260D3` | same | the status bar, left to right |
+| `statusGradientInk` | `#FFFFFF` | same | text/glyph colour on `statusGradient` |
 | `attention` | orange (see open question 1) | same | the status bar under attention, "today" |
 | `run` | `#07748C` on a `#E6FAFE` pill | `FLUO.cyan` `#22E4FF` on `rgba(34,228,255,.12)` | a running agent; light needs the deeper cyan |
 | `mono` | Cascadia Code, JetBrains Mono, Consolas | same | keys, branches, versions |
@@ -459,7 +460,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     own list; the existing "both NAVs carry an automations / activity / issues tab" assertions
     move onto `SHELL_NAV`. Gates green.
 
-- [ ] F13.9 Restyle the status bar as the gradient bar with the orange attention fill @needs: F13.2 Add a pure contrast checker and assert every token pair in both themes
+- [x] F13.9 Restyle the status bar as the gradient bar with the orange attention fill @needs: F13.2 Add a pure contrast checker and assert every token pair in both themes
 
   - `StatusBar.tsx` reads `statusGradient` and `attention` from tokens; white text on the
     gradient, dark ink on orange; `StatusDot` keeps its ring; the busy ring keeps

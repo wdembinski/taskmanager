@@ -3,7 +3,6 @@ import { AA, composite, contrastRatio, parseColor, type Rgba } from './contrast'
 import { appDarkTheme, themeFor } from './theme';
 import { SEMANTIC, pipelineColor, statusIndicatorColor, type ColorScheme } from './tokens';
 
-const WHITE = '#FFFFFF';
 const SCHEMES: readonly ColorScheme[] = ['light', 'dark'];
 
 describe('contrastRatio', () => {
@@ -158,8 +157,8 @@ describe.each(SCHEMES)('shell token pairs (%s)', (scheme) => {
 
   describe('status gradient', () => {
     for (const stop of s.statusGradientStops) {
-      it(`white on ${stop} >= ${AA.text}`, () => {
-        expect(contrastRatio(WHITE, stop)).toBeGreaterThanOrEqual(AA.text);
+      it(`statusGradientInk on ${stop}`, () => {
+        expect(contrastRatio(s.statusGradientInk, stop)).toBeGreaterThanOrEqual(AA.text);
       });
     }
   });
