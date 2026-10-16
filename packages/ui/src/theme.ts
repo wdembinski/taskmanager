@@ -13,10 +13,27 @@
  * process, and they are tested. Moving them here would trade a tested mapping for a
  * bag of hex.
  */
-import { makeStaticStyles, tokens, webDarkTheme, type Theme } from '@fluentui/react-components';
+import {
+  createDarkTheme,
+  createLightTheme,
+  makeStaticStyles,
+  tokens,
+  type BrandVariants,
+  type Theme,
+} from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
-import type { PipelineStatus } from '@tm/shared/mergeRequest';
-import type { TaskStatus } from '@tm/shared/model';
+import {
+  ATTENTION_TINT_BY_SCHEME,
+  CODE_BY_SCHEME,
+  FLUO_BY_SCHEME,
+  SEMANTIC,
+  graphInk,
+  pipelineColor,
+  statusIndicatorColor,
+  type ColorScheme,
+} from './tokens';
+
+export type { ColorScheme };
 
 /**
  * The mono stack, written out in a dozen `makeStyles` blocks before this existed.
@@ -59,10 +76,13 @@ export const ACCENT = {
  * dark grey a neutral code background is almost invisible, so inline code read as
  * ordinary prose and a fenced block had no edge of its own. A slight hue shift separates
  * "this is code" from "this is text" without adding a border to every span.
+ *
+ * The dark entry of `CODE_BY_SCHEME` (`tokens.ts`); the light entry is reachable there
+ * until F13.16 moves callers onto the scheme.
  */
-export const CODE_BG = '#16202e';
-export const CODE_INLINE_BG = '#1d2a3a';
-export const CODE_BORDER = '#26364a';
+export const CODE_BG = CODE_BY_SCHEME.dark.bg;
+export const CODE_INLINE_BG = CODE_BY_SCHEME.dark.inlineBg;
+export const CODE_BORDER = CODE_BY_SCHEME.dark.border;
 
 /**
  * The card's ring width. There is only one ring now — "this card wants you". Selection
@@ -81,21 +101,74 @@ export const RING = { attention: 3 } as const;
 export const EDITOR_FOREGROUND = '#CCCCCC';
 
 /**
- * **The app's theme** — Fluent dark with softer body text, and the one both hosts mount.
- *
- * It lives here rather than in each `main.tsx` because it was duplicated in both, four
- * tokens at a time, and a four-line copy is exactly the kind that drifts: the desktop
- * window and the browser tab would have gone on rendering the same board in two different
- * greys and nothing would have flagged it. Everything else stays stock Fluent, so contrast
- * ratios for brand/danger/success surfaces are untouched.
+ * Fluent's own 16-step web brand ramp around the app's one brand blue — step 80 is
+ * `#0F6CBD` (`SEMANTIC.light.brand`), step 160 is `#EBF3FC` (`SEMANTIC.light.selectedTint`).
+ * `createLightTheme`/`createDarkTheme` derive every brand-coloured Fluent token
+ * (`colorBrandBackground`, `colorCompoundBrandStroke`, …) from this one ramp.
+ */
+export const BRAND_RAMP: BrandVariants = {
+  10: '#061724',
+  20: '#082338',
+  30: '#0A2E4A',
+  40: '#0C3B5E',
+  50: '#0E4775',
+  60: '#0F548C',
+  70: '#115EA3',
+  80: '#0F6CBD',
+  90: '#2886DE',
+  100: '#479EF5',
+  110: '#62ABF5',
+  120: '#77B7F7',
+  130: '#96C6FA',
+  140: '#B4D6FA',
+  150: '#CFE4FA',
+  160: '#EBF3FC',
+};
+
+/**
+ * **The light theme** — Fluent's generated light theme, with the neutral background and
+ * foreground tokens pulled from `SEMANTIC.light` so a Fluent `Button` and a bare
+ * `makeStyles` div agree about what "canvas" and "text" mean. Everything else (brand,
+ * danger, success surfaces) stays stock Fluent, generated from {@link BRAND_RAMP}.
+ */
+export const appLightTheme: Theme = {
+  ...createLightTheme(BRAND_RAMP),
+  colorNeutralBackground1: SEMANTIC.light.paneOpaque,
+  colorNeutralBackground2: SEMANTIC.light.canvas,
+  colorNeutralForeground1: SEMANTIC.light.text,
+  colorNeutralForeground1Hover: SEMANTIC.light.text,
+  colorNeutralForeground1Pressed: SEMANTIC.light.text,
+  colorNeutralForeground1Selected: SEMANTIC.light.text,
+  colorNeutralForeground2: SEMANTIC.light.textMuted,
+  colorNeutralForeground4: SEMANTIC.light.textFaint,
+};
+
+/**
+ * **The dark theme** — Fluent's generated dark theme (from the same {@link BRAND_RAMP}),
+ * with the neutral background and foreground tokens pulled from `SEMANTIC.dark`, except
+ * `colorNeutralForeground1` (+ Hover/Pressed/Selected): it stays {@link EDITOR_FOREGROUND}
+ * rather than `SEMANTIC.dark.text`. Fluent's generated dark theme sets body text to pure
+ * white, which is what a code editor deliberately avoids: at this text density
+ * white-on-near-black glares and every word reads as emphasis. The editor grey is the
+ * reference the user asked for, and it predates the token table — so it wins here on
+ * purpose, not by oversight (`tokens.test.ts` asserts it).
  */
 export const appDarkTheme: Theme = {
-  ...webDarkTheme,
+  ...createDarkTheme(BRAND_RAMP),
+  colorNeutralBackground1: SEMANTIC.dark.paneOpaque,
+  colorNeutralBackground2: SEMANTIC.dark.canvas,
   colorNeutralForeground1: EDITOR_FOREGROUND,
   colorNeutralForeground1Hover: EDITOR_FOREGROUND,
   colorNeutralForeground1Pressed: EDITOR_FOREGROUND,
   colorNeutralForeground1Selected: EDITOR_FOREGROUND,
+  colorNeutralForeground2: SEMANTIC.dark.textMuted,
+  colorNeutralForeground4: SEMANTIC.dark.textFaint,
 };
+
+/** The theme for a resolved scheme — the one seam F13.4 mounts through. */
+export function themeFor(scheme: ColorScheme): Theme {
+  return scheme === 'light' ? appLightTheme : appDarkTheme;
+}
 
 /**
  * A px size that follows the user's font-size setting.
@@ -179,74 +252,34 @@ export function scaleTheme(base: Theme, basePx: number): Theme {
  *
  * `pending`, `skipped` and friends stay neutral grey on purpose — "nothing is happening" is
  * information too, and a fluo dot for it would make every idle row shout.
+ *
+ * The dark entry of `FLUO_BY_SCHEME` (`tokens.ts`); the light entry is reachable there
+ * until F13.14/F13.16 move callers onto the scheme.
  */
-export const FLUO = {
-  /** Moving: running, starting, in progress. Also every spinner in the app. */
-  cyan: '#22E4FF',
-  /**
-   * The spinner's *track* — the ring behind the moving arc. Translucent so it sits on
-   * whatever surface the spinner lands on.
-   */
-  cyanDim: 'rgba(34, 228, 255, 0.22)',
-  /**
-   * The same dark half of the spinner, opaque: roughly {@link FLUO.cyanDim} composited over
-   * a card. The trough of the agent glyph's pulse, so a pulsing glyph and a turning spinner
-   * are visibly the same two colours rather than two different cyans.
-   */
-  cyanDeep: '#285258',
-  /** Finished well: done, a passed stage. */
-  green: '#2BFF88',
-  /** Finished badly: failed. */
-  red: '#FF4D6A',
-  /** Stopped and wants a human: waiting, blocked, a cancelled pipeline. Warm, like the ring. */
-  amber: '#FFC53D',
-  /** In review — the one column that is neither in flight nor finished. */
-  violet: '#C77DFF',
-} as const;
+export const FLUO = FLUO_BY_SCHEME.dark;
 
 /**
  * A task status as an indicator colour — the card's step dots and the step rows' badges.
  *
  * Shared rather than owned by the card, because the two surfaces show the same steps: a
  * step that is amber on the card and orange in the detail pane reads as two states.
+ *
+ * The dark entry of `statusIndicatorColor` (`tokens.ts`); the light entry is reachable
+ * there until F13.14/F13.16 move callers onto the scheme.
  */
-export const STATUS_INDICATOR_COLOR: Record<TaskStatus, string> = {
-  // Not started, or over and not worth a colour: grey is the honest reading.
-  pending: tokens.colorNeutralForeground4,
-  stopped: tokens.colorNeutralForeground4,
-  cancelled: tokens.colorNeutralForeground4,
-  'in-progress': FLUO.cyan,
-  running: FLUO.cyan,
-  'in-review': FLUO.violet,
-  'waiting-input': FLUO.amber,
-  'blocked-by-limit': FLUO.amber,
-  blocked: FLUO.amber,
-  done: FLUO.green,
-  failed: FLUO.red,
-};
+export const STATUS_INDICATOR_COLOR = statusIndicatorColor('dark');
 
 /**
  * A pipeline status as a dot colour.
  *
  * Stated once because three surfaces draw it — the card's MR row, the detail pane's, and
  * now the per-stage row — and a pipeline that is green on the card and grey in the pane
- * looks like two pipelines. Keyed by `PipelineStatus` so a new status cannot be forgotten.
+ * looks like two pipelines.
+ *
+ * The dark entry of `pipelineColor` (`tokens.ts`); the light entry is reachable there
+ * until F13.14/F13.16 move callers onto the scheme.
  */
-export const PIPELINE_COLOR: Record<PipelineStatus, string> = {
-  // Nothing is happening yet, or ever will: grey says that better than a colour would.
-  unknown: tokens.colorNeutralForeground4,
-  // Same grey as `unknown` — the difference between "no pipeline we could read" and "asked,
-  // and there genuinely is none" is a labelling question, not a colour one.
-  none: tokens.colorNeutralForeground4,
-  created: tokens.colorNeutralForeground4,
-  pending: tokens.colorNeutralForeground4,
-  manual: tokens.colorNeutralForeground4,
-  skipped: tokens.colorNeutralForeground4,
-  running: FLUO.cyan,
-  success: FLUO.green,
-  failed: FLUO.red,
-  canceled: FLUO.amber,
-};
+export const PIPELINE_COLOR = pipelineColor('dark');
 
 /**
  * The commit graph's ink (`GitGraphPane`), and the whole of its colour budget.
@@ -262,21 +295,11 @@ export const PIPELINE_COLOR: Record<PipelineStatus, string> = {
  * card's running band, the chain's travelling dash, every spinner) — and it is why this is
  * {@link FLUO.cyan} rather than the brand accent: cyan is already what this app means by
  * "working", so a live branch in the graph and a live card on the board read as one state.
+ *
+ * The dark entry of `graphInk` (`tokens.ts`); the light entry is reachable there until
+ * F13.15 moves `GitGraphPane` onto the scheme.
  */
-export const GRAPH_INK = {
-  /** Every lane at rest, and the border of every dot. */
-  line: tokens.colorNeutralStroke2,
-  /**
-   * The lines a MERGE pulled in — its second and later parents. A step fainter than
-   * {@link GRAPH_INK.line}, because a merge's incoming lines are the ones you read past
-   * when following a branch down its own lane.
-   */
-  merge: tokens.colorNeutralStroke3,
-  /** A commit's dot. Neutral: every commit in the window is equally over and done with. */
-  dot: tokens.colorNeutralForeground3,
-  /** The one moving thing — the branch an agent is on this second, and its dot. */
-  live: FLUO.cyan,
-} as const;
+export const GRAPH_INK = graphInk('dark');
 
 /**
  * The document's backdrop, wherever the shell is mounted: the Electron window's own
@@ -405,11 +428,13 @@ export const TOASTER_ID = 'app-toaster';
 /**
  * The tint an "attention" row takes instead of a border.
  *
- * A literal rather than a computed alpha because {@link ACCENT.unread} is a hex string
- * and Griffel does no colour maths. Used by both the card's merge-request rows and the
- * detail pane's — the two must match or the same MR looks like two different states.
+ * Used by both the card's merge-request rows and the detail pane's — the two must match
+ * or the same MR looks like two different states.
+ *
+ * The dark entry of `ATTENTION_TINT_BY_SCHEME` (`tokens.ts`); the light entry is
+ * reachable there until F13.16 moves callers onto the scheme.
  */
-export const ATTENTION_TINT = 'rgba(242, 169, 0, 0.13)';
+export const ATTENTION_TINT = ATTENTION_TINT_BY_SCHEME.dark;
 
 /** A subtle hairline between a card's sections. Re-exported so the value is stated once. */
 export const sectionRule = (): string => `1px solid ${tokens.colorNeutralStroke2}`;
