@@ -62,6 +62,7 @@ import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
 import {
   buildDesktopCommands,
+  DESKTOP_SCREENS,
   type DesktopPaletteSnapshot,
   type DesktopPaletteTab,
 } from './paletteSource';
@@ -128,19 +129,27 @@ const useStyles = makeStyles({
 // already knows about, and the two can never drift apart.
 type TabId = DesktopPaletteTab;
 
+/** Icons have no place in the palette's own data, so the rail layers them onto
+ *  `DESKTOP_SCREENS` — the one list of screens, shared with the palette (F9.4). */
+const NAV_ICON: Record<TabId, JSX.Element> = {
+  mytasks: <TaskListSquareLtrRegular />,
+  projects: <FolderRegular />,
+  tickets: <AppsListDetailRegular />,
+  issues: <TicketDiagonalRegular />,
+  automations: <FlashRegular />,
+  performance: <DataTrendingRegular />,
+  activity: <PulseRegular />,
+  attention: <AlertRegular />,
+  settings: <SettingsRegular />,
+  scratch: <PlayRegular />,
+};
+
 /** The rail, in order. The label is the tooltip and the accessible name. */
-const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
-  { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
-  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
-  { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
-  { id: 'issues', label: 'Issues', icon: <TicketDiagonalRegular /> },
-  { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
-  { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
-  { id: 'activity', label: 'Activity', icon: <PulseRegular /> },
-  { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
-  { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
-  { id: 'scratch', label: 'Scratch run', icon: <PlayRegular /> },
-];
+const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = DESKTOP_SCREENS.map((screen) => ({
+  id: screen.id,
+  label: screen.title,
+  icon: NAV_ICON[screen.id],
+}));
 
 /** What each kind of ask is called in a toast — short, because a toast is one glance. */
 const TOAST_TITLE: Record<AttentionItem['kind'], string> = {

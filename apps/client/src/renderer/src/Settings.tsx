@@ -84,6 +84,7 @@ import type {
   LinearTeamList,
 } from '@shared/ipc';
 import { cloudAuthHint, cloudTokenPlaceholder } from './cloudAuthHint';
+import { SETTINGS_SECTIONS } from './paletteSource';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
 import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
@@ -809,19 +810,11 @@ export function Settings({
         onTabSelect={(_e, d) => setSection(d.value as SettingsSection)}
         className={styles.nav}
       >
-        <Tab value="general">General</Tab>
-        <Tab value="board">Board</Tab>
-        <Tab value="features">Features</Tab>
-        <Tab value="jira">JIRA</Tab>
-        <Tab value="gitlab">GitLab</Tab>
-        <Tab value="github">GitHub</Tab>
-        <Tab value="linear">Linear</Tab>
-        <Tab value="cloud">Cloud</Tab>
-        <Tab value="people">People</Tab>
-        <Tab value="agentProfiles">Agent profiles</Tab>
-        <Tab value="skills">Skills</Tab>
-        <Tab value="workflows">Workflows</Tab>
-        <Tab value="promptTemplates">Prompt templates</Tab>
+        {SETTINGS_SECTIONS.map((s) => (
+          <Tab key={s.id} value={s.id}>
+            {s.title}
+          </Tab>
+        ))}
       </TabList>
 
       {section === 'people' ? (

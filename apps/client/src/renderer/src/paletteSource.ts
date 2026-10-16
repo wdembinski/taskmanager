@@ -35,8 +35,9 @@ export type DesktopPaletteTab =
   | 'settings'
   | 'scratch';
 
-/** The nav rail, in palette order — titles match `App.tsx`'s `NAV` labels. */
-const NAV_TABS: ReadonlyArray<{ id: DesktopPaletteTab; title: string }> = [
+/** The nav rail, in palette order — the single source `App.tsx`'s own `NAV` reads its
+ *  labels from, so the rail and the palette can never list a different set of screens. */
+export const DESKTOP_SCREENS: ReadonlyArray<{ id: DesktopPaletteTab; title: string }> = [
   { id: 'mytasks', title: 'My Tasks' },
   { id: 'projects', title: 'Projects' },
   { id: 'tickets', title: 'Tickets' },
@@ -49,8 +50,10 @@ const NAV_TABS: ReadonlyArray<{ id: DesktopPaletteTab; title: string }> = [
   { id: 'scratch', title: 'Scratch run' },
 ];
 
-/** `Settings.tsx`'s own tabs, in the order its `TabList` renders them. */
-const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSection; title: string }> = [
+/** `Settings.tsx`'s own tabs, in the order its `TabList` renders them — the single source
+ *  it reads its `<Tab>` list from, so a section added here is a section Settings already
+ *  shows. */
+export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSection; title: string }> = [
   { id: 'general', title: 'General' },
   { id: 'board', title: 'Board' },
   { id: 'features', title: 'Features' },
@@ -111,7 +114,7 @@ function cardKeywords(task: Task): string[] {
 
 /** The `navigate` group: one row per screen, plus one per Settings section. */
 function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
-  const screens = NAV_TABS.map((tab): PaletteCommand => ({
+  const screens = DESKTOP_SCREENS.map((tab): PaletteCommand => ({
     id: `nav:${tab.id}`,
     group: 'navigate',
     title: tab.title,
