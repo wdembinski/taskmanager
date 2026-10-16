@@ -413,13 +413,27 @@ describe('the automations tab both hosts render from the shared view (F1.17)', (
   }
 
   it("both hosts' nav rails carry an automations tab", () => {
-    for (const path of [WEB_APP, DESKTOP_APP]) {
-      expect(
-        read(path),
-        `${path} must list { id: 'automations', … } in its NAV — a view nothing links to is ` +
-          'a file, not a tab.',
-      ).toMatch(/id:\s*'automations'/);
-    }
+    expect(
+      read(WEB_APP),
+      `${WEB_APP} must list { id: 'automations', … } in its NAV — a view nothing links to is ` +
+        'a file, not a tab.',
+    ).toMatch(/id:\s*'automations'/);
+
+    /**
+     * Since F9.4 (`e876e6f2`) the desktop rail is built from `DESKTOP_SCREENS.map(...)`
+     * (`App.tsx:148`) rather than listing its own `{ id: … }` literals, so the literal this
+     * test looks for now lives in `paletteSource.ts`. The `.toMatch` below guards that the
+     * rail still derives from the list — if it stops, reading the list alone would prove
+     * nothing about what ids the rail actually carries.
+     */
+    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
+
+    const DESKTOP_SCREENS_PATH = 'apps/client/src/renderer/src/paletteSource.ts';
+    expect(
+      read(DESKTOP_SCREENS_PATH),
+      `${DESKTOP_SCREENS_PATH} must list { id: 'automations', … } in DESKTOP_SCREENS — a view ` +
+        'nothing links to is a file, not a tab.',
+    ).toMatch(/id:\s*'automations'/);
   });
 });
 
@@ -1028,7 +1042,7 @@ describe('Linear: the web reads its settings and does not configure them', () =>
       expect(
         offenders,
         `${offenders.join(', ')} invokes ${channel}. Both are 'host-only' in ipcRelay.ts ` +
-          "because the API key never leaves the desktop — a caller here can only ever reach " +
+          'because the API key never leaves the desktop — a caller here can only ever reach ' +
           "the transport's refusal, and should never try.",
       ).toEqual([]);
     }
