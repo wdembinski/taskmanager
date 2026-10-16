@@ -261,7 +261,7 @@ from disagreeing — the same reason F12 made one panel.
     the script fails when the migration entry is removed (proven once). `pnpm typecheck`,
     `pnpm test`, `pnpm build` green.
 
-- [ ] F14.2 Write the shared archive predicate used by every surface
+- [x] F14.2 Write the shared archive predicate used by every surface
 
   - `packages/shared/src/trackerArchive.ts` is built on **structural input types, not**
     `Milestone` / `Project` / `Task` themselves (`packages/shared/src/model.ts:1320`, `:201`,
