@@ -30,6 +30,7 @@ import type { TaskLink } from '@tm/shared/taskChain';
 import { columnBadge } from '../taskStatus';
 import { useTransport } from '../transport';
 import { linkedTicketRows, type ChainPointer, type LinkedTicketRow } from './linkedTickets';
+import { TicketLinkAddRow, type LinkCandidate } from './TicketLinksEditor';
 import { useTicketLinks } from './useTicketLinks';
 
 /** Keyed the same way `BacklogTable`'s own `TYPE_ICON` resolves one — `IssueType` only; a
@@ -87,6 +88,8 @@ export interface TaskLinksSectionProps {
   /** Every link on the board; this section picks out the ones touching `task`. */
   chainLinks?: readonly TaskLink[];
   tasksById: ReadonlyMap<string, Task>;
+  /** This project's other tickets — candidates for the add row at the bottom. */
+  candidates?: LinkCandidate[];
   /** Show the ticket at the other end of a row in this same pane. */
   onOpenTask?: (taskId: string) => void;
   /** `TaskChain`'s own wrapper, so the chain pointer row can scroll to it — null when that
@@ -99,6 +102,7 @@ export function TaskLinksSection({
   ticketLinks,
   chainLinks = [],
   tasksById,
+  candidates = [],
   onOpenTask,
   chainRef,
 }: TaskLinksSectionProps): JSX.Element | null {
@@ -177,6 +181,7 @@ export function TaskLinksSection({
           <Caption1>{chainPointerText(section.chain)} — see Chain</Caption1>
         </button>
       )}
+      <TicketLinkAddRow ticket={task} candidates={candidates} />
     </div>
   );
 }

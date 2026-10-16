@@ -6,7 +6,12 @@
  */
 import { columnForTask } from '@tm/shared/board';
 import type { BoardColumn, IssueType, Task, TicketLink } from '@tm/shared/model';
-import { linksFor, TICKET_LINK_VOCABULARY } from '@tm/shared/ticketLinks';
+import {
+  linksFor,
+  TICKET_LINK_REFUSAL_MESSAGE,
+  TICKET_LINK_VOCABULARY,
+  type TicketLinkResult,
+} from '@tm/shared/ticketLinks';
 import type { TaskLink } from '@tm/shared/taskChain';
 
 export interface LinkedTicketRow {
@@ -110,4 +115,14 @@ export function linkedTicketRows(
   }
 
   return { groups, chain };
+}
+
+/**
+ * Why `ticketLink:add` refused to draw a link, in words — `null` when it did not, so a caller
+ * can show a `MessageBar` on the refusal and nothing at all on the ok case. Pure wrapper
+ * around `TICKET_LINK_REFUSAL_MESSAGE` so `TicketLinkAddRow` never has to read `result.reason`
+ * itself.
+ */
+export function linkAddRefusal(result: TicketLinkResult): string | null {
+  return result.status === 'refused' ? TICKET_LINK_REFUSAL_MESSAGE[result.reason] : null;
 }

@@ -76,8 +76,10 @@ import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
+import { linkedTicketRows } from './projects/linkedTickets';
 import { TaskLinksSection } from './projects/TaskLinksSection';
 import { TaskTicketSection } from './projects/TaskTicketSection';
+import { useTicketLinks } from './projects/useTicketLinks';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
 import {
   EMPTY_TIMELINE,
@@ -804,6 +806,18 @@ export function TaskDetail({
     [chainTasksById, task?.projectId],
   );
 
+  // Resolved once here — self-loaded only when no host has wired `ticketLinks` through yet
+  // (F12.6) — so `TaskLinksSection` below never opens a second subscription for the same
+  // list; it just receives this array back as its own `ticketLinks` prop.
+  const resolvedTicketLinks = useTicketLinks(ticketLinks);
+  // Whether the Links section will have anything to show, decided the same way it decides
+  // internally — so the Ticket section below knows to offer the add row itself instead,
+  // for a native ticket with neither a ticket link nor a chain link.
+  const linksSection = useMemo(
+    () => (task ? linkedTicketRows(task, resolvedTicketLinks, chainTasksById, chainLinks) : null),
+    [task, resolvedTicketLinks, chainTasksById, chainLinks],
+  );
+
   if (!task) {
     return (
       <div className={styles.root}>
@@ -1212,13 +1226,15 @@ export function TaskDetail({
               agentProjects={agentProjects}
               labels={labels}
               milestones={milestones}
+              addLink={linksSection === null ? { candidates: projectTickets } : undefined}
             />
           )}
           <TaskLinksSection
             task={task}
-            ticketLinks={ticketLinks}
+            ticketLinks={resolvedTicketLinks}
             chainLinks={chainLinks}
             tasksById={chainTasksById}
+            candidates={projectTickets}
             onOpenTask={onOpenTask}
             chainRef={chainSectionRef}
           />

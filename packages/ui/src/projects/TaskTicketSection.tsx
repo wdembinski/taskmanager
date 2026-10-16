@@ -6,16 +6,23 @@
  * Folded by default and remembered per DEVICE, not per card (`useDeviceFold`): a ticket's
  * fields are reference material you check, not something you are mid-edit on every time you
  * open a different card, so the fold should not re-ask on every single one.
+ *
+ * `addLink`: `TaskDetail` sets this when the Links section (`TaskLinksSection`) has nothing
+ * to show — a native ticket with no ticket links and no chain links otherwise has no way to
+ * draw its first link at all, since that add row normally lives at the bottom of the Links
+ * section itself.
  */
-import { Text, makeStyles } from '@fluentui/react-components';
+import { Caption1, Text, makeStyles } from '@fluentui/react-components';
 import type { Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
 import { FoldToggle } from '../FoldToggle';
 import { useDeviceFold } from './deviceFold';
 import { ticketSummaryLine } from './ticketSummary';
 import { TicketFieldsSection } from './TicketFieldsSection';
+import { TicketLinkAddRow, type LinkCandidate } from './TicketLinksEditor';
 
 const useStyles = makeStyles({
   box: { display: 'flex', flexDirection: 'column', gap: '8px' },
+  linksBox: { display: 'flex', flexDirection: 'column', gap: '6px' },
 });
 
 export interface TaskTicketSectionProps {
@@ -30,6 +37,8 @@ export interface TaskTicketSectionProps {
   labels: TicketLabel[];
   /** This project's milestones. */
   milestones: Milestone[];
+  /** Set when the Links section is absent — candidates for this ticket's first link. */
+  addLink?: { candidates: LinkCandidate[] };
 }
 
 export function TaskTicketSection({
@@ -39,6 +48,7 @@ export function TaskTicketSection({
   agentProjects,
   labels,
   milestones,
+  addLink,
 }: TaskTicketSectionProps): JSX.Element {
   const styles = useStyles();
   const [open, toggle] = useDeviceFold('tm.taskDetail.ticketOpen', false);
@@ -57,6 +67,12 @@ export function TaskTicketSection({
           labels={labels}
           milestones={milestones}
         />
+      )}
+      {open && addLink && (
+        <div className={styles.linksBox}>
+          <Caption1>Links</Caption1>
+          <TicketLinkAddRow ticket={ticket} candidates={addLink.candidates} />
+        </div>
       )}
     </div>
   );
