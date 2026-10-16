@@ -17,6 +17,12 @@ describe('sectionNeedsSettings', () => {
     expect(sectionNeedsSettings('desktop')).toBe(false);
   });
 
+  it('lets the Shortcuts pane render without settings — it is a static list', () => {
+    // `KeyboardShortcutsList` holds no `AppSettings` field, same reasoning as Skills and
+    // Workflows below, so it draws whether or not `settings:get` has answered.
+    expect(sectionNeedsSettings('shortcuts')).toBe(false);
+  });
+
   it('still gates the panes that render AppSettings fields', () => {
     // These six ARE forms over the blob, so they genuinely cannot draw until it loads.
     expect(sectionNeedsSettings('general')).toBe(true);
@@ -57,6 +63,7 @@ describe('sectionNeedsSettings', () => {
       skills: false,
       workflows: false,
       promptTemplates: true,
+      shortcuts: false,
     };
     for (const [section, expected] of Object.entries(all)) {
       expect(sectionNeedsSettings(section as SettingsSection)).toBe(expected);

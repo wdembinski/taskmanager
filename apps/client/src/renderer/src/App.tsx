@@ -57,6 +57,7 @@ import { AutomationsView } from '@ui/automations/AutomationsView';
 import { IssuesScreen } from '@ui/issues/IssuesScreen';
 import { CommandPalette } from '@ui/palette/CommandPalette';
 import { useGlobalShortcut } from '@ui/palette/shortcut';
+import { shortcutLabel } from '@ui/palette/shortcutLabel';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
@@ -464,6 +465,10 @@ export function App(): JSX.Element {
             })}
             selected={tab}
             onSelect={(id) => setTab(id as TabId)}
+            paletteHint={{
+              label: shortcutLabel('mod+k', window),
+              onClick: () => setPaletteOpen(true),
+            }}
           />
         }
         banners={

@@ -67,6 +67,7 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSection; title: stri
   { id: 'skills', title: 'Skills' },
   { id: 'workflows', title: 'Workflows' },
   { id: 'promptTemplates', title: 'Prompt templates' },
+  { id: 'shortcuts', title: 'Shortcuts' },
 ];
 
 /**

@@ -31,7 +31,8 @@ export type SettingsSection =
   | 'desktop'
   | 'skills'
   | 'workflows'
-  | 'promptTemplates';
+  | 'promptTemplates'
+  | 'shortcuts';
 
 /**
  * The sections whose form reads `AppSettings`. Everything NOT here draws without it — see the
