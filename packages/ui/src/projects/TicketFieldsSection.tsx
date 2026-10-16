@@ -2,8 +2,8 @@
  * The twelve ticket-only fields of a native ticket — type, epic, milestone, labels, story
  * points, estimate, start, due, assignee and reporter — plus the label and milestone
  * managers and the read-only delegated-agent indicator. Lives apart from `TicketDrawer` so
- * the same section can be dropped into `TaskDetail`'s own panel later (F12.4) without the
- * drawer's chrome coming with it.
+ * the same section is also what `TaskTicketSection` renders inside `TaskDetail`'s own band
+ * (F12.4), behind its fold, without the drawer's chrome coming with it.
  *
  * **Each field saves itself**, on change for a picker and on blur for text, through
  * `ticket:update` with a one-field patch from {@link ticketPatchFor} (`ticketFields.ts`) —

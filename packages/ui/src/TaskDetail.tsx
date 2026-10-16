@@ -34,12 +34,21 @@ import {
 } from '@fluentui/react-components';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { BoardScope } from '@tm/shared/ipc';
-import type { ManualStatus, Project, Task, TaskActivityEntry } from '@tm/shared/model';
+import type {
+  ManualStatus,
+  Milestone,
+  Person,
+  Project,
+  Task,
+  TaskActivityEntry,
+  TicketLabel,
+} from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { TaskLink } from '@tm/shared/taskChain';
 import type { SessionEvent } from '@tm/shared/session';
 import { chainNeedsAttention, chatTarget } from '@tm/shared/board';
+import { isNativeTicket } from '@tm/shared/tickets';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
 import type { PriorityDisplay } from '@tm/shared/settings';
 import {
@@ -66,6 +75,7 @@ import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
+import { TaskTicketSection } from './projects/TaskTicketSection';
 import { chatAvailability, REFUSAL_HINT } from './taskChat';
 import {
   EMPTY_TIMELINE,
@@ -349,10 +359,23 @@ export interface TaskDetailProps {
   section?: CardSection;
   /** The host's dictation offer (F9.10), passed straight through to `Composer`. */
   dictation?: DictationPath;
+  /**
+   * The ticket registries for this card's project (F12.6 passes them from
+   * `useTicketRegistries`). Absent, the Ticket section still renders with empty pickers.
+   */
+  people?: Person[];
+  /** See {@link people}. */
+  milestones?: Milestone[];
+  /** See {@link people}. */
+  labels?: TicketLabel[];
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
 const NO_TASKS: ReadonlyMap<string, Task> = new Map();
+/** One empty array for every pane with no ticket registries, rather than a new one per render. */
+const NO_PEOPLE: Person[] = [];
+const NO_MILESTONES: Milestone[] = [];
+const NO_LABELS: TicketLabel[] = [];
 
 export function TaskDetail({
   task,
@@ -385,6 +408,9 @@ export function TaskDetail({
   onSubtasksChanged,
   section,
   dictation,
+  people = NO_PEOPLE,
+  milestones = NO_MILESTONES,
+  labels = NO_LABELS,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -754,6 +780,13 @@ export function TaskDetail({
       setHasNewMessages(true);
     }
   }, [turns, subAgents, taskId, scrollToBottom]);
+
+  // This card's own project, out of the chain's whole task index — the Ticket section's
+  // epic candidates, same narrowing `TicketDrawer`'s caller already does for `tickets`.
+  const projectTickets = useMemo(
+    () => Array.from(chainTasksById.values()).filter((t) => t.projectId === task?.projectId),
+    [chainTasksById, task?.projectId],
+  );
 
   if (!task) {
     return (
@@ -1155,6 +1188,16 @@ export function TaskDetail({
             onStatusSet={(status) => onStatusSet?.(task.id, status)}
             onEdited={() => void loadActivity()}
           />
+          {isNativeTicket(task) && (
+            <TaskTicketSection
+              ticket={task}
+              tickets={projectTickets}
+              people={people}
+              agentProjects={agentProjects}
+              labels={labels}
+              milestones={milestones}
+            />
+          )}
         </>
       )}
     </>
