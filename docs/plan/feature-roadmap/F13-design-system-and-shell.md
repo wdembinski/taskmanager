@@ -442,7 +442,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     tree's key handling is a pure reducer with tests (expand, collapse, move into children,
     skip folded). Gates green.
 
-- [ ] F13.12 Build the shared issue row with the selected state
+- [x] F13.12 Build the shared issue row with the selected state
 
   - `packages/ui/src/issues/IssueRow.tsx` and a pure `issueRowParts(task, ctx)` deciding which
     optional parts show: run pill (from the live-run index, "Step n of m"), MR (`!iid`), due
