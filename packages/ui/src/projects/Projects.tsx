@@ -10,23 +10,17 @@
  * header and `shell-parity.test.ts`'s "agent projects" block, which is about *repo* projects
  * and does not apply here.
  *
- * The seed loads the four collections every part of this screen reads: the ticket projects
- * themselves, and the app-wide people/milestone/label registries a ticket can point at.
- * `board:tasks` for the selected project's own tickets is `BacklogTable`'s to fetch — a
- * project switch should not re-fetch the roster, and a roster edit should not re-fetch every
- * project's tickets.
+ * The seed here loads only the ticket projects themselves; the app-wide people/milestone/label
+ * registries a ticket can point at come from `useTicketRegistries`, scoped to whichever
+ * project is selected. `board:tasks` for the selected project's own tickets is `BacklogTable`'s
+ * to fetch — a project switch should not re-fetch the roster, and a roster edit should not
+ * re-fetch every project's tickets.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ToggleButton, makeStyles } from '@fluentui/react-components';
 import { agentProjectsOf } from '@tm/shared/agentProjects';
 import '@xyflow/react/dist/style.css';
-import {
-  ownsTickets,
-  type Milestone,
-  type Person,
-  type Project,
-  type TicketLabel,
-} from '@tm/shared/model';
+import { ownsTickets, type Project } from '@tm/shared/model';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
@@ -34,6 +28,7 @@ import { BacklogTable } from './BacklogTable';
 import { GraphPane } from './GraphPane';
 import { ProjectPicker } from './ProjectPicker';
 import { TimelinePane } from './TimelinePane';
+import { useTicketRegistries } from './useTicketRegistries';
 
 const useStyles = makeStyles({
   root: { display: 'flex', gap: '20px', minHeight: 0, height: '100%' },
@@ -52,38 +47,17 @@ export function Projects(): JSX.Element {
   /** The repos a ticket can be delegated to — for resolving `agentProjectId` to a name
    *  wherever a ticket surface shows its assignee, alongside the human `people` roster. */
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
-  const [people, setPeople] = useState<Person[]>([]);
-  const [milestones, setMilestones] = useState<Milestone[]>([]);
-  const [labels, setLabels] = useState<TicketLabel[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [view, setView] = useState<ProjectView>('backlog');
 
   const seed = useCallback(async () => {
-    const [allProjects, allPeople, allMilestones, allLabels] = await Promise.all([
-      transport.invoke('project:list'),
-      transport.invoke('person:list'),
-      transport.invoke('milestone:list'),
-      transport.invoke('label:list'),
-    ]);
+    const allProjects = await transport.invoke('project:list');
     const projectList = allProjects.map((p) => p.project);
     setProjects(projectList.filter(ownsTickets));
     setAgentProjects(agentProjectsOf(projectList));
-    setPeople(allPeople);
-    setMilestones(allMilestones);
-    setLabels(allLabels);
   }, [transport]);
   const initial = useInitialLoad(seed);
-
-  useEffect(() => {
-    const offPeople = transport.on('person:changed', setPeople);
-    const offMilestones = transport.on('milestone:changed', setMilestones);
-    const offLabels = transport.on('label:changed', setLabels);
-    return () => {
-      offPeople();
-      offMilestones();
-      offLabels();
-    };
-  }, [transport]);
+  const registries = useTicketRegistries(selectedProjectId);
 
   // Keep a project selected once there is one to select — the backlog otherwise has nothing
   // to show and the picker's list has nothing highlighted.
@@ -98,21 +72,15 @@ export function Projects(): JSX.Element {
     [projects, selectedProjectId],
   );
 
-  const projectMilestones = useMemo(
-    () => (selectedProject ? milestones.filter((m) => m.projectId === selectedProject.id) : []),
-    [milestones, selectedProject],
-  );
-  const projectLabels = useMemo(
-    () => (selectedProject ? labels.filter((l) => l.projectId === selectedProject.id) : []),
-    [labels, selectedProject],
-  );
-
-  if (projects === null) {
+  if (projects === null || !registries.loaded) {
     return (
       <PaneLoading
         label="Loading projects…"
-        error={initial.error}
-        onRetry={initial.retry}
+        error={initial.error ?? registries.error}
+        onRetry={() => {
+          initial.retry();
+          registries.retry();
+        }}
         shape="rows"
       />
     );
@@ -165,20 +133,20 @@ export function Projects(): JSX.Element {
               <BacklogTable
                 key={selectedProject.id}
                 projectId={selectedProject.id}
-                people={people}
+                people={registries.people}
                 agentProjects={agentProjects}
-                labels={projectLabels}
-                milestones={projectMilestones}
+                labels={registries.labels}
+                milestones={registries.milestones}
               />
             )}
             {view === 'timeline' && (
               <TimelinePane
                 key={selectedProject.id}
                 projectId={selectedProject.id}
-                people={people}
+                people={registries.people}
                 agentProjects={agentProjects}
-                labels={projectLabels}
-                milestones={projectMilestones}
+                labels={registries.labels}
+                milestones={registries.milestones}
               />
             )}
             {view === 'graph' && (
