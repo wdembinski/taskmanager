@@ -305,6 +305,53 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
    `nativeTheme.prefersReducedTransparency` on macOS; on Windows it is not documented.
    *Recommended default:* read it where Electron offers it, otherwise rely on the app setting and
    the CSS media query; the spike (F13.6) records what Windows reports.
+
+   **Findings (F13.6, 2026-10-16):** Probed on Electron 33.4.11 / Chromium 130.0.6723.191 / Node
+   20.18.3, Windows build 10.0.26200, an interactive console session (not RDP). With `frame:
+   false` and `backgroundColor: '#00000000'`, both `backgroundMaterial: 'mica'` and `'acrylic'`
+   painted a visibly distinct flat backdrop over the probe's green test background (sampled
+   32,32,32 for mica, 84,84,84 for acrylic — mica reads darker and flatter, acrylic lighter and
+   more blurred), and `transparent: true` produced the identical mica result as an alternative to
+   a transparent `backgroundColor`. Across five sampled offsets after a minimize/restore cycle
+   (0, 50, 100, 200, 400 ms), mica, acrylic and the `transparent: true` variant never once showed
+   a white or sentinel flash — the material held from the first captured frame. A control window
+   (`backgroundMaterial: 'none'`, opaque magenta `backgroundColor`) showed **white** at every one
+   of those same offsets instead of reverting to magenta — proof the harness can detect a flash
+   when one exists, so the clean mica/acrylic results are not a methodology blind spot. Separately,
+   a `backgroundMaterial: 'mica'` window given a non-transparent `backgroundColor` never showed
+   the material at all (steady state read pure magenta): **`backgroundColor` must be transparent
+   (or `transparent: true`) for the material to paint.** Calling `win.setBackgroundMaterial()`
+   *after* the window was already created and shown with `backgroundMaterial: 'none'` did **not**
+   apply mica or acrylic (samples stayed black) — `backgroundMaterial` must be a `BrowserWindow`
+   constructor option decided before the window is created, and there is no getter to read it back
+   (`getBackgroundMaterial` does not exist on this Electron). `nativeTheme.prefersReducedTransparency`
+   read `true` in every config and matched the machine's registry state exactly
+   (`HKCU\...\Personalize\EnableTransparency = 0x0`, i.e. the OS "Transparency effects" switch was
+   off) — the signal is real and trustworthy on Windows despite being undocumented, which answers
+   this question. Critically, **DWM did not withhold Mica or Acrylic because that switch was
+   off** — both still rendered with `prefersReducedTransparency: true` — so the app, not the OS,
+   must refuse native material when the user has reduced transparency. Windows 10 and a Remote
+   Desktop session were not reachable from this machine to probe directly; Electron documents
+   `backgroundMaterial` as a no-op below build 22621 and as dropped over RDP, so the detection
+   rule below treats both defensively rather than from direct observation. (Screen capture in
+   this disconnected-automation session twice read the wrong content before `win.setAlwaysOnTop(true,
+   'screen-saver')` plus `moveTop()` on every probe window fixed z-ordering; this run's samples
+   are self-consistent per config — the sentinel reads as sentinel, mica and acrylic read as
+   distinct flat grays — which is the evidence the fix held.)
+
+   **Decision:** Ship `native`. All three conditions hold: (a) mica showed with `frame: false`;
+   (b) restore never flashed once the background was transparent; (c) the detection rule needs
+   only signals available before the window is created. F13.7's
+   `windowMaterialFor(platform, osBuild, settings)` needs two extra inputs beyond that signature —
+   `remoteSession: boolean` (`/^RDP-/i.test(process.env.SESSIONNAME ?? '')`) and
+   `reducedTransparency: boolean` (`nativeTheme.prefersReducedTransparency`, readable with no
+   window yet created) — because this spike showed the OS will not refuse the material on the
+   app's behalf. Rule: return `'none'` unless `platform === 'win32'` **and** `osBuild >= 22621`
+   **and** `!remoteSession` **and** `!reducedTransparency`; only then does the user's own
+   transparency/material setting choose `'mica' | 'acrylic' | 'none'`. F13.7 must also pass
+   `backgroundColor: '#00000000'` (or `transparent: true`) alongside `backgroundMaterial` in the
+   `BrowserWindow` constructor, never via `setBackgroundMaterial()` after creation, which this
+   spike showed does not apply the material.
 4. **Light first for existing users?** Every user has only ever seen dark. *Recommended
    default:* `appearance: 'system'` for new installs; an existing install keeps `'dark'` (the
    migration writes it when the setting is absent and a settings row already exists), so nobody
@@ -378,7 +425,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     `useGlassStyles` (glass stays one implementation); contrast pairs from F13.2 include the
     pane in both modes. Gates green.
 
-- [ ] F13.6 Spike Electron's native background material on Windows with a frameless window
+- [x] F13.6 Spike Electron's native background material on Windows with a frameless window
 
   - Throwaway probe, never merged: a packaged build with `backgroundMaterial: 'mica'` and
     `'acrylic'`, `frame: false`, a transparent page background; record whether the material
