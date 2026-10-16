@@ -2,8 +2,12 @@
  * Integration tests for the git helpers, run against a REAL temporary repository.
  * git is a system binary (no Electron ABI split), so these run fine under vitest.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// A single test here spawns a dozen real `git` processes against a real temp repo, so its
+// duration is a function of how loaded the machine is rather than of anything under test.
+// `worktreeManager.test.ts` carries the same line for the same reason.
+vi.setConfig({ testTimeout: 30_000 });
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,8 +19,10 @@ import {
   createRootCommit,
   currentBranch,
   deleteBranch,
+  deleteRefs,
   fastForwardRef,
   fetchRef,
+  fetchRefspecs,
   git,
   gitPreflight,
   hasCommits,
@@ -25,6 +31,7 @@ import {
   isClean,
   isRepo,
   listBranches,
+  listRemotes,
   mergeBase,
   mergeFfOnly,
   parsePorcelainPaths,
@@ -35,6 +42,8 @@ import {
   remoteBranchSha,
   remoteUrl,
   removeWorktree,
+  reviewRef,
+  REVIEW_REF_PREFIX,
   uncommittedPaths,
   upstreamOf,
 } from './git';
@@ -716,6 +725,218 @@ describe('git helpers — fetching a ref and pushing with a lease', () => {
       const res = await pushBranch(repo, 'origin', branch, { forceWithLease: { expected: '' } });
 
       expect(res.code).not.toBe(0);
+    });
+  });
+
+  describe('fetchRefspecs, deleteRefs, listRemotes', () => {
+    /** Every path under `dir` (relative, forward-slashed), excluding `.git`. */
+    function walkFiles(dir: string, sub = ''): string[] {
+      const entries = readdirSync(join(dir, sub), { withFileTypes: true });
+      let out: string[] = [];
+      for (const entry of entries) {
+        if (entry.name === '.git') continue;
+        const rel = sub ? `${sub}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) out = out.concat(walkFiles(dir, rel));
+        else out.push(rel);
+      }
+      return out;
+    }
+
+    /**
+     * Everything a fetch into a scratch ref must leave untouched: `HEAD`, the index, the
+     * work tree's own bytes, and `status`'s view of them. The ref list is captured too, but
+     * — unlike the rest — it is expected to GAIN exactly the refs a fetch was asked to write,
+     * so callers compare it separately rather than for byte equality.
+     */
+    async function snapshot(dir: string) {
+      const head = readFileSync(join(dir, '.git', 'HEAD'));
+      const headSha = (await git(dir, ['rev-parse', 'HEAD'])).stdout.trim();
+      const index = readFileSync(join(dir, '.git', 'index'));
+      const files = walkFiles(dir)
+        .sort()
+        .map((path) => ({ path, bytes: readFileSync(join(dir, path)) }));
+      // --no-optional-locks: a plain `status` is free to refresh and rewrite the index as a
+      // side effect of merely answering, which would make the `index` comparison above flaky.
+      const status = (
+        await git(dir, ['--no-optional-locks', 'status', '--porcelain=v2', '--untracked-files=all'])
+      ).stdout;
+      const refLines = (
+        await git(dir, ['for-each-ref', '--format=%(refname) %(objectname)'])
+      ).stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      return { head, headSha, index, files, status, refLines };
+    }
+
+    it('fetches a PR ref into refs/tm/review, changing nothing in a dirty tree', async () => {
+      // The base: pushed to the forge so `refs/heads/<base>` exists there too.
+      await commitFile(repo, 'b.txt', 'b-v1\n', 'add b');
+      expect((await git(repo, ['push', 'origin', base])).code).toBe(0);
+      const baseSha = (await git(bare, ['rev-parse', `refs/heads/${base}`])).stdout.trim();
+
+      // The PR commit exists only on the forge, at a GitHub-shaped ref — never in `repo`.
+      await git(repo, ['checkout', '-b', 'pr-7']);
+      await commitFile(repo, 'pr.txt', 'pr work\n', 'pr commit');
+      const prSha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+      expect((await git(repo, ['push', 'origin', `${prSha}:refs/pull/7/head`])).code).toBe(0);
+      await git(repo, ['checkout', base]);
+      await git(repo, ['branch', '-D', 'pr-7']);
+      await git(repo, ['reset', '--hard', base]);
+
+      // Dirty the tree: an unstaged edit, a staged edit, and an untracked file.
+      writeFileSync(join(repo, 'a.txt'), 'dirty-unstaged\n');
+      writeFileSync(join(repo, 'b.txt'), 'dirty-staged\n');
+      await git(repo, ['add', 'b.txt']);
+      writeFileSync(join(repo, 'c.txt'), 'untracked\n');
+
+      const before = await snapshot(repo);
+
+      const headRef = reviewRef('gh-1-7', 'head');
+      const baseRef = reviewRef('gh-1-7', 'base');
+      const res = await fetchRefspecs(repo, 'origin', [
+        `refs/pull/7/head:${headRef}`,
+        `refs/heads/${base}:${baseRef}`,
+      ]);
+
+      const after = await snapshot(repo);
+
+      expect(res.code).toBe(0);
+      expect((await git(repo, ['rev-parse', headRef])).stdout.trim()).toBe(prSha);
+      expect((await git(repo, ['rev-parse', baseRef])).stdout.trim()).toBe(baseSha);
+
+      // Nothing about HEAD, the index, the work tree, or git's own view of it changed.
+      expect(after.head).toEqual(before.head);
+      expect(after.headSha).toBe(before.headSha);
+      expect(after.index).toEqual(before.index);
+      expect(after.files).toEqual(before.files);
+      expect(after.status).toBe(before.status);
+
+      // The ref list gained exactly the two review refs — nothing else moved.
+      const expected = [...before.refLines, `${baseRef} ${baseSha}`, `${headRef} ${prSha}`].sort();
+      expect(after.refLines.slice().sort()).toEqual(expected);
+    });
+
+    it('fetches a GitLab-shaped merge-request ref the same way', async () => {
+      await git(repo, ['checkout', '-b', 'mr-3']);
+      await commitFile(repo, 'mr.txt', 'mr work\n', 'mr commit');
+      const mrSha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+      expect(
+        (await git(repo, ['push', 'origin', `${mrSha}:refs/merge-requests/3/head`])).code,
+      ).toBe(0);
+      await git(repo, ['checkout', base]);
+      await git(repo, ['branch', '-D', 'mr-3']);
+
+      const headRef = reviewRef('gl-1-3', 'head');
+      const res = await fetchRefspecs(repo, 'origin', [`refs/merge-requests/3/head:${headRef}`]);
+
+      expect(res.code).toBe(0);
+      expect((await git(repo, ['rev-parse', headRef])).stdout.trim()).toBe(mrSha);
+    });
+
+    it('refuses an empty refspec list, touching neither the work tree nor the refs', async () => {
+      const statusBefore = (
+        await git(repo, [
+          '--no-optional-locks',
+          'status',
+          '--porcelain=v2',
+          '--untracked-files=all',
+        ])
+      ).stdout;
+      const refsBefore = (await git(repo, ['for-each-ref', '--format=%(refname) %(objectname)']))
+        .stdout;
+
+      const res = await fetchRefspecs(repo, 'origin', []);
+
+      expect(res.code).not.toBe(0);
+      const statusAfter = (
+        await git(repo, [
+          '--no-optional-locks',
+          'status',
+          '--porcelain=v2',
+          '--untracked-files=all',
+        ])
+      ).stdout;
+      const refsAfter = (await git(repo, ['for-each-ref', '--format=%(refname) %(objectname)']))
+        .stdout;
+      expect(statusAfter).toBe(statusBefore);
+      expect(refsAfter).toBe(refsBefore);
+    });
+
+    it('redacts a token embedded in the URL from fetchRefspecs output', async () => {
+      const token = 'ghp_fetchRefspecsLeakedToken';
+      const res = await fetchRefspecs(repo, 'origin', [`refs/heads/${base}:refs/orch/missing`], {
+        url: join(bare, `does-not-exist-${token}`),
+        secrets: [token],
+      });
+
+      expect(res.code).not.toBe(0);
+      expect(res.stdout).not.toContain(token);
+      expect(res.stderr).not.toContain(token);
+    });
+
+    describe('deleteRefs', () => {
+      it('deletes every ref under a review prefix, sparing a longer sibling id and all branches', async () => {
+        const sha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+        await git(repo, ['update-ref', reviewRef('gh-1-7', 'head'), sha]);
+        await git(repo, ['update-ref', reviewRef('gh-1-7', 'base'), sha]);
+        await git(repo, ['update-ref', reviewRef('gh-1-70', 'head'), sha]);
+        await git(repo, ['branch', 'keep-me']);
+
+        const res = await deleteRefs(repo, `${REVIEW_REF_PREFIX}gh-1-7/`);
+
+        expect(res.code).toBe(0);
+        expect(
+          (await git(repo, ['rev-parse', '--verify', '--quiet', reviewRef('gh-1-7', 'head')])).code,
+        ).not.toBe(0);
+        expect(
+          (await git(repo, ['rev-parse', '--verify', '--quiet', reviewRef('gh-1-7', 'base')])).code,
+        ).not.toBe(0);
+        expect(
+          (await git(repo, ['rev-parse', '--verify', '--quiet', reviewRef('gh-1-70', 'head')]))
+            .code,
+        ).toBe(0);
+        expect(await listBranches(repo)).toEqual(expect.arrayContaining([base, 'keep-me']));
+      });
+
+      it('refuses a prefix outside refs/tm/, deleting nothing', async () => {
+        await git(repo, ['branch', 'do-not-delete']);
+
+        const res = await deleteRefs(repo, 'refs/heads/');
+
+        expect(res.code).not.toBe(0);
+        expect(await listBranches(repo)).toEqual(expect.arrayContaining([base, 'do-not-delete']));
+      });
+    });
+
+    describe('listRemotes', () => {
+      it('lists every remote with separate fetch and push URLs', async () => {
+        const upstreamFetch = mkdtempSync(join(tmpdir(), 'orch-bare-upstream-'));
+        const upstreamPush = mkdtempSync(join(tmpdir(), 'orch-bare-upstream-push-'));
+        await git(upstreamFetch, ['init', '--bare']);
+        await git(upstreamPush, ['init', '--bare']);
+        try {
+          await git(repo, ['remote', 'add', 'upstream', upstreamFetch]);
+          await git(repo, ['remote', 'set-url', '--push', 'upstream', upstreamPush]);
+
+          expect(await listRemotes(repo)).toEqual([
+            { name: 'origin', fetchUrl: bare, pushUrl: bare },
+            { name: 'upstream', fetchUrl: upstreamFetch, pushUrl: upstreamPush },
+          ]);
+        } finally {
+          rmSync(upstreamFetch, { recursive: true, force: true });
+          rmSync(upstreamPush, { recursive: true, force: true });
+        }
+      });
+
+      it('is empty for a directory that is not a repo', async () => {
+        const plain = mkdtempSync(join(tmpdir(), 'orch-plain-remotes-'));
+        try {
+          expect(await listRemotes(plain)).toEqual([]);
+        } finally {
+          rmSync(plain, { recursive: true, force: true });
+        }
+      });
     });
   });
 });
