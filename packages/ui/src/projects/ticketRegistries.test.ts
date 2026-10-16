@@ -13,6 +13,7 @@ function milestone(overrides: Partial<Milestone> = {}): Milestone {
     dueAt: null,
     color: '',
     closed: false,
+    archivedAt: null,
     createdAt: 0,
     ...overrides,
   };
