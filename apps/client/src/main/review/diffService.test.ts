@@ -11,6 +11,7 @@ import {
   DIFF_IMAGE_MAX_BYTES,
   DIFF_SUMMARY_MAX_FILES,
   isCollapsedByDefault,
+  WORKTREE_CAPABILITIES,
 } from '@shared/review';
 import type { NameStatusEntry } from '../git';
 import {
@@ -153,6 +154,9 @@ describe('task:diffSummary', () => {
       includesWorkingTree: true,
       truncated: false,
       diffId: computeDiffId(BASE_SHA, HEAD_SHA, 'dirty'),
+      subjectId: 'task:t1',
+      source: 'worktree',
+      capabilities: WORKTREE_CAPABILITIES,
     });
     expect(summary.files).toEqual([
       {
@@ -173,6 +177,9 @@ describe('task:diffSummary', () => {
     const summary = await okSummary(svc);
     expect(summary.includesWorkingTree).toBe(false);
     expect(summary.diffId).toBe(computeDiffId(BASE_SHA, HEAD_SHA, ''));
+    expect(summary.subjectId).toBe('task:t1');
+    expect(summary.source).toBe('worktree');
+    expect(summary.capabilities).toEqual(WORKTREE_CAPABILITIES);
     expect(g.calls).toContain(`nameStatus ${REPO} ${BASE_SHA}..${HEAD_SHA}`);
   });
 
