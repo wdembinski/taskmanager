@@ -646,6 +646,37 @@ export function canResumeWork(
 }
 
 /**
+ * Is there work here that pressing **Start** would actually begin — the mirror of
+ * {@link canStopWork} and {@link canResumeWork}, and given the same three arguments for the
+ * same reason: a step must be judged on its own state, with `subtasks` its SIBLINGS rather
+ * than its card's.
+ *
+ * An agent must be on the task, nothing must have run yet ({@link hasAgentWorked}, not
+ * `sessionId` — see that function's own docstring for why), and the task must be resting in
+ * `pending` — any other column already says what it is, and "not started" would contradict
+ * it rather than add to it. Mutually exclusive with {@link canResumeWork} by construction,
+ * checked last so a card stopped so early that nothing reached `workedAt` is offered Resume
+ * (which rejoins the session if there is one and falls through to a fresh start if there
+ * isn't) rather than two primary buttons both claiming to begin the work.
+ *
+ * Extracted out of `TaskAgentPanel`'s own `staged` so a second caller — the command palette's
+ * "Start selected card" action (F9.4) — can ask the identical question instead of
+ * re-deriving it and drifting from the panel's own answer.
+ */
+export function canStartWork(
+  task: Task,
+  subtasks: Task[] = [],
+  liveRunTaskIds?: ReadonlySet<string>,
+): boolean {
+  return (
+    Boolean(task.agentProjectId) &&
+    !hasAgentWorked(task, subtasks) &&
+    task.status === 'pending' &&
+    !canResumeWork(task, subtasks, liveRunTaskIds)
+  );
+}
+
+/**
  * What a **card** should say about its run, in words — or nothing, when something else on the
  * card already says it.
  *

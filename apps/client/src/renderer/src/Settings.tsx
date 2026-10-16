@@ -204,7 +204,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection =
+export type SettingsSection =
   | 'general'
   | 'board'
   | 'features'
@@ -281,9 +281,27 @@ const FEATURE_SWITCHES: ReadonlyArray<{
   },
 ];
 
-export function Settings(): JSX.Element {
+export interface SettingsProps {
+  /** A section another screen wants open — the command palette's "Settings: …" commands
+   *  (F9.4) are the first caller. Consumed once via `onInitialSectionHandled`, the same
+   *  one-shot shape as `MyTasks`' `openTaskId`, so returning to this tab on your own
+   *  doesn't re-jump you back to it. */
+  initialSection?: SettingsSection | null;
+  onInitialSectionHandled?: () => void;
+}
+
+export function Settings({
+  initialSection,
+  onInitialSectionHandled,
+}: SettingsProps = {}): JSX.Element {
   const styles = useStyles();
   const [section, setSection] = useState<SettingsSection>('general');
+
+  useEffect(() => {
+    if (!initialSection) return;
+    setSection(initialSection);
+    onInitialSectionHandled?.();
+  }, [initialSection, onInitialSectionHandled]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [jiraStatus, setJiraStatus] = useState<JiraConfigStatus | null>(null);

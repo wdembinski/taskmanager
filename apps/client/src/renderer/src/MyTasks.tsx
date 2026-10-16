@@ -139,9 +139,23 @@ export interface MyTasksProps {
    *  your own doesn't re-select it. */
   openTaskId?: string | null;
   onOpenTaskIdHandled?: () => void;
+  /** The Add task dialog, asked open from outside this screen — the command palette's "Add
+   *  task" (F9.4) is the first caller. The same one-shot shape as `openTaskId` above. */
+  openAddTask?: boolean;
+  onOpenAddTaskHandled?: () => void;
+  /** Reports the board's own selection upward on every change — what the command palette's
+   *  "Start/Stop selected card" (F9.4) acts on, since the selection otherwise lives only in
+   *  this screen's own state and the palette can be opened from any tab. */
+  onSelectedTaskIdChange?: (taskId: string | null) => void;
 }
 
-export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}): JSX.Element {
+export function MyTasks({
+  openTaskId,
+  onOpenTaskIdHandled,
+  openAddTask,
+  onOpenAddTaskHandled,
+  onSelectedTaskIdChange,
+}: MyTasksProps = {}): JSX.Element {
   // The board's frame — including the commit graph's own pane — shared with the browser
   // client. See `boardLayout.ts`; this screen has no styles left of its own.
   const layout = useBoardLayoutStyles();
@@ -468,6 +482,20 @@ export function MyTasks({ openTaskId, onOpenTaskIdHandled }: MyTasksProps = {}):
     if (tasks.some((t) => t.id === openTaskId)) setSelectedTaskId(openTaskId);
     onOpenTaskIdHandled?.();
   }, [openTaskId, tasks, onOpenTaskIdHandled]);
+
+  // The command palette's "Add task" — the same one-shot shape as `openTaskId` above.
+  useEffect(() => {
+    if (!openAddTask) return;
+    setAddOpen(true);
+    onOpenAddTaskHandled?.();
+  }, [openAddTask, onOpenAddTaskHandled]);
+
+  // Reported on every change, not just once, since the caller (the command palette's
+  // "Start/Stop selected card") needs to know the CURRENT selection, not merely the one
+  // in flight when this screen first mounted.
+  useEffect(() => {
+    onSelectedTaskIdChange?.(selectedTaskId);
+  }, [selectedTaskId, onSelectedTaskIdChange]);
 
   /**
    * taskId → its files, so each pane gets its own slice and nothing downstream filters a
