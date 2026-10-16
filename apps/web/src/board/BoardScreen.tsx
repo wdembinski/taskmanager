@@ -164,6 +164,15 @@ export interface BoardScreenProps {
    * through to `TaskDetail`'s `hostUnreachable` (`taskDetailProps`, below).
    */
   hostUnreachable?: string;
+  /**
+   * A command-palette action landed while this screen was already mounted (F9.5) — a card
+   * selection or Add task that `initialSelectedTaskId` cannot reach, since that only seeds
+   * the wide pane's selection on mount. `nonce` is a tie-breaker: re-selecting the SAME card
+   * a second time while the palette fires must still produce a new prop value for the effect
+   * below to see, since the object's shape alone would otherwise be identical to the last one.
+   */
+  paletteRequest?:
+    { kind: 'select'; taskId: string; nonce: number } | { kind: 'add'; nonce: number };
 }
 
 export function BoardScreen({
@@ -174,6 +183,7 @@ export function BoardScreen({
   initialSelectedTaskId = null,
   onSelectedTaskChange,
   hostUnreachable,
+  paletteRequest,
 }: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   const styles = useStyles();
@@ -201,6 +211,13 @@ export function BoardScreen({
   const [syncing, setSyncing] = useState(false);
   /** Whether the shared add-task dialog is up — the desktop's own `addOpen`. */
   const [addOpen, setAddOpen] = useState(false);
+  // The command palette's own entry into an already-mounted board (F9.5) — see
+  // `paletteRequest`'s own doc comment for why `initialSelectedTaskId` alone cannot reach this.
+  useEffect(() => {
+    if (!paletteRequest) return;
+    if (paletteRequest.kind === 'select') setSelectedTaskId(paletteRequest.taskId);
+    else setAddOpen(true);
+  }, [paletteRequest, setSelectedTaskId]);
   /**
    * When the Removed-cards dialog was opened, or null while it is shut — the timestamp
    * rather than a boolean for the reason `MyTasks` holds one: the rows are labelled
