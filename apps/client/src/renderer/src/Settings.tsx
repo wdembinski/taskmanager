@@ -116,6 +116,7 @@ import {
 } from '@shared/execTarget';
 import { AgentProfiles } from './AgentProfiles';
 import { ColorSwatches, PALETTE } from '@ui/ColorSwatches';
+import { KeyboardShortcutsList } from '@ui/palette/KeyboardShortcutsList';
 import { PaneLoading } from '@ui/PaneLoading';
 import { PeopleSettings } from '@ui/projects/PeopleSettings';
 import { ModelField } from '@ui/ModelField';
@@ -218,7 +219,8 @@ export type SettingsSection =
   | 'agentProfiles'
   | 'skills'
   | 'workflows'
-  | 'promptTemplates';
+  | 'promptTemplates'
+  | 'shortcuts';
 
 /** {@link LinearStateType}, spelled for a checkbox label — {@link LINEAR_STATE_TYPE_ORDER}'s order. */
 const LINEAR_STATE_TYPE_LABEL: Record<LinearStateType, string> = {
@@ -839,6 +841,14 @@ export function Settings({
           <PromptTemplatesSection
             templates={settings.promptTemplates}
             onSave={savePromptTemplates}
+          />
+        </div>
+      ) : section === 'shortcuts' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Keyboard shortcuts</Subtitle2>
+          <KeyboardShortcutsList
+            items={[{ id: 'palette', label: 'Open command palette', spec: 'mod+k' }]}
+            win={window}
           />
         </div>
       ) : section === 'board' ? (

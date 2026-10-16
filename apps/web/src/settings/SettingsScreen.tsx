@@ -75,6 +75,7 @@ import {
 } from '@fluentui/react-components';
 import { AddRegular, DismissRegular } from '@fluentui/react-icons';
 import { ColorSwatches, PALETTE } from '@tm/ui/ColorSwatches';
+import { KeyboardShortcutsList } from '@tm/ui/palette/KeyboardShortcutsList';
 import { PeopleSettings } from '@tm/ui/projects/PeopleSettings';
 import { ModelField } from '@tm/ui/ModelField';
 import { PlanningModelField } from '@tm/ui/PlanningModelField';
@@ -383,6 +384,7 @@ export function SettingsScreen({
         <Tab value="skills">Skills</Tab>
         <Tab value="promptTemplates">Prompt templates</Tab>
         <Tab value="workflows">Workflows</Tab>
+        <Tab value="shortcuts">Shortcuts</Tab>
         <Tab value="desktop">Desktop only</Tab>
       </TabList>
 
@@ -848,6 +850,19 @@ export function SettingsScreen({
         <div className={styles.pane}>
           <Subtitle2>Workflows</Subtitle2>
           <WorkflowBuilder canUseFileSystem={false} />
+        </div>
+      )}
+
+      {section === 'shortcuts' && (
+        <div className={styles.pane}>
+          <Subtitle2>Keyboard shortcuts</Subtitle2>
+          <KeyboardShortcutsList
+            items={[
+              { id: 'palette', label: 'Open command palette', spec: 'mod+k' },
+              { id: 'palette-slash', label: 'Open command palette', spec: '/' },
+            ]}
+            win={window}
+          />
         </div>
       )}
 

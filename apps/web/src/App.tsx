@@ -33,6 +33,7 @@ import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
 import { CommandPalette } from '@tm/ui/palette/CommandPalette';
 import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
+import { shortcutLabel } from '@tm/ui/palette/shortcutLabel';
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { GateTrustHostProvider } from '@tm/ui/gateTrustHost';
@@ -419,6 +420,7 @@ function SignedInBoard({
               selected={screen}
               onSelect={(id) => setScreen(id as Screen)}
               accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
+              paletteHint={{ label: shortcutLabel('mod+k', window), onClick: openPalette }}
             />
           }
           banners={
