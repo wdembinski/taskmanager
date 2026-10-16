@@ -2,12 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { Task } from '@tm/shared/model';
 import {
   dateToInput,
-  draftFromTicket,
   inputToDate,
   parseDays,
   parsePoints,
   splitLabels,
-  ticketPatchFrom,
+  ticketPatchFor,
 } from './ticketFields';
 
 let seq = 0;
@@ -98,8 +97,13 @@ describe('dateToInput / inputToDate', () => {
   });
 });
 
-describe('ticketPatchFrom', () => {
-  it('returns {} when the draft matches the ticket untouched — closing the drawer writes nothing', () => {
+describe('ticketPatchFor', () => {
+  it('returns {} when the field matches the ticket untouched', () => {
+    const t = ticket({ storyPoints: 3 });
+    expect(ticketPatchFor('storyPointsText', '3', t)).toEqual({});
+  });
+
+  it('returns {} for every field left exactly as the ticket already has it', () => {
     const t = ticket({
       issueType: 'story',
       epicTaskId: 'epic1',
@@ -112,36 +116,76 @@ describe('ticketPatchFrom', () => {
       assigneeId: 'p1',
       reporterId: 'p2',
     });
-    const draft = draftFromTicket(t);
-    expect(ticketPatchFrom(draft, t)).toEqual({});
-  });
-
-  it('sends an explicit null for a field the human cleared, never undefined', () => {
-    const t = ticket({ milestoneId: 'mile1' });
-    const draft = draftFromTicket(t);
-    draft.milestoneId = '';
-    const patch = ticketPatchFrom(draft, t);
-    expect(patch).toEqual({ milestoneId: null });
-    expect('milestoneId' in patch).toBe(true);
-  });
-
-  it('carries only the field that actually changed', () => {
-    const t = ticket({ storyPoints: 3, estimateDays: 1 });
-    const draft = draftFromTicket(t);
-    draft.storyPointsText = '5';
-    expect(ticketPatchFrom(draft, t)).toEqual({ storyPoints: 5 });
+    expect(ticketPatchFor('issueType', 'story', t)).toEqual({});
+    expect(ticketPatchFor('epicTaskId', 'epic1', t)).toEqual({});
+    expect(ticketPatchFor('milestoneId', 'mile1', t)).toEqual({});
+    expect(ticketPatchFor('labelsText', 'Backend, ui', t)).toEqual({});
+    expect(ticketPatchFor('storyPointsText', '3', t)).toEqual({});
+    expect(ticketPatchFor('estimateDaysText', '1.5', t)).toEqual({});
+    expect(ticketPatchFor('startAtInput', '2024-03-01', t)).toEqual({});
+    expect(ticketPatchFor('dueAtInput', '2024-03-10', t)).toEqual({});
+    expect(ticketPatchFor('assigneeId', 'p1', t)).toEqual({});
+    expect(ticketPatchFor('reporterId', 'p2', t)).toEqual({});
   });
 
   it('treats an unestimated ticket left blank as unchanged, not cleared to null again', () => {
     const t = ticket({ storyPoints: null });
-    const draft = draftFromTicket(t);
-    expect(ticketPatchFrom(draft, t)).toEqual({});
+    expect(ticketPatchFor('storyPointsText', '', t)).toEqual({});
+  });
+
+  it('carries only the field that actually changed', () => {
+    const t = ticket({ storyPoints: 3, estimateDays: 1 });
+    expect(ticketPatchFor('storyPointsText', '5', t)).toEqual({ storyPoints: 5 });
+  });
+
+  it('sends an explicit null for a cleared picker, never undefined', () => {
+    const t = ticket({ milestoneId: 'mile1' });
+    const patch = ticketPatchFor('milestoneId', '', t);
+    expect(patch).toEqual({ milestoneId: null });
+    expect('milestoneId' in patch).toBe(true);
+  });
+
+  it('sends an explicit null for a cleared epic, assignee or reporter', () => {
+    const t = ticket({ epicTaskId: 'epic1', assigneeId: 'p1', reporterId: 'p2' });
+    expect(ticketPatchFor('epicTaskId', '', t)).toEqual({ epicTaskId: null });
+    expect(ticketPatchFor('assigneeId', '', t)).toEqual({ assigneeId: null });
+    expect(ticketPatchFor('reporterId', '', t)).toEqual({ reporterId: null });
+  });
+
+  it('sends an explicit null for a cleared date', () => {
+    const t = ticket({ startAt: new Date(2024, 2, 1).getTime() });
+    expect(ticketPatchFor('startAtInput', '', t)).toEqual({ startAt: null });
   });
 
   it('detects a label list change regardless of the registry not being consulted', () => {
     const t = ticket({ labels: ['backend'] });
-    const draft = draftFromTicket(t);
-    draft.labelsText = 'backend, ui';
-    expect(ticketPatchFrom(draft, t)).toEqual({ labels: ['backend', 'ui'] });
+    expect(ticketPatchFor('labelsText', 'backend, ui', t)).toEqual({ labels: ['backend', 'ui'] });
+  });
+
+  it('is unchanged when the same labels are retyped with different spacing', () => {
+    const t = ticket({ labels: ['backend', 'ui'] });
+    expect(ticketPatchFor('labelsText', ' backend , ui ', t)).toEqual({});
+  });
+
+  it('is a real change when only the casing differs — normalizeLabels dedupes case-blind but keeps the case it first saw', () => {
+    const t = ticket({ labels: ['backend', 'ui'] });
+    expect(ticketPatchFor('labelsText', 'Backend, ui', t)).toEqual({ labels: ['Backend', 'ui'] });
+  });
+
+  it('reports an issueType change', () => {
+    const t = ticket({ issueType: 'task' });
+    expect(ticketPatchFor('issueType', 'epic', t)).toEqual({ issueType: 'epic' });
+  });
+
+  it('reads a ticket missing issueType as "task", its default', () => {
+    const t = ticket({});
+    expect(ticketPatchFor('issueType', 'task', t)).toEqual({});
+  });
+
+  it('round-trips a date change through the local-day input format', () => {
+    const t = ticket({ dueAt: new Date(2024, 2, 1).getTime() });
+    expect(ticketPatchFor('dueAtInput', '2024-03-15', t)).toEqual({
+      dueAt: new Date(2024, 2, 15).getTime(),
+    });
   });
 });
