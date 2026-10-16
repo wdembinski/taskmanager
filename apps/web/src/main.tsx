@@ -32,6 +32,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
 import { appDarkTheme, BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@tm/ui/theme';
+import { tokenCssVars } from '@tm/ui/tokens';
 import { App } from './App';
 
 function ThemedApp(): JSX.Element {
@@ -53,6 +54,8 @@ function ThemedApp(): JSX.Element {
             'env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)',
           // The desktop's is `fontSizePx / BASE_FONT_PX`; with no setting to read, 1.
           '--app-font-scale': 1,
+          // Dark because it is the only mounted scheme until F13.4's resolver picks one.
+          ...tokenCssVars('dark'),
         } as React.CSSProperties
       }
     >

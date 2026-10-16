@@ -17,6 +17,7 @@ import { App } from './App';
 import { isFileDrag } from '@ui/AttachmentStrip';
 import { RootErrorBoundary } from './RootErrorBoundary';
 import { appDarkTheme, BASE_FONT_PX, TOASTER_ID, scaleTheme, useGlobalStyles } from '@ui/theme';
+import { tokenCssVars } from '@ui/tokens';
 import { TransportProvider } from '@ui/transport';
 import './index.css';
 
@@ -86,6 +87,8 @@ function ThemedApp(): JSX.Element {
         {
           height: '100vh',
           '--app-font-scale': fontSizePx / BASE_FONT_PX,
+          // Dark because it is the only mounted scheme until F13.4's resolver picks one.
+          ...tokenCssVars('dark'),
         } as React.CSSProperties
       }
     >
