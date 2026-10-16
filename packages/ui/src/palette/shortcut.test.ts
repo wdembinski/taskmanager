@@ -9,7 +9,7 @@
  * unit-tested here — this package's vitest config has no jsdom.
  */
 import { describe, expect, it } from 'vitest';
-import { shortcutMatches, type ShortcutEventLike } from './shortcut';
+import { isEditableTarget, shortcutMatches, type ShortcutEventLike } from './shortcut';
 
 const ev = (partial: Partial<ShortcutEventLike> & { key: string }): ShortcutEventLike => ({
   ctrlKey: false,
@@ -62,5 +62,28 @@ describe('shortcutMatches', () => {
     expect(shortcutMatches(ev({ key: 'k', ctrlKey: true, shiftKey: true }), 'shift+mod+k')).toBe(
       true,
     );
+  });
+
+  it('matches a bare slash against "/"', () => {
+    expect(shortcutMatches(ev({ key: '/' }), '/')).toBe(true);
+  });
+});
+
+describe('isEditableTarget', () => {
+  it('is false for null and undefined', () => {
+    expect(isEditableTarget(null)).toBe(false);
+    expect(isEditableTarget(undefined)).toBe(false);
+  });
+
+  it('is false for a plain element like a DIV', () => {
+    expect(isEditableTarget({ tagName: 'DIV' })).toBe(false);
+  });
+
+  it.each(['INPUT', 'TEXTAREA', 'SELECT'])('is true for a %s', (tagName) => {
+    expect(isEditableTarget({ tagName })).toBe(true);
+  });
+
+  it('is true for a contentEditable element regardless of tag name', () => {
+    expect(isEditableTarget({ tagName: 'DIV', isContentEditable: true })).toBe(true);
   });
 });

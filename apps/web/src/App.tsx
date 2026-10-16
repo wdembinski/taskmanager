@@ -13,7 +13,7 @@
  * profiles and the assignment queue, which only makes sense once an account has more than
  * one desktop serving it.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, CounterBadge, makeStyles } from '@fluentui/react-components';
 import {
   AlertRegular,
@@ -31,6 +31,8 @@ import {
 import { BOARD_COLUMNS } from '@tm/shared/model';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
+import { CommandPalette } from '@tm/ui/palette/CommandPalette';
+import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
 import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { GateTrustHostProvider } from '@tm/ui/gateTrustHost';
@@ -43,6 +45,7 @@ import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
 import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
 import { Fleet } from './agents/Fleet';
+import { webPaletteSource, type WebPaletteActions } from './palette/webPaletteSource';
 import { AutomationsScreen } from './automations/AutomationsScreen';
 import { activityGate } from './activity/activityGate';
 import { useWebLastSeen } from './activity/useWebLastSeen';
@@ -145,8 +148,10 @@ const NAV: readonly NavRailItem[] = [
   { id: 'scratch', label: 'Scratch run', icon: <PlayRegular />, unavailable: DESKTOP_ONLY },
 ];
 
-/** The rail's destinations that this app actually renders. */
-type Screen =
+/** The rail's destinations that this app actually renders — also `webPaletteSource.ts`'s
+ *  `goTo` target, which is how it offers every one of them as a navigate command without a
+ *  way to construct a dead one for Scratch run (not a member of this union). */
+export type Screen =
   | 'mytasks'
   | 'projects'
   | 'tickets'
@@ -310,6 +315,47 @@ function SignedInBoard({
   const [route, navigate] = useHashRoute();
   const layoutMode = useLayoutMode();
 
+  // The command palette (F9.5) — wide layout only for now, since Ctrl+K has no equivalent on
+  // a phone keyboard and "/" would fight the on-screen keyboard's own search affordances.
+  // Declared above the layout switch so the hook order stays the same on every render
+  // regardless of which branch returns.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const openPalette = useCallback(() => setPaletteOpen(true), []);
+  useGlobalShortcut('mod+k', openPalette);
+  useGlobalShortcut('/', openPalette, { ignoreInFields: true });
+
+  // A palette command landed while `BoardScreen` was already mounted — see its own
+  // `paletteRequest` prop doc for why `initialSelectedTaskId` alone cannot reach that case.
+  const [paletteRequest, setPaletteRequest] = useState<
+    { kind: 'select'; taskId: string; nonce: number } | { kind: 'add'; nonce: number } | null
+  >(null);
+
+  const paletteActions: WebPaletteActions = useMemo(
+    () => ({
+      goTo: (next) => setScreen(next),
+      openCard: (taskId) => {
+        setScreen('mytasks');
+        navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+        setPaletteRequest({ kind: 'select', taskId, nonce: Date.now() });
+      },
+      addTask: () => {
+        setScreen('mytasks');
+        setPaletteRequest({ kind: 'add', nonce: Date.now() });
+      },
+      signOut: onSignOut,
+    }),
+    [navigate, route, onSignOut],
+  );
+
+  const webSource = useMemo(
+    () =>
+      webPaletteSource(
+        () => ({ tasks: board.state.tasks, projects: board.state.projects }),
+        paletteActions,
+      ),
+    [board.state, paletteActions],
+  );
+
   if (layoutMode === 'compact') {
     return (
       <TransportProvider transport={board.transport}>
@@ -464,6 +510,7 @@ function SignedInBoard({
                   navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]), { replace: true })
                 }
                 hostUnreachable={hostUnreachable}
+                paletteRequest={paletteRequest ?? undefined}
               />
             ) : (
               <SyncCurtain
@@ -514,6 +561,12 @@ function SignedInBoard({
             />
           )}
         </AppShell>
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          sources={[webSource]}
+          context={{ currentProjectId: null }}
+        />
       </GateTrustHostProvider>
     </TransportProvider>
   );
