@@ -21,6 +21,7 @@ import {
   cardRunLabel,
   canStopWork,
   canResumeWork,
+  canStartWork,
   hasAgentWorked,
   runPhase,
   type RunState,
@@ -711,6 +712,49 @@ describe('canResumeWork', () => {
     const spawning = card({ status: 'pending', stoppedAt: 1_700 });
     expect(canStopWork(spawning, [], new Set(['c1']))).toBe(true);
     expect(canResumeWork(spawning, [], new Set(['c1']))).toBe(false);
+  });
+});
+
+describe('canStartWork', () => {
+  const card = (over: Partial<Task> = {}): Task =>
+    task({ id: 'c1', agentProjectId: 'a1', status: 'pending', ...over });
+
+  it('is false for a card with no agent project', () => {
+    expect(canStartWork(task({ status: 'pending' }))).toBe(false);
+  });
+
+  it('is true for a card assigned but never run, resting in TO DO', () => {
+    expect(canStartWork(card())).toBe(true);
+  });
+
+  it('is false while the card rests anywhere other than pending', () => {
+    for (const status of ['in-review', 'blocked', 'done'] as const) {
+      expect(canStartWork(card({ status }))).toBe(false);
+    }
+  });
+
+  it('is false once the card (or one of its steps) has actually run', () => {
+    expect(canStartWork(card({ workedAt: 1_700 }))).toBe(false);
+    expect(canStartWork(card(), [task({ id: 's1', status: 'done', workedAt: 1_700 })])).toBe(false);
+  });
+
+  it('is false for a card currently running or stopped — canResumeWork or canStopWork answers those', () => {
+    expect(canStartWork(card({ status: 'running' }))).toBe(false);
+    expect(canStartWork(card({ status: 'pending', stoppedAt: 1_700 }))).toBe(false);
+  });
+
+  it('is never true where canStopWork or canResumeWork is', () => {
+    expect(canStartWork(card())).toBe(true);
+    expect(canStopWork(card())).toBe(false);
+    expect(canResumeWork(card())).toBe(false);
+
+    const running = card({ status: 'running' });
+    expect(canStartWork(running)).toBe(false);
+    expect(canStopWork(running)).toBe(true);
+
+    const stopped = card({ stoppedAt: 1_700 });
+    expect(canStartWork(stopped)).toBe(false);
+    expect(canResumeWork(stopped)).toBe(true);
   });
 });
 

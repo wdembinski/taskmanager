@@ -57,8 +57,29 @@ const DESKTOP_BOARD = 'apps/client/src/renderer/src/MyTasks.tsx';
 const WEB_MAIN = 'apps/web/src/main.tsx';
 const DESKTOP_MAIN = 'apps/client/src/renderer/src/main.tsx';
 
+/**
+ * Since F9.4 (`e876e6f2`) the desktop rail is mapped from `DESKTOP_SCREENS`, shared with
+ * the command palette, rather than listing its own `{ id: … }` literals in `DESKTOP_APP`.
+ */
+const DESKTOP_SCREENS_SRC = 'apps/client/src/renderer/src/paletteSource.ts';
+
 function read(path: string): string {
   return readFileSync(join(repoRoot, ...path.split('/')), 'utf8');
+}
+
+/**
+ * Where a host's NAV rail is actually listed, for the ids F9.4 moved off `DESKTOP_APP`
+ * itself. `WEB_APP` still lists its own `{ id: … }` literals, so the web side reads `path`
+ * directly; the desktop side reads `DESKTOP_SCREENS_SRC` instead, but only after confirming
+ * `DESKTOP_APP` still builds its rail from `DESKTOP_SCREENS.map(...)` — if that derivation
+ * stops, reading the list alone would prove nothing about what ids the rail actually carries.
+ */
+function navListing(path: string): string {
+  if (path === DESKTOP_APP) {
+    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
+    return read(DESKTOP_SCREENS_SRC);
+  }
+  return read(path);
 }
 
 /**
@@ -413,13 +434,17 @@ describe('the automations tab both hosts render from the shared view (F1.17)', (
   }
 
   it("both hosts' nav rails carry an automations tab", () => {
-    for (const path of [WEB_APP, DESKTOP_APP]) {
-      expect(
-        read(path),
-        `${path} must list { id: 'automations', … } in its NAV — a view nothing links to is ` +
-          'a file, not a tab.',
-      ).toMatch(/id:\s*'automations'/);
-    }
+    expect(
+      read(WEB_APP),
+      `${WEB_APP} must list { id: 'automations', … } in its NAV — a view nothing links to is ` +
+        'a file, not a tab.',
+    ).toMatch(/id:\s*'automations'/);
+
+    expect(
+      navListing(DESKTOP_APP),
+      `${DESKTOP_SCREENS_SRC} must list { id: 'automations', … } in DESKTOP_SCREENS — a view ` +
+        'nothing links to is a file, not a tab.',
+    ).toMatch(/id:\s*'automations'/);
   });
 });
 
@@ -598,7 +623,9 @@ describe('workflows both hosts render from the shared builder (F8.13)', () => {
 describe('the activity tab both hosts render from the shared screen (F2.13/F2.14)', () => {
   /**
    * `apps/client/src/renderer/src/App.tsx` imports `ActivityScreen` straight from
-   * `@tm/ui/activity/ActivityScreen` and lists `id: 'activity'` in its NAV (F2.13). The web
+   * `@tm/ui/activity/ActivityScreen` (F2.13). Since F9.4 (`e876e6f2`) its NAV is built from
+   * `DESKTOP_SCREENS.map(...)` rather than its own `{ id: … }` literals, so the `id: 'activity'`
+   * entry itself now lives in `paletteSource.ts`, alongside the automations one above. The web
    * half (F2.14) is a wrapper, the same shape as the automations tab above: `WEB_APP` lists
    * the NAV entry, but the `ActivityScreen` import itself lives one file over, in
    * `apps/web/src/activity/WebActivityScreen.tsx` — the gate that decides whether there is a
@@ -622,13 +649,17 @@ describe('the activity tab both hosts render from the shared screen (F2.13/F2.14
   }
 
   it("lists an activity tab in both hosts' NAV", () => {
-    for (const path of [WEB_APP, DESKTOP_APP]) {
-      expect(
-        read(path),
-        `${path} must list { id: 'activity', … } in its NAV — a screen nothing links to is a ` +
-          'file, not a tab.',
-      ).toMatch(/id:\s*'activity'/);
-    }
+    expect(
+      read(WEB_APP),
+      `${WEB_APP} must list { id: 'activity', … } in its NAV — a screen nothing links to is a ` +
+        'file, not a tab.',
+    ).toMatch(/id:\s*'activity'/);
+
+    expect(
+      navListing(DESKTOP_APP),
+      `${DESKTOP_SCREENS_SRC} must list { id: 'activity', … } in DESKTOP_SCREENS — a screen ` +
+        'nothing links to is a file, not a tab.',
+    ).toMatch(/id:\s*'activity'/);
   });
 
   it('leaves no local ActivityScreen behind in a host tree', () => {
@@ -645,9 +676,11 @@ describe('the activity tab both hosts render from the shared screen (F2.13/F2.14
 describe('the issues tab both hosts render from the shared screen (F5.10)', () => {
   /**
    * `apps/client/src/renderer/src/App.tsx` imports `IssuesScreen` straight from
-   * `@ui/issues/IssuesScreen` and lists `id: 'issues'` in its NAV — step 1 of this ticket. The
-   * web half is a wrapper, the same shape as the activity tab above: `WEB_APP` lists the NAV
-   * entry, but the `IssuesScreen` import itself lives one file over, in
+   * `@ui/issues/IssuesScreen` — step 1 of this ticket. Since F9.4 (`e876e6f2`) its NAV is
+   * built from `DESKTOP_SCREENS.map(...)` rather than its own `{ id: … }` literals, so the
+   * `id: 'issues'` entry itself now lives in `paletteSource.ts`, alongside the activity one
+   * above. The web half is a wrapper, the same shape as the activity tab above: `WEB_APP`
+   * lists the NAV entry, but the `IssuesScreen` import itself lives one file over, in
    * `apps/web/src/issues/WebIssuesScreen.tsx` — which reuses `activityGate` rather than
    * growing a second gate, since Issues has the same one source (a live desktop) that
    * Activity does.
@@ -670,13 +703,17 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
   }
 
   it("lists an issues tab in both hosts' NAV", () => {
-    for (const path of [WEB_APP, DESKTOP_APP]) {
-      expect(
-        read(path),
-        `${path} must list { id: 'issues', … } in its NAV — a screen nothing links to is a ` +
-          'file, not a tab.',
-      ).toMatch(/id:\s*'issues'/);
-    }
+    expect(
+      read(WEB_APP),
+      `${WEB_APP} must list { id: 'issues', … } in its NAV — a screen nothing links to is a ` +
+        'file, not a tab.',
+    ).toMatch(/id:\s*'issues'/);
+
+    expect(
+      navListing(DESKTOP_APP),
+      `${DESKTOP_SCREENS_SRC} must list { id: 'issues', … } in DESKTOP_SCREENS — a screen ` +
+        'nothing links to is a file, not a tab.',
+    ).toMatch(/id:\s*'issues'/);
   });
 
   it('leaves no local IssuesScreen behind in a host tree', () => {
@@ -1028,7 +1065,7 @@ describe('Linear: the web reads its settings and does not configure them', () =>
       expect(
         offenders,
         `${offenders.join(', ')} invokes ${channel}. Both are 'host-only' in ipcRelay.ts ` +
-          "because the API key never leaves the desktop — a caller here can only ever reach " +
+          'because the API key never leaves the desktop — a caller here can only ever reach ' +
           "the transport's refusal, and should never try.",
       ).toEqual([]);
     }

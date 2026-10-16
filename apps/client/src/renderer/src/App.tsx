@@ -20,7 +20,7 @@
  * `window.api.invoke(...)` and consume pushed updates via `window.api.on(...)`.
  * Those two are the whole UI↔engine vocabulary.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Caption1,
   CounterBadge,
@@ -48,15 +48,24 @@ import {
 import type { AuthState } from '@shared/auth';
 import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
+import { hasPlan, hasRepo, type Project, type Task } from '@shared/model';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from '@ui/Attention';
 import { ActivityScreen } from '@ui/activity/ActivityScreen';
 import { unreadActivityCount } from '@ui/activity/activityUnread';
 import { AutomationsView } from '@ui/automations/AutomationsView';
 import { IssuesScreen } from '@ui/issues/IssuesScreen';
+import { CommandPalette } from '@ui/palette/CommandPalette';
+import { useGlobalShortcut } from '@ui/palette/shortcut';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
+import {
+  buildDesktopCommands,
+  DESKTOP_SCREENS,
+  type DesktopPaletteSnapshot,
+  type DesktopPaletteTab,
+} from './paletteSource';
 import { currentSprintName } from '@ui/board/currentSprint';
 // The ticket WORKSPACE (backlog table + Gantt over one ticket project's own tickets),
 // distinct from the admin `Projects` screen below — see the TabId doc above.
@@ -65,9 +74,10 @@ import { SyncRing } from './SyncRing';
 import type { SyncState } from '@shared/sync';
 import { Performance } from '@ui/Performance';
 import { Projects } from './projects/Projects';
-import { Settings } from './Settings';
+import { Settings, type SettingsSection } from './Settings';
 import { SessionRunner } from './SessionRunner';
 import { TitleBar } from './TitleBar';
+import { useActiveRuns } from './useActiveRuns';
 import { UsageQuotaStatus, useUsageQuotas } from '@ui/UsageQuotaBars';
 import { AppShell } from '@ui/shell/AppShell';
 import { NavRail, type NavRailItem } from '@ui/shell/NavRail';
@@ -114,31 +124,32 @@ const useStyles = makeStyles({
  *
  * Issues (F5.10) browses tracker issues outside the sync query and hands one to an agent.
  */
-type TabId =
-  | 'mytasks'
-  | 'projects'
-  | 'tickets'
-  | 'issues'
-  | 'automations'
-  | 'performance'
-  | 'activity'
-  | 'attention'
-  | 'settings'
-  | 'scratch';
+// Also the command palette's own vocabulary for a screen (F9.4): defined once as
+// `DesktopPaletteTab` in `paletteSource.ts` so a screen added there is a screen the rail
+// already knows about, and the two can never drift apart.
+type TabId = DesktopPaletteTab;
+
+/** Icons have no place in the palette's own data, so the rail layers them onto
+ *  `DESKTOP_SCREENS` — the one list of screens, shared with the palette (F9.4). */
+const NAV_ICON: Record<TabId, JSX.Element> = {
+  mytasks: <TaskListSquareLtrRegular />,
+  projects: <FolderRegular />,
+  tickets: <AppsListDetailRegular />,
+  issues: <TicketDiagonalRegular />,
+  automations: <FlashRegular />,
+  performance: <DataTrendingRegular />,
+  activity: <PulseRegular />,
+  attention: <AlertRegular />,
+  settings: <SettingsRegular />,
+  scratch: <PlayRegular />,
+};
 
 /** The rail, in order. The label is the tooltip and the accessible name. */
-const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = [
-  { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
-  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
-  { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
-  { id: 'issues', label: 'Issues', icon: <TicketDiagonalRegular /> },
-  { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
-  { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
-  { id: 'activity', label: 'Activity', icon: <PulseRegular /> },
-  { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
-  { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
-  { id: 'scratch', label: 'Scratch run', icon: <PlayRegular /> },
-];
+const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = DESKTOP_SCREENS.map((screen) => ({
+  id: screen.id,
+  label: screen.title,
+  icon: NAV_ICON[screen.id],
+}));
 
 /** What each kind of ask is called in a toast — short, because a toast is one glance. */
 const TOAST_TITLE: Record<AttentionItem['kind'], string> = {
@@ -173,6 +184,62 @@ export function App(): JSX.Element {
     setPendingOpenTaskId(taskId);
     setTab('mytasks');
   }, []);
+  // Add task, queued for My Tasks the same one-shot way `pendingOpenTaskId` is — the
+  // command palette's "Add task" (F9.4) is the first caller from outside that screen.
+  const [pendingAddTask, setPendingAddTask] = useState(false);
+  // A Settings section another screen wants open — the palette's "Settings: …" commands.
+  // See `Settings`' own `initialSection`/`onInitialSectionHandled`.
+  const [pendingSettingsSection, setPendingSettingsSection] = useState<SettingsSection | null>(
+    null,
+  );
+  /**
+   * The board's own cards and delegable repos, read here ONLY so the command palette
+   * (F9.4) has something to search and act on from any tab — the board itself (`MyTasks`)
+   * keeps its own copies for everything it actually renders. Fetched the same way
+   * `readSprint` below already fetches `tasks` for the sprint name; this just keeps the
+   * result instead of discarding it.
+   */
+  const [paletteTasks, setPaletteTasks] = useState<Task[]>([]);
+  const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  // The card selected on the My Tasks board, reported up by `MyTasks` itself — what the
+  // palette's "Start/Stop selected card" acts on, wherever the palette happens to be opened.
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  /**
+   * `paletteTasks`, read fresh at the moment a palette command actually RUNS rather than at
+   * the moment the palette opened. `CommandPalette` snapshots its commands once per open, so
+   * a card deleted while the palette is still sitting there open would otherwise be resolved
+   * against the stale array captured at open time — exactly the "stale rows" failure mode
+   * the command palette's design calls out. Assigned every render, the same pattern
+   * `MyTasks`' own `scopeRef` uses for the same reason.
+   */
+  const paletteTasksRef = useRef<Task[]>(paletteTasks);
+  paletteTasksRef.current = paletteTasks;
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useGlobalShortcut('mod+k', () => setPaletteOpen(true));
+  const { ids: liveRunTaskIds } = useActiveRuns();
+  const paletteSnapshot: DesktopPaletteSnapshot = {
+    tasks: paletteTasks,
+    agentProjects,
+    liveRunTaskIds,
+    selectedTaskId,
+    getTask: (taskId) => paletteTasksRef.current.find((t) => t.id === taskId),
+    onNavigate: setTab,
+    onOpenTask: openTaskOnBoard,
+    onOpenSettingsSection: (section) => {
+      setPendingSettingsSection(section);
+      setTab('settings');
+    },
+    onAddTask: () => {
+      setPendingAddTask(true);
+      setTab('mytasks');
+    },
+    runTask: async (taskId) => {
+      await window.api.invoke('task:run', taskId);
+    },
+    stopTask: async (taskId) => {
+      await window.api.invoke('task:stopAgent', taskId);
+    },
+  };
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
   /**
@@ -253,15 +320,23 @@ export function App(): JSX.Element {
       window.api.invoke('update:get').then(setUpdate),
       window.api.invoke('sync:state').then(setSyncState),
       window.api.invoke('activity:getLastSeen').then(setLastSeen),
+      // The repos a command palette "Start/Stop selected card" (F9.4) may legally act on —
+      // the same filter `MyTasks` applies to its own copy of this list.
+      window.api.invoke('project:list').then((projects) => {
+        const projectList = projects.map((p) => p.project);
+        setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
+      }),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
-    /** Recompute the footer's sprint from the settings flag and the board's cards. */
+    /** Recompute the footer's sprint from the settings flag and the board's cards — and,
+     *  for the same fetch, keep the palette's own copy of the board's cards current. */
     const readSprint = async (): Promise<void> => {
       const [settings, tasks] = await Promise.all([
         window.api.invoke('settings:get'),
         window.api.invoke('board:tasks'),
       ]);
       setSprint(settings.jira.currentSprintOnly ? currentSprintName(tasks) : null);
+      setPaletteTasks(tasks);
     };
     void readSprint().catch(() => setSprint(null));
 
@@ -343,181 +418,195 @@ export function App(): JSX.Element {
     !signedOut && claude?.installed && claude?.authenticated && !claude?.apiKeyDetected;
 
   return (
-    <AppShell
-      titleBar={<TitleBar />}
-      nav={
-        <NavRail
-          items={NAV.map((item) => {
-            // The only labels the rail ever shows: counts built per render rather than in
-            // `NAV` because they move. Attention's is "someone is waiting on you"; Activity's
-            // is unread rows, and hides while that tab is the one already open — see
-            // `unreadActivityCount`'s own docstring on why a human move is excluded from it.
-            if (item.id === 'attention' && attentionCount > 0) {
-              return {
-                ...item,
-                badge: (
-                  <CounterBadge
-                    count={attentionCount}
-                    color="danger"
-                    size="small"
-                    appearance="filled"
-                  />
-                ),
-              };
-            }
-            if (item.id === 'activity' && unreadCount > 0 && tab !== 'activity') {
-              return {
-                ...item,
-                badge: (
-                  <CounterBadge
-                    count={unreadCount}
-                    color="informative"
-                    size="small"
-                    appearance="filled"
-                  />
-                ),
-              };
-            }
-            return item;
-          })}
-          selected={tab}
-          onSelect={(id) => setTab(id as TabId)}
-        />
-      }
-      banners={
-        <>
-          {/* The engine is unreachable — every tab below will be empty, so say why once,
+    <>
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        sources={[() => buildDesktopCommands(paletteSnapshot)]}
+        context={{ currentProjectId: null }}
+      />
+      <AppShell
+        titleBar={<TitleBar />}
+        nav={
+          <NavRail
+            items={NAV.map((item) => {
+              // The only labels the rail ever shows: counts built per render rather than in
+              // `NAV` because they move. Attention's is "someone is waiting on you"; Activity's
+              // is unread rows, and hides while that tab is the one already open — see
+              // `unreadActivityCount`'s own docstring on why a human move is excluded from it.
+              if (item.id === 'attention' && attentionCount > 0) {
+                return {
+                  ...item,
+                  badge: (
+                    <CounterBadge
+                      count={attentionCount}
+                      color="danger"
+                      size="small"
+                      appearance="filled"
+                    />
+                  ),
+                };
+              }
+              if (item.id === 'activity' && unreadCount > 0 && tab !== 'activity') {
+                return {
+                  ...item,
+                  badge: (
+                    <CounterBadge
+                      count={unreadCount}
+                      color="informative"
+                      size="small"
+                      appearance="filled"
+                    />
+                  ),
+                };
+              }
+              return item;
+            })}
+            selected={tab}
+            onSelect={(id) => setTab(id as TabId)}
+          />
+        }
+        banners={
+          <>
+            {/* The engine is unreachable — every tab below will be empty, so say why once,
               at the top, rather than leaving the user to guess from seven spinners. */}
-          {bootError && (
-            <MessageBar intent="error">
-              <MessageBarBody>
-                Can&apos;t reach the app&apos;s backend, so nothing will load: {bootError}
-              </MessageBarBody>
-            </MessageBar>
-          )}
+            {bootError && (
+              <MessageBar intent="error">
+                <MessageBarBody>
+                  Can&apos;t reach the app&apos;s backend, so nothing will load: {bootError}
+                </MessageBarBody>
+              </MessageBar>
+            )}
 
-          {/* Surface a Claude problem prominently; when all is well the footer suffices.
+            {/* Surface a Claude problem prominently; when all is well the footer suffices.
               Suppressed while the sign-in gate is up: `AuthBanner` above is saying the
               same thing with the button that fixes it, and two red bars reporting one
               outage reads as two outages. */}
-          {claude && !claudeOk && !signedOut && (
-            <MessageBar intent="warning">
-              <MessageBarBody>{claude.message}</MessageBarBody>
-            </MessageBar>
-          )}
+            {claude && !claudeOk && !signedOut && (
+              <MessageBar intent="warning">
+                <MessageBarBody>{claude.message}</MessageBarBody>
+              </MessageBar>
+            )}
 
-          {/* Account-wide sign-in gate: all work is held until a human signs in. Above
+            {/* Account-wide sign-in gate: all work is held until a human signs in. Above
               the limit banner because it is the one with an action on it. */}
-          <AuthBanner />
+            <AuthBanner />
 
-          {/* Global usage-limit gate (Phase 5): a countdown while work is parked. */}
-          <LimitBanner />
-        </>
-      }
-      // Every screen but My Tasks is a document and wants a margin. My Tasks is a
-      // two-panel workspace whose right pane runs to the window's edges.
-      padded={tab !== 'mytasks'}
-      /* Status bar: Claude readiness + app info, the full width of the window. */
-      status={
-        <StatusBar attention={attentionCount > 0}>
-          {claude ? (
-            <>
-              <StatusDot ok={Boolean(claudeOk)} />
-              <Caption1>
-                {/* `signedOut` first: a run has PROVEN the credential is dead, so saying
+            {/* Global usage-limit gate (Phase 5): a countdown while work is parked. */}
+            <LimitBanner />
+          </>
+        }
+        // Every screen but My Tasks is a document and wants a margin. My Tasks is a
+        // two-panel workspace whose right pane runs to the window's edges.
+        padded={tab !== 'mytasks'}
+        /* Status bar: Claude readiness + app info, the full width of the window. */
+        status={
+          <StatusBar attention={attentionCount > 0}>
+            {claude ? (
+              <>
+                <StatusDot ok={Boolean(claudeOk)} />
+                <Caption1>
+                  {/* `signedOut` first: a run has PROVEN the credential is dead, so saying
                     "logged in" because the file is still on disk would be the bar's most
                     confidently wrong moment — which is exactly what it did during the
                     outage this reports. */}
-                {signedOut
-                  ? `Claude ${claude.version ?? '?'} · signed out — work is held`
-                  : claude.installed
-                    ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
-                    : 'Claude CLI not found'}
-                {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
-              </Caption1>
-            </>
-          ) : bootError ? (
-            <>
-              <StatusDot ok={false} />
-              <Caption1>Backend unavailable</Caption1>
-            </>
-          ) : (
-            <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
-          )}
-          {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
-          {/* No colour of its own: the bar turns orange under attention, and a fixed
+                  {signedOut
+                    ? `Claude ${claude.version ?? '?'} · signed out — work is held`
+                    : claude.installed
+                      ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
+                      : 'Claude CLI not found'}
+                  {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
+                </Caption1>
+              </>
+            ) : bootError ? (
+              <>
+                <StatusDot ok={false} />
+                <Caption1>Backend unavailable</Caption1>
+              </>
+            ) : (
+              <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
+            )}
+            {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
+            {/* No colour of its own: the bar turns orange under attention, and a fixed
               white would go unreadable exactly then. */}
-          {sprint && <Caption1>· {sprint}</Caption1>}
-          <StatusSpacer />
-          {/* A downloaded update installs itself on the next quit either way; this is
+            {sprint && <Caption1>· {sprint}</Caption1>}
+            <StatusSpacer />
+            {/* A downloaded update installs itself on the next quit either way; this is
               simply the offer to have it now, and the only notice the user ever gets. */}
-          {update?.status === 'downloaded' && (
-            <Caption1>
-              <button
-                type="button"
-                className={styles.update}
-                title="Restart now to finish installing. Otherwise it applies the next time you quit."
-                onClick={() => void window.api.invoke('update:install')}
-              >
-                Update {update.version ?? ''} ready — restart
-              </button>
-            </Caption1>
-          )}
-          {/* A failure used to be shown nowhere at all, which is how three releases' worth of
+            {update?.status === 'downloaded' && (
+              <Caption1>
+                <button
+                  type="button"
+                  className={styles.update}
+                  title="Restart now to finish installing. Otherwise it applies the next time you quit."
+                  onClick={() => void window.api.invoke('update:install')}
+                >
+                  Update {update.version ?? ''} ready — restart
+                </button>
+              </Caption1>
+            )}
+            {/* A failure used to be shown nowhere at all, which is how three releases' worth of
               refused installs went unnoticed. Still not a dialog — one line that points at the
               place where the actual reason is written down. */}
-          {update?.status === 'error' && (
-            <Caption1>
-              <button
-                type="button"
-                className={styles.update}
-                title={describeUpdate(update)}
-                onClick={() => setTab('settings')}
-              >
-                Update failed — see Settings
-              </button>
-            </Caption1>
-          )}
-          {/* How much of the two metered windows is gone. Same right-hand group as the sync
+            {update?.status === 'error' && (
+              <Caption1>
+                <button
+                  type="button"
+                  className={styles.update}
+                  title={describeUpdate(update)}
+                  onClick={() => setTab('settings')}
+                >
+                  Update failed — see Settings
+                </button>
+              </Caption1>
+            )}
+            {/* How much of the two metered windows is gone. Same right-hand group as the sync
               rings, and for the same reason: ambient state you glance at, never a decision.
               The full numbers and the reset countdown are in each one's tooltip, and the
               Performance tab draws the same pair at full size. */}
-          <UsageQuotaStatus quotas={quotas} />
-          {/* How stale the mirror is, and how long until the next refresh. On the right,
+            <UsageQuotaStatus quotas={quotas} />
+            {/* How stale the mirror is, and how long until the next refresh. On the right,
               beside the version: it is ambient state, not something that wants a decision. */}
-          <SyncRing state={syncState} />
-          {info && (
-            <Caption1>
-              v{info.version} · electron {info.electron} · node {info.node}
-            </Caption1>
-          )}
-        </StatusBar>
-      }
-    >
-      {tab === 'mytasks' ? (
-        <MyTasks
-          openTaskId={pendingOpenTaskId}
-          onOpenTaskIdHandled={() => setPendingOpenTaskId(null)}
-        />
-      ) : tab === 'projects' ? (
-        <Projects />
-      ) : tab === 'tickets' ? (
-        <TicketWorkspace />
-      ) : tab === 'issues' ? (
-        <IssuesScreen onOpenTask={openTaskOnBoard} />
-      ) : tab === 'automations' ? (
-        <AutomationsView onOpenTask={openTaskOnBoard} />
-      ) : tab === 'performance' ? (
-        <Performance />
-      ) : tab === 'activity' ? (
-        <ActivityScreen lastSeen={lastSeen} onSeen={onSeen} onOpenTask={openTaskOnBoard} />
-      ) : tab === 'attention' ? (
-        <Attention />
-      ) : tab === 'settings' ? (
-        <Settings />
-      ) : (
-        <SessionRunner />
-      )}
-    </AppShell>
+            <SyncRing state={syncState} />
+            {info && (
+              <Caption1>
+                v{info.version} · electron {info.electron} · node {info.node}
+              </Caption1>
+            )}
+          </StatusBar>
+        }
+      >
+        {tab === 'mytasks' ? (
+          <MyTasks
+            openTaskId={pendingOpenTaskId}
+            onOpenTaskIdHandled={() => setPendingOpenTaskId(null)}
+            openAddTask={pendingAddTask}
+            onOpenAddTaskHandled={() => setPendingAddTask(false)}
+            onSelectedTaskIdChange={setSelectedTaskId}
+          />
+        ) : tab === 'projects' ? (
+          <Projects />
+        ) : tab === 'tickets' ? (
+          <TicketWorkspace />
+        ) : tab === 'issues' ? (
+          <IssuesScreen onOpenTask={openTaskOnBoard} />
+        ) : tab === 'automations' ? (
+          <AutomationsView onOpenTask={openTaskOnBoard} />
+        ) : tab === 'performance' ? (
+          <Performance />
+        ) : tab === 'activity' ? (
+          <ActivityScreen lastSeen={lastSeen} onSeen={onSeen} onOpenTask={openTaskOnBoard} />
+        ) : tab === 'attention' ? (
+          <Attention />
+        ) : tab === 'settings' ? (
+          <Settings
+            initialSection={pendingSettingsSection}
+            onInitialSectionHandled={() => setPendingSettingsSection(null)}
+          />
+        ) : (
+          <SessionRunner />
+        )}
+      </AppShell>
+    </>
   );
 }

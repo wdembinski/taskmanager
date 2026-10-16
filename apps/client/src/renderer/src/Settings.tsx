@@ -84,6 +84,7 @@ import type {
   LinearTeamList,
 } from '@shared/ipc';
 import { cloudAuthHint, cloudTokenPlaceholder } from './cloudAuthHint';
+import { SETTINGS_SECTIONS } from './paletteSource';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
 import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
@@ -204,7 +205,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
 
-type SettingsSection =
+export type SettingsSection =
   | 'general'
   | 'board'
   | 'features'
@@ -281,9 +282,27 @@ const FEATURE_SWITCHES: ReadonlyArray<{
   },
 ];
 
-export function Settings(): JSX.Element {
+export interface SettingsProps {
+  /** A section another screen wants open — the command palette's "Settings: …" commands
+   *  (F9.4) are the first caller. Consumed once via `onInitialSectionHandled`, the same
+   *  one-shot shape as `MyTasks`' `openTaskId`, so returning to this tab on your own
+   *  doesn't re-jump you back to it. */
+  initialSection?: SettingsSection | null;
+  onInitialSectionHandled?: () => void;
+}
+
+export function Settings({
+  initialSection,
+  onInitialSectionHandled,
+}: SettingsProps = {}): JSX.Element {
   const styles = useStyles();
   const [section, setSection] = useState<SettingsSection>('general');
+
+  useEffect(() => {
+    if (!initialSection) return;
+    setSection(initialSection);
+    onInitialSectionHandled?.();
+  }, [initialSection, onInitialSectionHandled]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [jiraStatus, setJiraStatus] = useState<JiraConfigStatus | null>(null);
@@ -791,19 +810,11 @@ export function Settings(): JSX.Element {
         onTabSelect={(_e, d) => setSection(d.value as SettingsSection)}
         className={styles.nav}
       >
-        <Tab value="general">General</Tab>
-        <Tab value="board">Board</Tab>
-        <Tab value="features">Features</Tab>
-        <Tab value="jira">JIRA</Tab>
-        <Tab value="gitlab">GitLab</Tab>
-        <Tab value="github">GitHub</Tab>
-        <Tab value="linear">Linear</Tab>
-        <Tab value="cloud">Cloud</Tab>
-        <Tab value="people">People</Tab>
-        <Tab value="agentProfiles">Agent profiles</Tab>
-        <Tab value="skills">Skills</Tab>
-        <Tab value="workflows">Workflows</Tab>
-        <Tab value="promptTemplates">Prompt templates</Tab>
+        {SETTINGS_SECTIONS.map((s) => (
+          <Tab key={s.id} value={s.id}>
+            {s.title}
+          </Tab>
+        ))}
       </TabList>
 
       {section === 'people' ? (

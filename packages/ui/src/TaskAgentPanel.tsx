@@ -56,7 +56,13 @@ import {
 import { AgentGlyph } from './AgentGlyph';
 import { autoCreatePrTooltip, autoMergeTooltip, autoReleaseTooltip } from './agentAutoToggles';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
-import { canResumeWork, canStopWork, hasAgentWorked, parkedStep } from '@tm/shared/board';
+import {
+  canResumeWork,
+  canStartWork,
+  canStopWork,
+  hasAgentWorked,
+  parkedStep,
+} from '@tm/shared/board';
 import type { BoardScope } from '@tm/shared/ipc';
 import type { Project, Task } from '@tm/shared/model';
 import { autoIntegrateOn, projectAutoIntegrate } from '@tm/shared/integrate';
@@ -388,19 +394,10 @@ export function TaskAgentPanel({
     setApplyWorkflowId((id) => reconcileSelection(id, workflowState.workflows));
   }, [workflowState.workflows]);
   // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
-  // without being started. "Has it run" is the test rather than the status, because a
-  // staged card and a queued one are both `pending`.
-  //
-  // Not while Resume is offered, which is the one case both can be true at once: a card
-  // stopped so early that nothing was written to `workedAt` still reads as never-started,
-  // and the row would then hold two primary buttons each claiming to begin the work.
-  // Resume wins — it rejoins the session if there is one and falls through to the ordinary
-  // start path if there is not, so it is Start plus what Start forgets.
-  const staged =
-    Boolean(task.agentProjectId) &&
-    !hasAgentWorked(task, ownSteps) &&
-    task.status === 'pending' &&
-    !resumable;
+  // without being started. Asked of {@link canStartWork} rather than re-derived here, so
+  // this panel and the command palette's "Start selected card" (F9.4) can never disagree
+  // about when Start is on offer.
+  const staged = canStartWork(task, ownSteps, liveRunTaskIds);
   /**
    * Whether to offer Merge: a delegated card that has actually run, in a repo that uses
    * worktrees. Derived here rather than asked of the engine, which would mean an async

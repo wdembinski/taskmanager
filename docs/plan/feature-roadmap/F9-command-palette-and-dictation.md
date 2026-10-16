@@ -104,7 +104,7 @@ None — the palette is pure UI over data each host already has (the board store
 
   - `packages/ui/src/palette/CommandPalette.tsx` — Fluent `Dialog` + `Input` + listbox driven entirely by `paletteReduce`; ARIA listbox/option roles; Escape closes; Enter runs; Ctrl/⌘+Enter runs the secondary action; errors from `run` render as a `MessageBar` inside the palette instead of closing it.
   - Acceptance: the component holds no logic beyond wiring (reviewable); reducer tests from F9.1 extended for secondary-action and error-row transitions. Gates green.
-- [ ] F9.4 Register navigation card and project commands in the desktop app @needs: F9.3 Build the CommandPalette dialog in packages/ui with full keyboard navigation
+- [x] F9.4 Register navigation card and project commands in the desktop app @needs: F9.3 Build the CommandPalette dialog in packages/ui with full keyboard navigation
 
   - Mount the palette once in `apps/client/src/renderer/src/App.tsx`; a desktop `PaletteSource` in `apps/client/src/renderer/src/paletteSource.ts` building: screens, cards (title / `externalKey` / `ticketKey` / id), projects, Add task, Start/Stop selected (gated by the existing start/`canStopWork` predicates), theme, Settings sections.
   - Acceptance: pure `buildDesktopCommands(snapshot)` tested — a running card offers Stop not Start; a card with no agent project offers no Start; a deleted card's command resolves to the unknown-task refusal message. Gates green.
