@@ -88,16 +88,16 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     paneShadow: '0 1px 2px rgba(17, 24, 39, 0.05), 0 6px 20px rgba(17, 24, 39, 0.07)',
     text: '#1B1D21',
     textMuted: '#454B54',
-    textFaint: '#7C838D',
+    textFaint: '#646B74',
     brand: '#0F6CBD',
     selectedTint: '#EBF3FC',
     accentBar: '#0F6CBD',
-    statusGradient: 'linear-gradient(90deg, #0F6CBD, #2F7FE0, #5B6BEA)',
-    statusGradientStops: ['#0F6CBD', '#2F7FE0', '#5B6BEA'],
+    statusGradient: 'linear-gradient(90deg, #0F6CBD, #2A72CA, #5260D3)',
+    statusGradientStops: ['#0F6CBD', '#2A72CA', '#5260D3'],
     attention: UNREAD_ORANGE,
     attentionInk: '#1b1b1b',
     run: {
-      ink: '#0BA5C2',
+      ink: '#07748C',
       pill: '#E6FAFE',
     },
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
@@ -123,8 +123,8 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     brand: '#4FA3E8',
     selectedTint: '#1D2B38',
     accentBar: '#4FA3E8',
-    statusGradient: 'linear-gradient(90deg, #0F6CBD, #2F7FE0, #5B6BEA)',
-    statusGradientStops: ['#0F6CBD', '#2F7FE0', '#5B6BEA'],
+    statusGradient: 'linear-gradient(90deg, #0F6CBD, #2A72CA, #5260D3)',
+    statusGradientStops: ['#0F6CBD', '#2A72CA', '#5260D3'],
     attention: UNREAD_ORANGE,
     attentionInk: '#1b1b1b',
     run: {
@@ -155,12 +155,12 @@ export interface FluoPalette {
 
 /**
  * The high-key indicator palette, per scheme. Dark is today's `FLUO` from `theme.ts`,
- * moved here unchanged; light is provisional until F13.2's contrast test pins it.
+ * moved here unchanged.
  */
 export const FLUO_BY_SCHEME: Record<ColorScheme, FluoPalette> = {
   light: {
-    cyan: '#0BA5C2',
-    cyanDim: 'rgba(11, 165, 194, 0.20)',
+    cyan: '#07748C',
+    cyanDim: 'rgba(7, 116, 140, 0.20)',
     cyanDeep: '#8FD3E0',
     green: '#1A7F37',
     red: '#CF222E',

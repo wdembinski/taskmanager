@@ -121,13 +121,13 @@ below are taken from the v9 mockups and checked for contrast in F13.2.
 | `paneOpaque` | `#FFFFFF` | `#1A1C1F` | the same pane when glass is off |
 | `paneRim` | 1px light rim; top sheen white 0.7 → 0 | 1px faint rim; sheen white 0.08 → 0 | an inset highlight, not a border |
 | `paneShadow` | `0 1px 2px rgba(17,24,39,.05)`, `0 6px 20px rgba(17,24,39,.07)` | same offsets, `rgba(0,0,0,.30/.45)` | from the mockups' `feDropShadow`s |
-| `text` / `textMuted` / `textFaint` | `#1B1D21` / `#454B54` / `#7C838D` | `#E8EAED` / `#BAC0C7` / `#8A929B` | faint is for keys and meta |
+| `text` / `textMuted` / `textFaint` | `#1B1D21` / `#454B54` / `#646B74` | `#E8EAED` / `#BAC0C7` / `#8A929B` | faint is for keys and meta |
 | `brand` | `#0F6CBD` | `#4FA3E8` | the one brand blue; dark uses its lighter step |
 | `selectedTint` | `#EBF3FC` | `#1D2B38` | the selected row's fill |
 | `accentBar` | `#0F6CBD` | `#4FA3E8` | the selected row's short left bar |
-| `statusGradient` | `#0F6CBD → #2F7FE0 → #5B6BEA` | same | the status bar, left to right |
+| `statusGradient` | `#0F6CBD → #2A72CA → #5260D3` | same | the status bar, left to right |
 | `attention` | orange (see open question 1) | same | the status bar under attention, "today" |
-| `run` | `#0BA5C2` on a `#E6FAFE` pill | `FLUO.cyan` `#22E4FF` on `rgba(34,228,255,.12)` | a running agent; light needs the deeper cyan |
+| `run` | `#07748C` on a `#E6FAFE` pill | `FLUO.cyan` `#22E4FF` on `rgba(34,228,255,.12)` | a running agent; light needs the deeper cyan |
 | `mono` | Cascadia Code, JetBrains Mono, Consolas | same | keys, branches, versions |
 | `sans` | Segoe UI Variable Text, Segoe UI, Inter, system-ui | same | Display cut for titles |
 
@@ -331,7 +331,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     `STATUS_INDICATOR_COLOR` / `PIPELINE_COLOR` key resolves in both; `appDarkTheme` still sets
     the editor-grey body text. `pnpm typecheck`, `pnpm test`, `pnpm build` green.
 
-- [ ] F13.2 Add a pure contrast checker and assert every token pair in both themes @needs: F13.1 Define the semantic light and dark token sets and the two Fluent themes
+- [x] F13.2 Add a pure contrast checker and assert every token pair in both themes @needs: F13.1 Define the semantic light and dark token sets and the two Fluent themes
 
   - `packages/ui/src/contrast.ts`: WCAG relative luminance, `contrastRatio(fg, bg)`, and alpha
     compositing for glass (`composite(rgba, over)`). `contrast.test.ts` lists every pair the
