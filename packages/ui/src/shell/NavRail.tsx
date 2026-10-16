@@ -61,6 +61,15 @@ const useStyles = makeStyles({
    * the app is the same one and that the rest of it lives elsewhere.
    */
   unavailable: { opacity: 0.4, cursor: 'default' },
+  /** The palette hint's label is a shortcut ("Ctrl K", "⌘K"), not a glyph — too wide for the
+   *  rail's 44px tile at the `button`/`svg` sizing above, so it gets its own small, tight
+   *  text instead of inheriting either. */
+  paletteHint: {
+    fontSize: '11px',
+    lineHeight: '13px',
+    whiteSpace: 'normal',
+    color: tokens.colorNeutralForeground3,
+  },
 });
 
 export interface NavRailItem {
@@ -99,9 +108,28 @@ export interface NavRailProps {
    * opening onto an empty list.
    */
   accountItems?: readonly NavRailAccountItem[];
+  /**
+   * The command palette's opener (F9.6), rendered as a tile pinned to the rail's foot below
+   * the destinations — above the Account tile, since both hosts that have one mount it.
+   * Omitted where no host has yet wired the palette into this rail.
+   */
+  paletteHint?: NavRailPaletteHint;
 }
 
-export function NavRail({ items, selected, onSelect, accountItems }: NavRailProps): JSX.Element {
+/** A click opens the palette; `label` is the platform-aware shortcut text (`shortcutLabel`'s
+ *  output) the tile shows and the tooltip/accessible name is built from. */
+export interface NavRailPaletteHint {
+  label: string;
+  onClick: () => void;
+}
+
+export function NavRail({
+  items,
+  selected,
+  onSelect,
+  accountItems,
+  paletteHint,
+}: NavRailProps): JSX.Element {
   const styles = useStyles();
   return (
     <div className={styles.rail}>
@@ -138,6 +166,23 @@ export function NavRail({ items, selected, onSelect, accountItems }: NavRailProp
           </Tooltip>
         ))}
       </TabList>
+
+      {paletteHint && (
+        <Tooltip
+          content={`Open command palette (${paletteHint.label})`}
+          relationship="label"
+          positioning="after"
+        >
+          <Button
+            appearance="subtle"
+            className={styles.paletteHint}
+            aria-label={`Open command palette (${paletteHint.label})`}
+            onClick={paletteHint.onClick}
+          >
+            {paletteHint.label}
+          </Button>
+        </Tooltip>
+      )}
 
       {accountItems && accountItems.length > 0 && (
         <Menu>
