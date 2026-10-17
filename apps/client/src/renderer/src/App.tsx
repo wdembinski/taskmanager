@@ -619,7 +619,7 @@ export function App(): JSX.Element {
         ) : tab === 'projects' ? (
           <Projects />
         ) : tab === 'tickets' ? (
-          <TicketWorkspace />
+          <TicketWorkspace onShowOnBoard={openTaskOnBoard} />
         ) : tab === 'issues' ? (
           <IssuesScreen onOpenTask={openTaskOnBoard} />
         ) : tab === 'automations' ? (
