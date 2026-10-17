@@ -155,6 +155,7 @@ describe('isActivityKind', () => {
       'release-published',
       'status-moved',
       'trigger-fired',
+      'milestone-archived',
     ]) {
       expect(isActivityKind(kind)).toBe(true);
     }

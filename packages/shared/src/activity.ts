@@ -34,6 +34,7 @@ export const ACTIVITY_KINDS = [
   'release-published',
   'status-moved',
   'trigger-fired',
+  'milestone-archived',
 ] as const;
 
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
@@ -76,9 +77,13 @@ export function isActivityOrigin(value: string): value is ActivityOrigin {
 
 /**
  * The small, kind-specific extras a row carries — a limit's `reason`, a merge's `branch`, a
- * release's `version`, a move's `from`/`to` column, or `backfilled` marking a row the
- * one-shot backfill (F2.5) derived from older tables rather than recorded live. Every field
- * is optional because no single kind uses all of them.
+ * release's `version`, a move's `from`/`to` column, a `milestone-archived` row's own
+ * `milestoneId`, or `backfilled` marking a row the one-shot backfill (F2.5) derived from
+ * older tables rather than recorded live. Every field is optional because no single kind uses
+ * all of them.
+ *
+ * `reason` doubles as `milestone-archived`'s own discriminator: `'auto'` means the sweep
+ * (F14.10) archived it, anything else (or absent) means a human did.
  */
 export interface ActivityDetail {
   reason?: string;
@@ -87,6 +92,7 @@ export interface ActivityDetail {
   from?: string;
   to?: string;
   backfilled?: boolean;
+  milestoneId?: string;
 }
 
 /** One row of the activity log, as read back from `activity_log`. */

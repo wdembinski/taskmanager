@@ -819,6 +819,16 @@ export interface AppSettings {
    */
   maxAutoRetries: number;
   /**
+   * How many weeks a milestone's tickets must have been closed (`done`/`cancelled`) before
+   * the sweep archives it on its own, or `null` to never auto-archive (F14, open question 1).
+   *
+   * **Global**, not per-project: the recommended default an auto-archive cadence should read
+   * the same wherever it is checked, with a per-project override left for F19's workspace
+   * settings rather than built in here. See `dueForAutoArchive` in `@shared/autoArchive` for
+   * what "closed" and "due" mean, and `GLOBAL_SETTINGS_KEYS`.
+   */
+  ticketAutoArchiveWeeks: number | null;
+  /**
    * Which machine a NEWLY ADDED project runs on. Purely a seed, like `defaultModel`:
    * changing it never moves an existing project, because a project's path only makes
    * sense on the machine it was picked from.
@@ -1005,6 +1015,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   weeklyTokenBudget: DEFAULT_WEEKLY_TOKEN_BUDGET,
   writeBackPlan: false,
   maxAutoRetries: 1,
+  // null: a fresh install never auto-archives until a human opts in — see the field's own doc.
+  ticketAutoArchiveWeeks: null,
   defaultExecTarget: LOCAL_TARGET,
   statusKeywords: [],
   promptTemplates: DEFAULT_PROMPT_TEMPLATES,
@@ -1127,6 +1139,7 @@ export const GLOBAL_SETTINGS_KEYS = [
   'weeklyTokenBudget',
   'writeBackPlan',
   'maxAutoRetries',
+  'ticketAutoArchiveWeeks',
   'statusKeywords',
   'promptTemplates',
   'branchPrefix',

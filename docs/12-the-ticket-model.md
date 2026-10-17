@@ -296,6 +296,23 @@ reconciler for a native ticket to be structurally isolated from in the first pla
 
 ---
 
+## Milestone archiving (F14)
+
+A milestone, an epic or a ticket project can be put away without being deleted —
+`trackerArchivedAt` on tasks/epics, `archivedAt` on milestones/projects, both distinct from
+`Task.archivedAt` (the BOARD's own "removed from the board" column; neither ever reads the
+other's). `AppSettings.ticketAutoArchiveWeeks` (global, `null` by default = off) adds a sweep
+on top of the human-driven `archiveMilestone`/`restoreMilestone` pair: once every ticket on a
+milestone has closed (`done`/`cancelled`) for at least that many weeks — timed by an
+activity-log `status-moved` row when one exists, falling back to the ticket's own `updatedAt`
+otherwise, via `dueForAutoArchive` (`@shared/autoArchive`) — `runAutoArchiveSweep`
+([`autoArchiveSweep.ts`](../apps/client/src/main/autoArchiveSweep.ts)) archives it with the
+same `archiveMilestone(id, { kind: 'backlog' }, now)` a human's own archive dialog calls, and
+records one `milestone-archived` activity row per milestone archived. `startAutoArchiveSweep`
+runs it once at boot and once every hour after, over every live ticket project's milestones.
+
+---
+
 ## The relay classification
 
 Phase 24 added 17 new `IpcApi` channels and 4 new `IpcEvents`, and every one of them was

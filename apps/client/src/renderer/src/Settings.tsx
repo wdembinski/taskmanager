@@ -991,6 +991,33 @@ export function Settings({
                 </div>
               </div>
             </Field>
+
+            <Field
+              label="Auto-archive finished milestones after (weeks)"
+              hint="Once every ticket on a milestone has been done or cancelled for this many weeks, the sweep archives it on its own — restore it any time from Archived. Blank turns auto-archive off."
+            >
+              <Input
+                type="number"
+                min={1}
+                max={520}
+                value={
+                  settings.ticketAutoArchiveWeeks == null
+                    ? ''
+                    : String(settings.ticketAutoArchiveWeeks)
+                }
+                placeholder="Off"
+                onChange={(_e, d) => {
+                  if (d.value === '') {
+                    patch({ ticketAutoArchiveWeeks: null });
+                    return;
+                  }
+                  const n = Number(d.value);
+                  if (Number.isFinite(n)) {
+                    patch({ ticketAutoArchiveWeeks: Math.min(520, Math.max(1, Math.round(n))) });
+                  }
+                }}
+              />
+            </Field>
           </div>
 
           <div className={styles.actions}>

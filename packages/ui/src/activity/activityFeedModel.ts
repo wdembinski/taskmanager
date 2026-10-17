@@ -25,7 +25,7 @@ export const KIND_GROUPS: Record<FeedKindGroup, readonly ActivityKind[]> = {
   runs: ['run-started', 'run-finished', 'trigger-fired'],
   merges: ['merge-landed', 'merge-conflict', 'merge-failed', 'release-published'],
   gates: ['parked', 'resumed', 'plan-presented', 'question-raised'],
-  moves: ['status-moved'],
+  moves: ['status-moved', 'milestone-archived'],
 };
 
 /** Fixed order kind groups expand in, independent of the filter's own array order. */
@@ -160,6 +160,7 @@ const BASE_SENTENCE: Record<ActivityKind, string> = {
   'release-published': 'Released',
   'status-moved': 'Moved',
   'trigger-fired': 'Trigger fired',
+  'milestone-archived': 'Milestone archived',
 };
 
 const OUTCOME_LABEL: Record<ActivityOutcome, string> = {
@@ -174,7 +175,8 @@ const OUTCOME_LABEL: Record<ActivityOutcome, string> = {
  * A short label for a row's kind/outcome — the row's own text, next to its title snapshot.
  * `run-finished` appends the outcome ("Run finished — failed"); `release-published` and
  * `status-moved` read their version/from-to out of `detail` when present, falling back to
- * the bare verb when a backfilled row has none.
+ * the bare verb when a backfilled row has none; `milestone-archived` says "auto-archived"
+ * when the sweep (F14.10) did it rather than a human.
  */
 export function rowSentence(row: ActivityRow): string {
   switch (row.kind) {
@@ -186,6 +188,8 @@ export function rowSentence(row: ActivityRow): string {
       return row.detail?.from && row.detail?.to
         ? `Moved ${row.detail.from} → ${row.detail.to}`
         : BASE_SENTENCE[row.kind];
+    case 'milestone-archived':
+      return row.detail?.reason === 'auto' ? 'Milestone auto-archived' : BASE_SENTENCE[row.kind];
     default:
       return BASE_SENTENCE[row.kind];
   }

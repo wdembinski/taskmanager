@@ -168,6 +168,15 @@ describe('rowSentence', () => {
       'Released',
     );
   });
+
+  it('says auto-archived when the sweep did it, and the bare verb for a human', () => {
+    expect(
+      rowSentence(row({ kind: 'milestone-archived', outcome: null, detail: { reason: 'auto' } })),
+    ).toBe('Milestone auto-archived');
+    expect(rowSentence(row({ kind: 'milestone-archived', outcome: null, detail: null }))).toBe(
+      'Milestone archived',
+    );
+  });
 });
 
 describe('originLabel', () => {
