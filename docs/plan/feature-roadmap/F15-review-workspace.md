@@ -719,7 +719,7 @@ plus a "monochrome code" setting. Chrome around the diff gets no new colour (mem
     `ReviewState` in both layouts (memory *verify-electron-app*: never launch the user's
     app).
 
-- [ ] F15.13 Extend reviewState with viewed files, expanded context and keyboard navigation @needs: F15.3 Implement splitRows, expandContext and viewedState
+- [x] F15.13 Extend reviewState with viewed files, expanded context and keyboard navigation @needs: F15.3 Implement splitRows, expandContext and viewedState
 
   - Add to `packages/ui/src/review/reviewState.ts`:
     - viewed marks;
