@@ -60,16 +60,9 @@ const useStyles = makeStyles({
   },
   /** The destination tabs, growing to fill the rail so the Account tile sits at its foot. */
   tabs: { flex: 1, display: 'flex', flexDirection: 'column' },
-  /** `role="separator"` between the bar group and the interim group — a hairline, not a pane
-   *  edge, so it reads as a soft break in one rail rather than two rails stacked. */
-  divider: {
-    height: '1px',
-    margin: '8px 10px',
-    backgroundColor: 'var(--tm-text-faint)',
-    flexShrink: 0,
-  },
-  /** The spacer between the interim group and the foot group (Settings), pushing Settings to
-   *  the rail's bottom the same way `tabs` pushes the whole list above the Account tile. */
+  /** The spacer between the bar group and the foot group (Settings), pushing Settings to the
+   *  rail's bottom the same way `tabs` pushes the whole list above the Account tile — F13.11
+   *  deleted the `interim` group this used to sit below instead of above. */
   spacer: { flex: 1 },
   /**
    * The selected tile: `selectedTint` fill and a `brand` glyph — the glyph recolour has to
@@ -173,17 +166,13 @@ export function NavRail({
         {items.map((item, index) => {
           const reason = unavailable?.[item.id];
           const Icon = item.icon;
-          // A hairline between the bar group and the interim group, and the flexible gap
-          // that pushes the foot group (Settings) to the rail's bottom — both drawn right
-          // before the first item of the group that follows them, so an empty group (the
-          // `interim` group once F13.11 deletes it) leaves neither behind.
-          const precededByDivider =
-            index > 0 && item.group !== items[index - 1].group && item.group === 'interim';
+          // The flexible gap that pushes the foot group (Settings) to the rail's bottom —
+          // drawn right before the first item of that group, so a rail with no foot group at
+          // all (none today) leaves no spacer behind either.
           const precededBySpacer =
             index > 0 && item.group !== items[index - 1].group && item.group === 'foot';
           return (
             <Fragment key={item.id}>
-              {precededByDivider && <div role="separator" className={styles.divider} />}
               {precededBySpacer && <div className={styles.spacer} />}
               <Tooltip
                 content={reason ? `${item.label} — ${reason}` : item.label}

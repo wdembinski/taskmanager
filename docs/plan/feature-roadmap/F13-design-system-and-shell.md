@@ -546,7 +546,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     leaf; counts staying correct on a folded node; an archived milestone (and its tickets)
     dropped from the tree. Gates green.
 
-- [ ] F13.11 Render the sidebar in both hosts with tree keyboard navigation @needs: F13.8 Replace the two NAV lists with one shared shell navigation and the slim activity bar, F13.10 Write the pure sidebar model with the milestone, epic and ticket tree
+- [x] F13.11 Render the sidebar in both hosts with tree keyboard navigation @needs: F13.8 Replace the two NAV lists with one shared shell navigation and the slim activity bar, F13.10 Write the pure sidebar model with the milestone, epic and ticket tree
 
   - `packages/ui/src/shell/Sidebar.tsx` on the canvas (no pane); `AppShell` gains a `sidebar`
     slot; Fluent `Tree` (or `role="tree"`) with arrow keys, Home/End and type-ahead; folds saved

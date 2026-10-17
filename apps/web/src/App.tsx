@@ -14,8 +14,8 @@
  * an account has more than one desktop serving it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Caption1, CounterBadge, makeStyles } from '@fluentui/react-components';
-import { BOARD_COLUMNS } from '@tm/shared/model';
+import { Caption1, makeStyles } from '@fluentui/react-components';
+import { BOARD_COLUMNS, ownsTickets } from '@tm/shared/model';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
 import { CommandPalette } from '@tm/ui/palette/CommandPalette';
@@ -25,11 +25,15 @@ import { AppShell } from '@tm/ui/shell/AppShell';
 import { Attention } from '@tm/ui/Attention';
 import { GateTrustHostProvider } from '@tm/ui/gateTrustHost';
 import { Performance } from '@tm/ui/Performance';
+import { NewTicketDialog } from '@tm/ui/projects/NewTicketDialog';
 import { ProjectAdmin } from '@tm/ui/projects/ProjectAdmin';
 import { Projects } from '@tm/ui/projects/Projects';
 import { NavRail } from '@tm/ui/shell/NavRail';
+import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@tm/ui/shell/Sidebar';
+import { useDeviceFolds } from '@tm/ui/shell/sidebarFolds';
 import { SHELL_NAV, type ShellNavId } from '@tm/ui/shell/shellNav';
 import { StatusBar, StatusBusy, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
+import { useSidebarData } from '@tm/ui/shell/useSidebarData';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
 import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
@@ -90,9 +94,6 @@ const useStyles = makeStyles({
     textDecoration: 'underline',
   },
 });
-
-/** Why Scratch run is off here. Appended to its tooltip. */
-const DESKTOP_ONLY = 'desktop only';
 
 /**
  * The rail's destinations that this app actually renders — `SHELL_NAV` minus Scratch run,
@@ -280,6 +281,69 @@ function SignedInBoard({
   const [route, navigate] = useHashRoute();
   const layoutMode = useLayoutMode();
 
+  /**
+   * The sidebar's own tree (F13.11) is one ticket project's milestones/epics/tickets — the
+   * first ticket-owning project this tab's own local mirror already has, same "pick the
+   * first one" rule `Projects.tsx` applies to its own list. Read straight off `board.state`
+   * rather than a separate `project:list` call — this tab already keeps every project
+   * mirrored locally for the board itself.
+   */
+  const sidebarProjectId = useMemo(
+    () => Object.values(board.state.projects).find(ownsTickets)?.id ?? null,
+    [board.state.projects],
+  );
+  const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
+  const sidebarData = useSidebarData(sidebarProjectId, { attentionCount, folds: sidebarFolds });
+  const [newIssueDialogOpen, setNewIssueDialogOpen] = useState(false);
+
+  /** The sidebar's own navigation targets (F13.11), mapped onto this host's `screen` — the
+   *  same destinations `shellNav.ts`'s now-deleted `interim` group used to reach from a rail
+   *  tile. `machineProject` is a ruling: nothing has asked for a per-project board filter
+   *  yet, so it opens the Tickets workspace the same as the team header's own Projects link
+   *  does on the desktop — Projects itself goes to Settings → Projects here instead, since
+   *  that is where a WEB user manages a project's identity (`ProjectAdmin`'s own header). */
+  const handleSidebarNavigate = (target: SidebarNavTarget): void => {
+    switch (target.kind) {
+      case 'inbox':
+        setScreen('attention');
+        return;
+      case 'myIssues':
+        setScreen('mytasks');
+        return;
+      case 'reviews':
+        return; // F15 — reviewsEnabled is off, so this never fires yet.
+      case 'issues':
+        setScreen('issues');
+        return;
+      case 'fleet':
+        setScreen('fleet');
+        return;
+      case 'projects':
+        setScreen('projects');
+        return;
+      case 'machineProject':
+        setScreen('tickets');
+        return;
+    }
+  };
+
+  /** Which sidebar row reads as selected — the ticket open on the board (via the hash route)
+   *  outranks the plain "My issues" row once one actually is open. */
+  const sidebarSelectedView: SidebarSelection | null =
+    screen === 'attention'
+      ? { kind: 'inbox' }
+      : screen === 'mytasks'
+        ? openCardId(route)
+          ? { kind: 'ticket', taskId: openCardId(route)! }
+          : { kind: 'myIssues' }
+        : screen === 'issues'
+          ? { kind: 'issues' }
+          : screen === 'fleet'
+            ? { kind: 'fleet' }
+            : screen === 'projects'
+              ? { kind: 'projects' }
+              : null;
+
   // The command palette (F9.5) — wide layout only for now, since Ctrl+K has no equivalent on
   // a phone keyboard and "/" would fight the on-screen keyboard's own search affordances.
   // Declared above the layout switch so the hook order stays the same on every render
@@ -361,27 +425,33 @@ function SignedInBoard({
       >
         <AppShell
           nav={
-            // Scratch run refuses selection inside `NavRail` (it is the one tile still marked
-            // unavailable), so anything that reaches here is a real destination. Sign out lives
-            // in the rail's own Account dropdown rather than the status bar — this is the only
-            // host with an account to sign back out of, so it is also the only one passing it.
+            // Sign out lives in the rail's own Account dropdown rather than the status bar —
+            // this is the only host with an account to sign back out of, so it is also the
+            // only one passing it. Scratch run (desktop-only) and Attention's own badge both
+            // moved off the rail with F13.11 — see the sidebar below.
             <NavRail
               items={SHELL_NAV}
-              unavailable={{ scratch: DESKTOP_ONLY }}
-              badges={{
-                attention: attentionCount > 0 && (
-                  <CounterBadge
-                    count={attentionCount}
-                    color="danger"
-                    size="small"
-                    appearance="filled"
-                  />
-                ),
-              }}
               selected={screen}
               onSelect={(id) => setScreen(id as Screen)}
               accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
               paletteHint={{ label: shortcutLabel('mod+k', window), onClick: openPalette }}
+            />
+          }
+          sidebar={
+            <Sidebar
+              sections={sidebarData.sections}
+              selectedView={sidebarSelectedView}
+              onNavigate={handleSidebarNavigate}
+              onOpenTicket={(taskId) => {
+                setScreen('mytasks');
+                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+              }}
+              onNewIssue={() => {
+                if (sidebarProjectId) setNewIssueDialogOpen(true);
+              }}
+              folds={sidebarFolds}
+              onToggleFold={toggleSidebarFold}
+              showFleet
             />
           }
           banners={
@@ -529,6 +599,12 @@ function SignedInBoard({
           onOpenChange={setPaletteOpen}
           sources={[webSource]}
           context={{ currentProjectId: null }}
+        />
+        <NewTicketDialog
+          open={newIssueDialogOpen}
+          projectId={sidebarProjectId ?? ''}
+          tickets={sidebarData.tickets}
+          onClose={() => setNewIssueDialogOpen(false)}
         />
       </GateTrustHostProvider>
     </TransportProvider>

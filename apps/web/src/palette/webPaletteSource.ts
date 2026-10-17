@@ -41,11 +41,13 @@ export interface WebPaletteActions {
   signOut: () => void;
 }
 
-/** Every rail destination `goTo` can reach — `SHELL_NAV` (F13.8) minus Scratch run, which is
- *  not a `Screen` at all (see this module's header). */
-const NAV_SCREENS: readonly { id: Screen; title: string }[] = SHELL_NAV.filter(
-  (entry) => entry.id !== 'scratch',
-).map((entry) => ({ id: entry.id as Screen, title: entry.label }));
+/** Every rail destination `goTo` can reach — `SHELL_NAV` (F13.8), which since F13.11 no
+ *  longer carries Scratch run at all (desktop-only, a palette command there with no rail
+ *  tile — see `shellNav.ts`'s own header), so no filter is needed here any more. */
+const NAV_SCREENS: readonly { id: Screen; title: string }[] = SHELL_NAV.map((entry) => ({
+  id: entry.id as Screen,
+  title: entry.label,
+}));
 
 /** `keywords` a card command is searchable by, beyond its title — its tracker key under
  *  whichever name it carries, and its id for the uuid-paste case `paletteModel.ts` already

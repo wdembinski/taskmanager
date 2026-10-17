@@ -54,6 +54,11 @@ export interface AppShellProps {
   /** The desktop's frameless-window title bar. Absent in a browser — see the header. */
   titleBar?: ReactNode;
   nav: ReactNode;
+  /** The tree of milestones/epics/tickets plus the fixed views around it (F13.11), between
+   *  the rail and the content. Omitted entirely rather than rendered empty where a host has
+   *  not wired `useSidebarData` into a screen — `CompactShell`'s phone layout has no room for
+   *  one at all. */
+  sidebar?: ReactNode;
   /** Anything that must be said above every screen: an outage, a gate, a countdown. */
   banners?: ReactNode;
   /** The current screen. */
@@ -66,6 +71,7 @@ export interface AppShellProps {
 export function AppShell({
   titleBar,
   nav,
+  sidebar,
   banners,
   children,
   status,
@@ -78,6 +84,7 @@ export function AppShell({
 
       <div className={styles.main}>
         {nav}
+        {sidebar}
 
         <div className={styles.content}>
           <div className={styles.banners}>{banners}</div>

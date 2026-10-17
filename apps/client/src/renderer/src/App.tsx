@@ -35,7 +35,7 @@ import {
 import type { AuthState } from '@shared/auth';
 import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
-import { hasPlan, hasRepo, type Project, type Task } from '@shared/model';
+import { hasPlan, hasRepo, ownsTickets, type Project, type Task } from '@shared/model';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from '@ui/Attention';
 import { ActivityScreen } from '@ui/activity/ActivityScreen';
@@ -45,6 +45,7 @@ import { IssuesScreen } from '@ui/issues/IssuesScreen';
 import { CommandPalette } from '@ui/palette/CommandPalette';
 import { useGlobalShortcut } from '@ui/palette/shortcut';
 import { shortcutLabel } from '@ui/palette/shortcutLabel';
+import { NewTicketDialog } from '@ui/projects/NewTicketDialog';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
@@ -68,8 +69,11 @@ import { useActiveRuns } from './useActiveRuns';
 import { UsageQuotaStatus, useUsageQuotas } from '@ui/UsageQuotaBars';
 import { AppShell } from '@ui/shell/AppShell';
 import { NavRail } from '@ui/shell/NavRail';
+import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@ui/shell/Sidebar';
+import { useDeviceFolds } from '@ui/shell/sidebarFolds';
 import { SHELL_NAV } from '@ui/shell/shellNav';
 import { StatusBar, StatusDot, StatusSpacer } from '@ui/shell/StatusBar';
+import { useSidebarData } from '@ui/shell/useSidebarData';
 import { TOASTER_ID } from '@ui/theme';
 import type { AttentionItem } from '@shared/attention';
 
@@ -209,6 +213,16 @@ export function App(): JSX.Element {
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
   /**
+   * The sidebar's own tree (F13.11) is one ticket project's milestones/epics/tickets — the
+   * first ticket-owning project found at boot, same "pick the first one" rule `Projects.tsx`
+   * applies once its own `project:list` resolves. `null` until the boot effect below
+   * resolves, or forever if this machine has no ticket project at all.
+   */
+  const [sidebarProjectId, setSidebarProjectId] = useState<string | null>(null);
+  const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
+  const sidebarData = useSidebarData(sidebarProjectId, { attentionCount, folds: sidebarFolds });
+  const [newIssueDialogOpen, setNewIssueDialogOpen] = useState(false);
+  /**
    * The Activity tab's persisted unread baseline (F2.13) — read once at boot, and advanced
    * forward-only by `onSeen` below, which always holds whatever `activity:setLastSeen`
    * actually persisted rather than the raw value `ActivityScreen` reported.
@@ -291,6 +305,7 @@ export function App(): JSX.Element {
       window.api.invoke('project:list').then((projects) => {
         const projectList = projects.map((p) => p.project);
         setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
+        setSidebarProjectId((was) => was ?? projectList.find(ownsTickets)?.id ?? null);
       }),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
@@ -383,6 +398,48 @@ export function App(): JSX.Element {
   const claudeOk =
     !signedOut && claude?.installed && claude?.authenticated && !claude?.apiKeyDetected;
 
+  /** The sidebar's own navigation targets (F13.11), mapped onto this host's `tab` — the same
+   *  destinations `shellNav.ts`'s now-deleted `interim` group used to reach from a rail tile.
+   *  `machineProject` is a ruling: nothing has asked for a per-project board filter yet, so it
+   *  opens the Projects admin tab the same as the team header's own Projects link. */
+  const handleSidebarNavigate = (target: SidebarNavTarget): void => {
+    switch (target.kind) {
+      case 'inbox':
+        setTab('attention');
+        return;
+      case 'myIssues':
+        setTab('mytasks');
+        return;
+      case 'reviews':
+        return; // F15 — reviewsEnabled is off, so this never fires yet.
+      case 'issues':
+        setTab('issues');
+        return;
+      case 'fleet':
+        return; // showFleet is off below — the desktop has no Fleet screen.
+      case 'projects':
+      case 'machineProject':
+        setTab('projects');
+        return;
+    }
+  };
+
+  /** Which sidebar row reads as selected — the ticket open on the board outranks the plain
+   *  "My issues" row once one actually is open, same precedence a Linear-style sidebar gives
+   *  the open item over the list it came from. */
+  const sidebarSelectedView: SidebarSelection | null =
+    tab === 'attention'
+      ? { kind: 'inbox' }
+      : tab === 'mytasks'
+        ? selectedTaskId
+          ? { kind: 'ticket', taskId: selectedTaskId }
+          : { kind: 'myIssues' }
+        : tab === 'issues'
+          ? { kind: 'issues' }
+          : tab === 'projects'
+            ? { kind: 'projects' }
+            : null;
+
   return (
     <>
       <CommandPalette
@@ -391,28 +448,23 @@ export function App(): JSX.Element {
         sources={[() => buildDesktopCommands(paletteSnapshot)]}
         context={{ currentProjectId: null }}
       />
+      <NewTicketDialog
+        open={newIssueDialogOpen}
+        projectId={sidebarProjectId ?? ''}
+        tickets={sidebarData.tickets}
+        onClose={() => setNewIssueDialogOpen(false)}
+      />
       <AppShell
         titleBar={<TitleBar />}
         nav={
           <NavRail
             items={SHELL_NAV}
-            // Fleet (the web's cross-project read of agent profiles and the assignment
-            // queue) is the one destination the desktop does not have at all (F13.8's own
-            // header on `shellNav.ts`).
-            unavailable={{ fleet: 'web only' }}
-            // The only labels the rail ever shows: built fresh per render because they move.
-            // Attention's is "someone is waiting on you"; Activity's is unread rows, hidden
-            // while that tab is the one already open — see `unreadActivityCount`'s own
-            // docstring on why a human move is excluded from it.
+            // The only label the rail still shows on a tile of its own: Activity's unread
+            // rows, hidden while that tab is the one already open — see
+            // `unreadActivityCount`'s own docstring on why a human move is excluded from it.
+            // Attention's own count moved onto the sidebar's Inbox row (F13.11) along with
+            // its rail tile.
             badges={{
-              attention: attentionCount > 0 && (
-                <CounterBadge
-                  count={attentionCount}
-                  color="danger"
-                  size="small"
-                  appearance="filled"
-                />
-              ),
               activity: unreadCount > 0 && tab !== 'activity' && (
                 <CounterBadge
                   count={unreadCount}
@@ -428,6 +480,19 @@ export function App(): JSX.Element {
               label: shortcutLabel('mod+k', window),
               onClick: () => setPaletteOpen(true),
             }}
+          />
+        }
+        sidebar={
+          <Sidebar
+            sections={sidebarData.sections}
+            selectedView={sidebarSelectedView}
+            onNavigate={handleSidebarNavigate}
+            onOpenTicket={openTaskOnBoard}
+            onNewIssue={() => {
+              if (sidebarProjectId) setNewIssueDialogOpen(true);
+            }}
+            folds={sidebarFolds}
+            onToggleFold={toggleSidebarFold}
           />
         }
         banners={
