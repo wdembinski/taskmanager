@@ -361,6 +361,14 @@ export interface Project {
    * of which leave it exactly as it was.
    */
   repoSkills?: RepoSkillSummary[];
+  /**
+   * Epoch ms this **ticket project** was archived, or null/undefined while it is active.
+   *
+   * Ticket projects only — a plan project or a bare repo has no board of its own to take
+   * down. Optional, like {@link Project.repoSkills}: every project that predates the field
+   * reads as "active", the same way an absent `repoSkills` reads as "not scanned yet".
+   */
+  archivedAt?: number | null;
   /** Epoch ms when the project was added. */
   createdAt: number;
 }
@@ -1082,6 +1090,15 @@ export interface Task {
    * a card that is back has none.
    */
   archivedReason?: TaskArchiveReason | null;
+  /**
+   * Epoch ms this ticket was archived **in the tracker**, or null while it isn't — distinct
+   * from {@link Task.archivedAt}, which takes the card off this app's own board.
+   *
+   * A tracker-archived ticket stays fully editable, still opens by its `ticketKey` link, and
+   * is never pruned the way a board card is: the tracker's archive is a filing state, not a
+   * verdict that the row should stop being worked or shown when directly addressed.
+   */
+  trackerArchivedAt?: number | null;
   /** Epoch ms of the newest tracker comment the user has read (unread-badge marker). */
   lastReadCommentAt?: number | null;
   /** Epoch ms of the newest tracker comment seen at the last sync (drives unread). */
@@ -1329,6 +1346,17 @@ export interface Milestone {
   color: string;
   /** Closed milestones stay on record but drop out of the pickers. */
   closed: boolean;
+  /**
+   * Epoch ms this milestone was archived, or null while it is active.
+   *
+   * Deliberately separate from {@link Milestone.closed}: closing says the goal was reached,
+   * archiving says the milestone itself should stop being offered or shown at all — a
+   * milestone can be closed without being archived, and (abandoned, say) archived without
+   * ever having been closed. Archiving is its own operation, so `MilestonePatch` and
+   * `MilestoneInput` deliberately do not gain this field; nothing edits it alongside the
+   * milestone's ordinary fields.
+   */
+  archivedAt: number | null;
   createdAt: number;
 }
 

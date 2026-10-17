@@ -190,6 +190,12 @@ interface TaskRow {
   archivedAt: number | null;
   /** Which answer took it off the board. See `Task.archivedReason`. */
   archivedReason: string | null;
+  /**
+   * Epoch ms this ticket was archived in the TRACKER; NULL while it isn't. Optional, the
+   * same docstring rationale as `ProjectRow.repoSkills`: every ordinary row construction
+   * leaves it out of the columns it writes. See `Task.trackerArchivedAt`.
+   */
+  trackerArchivedAt?: number | null;
   lastReadCommentAt: number | null;
   latestCommentAt: number | null;
   /** The project this card is filed under — what it is ABOUT. NULL when unfiled. */
@@ -337,6 +343,12 @@ interface ProjectRow {
    * from `updateCloudTaskStmt`.
    */
   repoSkills?: string | null;
+  /**
+   * Epoch ms this ticket project was archived, or NULL/undefined for an active one. Optional,
+   * same reasoning as `repoSkills` above: every ordinary row construction leaves it out of
+   * the columns it writes. See `Project.archivedAt`.
+   */
+  archivedAt?: number | null;
   createdAt: number;
 }
 
@@ -1493,6 +1505,7 @@ export function createStore(dbPath: string): Store {
       pinnedImport           INTEGER,
       archivedAt             INTEGER,
       archivedReason         TEXT,
+      trackerArchivedAt      INTEGER,
       lastReadCommentAt      INTEGER,
       latestCommentAt        INTEGER,
       projectTagId           TEXT,
@@ -2120,6 +2133,13 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN updatedAt INTEGER`);
   }
 
+  // Migrate databases created before a ticket project could be archived (F14.1). NULL on
+  // every existing row, which reads as "active" — true of every project this column didn't
+  // exist to take down yet.
+  if (!projectColumns.some((c) => c.name === 'archivedAt')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN archivedAt INTEGER`);
+  }
+
   // A safety net for the `kind` column's retirement: a project's capabilities now come
   // from its fields (`hasPlan`/`hasRepo`/`ownsTickets` in `@shared/model`), not from this
   // legacy label, so a plan project with a real directory but a blank `planPath` would
@@ -2394,6 +2414,10 @@ export function createStore(dbPath: string): Store {
     // the version that added `archivedAt` and nothing else — which the Removed-cards list
     // reads as "removed by an earlier version" rather than inventing a reason for it.
     ['archivedReason', 'TEXT'],
+    // Whether the ticket was archived in the TRACKER (F14.1), distinct from `archivedAt`
+    // above (which takes the card off this app's own board). NULL on every pre-existing
+    // row — nothing synced a tracker's archive state before this column existed.
+    ['trackerArchivedAt', 'INTEGER'],
     // Native tickets (Phase 24). NULL on every pre-existing row, which is exactly "this is
     // not a ticket" — nothing about those cards changes, and the twelve columns stay empty
     // until a ticket project exists to fill them.
@@ -2478,6 +2502,16 @@ export function createStore(dbPath: string): Store {
   // the Gantt groups by the first and the timeline markers by the second.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_epic ON tasks(epicTaskId, "order")`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_milestone ON tasks(milestoneId)`);
+
+  // Migrate databases created before a milestone could be archived (F14.1). NULL on every
+  // existing row, which reads as "active" — true of everything already there, since nothing
+  // could archive a milestone before this column existed.
+  const milestoneColumns = db.prepare(`PRAGMA table_info(milestones)`).all() as Array<{
+    name: string;
+  }>;
+  if (!milestoneColumns.some((c) => c.name === 'archivedAt')) {
+    db.exec(`ALTER TABLE milestones ADD COLUMN archivedAt INTEGER`);
+  }
 
   // Created down here, not in the schema block above: on a pre-Phase-25 database
   // `tasks.updatedAt`/`projects.updatedAt` do not exist until the ALTERs above have run,
@@ -3319,6 +3353,8 @@ export function createStore(dbPath: string): Store {
     dueAt: number | null;
     color: string | null;
     closed: number;
+    /** Epoch ms this milestone was archived, or null while it is active. See `Milestone.archivedAt`. */
+    archivedAt: number | null;
     createdAt: number;
   }
 
@@ -3331,6 +3367,7 @@ export function createStore(dbPath: string): Store {
       dueAt: r.dueAt ?? null,
       color: r.color ?? '',
       closed: r.closed !== 0,
+      archivedAt: r.archivedAt ?? null,
       createdAt: r.createdAt,
     };
   }
@@ -3757,6 +3794,7 @@ export function createStore(dbPath: string): Store {
       color: r.color ?? '',
       // NULL (never scanned) and bad JSON both read back as `[]` — see `parseRepoSkills`.
       repoSkills: parseRepoSkills(r.repoSkills),
+      archivedAt: r.archivedAt ?? null,
       createdAt: r.createdAt,
     };
   }
@@ -4043,6 +4081,7 @@ export function createStore(dbPath: string): Store {
       pinnedImport: r.pinnedImport === 1 ? true : null,
       archivedAt: r.archivedAt ?? null,
       archivedReason: (r.archivedReason as Task['archivedReason']) ?? null,
+      trackerArchivedAt: r.trackerArchivedAt ?? null,
       lastReadCommentAt: r.lastReadCommentAt,
       latestCommentAt: r.latestCommentAt,
       projectTagId: r.projectTagId,
@@ -5650,6 +5689,7 @@ export function createStore(dbPath: string): Store {
         dueAt: input.dueAt ?? null,
         color: input.color?.trim() ?? '',
         closed: input.closed ?? false,
+        archivedAt: null,
         createdAt: Date.now(),
       };
       insertMilestone.run({
