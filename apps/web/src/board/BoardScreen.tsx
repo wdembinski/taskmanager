@@ -921,6 +921,7 @@ export function BoardScreen({
               attentionTaskIds={extras.attention.taskIds}
               liveRunTaskIds={extras.liveRunTaskIds}
               runPurposes={extras.runPurposes}
+              runStartedAt={extras.runStartedAt}
               mergingTaskIds={extras.mergingTaskIds}
               foldedStepTaskIds={foldedSteps}
               onToggleSteps={toggleSteps}
@@ -969,6 +970,7 @@ export function BoardScreen({
                 attentionTaskIds={extras.attention.taskIds}
                 liveRunTaskIds={extras.liveRunTaskIds}
                 runPurposes={extras.runPurposes}
+                runStartedAt={extras.runStartedAt}
                 mergingTaskIds={extras.mergingTaskIds}
                 foldedStepTaskIds={foldedSteps}
                 onToggleSteps={toggleSteps}
@@ -1082,6 +1084,7 @@ export function BoardScreen({
             attentionTaskIds={extras.attention.taskIds}
             liveRunTaskIds={extras.liveRunTaskIds}
             runPurposes={extras.runPurposes}
+            runStartedAt={extras.runStartedAt}
             mergingTaskIds={extras.mergingTaskIds}
             display={boardDisplay}
             selectedTaskId={selectedTaskId}

@@ -1071,6 +1071,18 @@ describe('Scheduler — a card delegated to an agent project', () => {
     });
   });
 
+  it('stamps a run with its start time once, and the stamp outlives the clock moving on', () => {
+    const { scheduler } = makeAgentScheduler();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    scheduler.runTask('t1');
+    now.mockReturnValue(9_000); // later reads must not re-stamp the run against the new time
+    expect(scheduler.activeRuns()).toEqual([
+      expect.objectContaining({ taskId: 't1', startedAt: 1_000 }),
+    ]);
+    expect(scheduler.activeRuns()[0]?.startedAt).toBe(1_000);
+    now.mockRestore();
+  });
+
   it('plans on the project’s planning model and works on its execution one', () => {
     // The whole point of the split, on ONE card: what changes the model is what the turn
     // is, not which card it is. Planning here is "assigned plan mode and asked for a plan".
@@ -1658,6 +1670,7 @@ describe('Scheduler run-failure handling', () => {
       taskId: 't1',
       projectId: 'p',
       runId: 'r1',
+      startedAt: 1_000,
       settled: false,
     });
     (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('t1');
@@ -1972,7 +1985,9 @@ describe('Scheduler run-failure handling', () => {
    */
   it('drops a settled run from activeRuns before its process has exited', () => {
     const { scheduler, fire } = setup(0);
-    expect(scheduler.activeRuns()).toEqual([{ taskId: 't1', runId: 'r1' }]);
+    expect(scheduler.activeRuns()).toEqual([
+      { taskId: 't1', runId: 'r1', startedAt: expect.any(Number) },
+    ]);
 
     fire(failResult); // the outcome is decided; `exited` has not arrived yet
 
@@ -4840,7 +4855,11 @@ describe('Scheduler.chatWithAgent (Phase 12)', () => {
     expect(opts.resumeSessionId).toBe('sess-1');
     // A real run: reserved, counted, and reported to the Board like any other.
     expect(scheduler.activeRuns()).toEqual([
-      { taskId: 'c1', runId: (result as { runId: string }).runId },
+      {
+        taskId: 'c1',
+        runId: (result as { runId: string }).runId,
+        startedAt: expect.any(Number),
+      },
     ]);
   });
 

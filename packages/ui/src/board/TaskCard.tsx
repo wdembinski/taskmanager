@@ -1068,6 +1068,12 @@ export interface TaskCardProps {
    */
   runPurposes?: ReadonlyMap<string, RunPurpose>;
   /**
+   * When each live run started (epoch ms) — `ActiveRun.startedAt`, keyed by task id. Threaded
+   * through here for the elapsed-time chip a later step adds; this component does not read it
+   * yet.
+   */
+  runStartedAt?: ReadonlyMap<string, number>;
+  /**
    * The task ids whose branch is being merged, so the card says "Merging branch…" for the
    * minute git takes. Nothing about the task itself moves in that window, so without this
    * a card that had just been sent to merge looked identical to one nobody had touched.

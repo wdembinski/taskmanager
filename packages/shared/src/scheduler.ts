@@ -92,12 +92,33 @@ export function runPurposesOf(runs: readonly ActiveRun[]): ReadonlyMap<string, R
   return map;
 }
 
+/**
+ * The {@link ActiveRun.startedAt} of every live run that has one, keyed by task id — a run
+ * with none (a gate run, or one relayed by a desktop too old to send it) is simply absent,
+ * never a `NaN` entry.
+ */
+export function runStartedAtOf(runs: readonly ActiveRun[]): ReadonlyMap<string, number> {
+  const map = new Map<string, number>();
+  for (const r of runs) if (r.startedAt !== undefined) map.set(r.taskId, r.startedAt);
+  return map;
+}
+
 /** Maps a currently-running task id to its live run id (seed for the Board on load). */
 export interface ActiveRun {
   taskId: string;
   runId: string;
   /** Why the engine started this run, when it was not ordinary work — see {@link RunPurpose}. */
   purpose?: RunPurpose;
+  /**
+   * When this run started (epoch ms), set once at creation and never touched again — so a
+   * card's elapsed time keeps counting from the same moment for the run's whole lifetime,
+   * including a resume into the same run, rather than resetting on every snapshot.
+   *
+   * Absent on a gate run (no agent session behind it) and on anything relayed by a desktop
+   * too old to send it — a caller must read a missing entry as "no elapsed time to show",
+   * never coerce it into `NaN`.
+   */
+  startedAt?: number;
 }
 
 /**

@@ -42,6 +42,9 @@ export interface ShelfStripProps {
   attentionTaskIds?: ReadonlySet<string>;
   liveRunTaskIds?: ReadonlySet<string>;
   runPurposes?: ReadonlyMap<string, RunPurpose>;
+  /** When each live run started (epoch ms), so a shelved card's chip can still say how long
+   *  it has been running — see `ActiveRun.startedAt`. */
+  runStartedAt?: ReadonlyMap<string, number>;
   mergingTaskIds?: ReadonlySet<string>;
   display?: BoardDisplaySettings;
   selectedTaskId: string | null;
@@ -133,6 +136,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
                   attentionTaskIds={props.attentionTaskIds}
                   liveRunTaskIds={props.liveRunTaskIds}
                   runPurposes={props.runPurposes}
+                  runStartedAt={props.runStartedAt}
                   mergingTaskIds={props.mergingTaskIds}
                   display={props.display}
                   selected={task.id === props.selectedTaskId}

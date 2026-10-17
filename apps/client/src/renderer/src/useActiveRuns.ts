@@ -19,18 +19,21 @@
  * starting long after its agent had stopped.
  */
 import { useEffect, useState } from 'react';
-import { runPurposesOf, type RunPurpose } from '@shared/scheduler';
+import { runPurposesOf, runStartedAtOf, type RunPurpose } from '@shared/scheduler';
 
 /**
  * Also answers WHY, for the runs the engine started as a remediation (`ActiveRun.purpose`) —
- * read off the same snapshot, so the card's chip can never disagree with its spinner.
+ * read off the same snapshot, so the card's chip can never disagree with its spinner. And
+ * WHEN, for the elapsed-time chip (`ActiveRun.startedAt`) — same reasoning.
  */
 export function useActiveRuns(): {
   ids: ReadonlySet<string>;
   purposes: ReadonlyMap<string, RunPurpose>;
+  startedAt: ReadonlyMap<string, number>;
 } {
   const [ids, setIds] = useState<ReadonlySet<string>>(() => new Set());
   const [purposes, setPurposes] = useState<ReadonlyMap<string, RunPurpose>>(() => new Map());
+  const [startedAt, setStartedAt] = useState<ReadonlyMap<string, number>>(() => new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +64,13 @@ export function useActiveRuns(): {
             }
             return next;
           });
+          setStartedAt((prev) => {
+            const next = runStartedAtOf(runs);
+            if (prev.size === next.size && [...next].every(([id, t]) => prev.get(id) === t)) {
+              return prev;
+            }
+            return next;
+          });
         })
         .catch(() => undefined);
     };
@@ -72,5 +82,5 @@ export function useActiveRuns(): {
     };
   }, []);
 
-  return { ids, purposes };
+  return { ids, purposes, startedAt };
 }

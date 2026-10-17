@@ -983,6 +983,12 @@ interface Run {
   base?: string;
   /** (Worktree mode) the worktree directory the session ran in. */
   worktree?: string;
+  /**
+   * When this run started (epoch ms) — set once in `startTask` and never reassigned, so the
+   * Board's elapsed-time chip keeps counting from the same moment for the run's whole
+   * lifetime. See {@link ActiveRun.startedAt}.
+   */
+  startedAt: number;
 }
 
 /**
@@ -2487,7 +2493,12 @@ export class Scheduler {
   activeRuns(): ActiveRun[] {
     const agentRuns = [...this.runs.values()]
       .filter((r) => !r.settled)
-      .map((r) => ({ taskId: r.taskId, runId: r.runId, purpose: r.purpose }));
+      .map((r) => ({
+        taskId: r.taskId,
+        runId: r.runId,
+        purpose: r.purpose,
+        startedAt: r.startedAt,
+      }));
     // A running gate owns no `Run`, but it is just as much "something to stop" as an agent
     // run is — `canStopWork` (and anything else reading this for a live-task set) needs it
     // too. `runId` is a synthetic tag; nothing looks a gate up by it.
@@ -3559,6 +3570,7 @@ export class Scheduler {
       projectId: project.id,
       runId,
       origin: opts.origin ?? 'human',
+      startedAt: Date.now(),
       settled: false,
       chatPrompt: opts.chatPrompt,
       resumeNudge: opts.resumeNudge,

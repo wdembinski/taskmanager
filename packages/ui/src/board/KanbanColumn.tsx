@@ -138,6 +138,9 @@ export interface KanbanColumnProps {
   liveRunTaskIds?: ReadonlySet<string>;
   /** Why the engine is running an agent on a task, when it is a remediation — see `RunPurpose`. */
   runPurposes?: ReadonlyMap<string, RunPurpose>;
+  /** When each live run started (epoch ms), for the card's elapsed-time chip — see
+   *  `ActiveRun.startedAt`. */
+  runStartedAt?: ReadonlyMap<string, number>;
   /** Task ids whose branch is being merged, so the card says so while git works. */
   mergingTaskIds?: ReadonlySet<string>;
   /** Which optional context lines each card draws. */
@@ -345,6 +348,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               attentionTaskIds={props.attentionTaskIds}
               liveRunTaskIds={props.liveRunTaskIds}
               runPurposes={props.runPurposes}
+              runStartedAt={props.runStartedAt}
               mergingTaskIds={props.mergingTaskIds}
               display={props.display}
               selected={task.id === props.selectedTaskId}

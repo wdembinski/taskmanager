@@ -303,7 +303,7 @@ export function MyTasks({
    * that must agree. See `useAttentionIndex` for the three bugs this replaced.
    */
   const attention = useAttentionIndex();
-  const { ids: liveRuns, purposes: runPurposes } = useActiveRuns();
+  const { ids: liveRuns, purposes: runPurposes, startedAt: runStartedAt } = useActiveRuns();
   // The third of the same kind: which cards are having their branch merged. Nothing about
   // a merging task changes while it merges, so this is the only thing any surface has to
   // go on — see `useIntegratingTasks`.
@@ -1626,6 +1626,7 @@ export function MyTasks({
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
               runPurposes={runPurposes}
+              runStartedAt={runStartedAt}
               mergingTaskIds={merging}
               display={boardDisplay}
               // Which cards are showing their steps, and the one control that changes it.
@@ -1748,6 +1749,7 @@ export function MyTasks({
             attentionTaskIds={attention.taskIds}
             liveRunTaskIds={liveRuns}
             runPurposes={runPurposes}
+            runStartedAt={runStartedAt}
             mergingTaskIds={merging}
             display={boardDisplay}
             selectedTaskId={selectedTaskId}

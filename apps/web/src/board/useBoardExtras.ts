@@ -32,7 +32,7 @@ import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { LinkGate, TaskLink } from '@tm/shared/taskChain';
 import type { AttentionItem } from '@tm/shared/attention';
-import { runPurposesOf, type RunPurpose } from '@tm/shared/scheduler';
+import { runPurposesOf, runStartedAtOf, type RunPurpose } from '@tm/shared/scheduler';
 import { DEFAULT_SETTINGS, type AppSettings } from '@tm/shared/settings';
 import { buildAttentionIndex, type AttentionIndex } from '@tm/ui/attentionIndex';
 export { byTask, mergeRequestsByTask } from '@tm/ui/taskDetailHost';
@@ -67,6 +67,8 @@ export interface BoardExtras {
   liveRunTaskIds: ReadonlySet<string>;
   /** Why the engine runs an agent on a task, when it is a remediation — see `RunPurpose`. */
   runPurposes: ReadonlyMap<string, RunPurpose>;
+  /** When each live run started (epoch ms) — see `ActiveRun.startedAt`. */
+  runStartedAt: ReadonlyMap<string, number>;
   mergingTaskIds: ReadonlySet<string>;
   settings: AppSettings;
   /** Persist a settings change and reflect it immediately — see {@link useBoardExtras}. */
@@ -142,6 +144,7 @@ export function useBoardExtras(): BoardExtras {
   const [attentionItems, setAttentionItems] = useState<AttentionItem[]>([]);
   const [liveRunTaskIds, setLiveRuns] = useState<ReadonlySet<string>>(new Set());
   const [runPurposes, setRunPurposes] = useState<ReadonlyMap<string, RunPurpose>>(new Map());
+  const [runStartedAt, setRunStartedAt] = useState<ReadonlyMap<string, number>>(new Map());
   const [mergingTaskIds, setMerging] = useState<ReadonlySet<string>>(new Set());
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [generation, setGeneration] = useState(0);
@@ -185,6 +188,7 @@ export function useBoardExtras(): BoardExtras {
       (runs) => {
         setLiveRuns(new Set(runs.map((r) => r.taskId)));
         setRunPurposes(runPurposesOf(runs));
+        setRunStartedAt(runStartedAtOf(runs));
       },
     );
     void load(
@@ -289,6 +293,7 @@ export function useBoardExtras(): BoardExtras {
     attention,
     liveRunTaskIds,
     runPurposes,
+    runStartedAt,
     mergingTaskIds,
     settings,
     saveSettings,
