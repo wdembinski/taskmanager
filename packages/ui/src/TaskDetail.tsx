@@ -1367,7 +1367,13 @@ export function TaskDetail({
       )}
 
       <div className={styles.scrollWrap}>
-        <div className={styles.scroll} ref={scrollRef} onScroll={handleScroll}>
+        <div
+          className={styles.scroll}
+          ref={scrollRef}
+          onScroll={handleScroll}
+          role="log"
+          aria-label="Conversation"
+        >
           {showTimelineSkeleton ? (
             // This load deliberately swallows failures into an empty timeline (see
             // `loadActivity`'s `.catch`), so there is never an error to show here — the
