@@ -6,12 +6,12 @@
  *
  *  - **The band** (top, fixed): the ticket's identity — type glyph, title, key, priority
  *    — then the agent controls, the details (status + a foldable, editable description)
- *    and the steps. A shade lighter than the pane and nothing else — no box, no radius,
+ *    and the steps. On the pane's own surface and nothing else — no box, no radius,
  *    no rules. Capped at 50% height with its own scroll, so a long chain can never
  *    crowd out the conversation.
  *  - **The conversation** (middle): the only thing that scrolls, unframed — a box around
  *    a chat is a box around the whole pane, which says nothing.
- *  - **The bottom band** (fixed): the live-run rows and the composer, on the same shade
+ *  - **The bottom band** (fixed): the live-run rows and the composer, on the same surface
  *    and the same inset as the top band. Two bands with the conversation running between
  *    them — the pane is one shape read top to bottom, and the composer floating on the
  *    pane's own colour used to break that for nothing.
@@ -125,8 +125,8 @@ const useStyles = makeStyles({
    */
   notice: { padding: '12px 12px 0' },
   /**
-   * The bottom band: the live-run rows and the composer, on the SAME surface and with
-   * the same 12px inset as the details band at the top. The pane is one shape read
+   * The bottom band: the live-run rows and the composer, on the pane's own surface and
+   * with the same 12px inset as the details band at the top. The pane is one shape read
    * top-to-bottom — two fixed bands with the conversation scrolling between them — and
    * an inset composer floating on the pane's own colour broke that symmetry for no
    * gain. Full-bleed, so the two bands' edges line up.
@@ -136,22 +136,19 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     gap: '8px',
     padding: '12px',
-    backgroundColor: tokens.colorNeutralBackground6,
     flexShrink: 0,
   },
   /**
    * Everything the card *is* — its identity, the agent controls, the details, the
-   * steps — in ONE band. No borders, no radius, no rules between the sections: shade
-   * and spacing carry the grouping, which is all a sidebar this narrow can afford.
+   * steps — in ONE band. No borders, no radius, no rules between the sections, and no
+   * shaded box under them either: the pane's own surface runs underneath the whole
+   * sidebar, and spacing alone carries the grouping.
    */
   cell: {
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
     padding: '12px',
-    // A shade lighter than the pane, and nothing else: no box, no radius, no rule under
-    // it and none between its own sections. The change of surface is the whole seam.
-    backgroundColor: tokens.colorNeutralBackground6,
     // Fixed while the conversation scrolls: this half never moves, and only overflows
     // into its own scroll when a card really has that much to say.
     flexShrink: 0,
