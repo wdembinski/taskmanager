@@ -12,10 +12,14 @@ import {
   pageBackground,
 } from './theme';
 import {
+  ATTENTION_TINT_BY_SCHEME,
   CODE_BY_SCHEME,
   FLUO_BY_SCHEME,
+  FLUO_VAR,
+  PIPELINE_VAR,
   SCROLL_THUMB_BY_SCHEME,
   SEMANTIC,
+  STATUS_INDICATOR_VAR,
   graphInk,
   pipelineColor,
   statusIndicatorColor,
@@ -94,6 +98,49 @@ describe('tokenCssVars', () => {
   it('has one key per SEMANTIC leaf (excluding array leaves)', () => {
     expect(Object.keys(tokenCssVars('dark'))).toHaveLength(countCssLeaves(SEMANTIC.dark));
   });
+
+  it('emits --tm-lane from SEMANTIC.lane', () => {
+    expect(tokenCssVars('light')['--tm-lane']).toBe(SEMANTIC.light.lane);
+    expect(tokenCssVars('dark')['--tm-lane']).toBe(SEMANTIC.dark.lane);
+  });
+
+  it('emits --tm-label-chip-bg / --tm-label-chip-ink from SEMANTIC.labelChip', () => {
+    for (const scheme of ['light', 'dark'] as const) {
+      const vars = tokenCssVars(scheme);
+      expect(vars['--tm-label-chip-bg']).toBe(SEMANTIC[scheme].labelChip.bg);
+      expect(vars['--tm-label-chip-ink']).toBe(SEMANTIC[scheme].labelChip.ink);
+    }
+  });
+
+  it('emits --tm-attention-tint from SEMANTIC.attentionTint', () => {
+    expect(tokenCssVars('light')['--tm-attention-tint']).toBe(ATTENTION_TINT_BY_SCHEME.light);
+    expect(tokenCssVars('dark')['--tm-attention-tint']).toBe(ATTENTION_TINT_BY_SCHEME.dark);
+  });
+
+  it('emits --tm-fluo-* from SEMANTIC.fluo, matching FLUO_BY_SCHEME', () => {
+    const fluoVarNames: Record<string, string> = {
+      cyan: '--tm-fluo-cyan',
+      cyanDim: '--tm-fluo-cyan-dim',
+      cyanDeep: '--tm-fluo-cyan-deep',
+      green: '--tm-fluo-green',
+      red: '--tm-fluo-red',
+      amber: '--tm-fluo-amber',
+      violet: '--tm-fluo-violet',
+    };
+    for (const scheme of ['light', 'dark'] as const) {
+      const vars: Record<string, string> = tokenCssVars(scheme);
+      const fluo: Record<string, string> = FLUO_BY_SCHEME[scheme];
+      for (const [key, varName] of Object.entries(fluoVarNames)) {
+        expect(vars[varName]).toBe(fluo[key]);
+      }
+    }
+  });
+});
+
+describe('labelChip', () => {
+  it('has identical bg/ink in both schemes — the chip carries its own contrast', () => {
+    expect(SEMANTIC.light.labelChip).toEqual(SEMANTIC.dark.labelChip);
+  });
 });
 
 describe('statusIndicatorColor / pipelineColor', () => {
@@ -119,6 +166,51 @@ describe('statusIndicatorColor / pipelineColor', () => {
       const colors = pipelineColor(scheme);
       for (const status of pipelineStatuses) {
         expect(colors[status]).toBeTruthy();
+      }
+    }
+  });
+});
+
+describe('FLUO_VAR / STATUS_INDICATOR_VAR / PIPELINE_VAR', () => {
+  const schemes = ['light', 'dark'] as const;
+
+  it('FLUO_VAR points at the --tm-fluo-* custom property for every FluoPalette key', () => {
+    expect(FLUO_VAR).toEqual({
+      cyan: 'var(--tm-fluo-cyan)',
+      cyanDim: 'var(--tm-fluo-cyan-dim)',
+      cyanDeep: 'var(--tm-fluo-cyan-deep)',
+      green: 'var(--tm-fluo-green)',
+      red: 'var(--tm-fluo-red)',
+      amber: 'var(--tm-fluo-amber)',
+      violet: 'var(--tm-fluo-violet)',
+    });
+  });
+
+  /** `"var(--tm-fluo-cyan-dim)"` → `FLUO_BY_SCHEME[scheme].cyanDim`; anything else (a Fluent
+   * token var) is already scheme-independent, so it is returned as-is. */
+  function resolveFluoVar(value: string, scheme: (typeof schemes)[number]): string {
+    const match = value.match(/^var\(--tm-fluo-(.+)\)$/);
+    if (!match) return value;
+    const camelKey = match[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    return (FLUO_BY_SCHEME[scheme] as Record<string, string>)[camelKey];
+  }
+
+  it('STATUS_INDICATOR_VAR resolves to the same colour as statusIndicatorColor, proving the shared role table', () => {
+    for (const scheme of schemes) {
+      const literal = statusIndicatorColor(scheme);
+      for (const status of Object.keys(STATUS_INDICATOR_VAR) as Array<
+        keyof typeof STATUS_INDICATOR_VAR
+      >) {
+        expect(resolveFluoVar(STATUS_INDICATOR_VAR[status], scheme)).toBe(literal[status]);
+      }
+    }
+  });
+
+  it('PIPELINE_VAR resolves to the same colour as pipelineColor, proving the shared role table', () => {
+    for (const scheme of schemes) {
+      const literal = pipelineColor(scheme);
+      for (const status of Object.keys(PIPELINE_VAR) as Array<keyof typeof PIPELINE_VAR>) {
+        expect(resolveFluoVar(PIPELINE_VAR[status], scheme)).toBe(literal[status]);
       }
     }
   });

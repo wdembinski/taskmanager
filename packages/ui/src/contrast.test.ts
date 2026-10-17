@@ -189,6 +189,14 @@ describe.each(SCHEMES)('shell token pairs (%s)', (scheme) => {
     });
   });
 
+  describe('the label chip', () => {
+    // Scheme-independent by design (see tokens.test.ts's `labelChip` suite) — the chip's
+    // own fill/ink pair carries its contrast, not the canvas it floats on.
+    it(`labelChip.ink on labelChip.bg >= ${AA.text}`, () => {
+      expect(contrastRatio(s.labelChip.ink, s.labelChip.bg)).toBeGreaterThanOrEqual(AA.text);
+    });
+  });
+
   describe('the selection cue', () => {
     // selectedTint itself can't clear 3:1 against the pane by design — the cue is the bar,
     // not the tint — so what's asserted here is that the bar reads, and the tint is at least
