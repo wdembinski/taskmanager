@@ -50,6 +50,8 @@ import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
 import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
 import { buildChainDrawing, linkMidpoint } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
+import { linkView, nextLinkMode, type LinkMode } from '@tm/ui/board/linkMode';
+import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
 import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/board/shelvedCards';
 import { chainStates } from '@tm/ui/board/chainStates';
@@ -244,6 +246,7 @@ export function BoardScreen({
    */
   const showGraph = settings.showGitGraph;
   const display = settings.board;
+  const boardLinks: LinkMode = settings.boardLinks;
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
 
@@ -535,9 +538,23 @@ export function BoardScreen({
     [selectedLink, chainDrawing],
   );
 
+  // The Off/Focus/All switch (F13.20) — the desktop's own `settings.boardLinks`, so the
+  // two hosts agree on how the links look the same way they already agree on every other
+  // toolbar switch.
+  const linkState = useMemo(
+    () => linkView(extras.chainLinks, boardLinks, selectedTaskId),
+    [extras.chainLinks, boardLinks, selectedTaskId],
+  );
+  useGlobalShortcut(
+    'l',
+    () => void saveSettings({ ...settings, boardLinks: nextLinkMode(boardLinks) }).catch(reportError),
+    { ignoreInFields: true },
+  );
+
   // Widens the gutters (`columnsLinked`/`listLinked`) only while there is something to route
-  // through them — a board with no links yet keeps its ordinary, narrower gap.
-  const linksDrawn = extras.chainLinks.length > 0;
+  // through them — a board with no links yet keeps its ordinary, narrower gap — and the
+  // switch is not Off, where nothing is drawn over the board at all.
+  const linksDrawn = extras.chainLinks.length > 0 && linkState.drawn;
 
   // Delete or Backspace erases the selected arrow, Escape lets it go — the desktop's own
   // keyboard contract, on the window rather than the path because an SVG `<path>` cannot
@@ -797,6 +814,10 @@ export function BoardScreen({
           chainFocus={chainFocus}
           onChainFocusChange={setChainFocus}
           canFocusChain={selectedTaskId !== null}
+          boardLinks={boardLinks}
+          onBoardLinksChange={(next) =>
+            void saveSettings({ ...settings, boardLinks: next }).catch(reportError)
+          }
           currentSprintOnly={settings.jira.currentSprintOnly}
           onCurrentSprintOnlyChange={(next) =>
             void saveSettings({
@@ -928,6 +949,7 @@ export function BoardScreen({
                 onToggleLaterSteps={toggleLaterSteps}
                 anchorRef={anchors.anchorRef}
                 linksDrawn={linksDrawn}
+                dimmedTaskIds={linkState.dimmedTaskIds}
                 linkDrag={linkDrag}
                 onLinkStart={(taskId) => {
                   setSelectedLinkId(null);
@@ -978,24 +1000,29 @@ export function BoardScreen({
               />
             ))}
             {/* Last, so the arrows paint over the cards — and inside the scroll container,
-                so they travel with them. It takes no pointer events; only the strokes do. */}
-            <ChainOverlay
-              links={extras.chainLinks}
-              anchors={anchors.rects}
-              cardColumns={anchors.cardColumns}
-              layout={anchors.layout}
-              tasksById={tasksById}
-              runningTaskIds={extras.liveRunTaskIds}
-              selectedTaskId={selectedTaskId}
-              hoveredTaskId={anchors.hoveredTaskId}
-              focusTaskIds={focusIds}
-              selectedLinkId={selectedLinkId}
-              onSelectLink={setSelectedLinkId}
-              linkDrag={linkDrag}
-              width={anchors.bounds.width}
-              height={anchors.bounds.height}
-            />
-            {selectedLink && selectedLinkAt && (
+                so they travel with them. It takes no pointer events; only the strokes do.
+                Absent entirely in Off: nothing to draw, and nothing for the popover below
+                to hang off either. */}
+            {linkState.drawn && (
+              <ChainOverlay
+                links={extras.chainLinks}
+                anchors={anchors.rects}
+                cardColumns={anchors.cardColumns}
+                layout={anchors.layout}
+                tasksById={tasksById}
+                runningTaskIds={extras.liveRunTaskIds}
+                selectedTaskId={selectedTaskId}
+                hoveredTaskId={anchors.hoveredTaskId}
+                focusTaskIds={focusIds}
+                selectedLinkId={selectedLinkId}
+                onSelectLink={setSelectedLinkId}
+                fadedLinkIds={linkState.fadedLinkIds}
+                linkDrag={linkDrag}
+                width={anchors.bounds.width}
+                height={anchors.bounds.height}
+              />
+            )}
+            {linkState.drawn && selectedLink && selectedLinkAt && (
               <ChainLinkPopover
                 link={selectedLink}
                 fromTitle={tasksById.get(selectedLink.fromTaskId)?.title ?? 'another card'}

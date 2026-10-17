@@ -41,6 +41,8 @@ import {
 } from '@fluentui/react-icons';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { BoardDisplayMenu } from '@tm/ui/board/BoardDisplayMenu';
+import { LinkModeSwitch } from '@tm/ui/board/LinkModeSwitch';
+import type { LinkMode } from '@tm/ui/board/linkMode';
 import { archivedCountLabel, archivedCountTitle } from '@tm/ui/board/ArchivedCardsDialog';
 import {
   doneSwitchLabel,
@@ -76,6 +78,10 @@ export interface BoardToolbarProps {
   onChainFocusChange: (value: boolean) => void;
   /** False with nothing selected: focus follows the selection, so there is nothing to focus. */
   canFocusChain: boolean;
+  /** The Off/Focus/All switch — how the chain links themselves draw, distinct from
+   *  `chainFocus` above, which filters which CARDS are on the board at all. */
+  boardLinks: LinkMode;
+  onBoardLinksChange: (mode: LinkMode) => void;
   currentSprintOnly: boolean;
   onCurrentSprintOnlyChange: (value: boolean) => void;
   /** A relayed `jira:sync` is in flight — the ring spins and the sprint switch is held. */
@@ -105,6 +111,8 @@ export function BoardToolbar({
   chainFocus,
   onChainFocusChange,
   canFocusChain,
+  boardLinks,
+  onBoardLinksChange,
   currentSprintOnly,
   onCurrentSprintOnlyChange,
   syncing,
@@ -172,6 +180,10 @@ export function BoardToolbar({
       >
         Chain
       </ToggleButton>
+      {/* Off/Focus/All: how the links themselves draw, distinct from Chain above — that one
+          filters which cards are on the board, this one changes how the links between
+          whatever cards ARE there look. `L` cycles it (`BoardScreen`'s own shortcut). */}
+      <LinkModeSwitch mode={boardLinks} onChange={onBoardLinksChange} />
       <BoardDisplayMenu display={display} onChange={onDisplayChange} />
       {/* Sync the tracker now. It is the DESKTOP that talks to JIRA — this relays the same
           `jira:sync` its own button calls — so the cards it changes arrive here on the next

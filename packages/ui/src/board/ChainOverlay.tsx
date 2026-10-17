@@ -86,6 +86,13 @@ const useStyles = makeStyles({
   },
   resting: { stroke: tokens.colorNeutralStroke2, strokeWidth: '1px' },
   lit: { stroke: tokens.colorBrandStroke1, strokeWidth: '2px' },
+  /**
+   * Focus mode's "everything else" (`fadedLinkIds`, from `linkMode.linkView`) — low opacity
+   * on the whole group, arrowhead included, so a link that is not the selected card's own
+   * recedes rather than competing with it. No hit band accompanies it (see the render below):
+   * a line you can no longer really see is not one worth making clickable either.
+   */
+  faded: { opacity: 0.25 },
   /** Waiting. The dash is the whole signal — no colour is spent on standing still. */
   blocked: { strokeDasharray: '4 4' },
   /**
@@ -257,6 +264,11 @@ export interface ChainOverlayProps {
   focusTaskIds?: ReadonlySet<string> | null;
   /** The arrow being edited — drawn heavier, with its two ends marked. */
   selectedLinkId?: string | null;
+  /**
+   * Links Focus mode fades — every link that does not touch the selected card directly
+   * (`linkMode.linkView`'s `fadedLinkIds`). Absent or empty in Off/All, where nothing fades.
+   */
+  fadedLinkIds?: ReadonlySet<string> | null;
   /** Click an arrow to select it; click its own stroke again is still just a select. */
   onSelectLink?: (linkId: string) => void;
   /** The link currently being drawn, for the rubber band. */
@@ -336,14 +348,20 @@ export function ChainOverlay(props: ChainOverlayProps): JSX.Element | null {
         {arrows.map((a) => {
           const selected = a.linkId === props.selectedLinkId;
           const stroke = strokeOf(a, selected);
+          const faded = props.fadedLinkIds?.has(a.linkId) ?? false;
           return (
-            <g key={a.linkId} data-link-id={a.linkId}>
+            <g
+              key={a.linkId}
+              data-link-id={a.linkId}
+              className={faded ? styles.faded : undefined}
+            >
               <title>{a.title}</title>
               {/* First, so it sits UNDER the visible stroke and cannot be what a click lands
                 on when the pointer is dead on the line — and so the hairline stays crisp.
                 Gone entirely mid-drag: a 14px invisible band across the cards is the worst
-                possible thing to have lying over a drop target. */}
-              {!dragging && (
+                possible thing to have lying over a drop target. Gone for a faded link too —
+                a line Focus has deliberately receded is not one worth hit-testing either. */}
+              {!dragging && !faded && (
                 <path
                   d={a.d}
                   className={styles.hit}

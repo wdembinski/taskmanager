@@ -179,12 +179,19 @@ export interface KanbanColumnProps {
    */
   linkDrag?: LinkDragState | null;
   /**
-   * At least one chain link is actually being drawn over the board (`links.length > 0`, and
-   * — once the switch exists — the mode is not Off). Widens the gap above the first card
-   * (`listLinked`) so the bus band `chainRoute` routes distant links through has somewhere to
-   * be; absent or false leaves the column exactly as it was before this ticket.
+   * At least one chain link is actually being drawn over the board (`links.length > 0` and
+   * the Off/Focus/All switch is not Off — `linkMode.linkView(...).drawn`). Widens the gap
+   * above the first card (`listLinked`) so the bus band `chainRoute` routes distant links
+   * through has somewhere to be; absent or false leaves the column exactly as it was before
+   * this ticket.
    */
   linksDrawn?: boolean;
+  /**
+   * Links Focus mode dims — neither the selection nor one of its direct links
+   * (`linkMode.linkView`'s `dimmedTaskIds`). Asked per card like `foldedStepTaskIds`: the
+   * answer lives in one place (the board) and every card here asks the same copy of it.
+   */
+  dimmedTaskIds?: ReadonlySet<string>;
   onLinkStart?: (taskId: string) => void;
   onLinkEnd?: () => void;
   onLinkTo?: (fromTaskId: string, toTaskId: string) => void;
@@ -334,6 +341,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               display={props.display}
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}
+              dimmed={props.dimmedTaskIds?.has(task.id)}
               anchorRef={props.anchorRef?.(task.id)}
               linkState={props.linkDrag?.states.get(task.id)}
               // Absent when the board is not wired for chains, which is also what decides

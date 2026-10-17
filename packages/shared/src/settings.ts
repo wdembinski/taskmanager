@@ -16,6 +16,22 @@ import { DEFAULT_PROMPT_TEMPLATES, type PromptTemplate } from './promptTemplates
 import type { StatusKeyword } from './statusKeywords';
 import { DEFAULT_SESSION_TOKEN_BUDGET, DEFAULT_WEEKLY_TOKEN_BUDGET } from './usage';
 
+/** Every mode `AppSettings.boardLinks` can hold, in the order its switch cycles them. */
+export const BOARD_LINKS_MODES = ['off', 'focus', 'all'] as const;
+
+export type BoardLinksMode = (typeof BOARD_LINKS_MODES)[number];
+
+/**
+ * Coerces anything that is not one of {@link BOARD_LINKS_MODES} to `'all'` — a blob saved
+ * before this setting existed, a hand-edited settings row, or a stray value from a future
+ * version this one does not know. `'all'` rather than `'off'` because it is what the board
+ * drew before the setting existed; falling back to `'off'` would read as links that vanished
+ * rather than as a setting nobody has touched yet.
+ */
+export function coerceBoardLinksMode(value: unknown): BoardLinksMode {
+  return value === 'off' || value === 'focus' || value === 'all' ? value : 'all';
+}
+
 /**
  * Non-secret JIRA connection config (the PAT itself is stored separately, encrypted
  * via Electron `safeStorage`). Persisted inside `AppSettings`; `getSettings` merges
@@ -961,6 +977,14 @@ export interface AppSettings {
   /** Whether the shelf itself is collapsed. Per-surface view-state, like `shelvedCardIds`. */
   shelfFolded: boolean;
   /**
+   * How the board draws its chain links (F13.20) — `'off'` hides them entirely (the card's
+   * own needs/unblocks chips carry the same facts), `'focus'` lights the selected card's own
+   * links and fades the rest, `'all'` draws every link at rest, same as before this setting
+   * existed. Per-surface view-state, exactly like `shelfFolded`: a browser tab and the
+   * desktop each keep their own, so switching it on one never reaches across to the other.
+   */
+  boardLinks: BoardLinksMode;
+  /**
    * Whether closing the last window quits the app (off) or leaves it running — behind a
    * tray icon where one is available, minimized otherwise (F1.10). **Local**: it is a
    * fact about THIS machine's process lifetime, not an account-scoped preference — the
@@ -1039,6 +1063,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   features: DEFAULT_FEATURE_SETTINGS,
   shelvedCardIds: [],
   shelfFolded: false,
+  // 'all' is what the board drew before this switch existed — a fresh install, and every
+  // existing one reading a blob from before the field was added, sees no change at all.
+  boardLinks: 'all',
   runInBackground: false,
   // Nothing trusted out of the box: a fresh install (or a desktop that has never seen a
   // given gate command) must park it for a human to look at before it runs.
@@ -1103,9 +1130,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * gate command trusted on THIS desktop, not the account — see the field's own doc) — or
  * per-SURFACE view-state:
  * `boardScopeId` / `foldedStepCards` / `shownEarlierStepCards` / `shownLaterStepCards` name
- * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline, and
- * `shelvedCardIds` / `shelfFolded` the same for the parked shelf. A browser and a desktop
- * each keep their own of those, so they never leave the surface they were set on.
+ * where you left one screen, `gantt.collapsedEpicIds` the same for the timeline,
+ * `shelvedCardIds` / `shelfFolded` the same for the parked shelf, and `boardLinks` the same
+ * for how the board draws its chain links. A browser and a desktop each keep their own of
+ * those, so they never leave the surface they were set on.
  *
  * A WHITELIST, not a denylist, and that direction is the safety: a field newly added to
  * `AppSettings` is LOCAL until someone deliberately lists it here, so a new machine-specific

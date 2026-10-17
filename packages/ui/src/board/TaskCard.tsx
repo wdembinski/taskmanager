@@ -243,6 +243,12 @@ const useStyles = makeStyles({
     // exactly one atomic class deciding the handle's opacity and no insertion-order race
     // with the base rule on the handle itself.
     '&:hover [data-chain-handle]': { opacity: 1, pointerEvents: 'auto' },
+    // `dimmed` toggles opacity alone; the transition lives here so it plays whichever
+    // direction the state changes, same split `AgentGlyph.layer`/`.hidden` makes.
+    transitionProperty: 'opacity',
+    transitionDuration: '160ms',
+    transitionTimingFunction: 'ease-in-out',
+    '@media (prefers-reduced-motion: reduce)': { transitionDuration: '0ms' },
     // Brighter than the board it sits on: a card is the object, the column is the space
     // between objects, and the old darker fill had that backwards. That contrast is the
     // whole edge — there is no frame, because a frame was saying a second time what the
@@ -592,6 +598,12 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
   },
   dragging: { opacity: 0.5 },
+  /**
+   * Focus mode's "non-neighbour" cards (`linkMode.linkView`'s `dimmedTaskIds`) — neither the
+   * selected card nor one of its direct links. Opacity alone, no token: this is not a status
+   * or a state anything reads back, only how hard the eye has to work to find it.
+   */
+  dimmed: { opacity: 0.45 },
   /**
    * `flex-start`, not `center`: a two-line title would otherwise push the type glyph and the
    * agent glyph down to its middle, so the same two icons sat at a different height on every
@@ -1177,6 +1189,12 @@ export interface TaskCardProps {
   onDragStart: (e: React.DragEvent) => void;
   onDragEnd: (e: React.DragEvent) => void;
   dragging: boolean;
+  /**
+   * Links Focus mode dims — the card is neither the selection nor one of its direct links
+   * (`linkMode.linkView`'s `dimmedTaskIds`). Absent or false everywhere else, which is every
+   * caller before this field existed.
+   */
+  dimmed?: boolean;
 }
 
 export function TaskCard({
@@ -1230,6 +1248,7 @@ export function TaskCard({
   onDragStart,
   onDragEnd,
   dragging,
+  dimmed = false,
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -1462,6 +1481,7 @@ export function TaskCard({
         wantsAttention && styles.cardUnread,
         selected && styles.cardSelected,
         dragging && styles.dragging,
+        dimmed && styles.dimmed,
         linkState === 'valid' && styles.linkValid,
         linkState === 'linked' && styles.linkExisting,
         linkState === 'refused' && styles.linkRefused,
