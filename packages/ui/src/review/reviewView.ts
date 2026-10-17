@@ -13,13 +13,10 @@
 import type {
   DiffFileEntry,
   DiffFileStatus,
-  DiffLine,
   DiffSide,
   DiffSummary,
   ReviewSendRefusal,
-  WordSegment,
 } from '@tm/shared/review';
-import { wordDiff } from '@tm/shared/review';
 import { formatAge } from '../countdown';
 import { REFUSAL_HINT } from '../taskChat';
 import {
@@ -148,39 +145,7 @@ export function summaryTotals(summary: DiffSummary): SummaryTotals {
   );
 }
 
-/**
- * The inner word-highlight for each line in one hunk's already-flattened lines, aligned
- * positionally: every run of `del` lines immediately followed by a run of `add` lines pairs up
- * index-for-index through `wordDiff`, shortest run first — a run with more dels than adds (or
- * the reverse) leaves its unmatched tail `null`, same as every `context` line and every pair
- * `wordDiff` gave up on (`wholeLine`), which reads as a plain whole-line change with no inner
- * highlight rather than a stale one.
- */
-export function pairWordDiffs(lines: readonly DiffLine[]): ReadonlyArray<WordSegment[] | null> {
-  const result = new Array<WordSegment[] | null>(lines.length).fill(null);
-  let i = 0;
-  while (i < lines.length) {
-    if (lines[i].kind !== 'del') {
-      i += 1;
-      continue;
-    }
-    const delStart = i;
-    while (i < lines.length && lines[i].kind === 'del') i += 1;
-    const delEnd = i;
-    const addStart = i;
-    while (i < lines.length && lines[i].kind === 'add') i += 1;
-    const addEnd = i;
-
-    const pairCount = Math.min(delEnd - delStart, addEnd - addStart);
-    for (let k = 0; k < pairCount; k += 1) {
-      const diff = wordDiff(lines[delStart + k].text, lines[addStart + k].text);
-      if (diff.wholeLine) continue;
-      result[delStart + k] = diff.old;
-      result[addStart + k] = diff.new;
-    }
-  }
-  return result;
-}
+export { pairWordDiffs } from '@tm/shared/review';
 
 /**
  * The paths that load without the human expanding anything: the first `limit` files that are
