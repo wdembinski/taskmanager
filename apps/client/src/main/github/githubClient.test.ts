@@ -7,6 +7,7 @@ import {
   nextPageUrl,
   pickMergeMethod,
 } from './githubClient';
+import { pullRequestFilesPage1, pullRequestFilesPage2 } from './__fixtures__/pullRequestFiles';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return {
@@ -15,6 +16,17 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
     statusText: 'OK',
     json: async () => body,
     text: async () => JSON.stringify(body),
+    headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+  } as unknown as Response;
+}
+
+function textResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 404 ? 'Not Found' : 'OK',
+    json: async () => JSON.parse(body),
+    text: async () => body,
     headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
   } as unknown as Response;
 }
@@ -891,5 +903,159 @@ describe('GitHubClient.getMergeProposal', () => {
       method: 'merge',
       message: null,
     });
+  });
+});
+
+describe('GitHubClient.listPullRequestFiles', () => {
+  it('pages across two pages via Link, and reports truncated: false once the last has none', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(pullRequestFilesPage1, 200, {
+          link: '<https://api.github.com/repos/acme/web/pulls/7/files?per_page=100&page=2>; rel="next"',
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(pullRequestFilesPage2, 200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().listPullRequestFiles('acme', 'web', 7);
+
+    expect(result.truncated).toBe(false);
+    expect(result.files.map((f) => f.filename)).toEqual([
+      'src/app.ts',
+      'src/utils/format.ts',
+      'assets/logo.png',
+      'docs/old-notes.md',
+    ]);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web/pulls/7/files?per_page=100',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
+      'https://api.github.com/repos/acme/web/pulls/7/files?per_page=100&page=2',
+    );
+  });
+
+  it('reports truncated: true when the page cap stops it with a rel="next" still left', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse(pullRequestFilesPage1, 200, {
+          link: '<https://api.github.com/repos/acme/web/pulls/7/files?per_page=100&page=2>; rel="next"',
+        }),
+      ),
+    );
+
+    const result = await client().listPullRequestFiles('acme', 'web', 7, 1);
+
+    expect(result.truncated).toBe(true);
+    expect(result.files).toHaveLength(2);
+  });
+
+  it('carries a binary file through with patch === undefined and its other fields intact', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(pullRequestFilesPage2, 200, {})));
+
+    const result = await client().listPullRequestFiles('acme', 'web', 7);
+
+    const binary = result.files.find((f) => f.filename === 'assets/logo.png');
+    expect(binary?.patch).toBeUndefined();
+    expect(binary).toMatchObject({
+      sha: 'c3d4e5f60718293a4b5c6d7e8f901234567a1b2',
+      status: 'modified',
+      additions: 0,
+      deletions: 0,
+      changes: 0,
+    });
+  });
+
+  it('carries a renamed file through with previous_filename', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(pullRequestFilesPage1, 200, {})));
+
+    const result = await client().listPullRequestFiles('acme', 'web', 7);
+
+    const renamed = result.files.find((f) => f.filename === 'src/utils/format.ts');
+    expect(renamed?.previous_filename).toBe('src/format.ts');
+    expect(renamed?.status).toBe('renamed');
+  });
+});
+
+describe('GitHubClient.getRawFile', () => {
+  it('encodes the path per segment, sends ?ref=, and asks for the raw media type', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(textResponse('export const x = 1;\n'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const text = await client().getRawFile('acme', 'web', 'src/app #1.ts', 'feature/x');
+
+    expect(text).toBe('export const x = 1;\n');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      'https://api.github.com/repos/acme/web/contents/src/app%20%231.ts?ref=feature%2Fx',
+    );
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Accept).toBe('application/vnd.github.raw+json');
+  });
+
+  it('keeps a literal / as a directory separator across segments', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(textResponse('content'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().getRawFile('acme', 'web', 'src/components/Button.tsx', 'main');
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://api.github.com/repos/acme/web/contents/src/components/Button.tsx?ref=main',
+    );
+  });
+
+  it('rejects a missing file at that ref with a GitHubError carrying status 404', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(textResponse('{"message":"Not Found"}', 404)));
+
+    await expect(client().getRawFile('acme', 'web', 'gone.ts', 'main')).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(client().getRawFile('acme', 'web', 'gone.ts', 'main')).rejects.toBeInstanceOf(
+      GitHubError,
+    );
+  });
+});
+
+describe('GitHubClient.listReviewRequests', () => {
+  it('sends the exact review-requested query with advanced_search=true', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ items: [], incomplete_results: false }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().listReviewRequests();
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(decodeURIComponent(url)).toContain(
+      'q=is:pr is:open review-requested:@me archived:false',
+    );
+    expect(url).toContain('advanced_search=true');
+  });
+
+  it('propagates truncated from incomplete_results: true', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ items: [{ number: 1 }], incomplete_results: true })),
+    );
+
+    const result = await client().listReviewRequests();
+
+    expect(result).toMatchObject({ incompleteResults: true, truncated: true });
+  });
+
+  it('propagates truncated from the page cap, even when GitHub says it was complete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({ items: [{ number: 1 }], incomplete_results: false }, 200, {
+          link: '<https://api.github.com/search/issues?page=2>; rel="next"',
+        }),
+      ),
+    );
+
+    const result = await client().listReviewRequests(1);
+
+    expect(result).toMatchObject({ incompleteResults: false, truncated: true });
   });
 });
