@@ -56,17 +56,8 @@ import type {
 import { MONO, SYNTAX, fontPx } from '../theme';
 import { useTransport } from '../transport';
 import { CommentThread } from './CommentThread';
-import {
-  MAX_FILE_LINES,
-  highlightHunk,
-  languageForPath,
-  loadLanguage,
-  mergeSegments,
-  scheduleIdle,
-  type HunkHighlight,
-  type SyntaxScope,
-  type SyntaxSegment,
-} from './highlight';
+import type { HunkHighlight } from './highlight';
+import { mergeSegments, type SyntaxScope, type SyntaxSegment } from './syntaxSegment';
 import {
   rangeLines,
   renderedIndex,
@@ -579,15 +570,18 @@ function FileBody({
 const EMPTY_HUNKS: readonly DiffHunk[] = [];
 
 /**
- * Resolves `path`'s language, loads its grammar, then highlights each of `hunks` through
- * {@link scheduleIdle} — one hunk at a time, so a large file never blocks a frame. Returns
- * each hunk's {@link HunkHighlight} as soon as it lands, indexed by its position in `hunks`;
- * a hunk not yet highlighted (or never going to be) is simply absent.
+ * Resolves `path`'s language, loads its grammar, then highlights each of `hunks` one hunk at a
+ * time (through the loaded module's own idle scheduler), so a large file never blocks a frame.
+ * Returns each hunk's {@link HunkHighlight} as soon as it lands, indexed by its position in
+ * `hunks`; a hunk not yet highlighted (or never going to be) is simply absent.
  *
- * Skips all of it — returning `[]` and doing no work — when `monochrome` is set, when `path`
- * has no known language, or when the file is over {@link MAX_FILE_LINES}: a file that big is
- * already a lot to render plain, and highlighting it would cost more than a diff this size is
- * ever read for.
+ * Reaches `./highlight` — `highlight.js/lib/core` plus the per-language grammars — through a
+ * dynamic `import()` rather than a top-level one, so that whole module loads as its own chunk
+ * instead of landing in the entry bundle (see that module's own header). Skips all of it —
+ * returning `[]` and doing no work — when `monochrome` is set, when `path` has no known
+ * language, or when the file is over the loaded module's own line-count cap: a file that big
+ * is already a lot to render plain, and highlighting it would cost more than a diff this size
+ * is ever read for.
  */
 function useHunkHighlights(
   path: string,
@@ -599,25 +593,29 @@ function useHunkHighlights(
   useEffect(() => {
     setHighlights([]);
     if (monochrome) return;
-    const lang = languageForPath(path);
-    if (lang === null) return;
-    const totalLines = hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
-    if (totalLines > MAX_FILE_LINES) return;
 
     const controller = new AbortController();
-    void loadLanguage(lang).then(() => {
+    void import('./highlight').then((mod) => {
       if (controller.signal.aborted) return;
-      scheduleIdle(
-        hunks.map((hunk, i) => () => {
-          const result = highlightHunk(lang, hunk);
-          setHighlights((prev) => {
-            const next = prev.slice();
-            next[i] = result;
-            return next;
-          });
-        }),
-        controller.signal,
-      );
+      const lang = mod.languageForPath(path);
+      if (lang === null) return;
+      const totalLines = hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
+      if (totalLines > mod.MAX_FILE_LINES) return;
+
+      void mod.loadLanguage(lang).then(() => {
+        if (controller.signal.aborted) return;
+        mod.scheduleIdle(
+          hunks.map((hunk, i) => () => {
+            const result = mod.highlightHunk(lang, hunk);
+            setHighlights((prev) => {
+              const next = prev.slice();
+              next[i] = result;
+              return next;
+            });
+          }),
+          controller.signal,
+        );
+      });
     });
 
     return () => controller.abort();
