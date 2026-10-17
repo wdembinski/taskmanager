@@ -1,5 +1,6 @@
 /**
- * Headless proof of the review_comments store (F6.7) — the table and the five
+ * Headless proof of the review_drafts store (F6.7, widened from any task's own
+ * review_comments table to any review subject by F15.4) — the table and the five
  * `Store` methods built on it: listReviewComments, addReviewComment, updateReviewComment,
  * deleteReviewComment, markReviewSent.
  *
@@ -16,14 +17,20 @@
  * also the `verify-electron-app` rule: never launch the app to check something.
  *
  * The pure row mapper (`reviewCommentToRow`/`rowToReviewComment`) has its own vitest coverage
- * in `reviewCommentRows.test.ts` — this script only proves the SQL built on top of it.
+ * in `reviewCommentRows.test.ts` — this script only proves the SQL built on top of it. The
+ * copy migration from the old `review_comments` table, and the explicit deletes
+ * `review_drafts`/`review_viewed`/`review_queue` need now that none of them carry a foreign
+ * key back to `tasks`, have their own deeper coverage in
+ * `scripts/verify-review-drafts-migration.mjs` — this script stays focused on the five
+ * `Store` methods above.
  *
  * ## What it proves
  *
- * 1. A fresh database already has `review_comments` with every column the mapper expects.
+ * 1. A fresh database already has `review_drafts` with every column the mapper expects.
  * 2. `addReviewComment` assigns id/createdAt/updatedAt/sentAt, round-trips a single-line and
  *    a range comment through `listReviewComments`, and returns `undefined` for an unknown
- *    task (the foreign key refuses it) rather than throwing.
+ *    task — checked explicitly, since `review_drafts` carries no foreign key to refuse it
+ *    for free the way the old `review_comments` table did.
  * 3. `updateReviewComment` merges a patch and bumps `updatedAt`, leaves an unpatched field
  *    alone, refuses an unknown id AND an already-sent comment — the `sentAt IS NULL`
  *    guard is enforced in SQL, not just by the caller — and `{ start: null }` clears a
@@ -33,11 +40,12 @@
  * 5. `markReviewSent` stamps every listed draft on the named task in one transaction,
  *    returns only the rows it actually stamped, ignores an id that belongs to a different
  *    task, and stamps nothing on a second call with the same ids (idempotent).
- * 6. Deleting a task cascades to its review comments (`foreign_keys = ON`, same as
- *    `task_attachments`).
- * 7. `syncTasksFromPlan` carries a surviving task's review comments across the
- *    delete-and-reinsert a plan re-sync performs, and drops the comments of a task the
- *    re-sync itself drops.
+ * 6. Deleting a task explicitly deletes its review drafts (`deleteTaskDeep`'s
+ *    `deleteDraftsForSubject` call) rather than riding a foreign key's `ON DELETE CASCADE`
+ *    the way the old `review_comments` table did — `review_drafts` has no such key.
+ * 7. `syncTasksFromPlan` leaves a surviving task's drafts alone (they were never touched —
+ *    `review_drafts` has no foreign key for `deleteTasks` to cascade through any more) and
+ *    explicitly clears the drafts of a task the re-sync drops.
  *
  * Prove the checks matter yourself with either of these two mutations — both go red:
  *
@@ -47,9 +55,9 @@
  *     `markReviewSent` has no such JS-side guard, so this is the one that bites): check
  *     5's "a second call with the same ids stamps nothing" goes red, because the second
  *     call re-stamps with a new `sentAt`.
- *   - Delete the `for (const row of reviewComments) { ... }` restore loop inside
- *     `syncTasksFromPlan`'s transaction in `store.ts`: check 7's "a surviving task keeps
- *     its review comments" goes red, because the comment is gone after the re-sync.
+ *   - Delete the `deleteDraftsForSubject.run(subjectId)` call from `deleteTaskDeep` in
+ *     `store.ts`: check 6's "deleteTask explicitly deletes its review drafts" goes red,
+ *     because the draft survives the delete.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync } from 'node:fs';
@@ -98,11 +106,7 @@ if (!process.versions.electron) {
       { stdio: 'inherit' },
     );
 
-  bundle(
-    join(root, 'apps/client/src/main/store.ts'),
-    join(scratch, 'store.cjs'),
-    'better-sqlite3',
-  );
+  bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'), 'better-sqlite3');
 
   const electron = join(
     clientModules,
@@ -160,13 +164,28 @@ const dbPath = join(work, 'orchestrator.db');
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`)
     .all()
     .map((r) => r.name);
-  check('fresh db has review_comments', tableNames.includes('review_comments'));
-  const columns = raw.prepare('PRAGMA table_info(review_comments)').all().map((c) => c.name);
+  check('fresh db has review_drafts', tableNames.includes('review_drafts'));
+  const columns = raw
+    .prepare('PRAGMA table_info(review_drafts)')
+    .all()
+    .map((c) => c.name);
   for (const col of [
-    'id', 'taskId', 'diffId', 'path', 'oldPath', 'side', 'line', 'startSide', 'startLine',
-    'body', 'excerpt', 'createdAt', 'updatedAt', 'sentAt',
+    'id',
+    'subjectId',
+    'diffId',
+    'path',
+    'oldPath',
+    'side',
+    'line',
+    'startSide',
+    'startLine',
+    'body',
+    'excerpt',
+    'createdAt',
+    'updatedAt',
+    'sentAt',
   ]) {
-    check(`review_comments has column ${col}`, columns.includes(col));
+    check(`review_drafts has column ${col}`, columns.includes(col));
   }
   raw.close();
   store.close();
@@ -191,7 +210,10 @@ let taskB;
   const ranged = store.addReviewComment(
     makeCommentInput(taskA.id, { line: 15, start: { side: 'new', line: 12 } }),
   );
-  check('a range comment round-trips start', ranged?.start?.side === 'new' && ranged?.start?.line === 12);
+  check(
+    'a range comment round-trips start',
+    ranged?.start?.side === 'new' && ranged?.start?.line === 12,
+  );
 
   const listed = store.listReviewComments(taskA.id);
   check('listReviewComments returns both comments', listed.length === 2);
@@ -227,10 +249,7 @@ let taskB;
   const onSent = store.updateReviewComment(draft.id, { body: 'trying to rewrite history' });
   check('updateReviewComment on an already-sent comment returns undefined', onSent === undefined);
   const stillSent = store.listReviewComments(taskA.id).find((c) => c.id === draft.id);
-  check(
-    "the sent comment's body did not change",
-    stillSent?.body === 'edited body',
-  );
+  check("the sent comment's body did not change", stillSent?.body === 'edited body');
 
   store.close();
 }
@@ -292,7 +311,10 @@ let taskB;
     'markReviewSent stamps only the ids that belong to the named task',
     stamped.length === 2 && stamped.every((c) => c.id === c1.id || c.id === c2.id),
   );
-  check('a stamped comment reads sentAt back', stamped.every((c) => c.sentAt === now));
+  check(
+    'a stamped comment reads sentAt back',
+    stamped.every((c) => c.sentAt === now),
+  );
   check(
     "a different task's comment was left alone",
     store.listReviewComments(taskB.id).find((c) => c.id === onB.id)?.sentAt === null,
@@ -304,20 +326,26 @@ let taskB;
   store.close();
 }
 
-// ── Check 6: deleting a task cascades to its review comments ────────────────────────
+// ── Check 6: deleteTask explicitly deletes a task's review drafts ───────────────────
 {
   const store = createStore(dbPath);
   const task = store.createTask('personal', { title: 'Task to delete' });
   store.addReviewComment(makeCommentInput(task.id));
-  check('the doomed task has a comment before delete', store.listReviewComments(task.id).length === 1);
+  check(
+    'the doomed task has a comment before delete',
+    store.listReviewComments(task.id).length === 1,
+  );
 
   store.deleteTask(task.id);
-  check('deleteTask cascades to its review comments', store.listReviewComments(task.id).length === 0);
+  check(
+    'deleteTask explicitly deletes its review drafts',
+    store.listReviewComments(task.id).length === 0,
+  );
 
   store.close();
 }
 
-// ── Check 7: syncTasksFromPlan preserves a surviving task's comments, drops the rest ─
+// ── Check 7: syncTasksFromPlan leaves a survivor's drafts alone, drops the rest ─────
 {
   const store = createStore(dbPath);
   // 'personal' (`PERSONAL_PROJECT_ID`) is the one project a fresh store already has —
@@ -342,11 +370,14 @@ let taskB;
   ]);
 
   const afterKeep = store.listReviewComments(keepTask.id);
-  check('a surviving task keeps its review comments', afterKeep.length === 1);
+  check('a surviving task is left with its review drafts untouched', afterKeep.length === 1);
   check('the surviving comment is the same one', afterKeep[0]?.body === 'on the surviving task');
 
   const afterDrop = store.listReviewComments(dropTask.id);
-  check("a dropped task's review comments do not survive the re-sync", afterDrop.length === 0);
+  check(
+    "a dropped task's review drafts are explicitly cleared by the re-sync",
+    afterDrop.length === 0,
+  );
 
   store.close();
 }

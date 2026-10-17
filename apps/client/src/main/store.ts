@@ -127,7 +127,7 @@ import type {
 import type { AttentionItem } from '@shared/attention';
 import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
-import type { ReviewComment } from '@shared/review';
+import { taskSubjectId, type ReviewComment } from '@shared/review';
 import type { ParsedTask } from './planParser';
 import { type ReviewCommentRow, reviewCommentToRow, rowToReviewComment } from './reviewCommentRows';
 import { splitProjectTag } from './projectTagMigration';
@@ -927,8 +927,9 @@ export interface Store {
    * Add a draft comment. The id, `createdAt`/`updatedAt` and `sentAt` are the store's to
    * assign — `createdAt === updatedAt` for a fresh draft, and `sentAt` starts `null`.
    *
-   * Undefined when the task is unknown (the foreign key refuses it) — "no comment"
-   * rather than an exception, the same contract `addAttachment`/`addTaskLink` keep.
+   * Undefined when the task is unknown (checked explicitly — `review_drafts` carries no
+   * foreign key) — "no comment" rather than an exception, the same contract
+   * `addAttachment`/`addTaskLink` keep.
    */
   addReviewComment(
     input: Omit<ReviewComment, 'id' | 'createdAt' | 'updatedAt' | 'sentAt'>,
@@ -1963,9 +1964,12 @@ export function createStore(dbPath: string): Store {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_log_run_once
       ON activity_log(runId, kind) WHERE kind IN ('run-started', 'run-finished');
     -- A task's review comments (F6.7, @shared/review): one row per comment left on a
-    -- diff, draft until sentAt is set. ON DELETE CASCADE ties a comment's life to its
-    -- task exactly as task_attachments does above, so a deleted card takes its comments
-    -- with it; a plan re-sync restores both the same way, in syncTasksFromPlan.
+    -- diff, draft until sentAt is set.
+    --
+    -- DEPRECATED (F15.4): superseded by review_drafts below, which widens the same shape to
+    -- any review subject rather than just a task. Read exactly once, by the one-shot copy
+    -- migration further down, and never written to again — droppable in the release after
+    -- this one.
     --
     -- side/startSide are plain TEXT rather than CHECK-constrained: an unknown value is
     -- the reader's problem to coerce (reviewCommentRows.ts), not the schema's to reject.
@@ -1993,6 +1997,59 @@ export function createStore(dbPath: string): Store {
       sentAt    INTEGER           -- NULL = draft
     );
     CREATE INDEX IF NOT EXISTS idx_review_comments_task ON review_comments(taskId, createdAt);
+    -- A review subject's draft/sent comments (F15.4, @shared/review): the live home of what
+    -- review_comments above used to hold, widened from "a card's own branch" to any review
+    -- subject — a task's branch, or a forge pull request (ReviewSubject/parseSubjectId).
+    --
+    -- subjectId is NOT a foreign key, unlike taskId above: a PR subject has no local row to
+    -- point at, and a task subject must now survive the card's own delete — F15's whole point
+    -- is that review state outlives a deleted card and a plan re-sync the same way a PR's
+    -- does. So nothing here cascades; every place that relied on tasks(id) ON DELETE CASCADE
+    -- now deletes explicitly instead, with deleteDraftsForSubject, deleteViewedForSubject and
+    -- deleteQueueForSubject (deleteTaskDeep, removeProject, syncTasksFromPlan's replace).
+    --
+    -- Otherwise the same shape as review_comments — see its comments above for side/
+    -- startSide/startLine and why diffId is not a foreign key either.
+    CREATE TABLE IF NOT EXISTS review_drafts (
+      id        TEXT PRIMARY KEY,
+      subjectId TEXT NOT NULL,
+      diffId    TEXT NOT NULL,
+      path      TEXT NOT NULL,
+      oldPath   TEXT,             -- NULL unless the file was renamed
+      side      TEXT NOT NULL,    -- 'old' | 'new'
+      line      INTEGER NOT NULL,
+      startSide TEXT,             -- both NULL for a single-line comment
+      startLine INTEGER,
+      body      TEXT NOT NULL,
+      excerpt   TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      sentAt    INTEGER           -- NULL = draft
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_drafts_subject ON review_drafts(subjectId, createdAt);
+    -- One row per file a subject has marked read (F15.4, ReviewViewedMark). Stale once
+    -- path's blob SHA moves past blobSha — the reader's job to notice, not this table's.
+    -- No foreign key, for the same reason review_drafts has none.
+    CREATE TABLE IF NOT EXISTS review_viewed (
+      subjectId TEXT NOT NULL,
+      path      TEXT NOT NULL,
+      blobSha   TEXT NOT NULL,
+      viewedAt  INTEGER NOT NULL,
+      PRIMARY KEY (subjectId, path)
+    );
+    -- One row per subject per queue it sits in (F15.4, ReviewQueueItem) — requested/mine/
+    -- agent, at most one row per subject per queue. queue is plain TEXT rather than
+    -- CHECK-constrained, matching the kind-coercion stance side already takes above: an
+    -- unknown value is the reader's problem, not the schema's to reject. row is the whole
+    -- ReviewQueueItem as JSON, like automations.data — nothing here needs a promoted column
+    -- to query by.
+    CREATE TABLE IF NOT EXISTS review_queue (
+      subjectId TEXT NOT NULL,
+      queue     TEXT NOT NULL,
+      row       TEXT NOT NULL, -- ReviewQueueItem JSON
+      syncedAt  INTEGER NOT NULL,
+      PRIMARY KEY (subjectId, queue)
+    );
     -- Library skills (F7.4, @shared/skills): a reusable playbook this app owns end to end,
     -- synced through its own endpoint rather than riding SyncRequest. New table, nothing to
     -- migrate.
@@ -3022,6 +3079,9 @@ export function createStore(dbPath: string): Store {
   /** Guard for the one-shot claim of blocks that predate `preBlockStatus` meaning ownership. */
   const BLOCK_OWNER_KEY = 'migration.blockOwner';
 
+  /** Guard for the one-shot copy of `review_comments` into `review_drafts` (F15.4), below. */
+  const REVIEW_DRAFTS_COPY_KEY = 'migration.reviewDraftsCopy';
+
   /**
    * The last `discoverModelCatalog` sweep (`claudeModels.ts`), so a model picker opens with a
    * real reading instead of a blank list on every app start — a fresh sweep is a few seconds
@@ -3507,24 +3567,17 @@ export function createStore(dbPath: string): Store {
   );
 
   const selectReviewCommentsForTask = db.prepare(
-    `SELECT * FROM review_comments WHERE taskId = ? ORDER BY createdAt, rowid`,
+    `SELECT * FROM review_drafts WHERE subjectId = ? ORDER BY createdAt, rowid`,
   );
-  const selectReviewComment = db.prepare(`SELECT * FROM review_comments WHERE id = ?`);
-  // The review comments of a project's tasks — carried across the delete-and-reinsert a
-  // plan re-sync performs, exactly as `selectAttachmentsForProject` is.
-  const selectReviewCommentsForProject = db.prepare(
-    `SELECT * FROM review_comments
-     WHERE taskId IN (SELECT id FROM tasks WHERE projectId = ?)
-     ORDER BY createdAt, rowid`,
-  );
+  const selectReviewComment = db.prepare(`SELECT * FROM review_drafts WHERE id = ?`);
   // No conflict target: DO NOTHING covers the primary key, so a re-inserted row on the
   // plan-sync path is idempotent for free, exactly as `insertAttachment` is.
   const insertReviewComment = db.prepare<[ReviewCommentRow]>(
-    `INSERT INTO review_comments
-       (id, taskId, diffId, path, oldPath, side, line, startSide, startLine, body, excerpt,
+    `INSERT INTO review_drafts
+       (id, subjectId, diffId, path, oldPath, side, line, startSide, startLine, body, excerpt,
         createdAt, updatedAt, sentAt)
      VALUES
-       (@id, @taskId, @diffId, @path, @oldPath, @side, @line, @startSide, @startLine, @body,
+       (@id, @subjectId, @diffId, @path, @oldPath, @side, @line, @startSide, @startLine, @body,
         @excerpt, @createdAt, @updatedAt, @sentAt)
      ON CONFLICT DO NOTHING`,
   );
@@ -3533,18 +3586,27 @@ export function createStore(dbPath: string): Store {
   // to the same file it was added on. `sentAt IS NULL` is what makes this draft-only —
   // the store's own enforcement, not just its callers'.
   const updateReviewCommentStmt = db.prepare(
-    `UPDATE review_comments
+    `UPDATE review_drafts
        SET diffId = @diffId, side = @side, line = @line, startSide = @startSide,
            startLine = @startLine, body = @body, excerpt = @excerpt, updatedAt = @updatedAt
      WHERE id = @id AND sentAt IS NULL`,
   );
   const deleteReviewCommentStmt = db.prepare(
-    `DELETE FROM review_comments WHERE id = ? AND sentAt IS NULL`,
+    `DELETE FROM review_drafts WHERE id = ? AND sentAt IS NULL`,
   );
   const markReviewSentStmt = db.prepare(
-    `UPDATE review_comments SET sentAt = @sentAt
-     WHERE id = @id AND taskId = @taskId AND sentAt IS NULL`,
+    `UPDATE review_drafts SET sentAt = @sentAt
+     WHERE id = @id AND subjectId = @subjectId AND sentAt IS NULL`,
   );
+
+  // The explicit deletes review_drafts/review_viewed/review_queue need now that none of
+  // them carry a foreign key back to tasks (see review_drafts' own comment for why) — the
+  // replacement for the ON DELETE CASCADE review_comments used to get for free. Called for
+  // `taskSubjectId(id)` everywhere a task (or its subtree, or its project) is destroyed:
+  // `deleteTaskDeep`, `removeProject`, and `syncTasksFromPlan`'s replace.
+  const deleteDraftsForSubject = db.prepare(`DELETE FROM review_drafts WHERE subjectId = ?`);
+  const deleteViewedForSubject = db.prepare(`DELETE FROM review_viewed WHERE subjectId = ?`);
+  const deleteQueueForSubject = db.prepare(`DELETE FROM review_queue WHERE subjectId = ?`);
 
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
@@ -3724,6 +3786,45 @@ export function createStore(dbPath: string): Store {
     db.transaction(() => {
       const counts = backfillActivityLog(db, Date.now());
       upsertState.run(ACTIVITY_BACKFILL_KEY, JSON.stringify(counts));
+    })();
+  }
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // One-shot: copy `review_comments` into `review_drafts` (F15.4).
+  //
+  // `review_comments` is keyed by `taskId` with an `ON DELETE CASCADE` foreign key;
+  // `review_drafts` widens the same rows to any review subject (`@shared/review`), keyed by
+  // `subjectId` with no foreign key at all (see that table's own comment for why). Every
+  // existing comment is a task's, so its `subjectId` is just `'task:' || taskId`. `sentAt` is
+  // copied verbatim, so a sent comment stays sent and an unsent one stays a draft.
+  //
+  // Guarded like the migrations above, and for the same reason: `review_comments` is read
+  // here and never written to again, so a second pass would find the exact same rows —
+  // `ON CONFLICT DO NOTHING` makes that a no-op, but a draft genuinely deleted from
+  // `review_drafts` since the first pass must stay gone, not get resurrected from the now-
+  // stale source table.
+  //
+  // `ORDER BY id` is load-bearing, not cosmetic: SQLite's FROM-clause grammar reads a bare
+  // `ON` right after a table name as the start of a join constraint, so an INSERT...SELECT
+  // with no clause between `FROM review_comments` and `ON CONFLICT` fails to parse at all
+  // ("near \"DO\": syntax error") — any clause disambiguates it, and an ORDER BY also makes
+  // the copy's own insertion order deterministic.
+  if (!selectState.get(REVIEW_DRAFTS_COPY_KEY)) {
+    db.transaction(() => {
+      const result = db
+        .prepare(
+          `INSERT INTO review_drafts
+             (id, subjectId, diffId, path, oldPath, side, line, startSide, startLine, body,
+              excerpt, createdAt, updatedAt, sentAt)
+           SELECT id, 'task:' || taskId, diffId, path, oldPath, side, line, startSide,
+                  startLine, body, excerpt, createdAt, updatedAt, sentAt
+           FROM review_comments
+           ORDER BY id
+           ON CONFLICT DO NOTHING`,
+        )
+        .run();
+      upsertState.run(REVIEW_DRAFTS_COPY_KEY, JSON.stringify({ comments: result.changes }));
     })();
   }
   // ---------------------------------------------------------------------------
@@ -4184,6 +4285,13 @@ export function createStore(dbPath: string): Store {
       clearEpicOnTasks.run(childId);
       deleteActivityForTask.run(childId);
       deleteEventsForTask.run(childId);
+      // review_drafts/review_viewed/review_queue carry no foreign key (see review_drafts'
+      // own comment), so a card's review state no longer dies with it for free — this also
+      // covers `pruneArchivedBefore`, which comes through here too.
+      const subjectId = taskSubjectId(childId);
+      deleteDraftsForSubject.run(subjectId);
+      deleteViewedForSubject.run(subjectId);
+      deleteQueueForSubject.run(subjectId);
       deleteTask.run(childId);
     }
   });
@@ -4788,7 +4896,19 @@ export function createStore(dbPath: string): Store {
     },
 
     removeProject(id) {
-      deleteProject.run(id);
+      // Projects cascade to their tasks (tasks.projectId ON DELETE CASCADE), but review
+      // state no longer rides that cascade (see review_drafts' own comment) — so every
+      // task's subject has to be cleared explicitly, in the same transaction, before the
+      // project (and with it, the tasks) actually goes.
+      db.transaction(() => {
+        for (const task of getTasks(id)) {
+          const subjectId = taskSubjectId(task.id);
+          deleteDraftsForSubject.run(subjectId);
+          deleteViewedForSubject.run(subjectId);
+          deleteQueueForSubject.run(subjectId);
+        }
+        deleteProject.run(id);
+      })();
     },
 
     setWriteBack(id, enabled) {
@@ -5297,15 +5417,21 @@ export function createStore(dbPath: string): Store {
       // and no way to get them back. Their ids are preserved along with them, so a
       // `vipper-attachment://a/<id>` an open pane is already showing stays valid.
       //
-      // Review comments are preserved the same way — a draft (or sent) comment belongs to
-      // the task it was left on, not to the plan round that produced the task, so a plan
-      // re-sync must not silently empty out a review in progress.
+      // Review state (review_drafts/review_viewed/review_queue) is preserved differently
+      // from links/attachments above: it carries no foreign key any more (see review_drafts'
+      // own comment), so it is never actually touched by `deleteTasks` below, and there is
+      // nothing to re-insert. What has to happen instead is the explicit delete that
+      // `ON DELETE CASCADE` used to do for free — a dropped task's subject must still lose
+      // its drafts, viewed marks and queue rows, exactly as before. So this captures the
+      // project's OLD task ids up front, and once the new set is known, clears the subjects
+      // of whichever old ids did not survive into `desired`. A surviving task (same id,
+      // kept by the reconciler) is untouched either way, draft and all.
       const replace = db.transaction((tasks: Task[]) => {
+        const oldTaskIds = getTasks(projectId).map((t) => t.id);
         const links = (selectTaskLinksForProject.all(projectId, projectId) as TaskLinkRow[]).map(
           rowToTaskLink,
         );
         const attachments = selectAttachmentsForProject.all(projectId) as TaskAttachment[];
-        const reviewComments = selectReviewCommentsForProject.all(projectId) as ReviewCommentRow[];
         deleteTasks.run(projectId);
         for (const t of tasks) insertTask.run(taskToRow(t));
         for (const link of links) {
@@ -5316,9 +5442,13 @@ export function createStore(dbPath: string): Store {
           if (!selectTask.get(attachment.taskId)) continue;
           insertAttachment.run(attachment);
         }
-        for (const row of reviewComments) {
-          if (!selectTask.get(row.taskId)) continue;
-          insertReviewComment.run(row);
+        const desiredIds = new Set(tasks.map((t) => t.id));
+        for (const oldId of oldTaskIds) {
+          if (desiredIds.has(oldId)) continue;
+          const subjectId = taskSubjectId(oldId);
+          deleteDraftsForSubject.run(subjectId);
+          deleteViewedForSubject.run(subjectId);
+          deleteQueueForSubject.run(subjectId);
         }
       });
       replace(desired);
@@ -5848,12 +5978,17 @@ export function createStore(dbPath: string): Store {
     },
 
     listReviewComments(taskId) {
-      return (selectReviewCommentsForTask.all(taskId) as ReviewCommentRow[]).map(
+      return (selectReviewCommentsForTask.all(taskSubjectId(taskId)) as ReviewCommentRow[]).map(
         rowToReviewComment,
       );
     },
 
     addReviewComment(input) {
+      // review_drafts carries no foreign key (see its own comment), so the check the FK
+      // used to do for free — refusing an unknown task — has to happen here now. The caller
+      // still gets "no comment" rather than an exception, the same contract `addAttachment`
+      // keeps, and `reviewService.add`'s "that card is no longer in the app" rests on it.
+      if (!selectTask.get(input.taskId)) return undefined;
       const now = Date.now();
       const comment: ReviewComment = {
         ...input,
@@ -5862,13 +5997,7 @@ export function createStore(dbPath: string): Store {
         updatedAt: now,
         sentAt: null,
       };
-      // The foreign key rejects an unknown task; the caller gets "no comment" rather than
-      // an exception, the same contract `addAttachment` keeps.
-      try {
-        if (insertReviewComment.run(reviewCommentToRow(comment)).changes === 0) return undefined;
-      } catch {
-        return undefined;
-      }
+      if (insertReviewComment.run(reviewCommentToRow(comment)).changes === 0) return undefined;
       return comment;
     },
 
@@ -5896,10 +6025,11 @@ export function createStore(dbPath: string): Store {
     },
 
     markReviewSent(taskId, ids, at) {
+      const subjectId = taskSubjectId(taskId);
       const stamped: ReviewComment[] = [];
       const tx = db.transaction(() => {
         for (const id of ids) {
-          if (markReviewSentStmt.run({ id, taskId, sentAt: at }).changes > 0) {
+          if (markReviewSentStmt.run({ id, subjectId, sentAt: at }).changes > 0) {
             stamped.push(rowToReviewComment(selectReviewComment.get(id) as ReviewCommentRow));
           }
         }

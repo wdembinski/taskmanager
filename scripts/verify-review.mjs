@@ -1,8 +1,9 @@
 /**
  * Headless end-to-end proof of F6 (`docs/plan/feature-roadmap/F6-in-app-code-review.md`): a
  * real temp git repository's diff, read through the real `DiffService` (F6.6), commented on
- * through the real `ReviewService` (F6.8) backed by a real SQLite `review_comments` table
- * (F6.7), sent as one batched follow-up (F6.9) through a REAL spawned Claude session — a stub
+ * through the real `ReviewService` (F6.8) backed by a real SQLite `review_drafts` table
+ * (F6.7, widened to any review subject by F15.4), sent as one batched follow-up (F6.9)
+ * through a REAL spawned Claude session — a stub
  * `claude` on PATH (memory `stub-claude-on-path`), driven by the real `SessionManager` /
  * `claudeSession.ts` NDJSON pipe, exactly as `review:send` hands a human's drafts to
  * `chatWithAgent`'s live-run path.
@@ -13,7 +14,7 @@
  *
  * `reviewService.test.ts` drives `ReviewService` against fakes for both `store` and `diffs`,
  * and `diffService.test.ts` drives `DiffService` against a fake `DiffGit` — neither proves
- * the two wired together against a REAL git repository and a REAL `review_comments` table.
+ * the two wired together against a REAL git repository and a REAL `review_drafts` table.
  * `better-sqlite3`'s addon is compiled for Electron's ABI, so nothing that calls `createStore`
  * can run under the Node that runs vitest (memory *the-store-has-no-tests*) — this script is
  * the only thing that exercises the store's half of this chain at all. And no existing test
@@ -31,7 +32,7 @@
  *    `task:diffSummary`/`task:diffFile` methods the IPC handlers call.
  * 2. `ReviewService.add` anchors a single-line comment and a range comment against that diff,
  *    each excerpt pulled from the real parsed hunks (`excerptFor`, F6.4), persisted through the
- *    real `review_comments` table under the Electron-as-Node ABI hop.
+ *    real `review_drafts` table under the Electron-as-Node ABI hop.
  * 3. After the second feature commit rewrites the single-line comment's anchored text,
  *    `ReviewService.list` recomputes `outdated: true` for it (`markOutdated`, F6.4) and leaves
  *    the untouched range comment `outdated: false` — and `ReviewService.update` REFUSES to
@@ -162,8 +163,14 @@ if (!process.versions.electron) {
   bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'), [
     'better-sqlite3',
   ]);
-  bundle(join(root, 'apps/client/src/main/review/diffService.ts'), join(scratch, 'diffService.cjs'));
-  bundle(join(root, 'apps/client/src/main/review/reviewService.ts'), join(scratch, 'reviewService.cjs'));
+  bundle(
+    join(root, 'apps/client/src/main/review/diffService.ts'),
+    join(scratch, 'diffService.cjs'),
+  );
+  bundle(
+    join(root, 'apps/client/src/main/review/reviewService.ts'),
+    join(scratch, 'reviewService.cjs'),
+  );
   bundle(join(root, 'apps/client/src/main/exec/index.ts'), join(scratch, 'exec.cjs'));
   // `sessionManager.ts` pulls in `claudeSession.ts` (the real spawn + NDJSON parser),
   // `exec/index.ts`, `eventNoise.ts`, `headlessContract.ts` and `permissionServerSource.ts` —
@@ -187,10 +194,10 @@ if (!process.versions.electron) {
       "const readline = require('readline');",
       `const LOG_PATH = ${JSON.stringify(logPath)};`,
       'const args = process.argv.slice(2);',
-      "const at = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };",
+      'const at = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };',
       "const sessionId = at('--session-id') ?? at('--resume') ?? 'stub-session';",
       "const model = at('--model') ?? 'stub';",
-      "process.stdout.write(JSON.stringify({",
+      'process.stdout.write(JSON.stringify({',
       "  type: 'system', subtype: 'init', session_id: sessionId, model,",
       "  cwd: process.cwd(), permissionMode: 'acceptEdits',",
       "}) + '\\n');",
@@ -202,12 +209,12 @@ if (!process.versions.electron) {
       "  fs.appendFileSync(LOG_PATH, JSON.stringify({ text }) + '\\n');",
       '});',
       'setTimeout(() => {',
-      "  process.stdout.write(JSON.stringify({",
+      '  process.stdout.write(JSON.stringify({',
       "    type: 'result', subtype: 'success', is_error: false,",
       "    result: 'stub run complete', total_cost_usd: 0,",
       "  }) + '\\n');",
       '}, 300);',
-      "// Stay alive — a managed session (stdin kept open) never self-exits after a result;",
+      '// Stay alive — a managed session (stdin kept open) never self-exits after a result;',
       '// the caller terminates the process tree once it has what it needs.',
       'process.stdin.resume();',
       '',
@@ -311,10 +318,7 @@ async function main() {
     'includesWorkingTree is true (util.ts has an uncommitted edit)',
     firstSummary.summary.includesWorkingTree === true,
   );
-  check(
-    'the summary lists all three changed files',
-    firstSummary.summary.files.length === 3,
-  );
+  check('the summary lists all three changed files', firstSummary.summary.files.length === 3);
   const oldDiffId = firstSummary.summary.diffId;
 
   // ── Check 2: direct file reads through the diffService (task:diffFile) ──────────────
@@ -330,7 +334,10 @@ async function main() {
   check("app.ts's added 'bye' line was found", byeLine !== undefined);
 
   const newLines = linesOf(newFile.file);
-  check('new.ts has exactly two added lines', newLines.length === 2 && newLines.every((l) => l.kind === 'add'));
+  check(
+    'new.ts has exactly two added lines',
+    newLines.length === 2 && newLines.every((l) => l.kind === 'add'),
+  );
 
   // ── Check 3: ReviewService.add anchors a single-line and a range comment ────────────
   const reviewsDeps = {
@@ -342,7 +349,10 @@ async function main() {
       deleteReviewComment: (id) => store.deleteReviewComment(id),
       markReviewSent: (id, ids, at) => store.markReviewSent(id, ids, at),
     },
-    diffs: { filesFor: (id, paths) => diffs.filesFor(id, paths), summary: (id) => diffs.summary(id) },
+    diffs: {
+      filesFor: (id, paths) => diffs.filesFor(id, paths),
+      summary: (id) => diffs.summary(id),
+    },
     chat: undefined, // wired once the live session exists (check 5)
   };
   const reviews = new ReviewService(reviewsDeps);
@@ -373,8 +383,7 @@ async function main() {
   check('the range comment was added', rangeAdd.status === 'ok');
   check(
     'its excerpt spans both lines of new.ts',
-    rangeAdd.status === 'ok' &&
-      rangeAdd.comment.excerpt === newLines.map((l) => l.text).join('\n'),
+    rangeAdd.status === 'ok' && rangeAdd.comment.excerpt === newLines.map((l) => l.text).join('\n'),
   );
 
   const freshList = await reviews.list(task.id);
@@ -409,10 +418,7 @@ async function main() {
     "the single-line comment ('bye' got rewritten) is now outdated",
     singleAfter?.outdated === true,
   );
-  check(
-    'the untouched range comment is still not outdated',
-    rangeAfter?.outdated !== true,
-  );
+  check('the untouched range comment is still not outdated', rangeAfter?.outdated !== true);
 
   const staleMove = await reviews.update(task.id, rangeAdd.comment.id, {
     anchor: {
@@ -424,7 +430,9 @@ async function main() {
   });
   check(
     "moving the range comment's anchor against the now-stale diffId is refused",
-    staleMove.status === 'stale' && staleMove.diffId === oldDiffId && staleMove.currentDiffId === newDiffId,
+    staleMove.status === 'stale' &&
+      staleMove.diffId === oldDiffId &&
+      staleMove.currentDiffId === newDiffId,
   );
 
   // ── Check 5: send() delivers into a REAL, already-live session ──────────────────────
@@ -434,7 +442,12 @@ async function main() {
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('stub CLI never started')), 15_000);
     ({ runId } = sessionManager.start(
-      { prompt: 'Begin work on the ticket.', cwd: workRepo, model: 'sonnet', permissionMode: 'acceptEdits' },
+      {
+        prompt: 'Begin work on the ticket.',
+        cwd: workRepo,
+        model: 'sonnet',
+        permissionMode: 'acceptEdits',
+      },
       {
         onEvent: (event) => {
           if (event.kind === 'started') {
@@ -447,9 +460,15 @@ async function main() {
       },
     ));
   });
-  check('a real session really started', typeof startedSessionId === 'string' && startedSessionId.length > 0);
+  check(
+    'a real session really started',
+    typeof startedSessionId === 'string' && startedSessionId.length > 0,
+  );
   await waitFor(() => readLoggedMessages().length >= 1);
-  check('the stub logged the initial prompt', readLoggedMessages()[0] === 'Begin work on the ticket.');
+  check(
+    'the stub logged the initial prompt',
+    readLoggedMessages()[0] === 'Begin work on the ticket.',
+  );
 
   reviewsDeps.chat = (taskId, message) => {
     sessionManager.send(runId, message);
@@ -482,7 +501,10 @@ async function main() {
 
   // ── Check 6: a second send() is refused, and an unknown task too ────────────────────
   const secondSend = await reviews.send(task.id, 'ignored — nothing left to send');
-  check('a second send() is refused nothing-to-send', secondSend.status === 'refused' && secondSend.reason === 'nothing-to-send');
+  check(
+    'a second send() is refused nothing-to-send',
+    secondSend.status === 'refused' && secondSend.reason === 'nothing-to-send',
+  );
   await new Promise((resolve) => setTimeout(resolve, 200));
   check('the double send delivered no further message', readLoggedMessages().length === 2);
 
