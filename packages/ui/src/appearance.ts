@@ -3,6 +3,7 @@
  * scheme and glass mode a window should actually paint — the one place that decision is
  * made, so the desktop and the web shell can never disagree about what `'system'` means.
  */
+import type { NativeMaterial } from '@tm/shared/canvas';
 import type { AppSettings, AppearanceSetting, TransparencySetting } from '@tm/shared/settings';
 import type { ColorScheme } from './tokens';
 
@@ -34,7 +35,7 @@ export interface AppearanceEnv {
   prefersReducedTransparency: boolean;
   backdropFilterSupported: boolean;
   /** Desktop only; null/absent = no OS material took effect (web, Win10, Linux). */
-  nativeMaterial?: 'mica' | 'acrylic' | null;
+  nativeMaterial?: NativeMaterial | null;
 }
 
 export type GlassMode = 'native' | 'css' | 'opaque';
