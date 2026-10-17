@@ -80,14 +80,44 @@ const NON_WORK_HEADINGS = new Set([
   'references',
 ]);
 
-/** True when a heading names framing rather than work. Case/punctuation tolerant. */
+/**
+ * Framing headings that come with a tail — "Facts checked", "Decisions taken without
+ * asking", "Research findings the new steps rely on". Matched as a whole leading phrase
+ * (`facts` matches "Facts already checked", never "Fact-check the glossary"). Only phrases
+ * no work step plausibly opens with: `context` and `background` stay exact-match above,
+ * because "Background sync worker" is work.
+ */
+const NON_WORK_PREFIXES = [
+  'facts',
+  'decisions',
+  'critical files',
+  'key files',
+  'relevant files',
+  'research findings',
+  'findings',
+  'out of scope',
+  'open questions',
+  'non-goals',
+];
+
+/**
+ * True when a heading names framing rather than work. Case/punctuation tolerant, and blind
+ * to a parenthetical and an ordinal prefix: the exact-match list alone let "Out of scope
+ * (other F15 steps)" and "Step 8 (renumbered…) — Out of scope" through as steps, each of
+ * which then ran a session with nothing to build.
+ */
 function isNonWorkHeading(title: string): boolean {
   const key = title
-    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
     .replace(/[*_`#]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(ORDINAL_PREFIX, '')
+    .toLowerCase()
     .replace(/[.:;,!?]+$/, '')
     .trim();
-  return NON_WORK_HEADINGS.has(key);
+  if (NON_WORK_HEADINGS.has(key)) return true;
+  return NON_WORK_PREFIXES.some((prefix) => key === prefix || key.startsWith(`${prefix} `));
 }
 
 /**
