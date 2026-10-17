@@ -38,7 +38,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Caption1, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
 import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
-import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
+import { hiddenBoardColumns, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ColumnSwitcher } from '@tm/ui/board/ColumnSwitcher';
 import { columnSwitcherItems } from '@tm/ui/board/compactColumns';
@@ -53,7 +53,6 @@ import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
 import { linkView, nextLinkMode, type LinkMode } from '@tm/ui/board/linkMode';
 import { linkChips } from '@tm/ui/board/linkChips';
 import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
-import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/board/shelvedCards';
 import { chainStates } from '@tm/ui/board/chainStates';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
@@ -303,7 +302,6 @@ export function BoardScreen({
     }
     return list;
   }, [state.projects, projects]);
-  const boardsById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
   /** The scope Dropdown's closed-state label. */
   const scopeLabel = useMemo(
     () =>
@@ -311,43 +309,8 @@ export function BoardScreen({
     [scope, scopes],
   );
 
-  /**
-   * What the cards actually draw: `display`, with the project name forced on while the board
-   * mixes projects together — `MyTasks.tsx`'s own `boardDisplay`. A single-board scope already
-   * says which project every card is on (the scope picker itself), so the saved preference is
-   * left alone there.
-   */
-  const boardDisplay = useMemo(
-    () => (scope === 'all' ? { ...display, showProjectName: true } : display),
-    [display, scope],
-  );
-
-  /**
-   * The card's optional lines, read the desktop's way: `projectNameOf` is, on a single-board
-   * scope, the tracker's own container for the card (`phase` — JIRA's project name, or
-   * GitHub's `owner/repo`) — every card on that board is in the same project, so the local
-   * one would say the same word on all of them. On the All scope a mixed board needs to say
-   * which BOARD a card is on before it needs to say which tracker phase it's in, so that wins
-   * where the two would both have something to say. The stripe is the repo the card is
-   * tagged with (`projectTagId`), with the card's own board project as a fallback on the All
-   * scope — a card added straight onto a project's board carries no tag at all.
-   */
-  const projectNameOf = (task: Task): string | undefined => {
-    if (scope === 'all') {
-      const board = boardsById.get(task.projectId);
-      if (board && board.id !== PERSONAL_PROJECT_ID) return board.name;
-    }
-    return task.externalSource ? task.phase || undefined : undefined;
-  };
   const agentNameOf = (task: Task): string | undefined =>
     agentProjects.find((p) => p.id === task.agentProjectId)?.name;
-  const projectColorOf = (task: Task): string | undefined => {
-    const tagColor = agentProjects.find((p) => p.id === task.projectTagId)?.color;
-    if (tagColor) return tagColor;
-    if (scope !== 'all') return undefined;
-    const board = boardsById.get(task.projectId);
-    return board && board.id !== PERSONAL_PROJECT_ID ? board.color || undefined : undefined;
-  };
 
   /** The desktop's own card set for this scope, un-archived. See `boardSelectors.ts`. */
   const boardTasks = useMemo(() => selectBoardTasks(state, scope), [state, scope]);
@@ -611,61 +574,7 @@ export function BoardScreen({
     setError(e instanceof Error ? e.message : String(e));
   }, []);
 
-  const foldedSteps = useMemo(() => foldedCardSet(settings.foldedStepCards), [settings]);
-  const shownEarlierSteps = useMemo(
-    () => foldedCardSet(settings.shownEarlierStepCards),
-    [settings],
-  );
-  const shownLaterSteps = useMemo(() => foldedCardSet(settings.shownLaterStepCards), [settings]);
   const onBoardIds = useMemo(() => new Set(boardTasks.map((t) => t.id)), [boardTasks]);
-
-  const toggleSteps = useCallback(
-    (taskId: string) => {
-      void saveSettings({
-        ...settings,
-        foldedStepCards: toggleFoldedCard(settings.foldedStepCards, taskId, onBoardIds),
-      }).catch(reportError);
-    },
-    [settings, saveSettings, onBoardIds, reportError],
-  );
-  const toggleEarlierSteps = useCallback(
-    (taskId: string) => {
-      void saveSettings({
-        ...settings,
-        shownEarlierStepCards: toggleFoldedCard(settings.shownEarlierStepCards, taskId, onBoardIds),
-      }).catch(reportError);
-    },
-    [settings, saveSettings, onBoardIds, reportError],
-  );
-  const toggleLaterSteps = useCallback(
-    (taskId: string) => {
-      void saveSettings({
-        ...settings,
-        shownLaterStepCards: toggleFoldedCard(settings.shownLaterStepCards, taskId, onBoardIds),
-      }).catch(reportError);
-    },
-    [settings, saveSettings, onBoardIds, reportError],
-  );
-
-  /**
-   * Auto-fold a card's Steps section the moment it lands in Review or Done — the desktop's
-   * own `foldOnAutoFoldColumn` (`MyTasks.tsx`), behind the same `settings.features` switch so
-   * the two apps agree on whether it is on. `ensureFoldedCard` only ever ADDS the fold, so a
-   * card the human reopened after the move stays open rather than being flipped shut again.
-   *
-   * Called from the two places a human can move a card here: the drag drop below and the
-   * pane's State dropdown (`onStatusSet`) — each firing once per explicit move.
-   */
-  const foldOnAutoFoldColumn = useCallback(
-    (taskId: string, column: BoardColumn | ManualStatus) => {
-      if (!shouldAutoFoldOnMove(settings.features, column)) return;
-      void saveSettings({
-        ...settings,
-        foldedStepCards: ensureFoldedCard(settings.foldedStepCards, taskId, onBoardIds),
-      }).catch(reportError);
-    },
-    [settings, saveSettings, onBoardIds, reportError],
-  );
 
   /**
    * Move a card onto the shelf, or back off it — the desktop's own `toggleShelved`, over
@@ -736,12 +645,11 @@ export function BoardScreen({
         return;
       }
       onMoveTask(taskId, dropColumn);
-      foldOnAutoFoldColumn(taskId, dropColumn);
       // The drag that returns a shelved card to a column is the toggle's other click — see
       // `MyTasks.tsx`'s own `onDropInColumn`.
       if (shelvedIds.has(taskId)) toggleShelved(taskId);
     },
-    [hiddenColumns, pendingTaskIds, onMoveTask, foldOnAutoFoldColumn, shelvedIds, toggleShelved],
+    [hiddenColumns, pendingTaskIds, onMoveTask, shelvedIds, toggleShelved],
   );
 
   /**
@@ -789,7 +697,6 @@ export function BoardScreen({
     // back is the transport's stub (`{ id, status }`), never a row worth merging into
     // `state.tasks`; the next poll brings the real one.
     onStatusChanged: handleStatusChanged,
-    onStatusSet: foldOnAutoFoldColumn,
     onSubtasksChanged: extras.refresh,
   };
 
@@ -827,10 +734,6 @@ export function BoardScreen({
                 hiddenColumns: withColumnHidden(hiddenColumns, 'done', !next),
               },
             }).catch(reportError)
-          }
-          display={display}
-          onDisplayChange={(next) =>
-            void saveSettings({ ...settings, board: next }).catch(reportError)
           }
           showDetail={showDetail}
           onShowDetailChange={(next) =>
@@ -910,25 +813,14 @@ export function BoardScreen({
               label={COLUMN_LABEL[compact.column]}
               cards={cardsByColumn.get(compact.column) ?? []}
               layout="compact"
-              projectNameOf={projectNameOf}
               epicNameOf={epicNameOf}
               assigneeOf={assigneeOf}
               agentNameOf={agentNameOf}
-              projectColorOf={projectColorOf}
-              display={boardDisplay}
-              showSprint={!settings.jira.currentSprintOnly}
-              statusKeywords={settings.statusKeywords}
               attentionTaskIds={extras.attention.taskIds}
               liveRunTaskIds={extras.liveRunTaskIds}
               runPurposes={extras.runPurposes}
               runStartedAt={extras.runStartedAt}
               mergingTaskIds={extras.mergingTaskIds}
-              foldedStepTaskIds={foldedSteps}
-              onToggleSteps={toggleSteps}
-              shownEarlierStepTaskIds={shownEarlierSteps}
-              onToggleEarlierSteps={toggleEarlierSteps}
-              shownLaterStepTaskIds={shownLaterSteps}
-              onToggleLaterSteps={toggleLaterSteps}
               chainStateOf={(t) => chainState.get(t.id)}
               chainPositionOf={(t) => chainPosition(extras.chainLinks, t.id) ?? undefined}
               selectedTaskId={selectedTaskId}
@@ -937,9 +829,6 @@ export function BoardScreen({
               onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
               onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
               onMoveTask={setMoveSheetTaskId}
-              afterMergePipeline={settings.features.afterMergePipeline}
-              mrRebaseButton={settings.features.mrRebaseButton}
-              mrMergeButton={settings.features.mrMergeButton}
               onSelectTask={(id) => compact.onOpenCard(id)}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
@@ -957,27 +846,14 @@ export function BoardScreen({
                 column={column}
                 label={COLUMN_LABEL[column]}
                 cards={cardsByColumn.get(column) ?? []}
-                projectNameOf={projectNameOf}
                 epicNameOf={epicNameOf}
                 assigneeOf={assigneeOf}
                 agentNameOf={agentNameOf}
-                projectColorOf={projectColorOf}
-                display={boardDisplay}
-                // With the sprint filter on, every card carries the same chip — the desktop
-                // hides it for exactly that reason, and now so does this.
-                showSprint={!settings.jira.currentSprintOnly}
-                statusKeywords={settings.statusKeywords}
                 attentionTaskIds={extras.attention.taskIds}
                 liveRunTaskIds={extras.liveRunTaskIds}
                 runPurposes={extras.runPurposes}
                 runStartedAt={extras.runStartedAt}
                 mergingTaskIds={extras.mergingTaskIds}
-                foldedStepTaskIds={foldedSteps}
-                onToggleSteps={toggleSteps}
-                shownEarlierStepTaskIds={shownEarlierSteps}
-                onToggleEarlierSteps={toggleEarlierSteps}
-                shownLaterStepTaskIds={shownLaterSteps}
-                onToggleLaterSteps={toggleLaterSteps}
                 anchorRef={anchors.anchorRef}
                 linksDrawn={linksDrawn}
                 dimmedTaskIds={linkState.dimmedTaskIds}
@@ -1022,9 +898,6 @@ export function BoardScreen({
                 // now this app was the only host that did not pass it.
                 onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
                 onToggleShelved={settings.features.shelf ? toggleShelved : undefined}
-                afterMergePipeline={settings.features.afterMergePipeline}
-                mrRebaseButton={settings.features.mrRebaseButton}
-                mrMergeButton={settings.features.mrMergeButton}
                 onSelectTask={selectTask}
                 onDragStartTask={setDraggingId}
                 onDragEndTask={() => setDraggingId(null)}
@@ -1074,19 +947,14 @@ export function BoardScreen({
             cards={shelvedCards}
             folded={settings.shelfFolded}
             onToggleFolded={toggleShelfFolded}
-            projectNameOf={projectNameOf}
             epicNameOf={epicNameOf}
             assigneeOf={assigneeOf}
             agentNameOf={agentNameOf}
-            projectColorOf={projectColorOf}
-            showSprint={!settings.jira.currentSprintOnly}
-            statusKeywords={settings.statusKeywords}
             attentionTaskIds={extras.attention.taskIds}
             liveRunTaskIds={extras.liveRunTaskIds}
             runPurposes={extras.runPurposes}
             runStartedAt={extras.runStartedAt}
             mergingTaskIds={extras.mergingTaskIds}
-            display={boardDisplay}
             selectedTaskId={selectedTaskId}
             draggingId={draggingId}
             onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
@@ -1097,9 +965,6 @@ export function BoardScreen({
             onToggleShelved={toggleShelved}
             onMoveTask={compact ? setMoveSheetTaskId : undefined}
             onDropOnShelf={dropOnShelf}
-            afterMergePipeline={settings.features.afterMergePipeline}
-            mrRebaseButton={settings.features.mrRebaseButton}
-            mrMergeButton={settings.features.mrMergeButton}
           />
         )}
         {compact && (

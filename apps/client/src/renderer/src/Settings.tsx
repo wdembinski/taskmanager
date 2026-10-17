@@ -1128,35 +1128,6 @@ export function Settings({
             </Field>
 
             <Field
-              label="On each card"
-              hint="The same switches live in the board's Display menu, where you notice the noise."
-            >
-              <div className={styles.switchRow}>
-                <Switch
-                  checked={settings.board.showLabels}
-                  label="JIRA labels"
-                  onChange={(_e, d) =>
-                    patch({ board: { ...settings.board, showLabels: d.checked } })
-                  }
-                />
-                <Switch
-                  checked={settings.board.showProjectName}
-                  label="Project name"
-                  onChange={(_e, d) =>
-                    patch({ board: { ...settings.board, showProjectName: d.checked } })
-                  }
-                />
-                <Switch
-                  checked={settings.board.showEpicName}
-                  label="Epic"
-                  onChange={(_e, d) =>
-                    patch({ board: { ...settings.board, showEpicName: d.checked } })
-                  }
-                />
-              </div>
-            </Field>
-
-            <Field
               label="Auto-sync interval (minutes)"
               hint="How often every connected tracker is refreshed in the background — JIRA, GitLab and anything added later share one timer. 0 = off; the Sync button always works. The status bar's ring counts down to the next one."
             >
@@ -1176,8 +1147,8 @@ export function Settings({
             </Field>
 
             <Field
-              label="Priority on a card"
-              hint="A board already spends colour on step dots, pipeline dots and the running band. This is the one place that colour is optional — the sort order honours priority either way."
+              label="Priority in the ticket drawer"
+              hint="The board card itself spends no colour on priority; this is the detail pane and peek's own indicator. The sort order honours priority either way."
             >
               <Dropdown
                 value={PRIORITY_DISPLAY_LABELS[settings.board.priorityDisplay]}

@@ -19,8 +19,8 @@
  * the reason this repo's own rule gives: the desktop's is inline in a 1200-line screen with
  * a dozen closures over its state, and lifting it would be a refactor of `MyTasks` rather
  * than a reuse. What IS shared is everything with a rule in it: the layout (`boardLayout`),
- * the Done switch's words (`doneSwitchLabel`), the Display menu, the Removed-cards dialog and
- * the commit-graph pane the button here opens.
+ * the Done switch's words (`doneSwitchLabel`), the Removed-cards dialog and the commit-graph
+ * pane the button here opens.
  */
 import type { ReactNode } from 'react';
 import {
@@ -40,7 +40,6 @@ import {
   PanelRightExpandRegular,
 } from '@fluentui/react-icons';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
-import { BoardDisplayMenu } from '@tm/ui/board/BoardDisplayMenu';
 import { LinkModeSwitch } from '@tm/ui/board/LinkModeSwitch';
 import type { LinkMode } from '@tm/ui/board/linkMode';
 import { archivedCountLabel, archivedCountTitle } from '@tm/ui/board/ArchivedCardsDialog';
@@ -49,7 +48,6 @@ import {
   doneSwitchTitle,
   type HiddenDoneSummary,
 } from '@tm/ui/board/doneSwitchLabel';
-import type { BoardDisplaySettings } from '@tm/shared/settings';
 import type { BoardScope } from '@tm/shared/ipc';
 import { pickableProjects } from '@tm/shared/trackerArchive';
 
@@ -67,8 +65,6 @@ export interface BoardToolbarProps {
   /** What the DONE column is holding while it is shut — see `hiddenDoneSummary`. */
   hiddenDone: HiddenDoneSummary;
   onShowDoneChange: (value: boolean) => void;
-  display: BoardDisplaySettings;
-  onDisplayChange: (value: BoardDisplaySettings) => void;
   showDetail: boolean;
   onShowDetailChange: (value: boolean) => void;
   /** The commit-graph pane. Off by default — it costs a `git log` on the desktop's machine. */
@@ -103,8 +99,6 @@ export function BoardToolbar({
   showDone,
   hiddenDone,
   onShowDoneChange,
-  display,
-  onDisplayChange,
   showDetail,
   onShowDetailChange,
   showGraph,
@@ -185,7 +179,6 @@ export function BoardToolbar({
           filters which cards are on the board, this one changes how the links between
           whatever cards ARE there look. `L` cycles it (`BoardScreen`'s own shortcut). */}
       <LinkModeSwitch mode={boardLinks} onChange={onBoardLinksChange} />
-      <BoardDisplayMenu display={display} onChange={onDisplayChange} />
       {/* Sync the tracker now. It is the DESKTOP that talks to JIRA — this relays the same
           `jira:sync` its own button calls — so the cards it changes arrive here on the next
           board poll rather than when this settles. */}

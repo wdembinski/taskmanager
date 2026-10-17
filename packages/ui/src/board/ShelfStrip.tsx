@@ -14,8 +14,6 @@ import { useState } from 'react';
 import { Caption1, Text, makeStyles, mergeClasses } from '@fluentui/react-components';
 import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
 import type { Person, Task } from '@tm/shared/model';
-import type { StatusKeyword } from '@tm/shared/statusKeywords';
-import type { BoardDisplaySettings } from '@tm/shared/settings';
 import type { RunPurpose } from '@tm/shared/scheduler';
 import { TaskCard } from './TaskCard';
 import type { BoardCard } from './boardColumns';
@@ -32,13 +30,9 @@ export interface ShelfStripProps {
   /** Whether the strip is collapsed to its header — `settings.shelfFolded`. */
   folded: boolean;
   onToggleFolded: () => void;
-  projectNameOf: (task: Task) => string | undefined;
   agentNameOf: (task: Task) => string | undefined;
-  projectColorOf: (task: Task) => string | undefined;
   epicNameOf?: (task: Task) => string | undefined;
   assigneeOf?: (task: Task) => Pick<Person, 'name' | 'initials' | 'color'> | undefined;
-  showSprint?: boolean;
-  statusKeywords?: readonly StatusKeyword[];
   attentionTaskIds?: ReadonlySet<string>;
   liveRunTaskIds?: ReadonlySet<string>;
   runPurposes?: ReadonlyMap<string, RunPurpose>;
@@ -46,7 +40,6 @@ export interface ShelfStripProps {
    *  it has been running — see `ActiveRun.startedAt`. */
   runStartedAt?: ReadonlyMap<string, number>;
   mergingTaskIds?: ReadonlySet<string>;
-  display?: BoardDisplaySettings;
   selectedTaskId: string | null;
   draggingId: string | null;
   onStopTask?: (id: string) => void;
@@ -64,12 +57,6 @@ export interface ShelfStripProps {
   onMoveTask?: (id: string) => void;
   /** A card dropped onto the strip — always shelves it, whichever column it came from. */
   onDropOnShelf: (id: string) => void;
-  /** `settings.features.afterMergePipeline` — passed straight through to each `TaskCard`. */
-  afterMergePipeline?: boolean;
-  /** `settings.features.mrRebaseButton` — passed straight through to each `TaskCard`. */
-  mrRebaseButton?: boolean;
-  /** `settings.features.mrMergeButton` — passed straight through to each `TaskCard`. */
-  mrMergeButton?: boolean;
 }
 
 export function ShelfStrip(props: ShelfStripProps): JSX.Element {
@@ -123,36 +110,26 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
               <div key={task.id} className={layout.shelfCard}>
                 <TaskCard
                   task={task}
-                  projectName={props.projectNameOf(task)}
                   epicName={props.epicNameOf?.(task)}
                   assignee={props.assigneeOf?.(task)}
                   agentName={props.agentNameOf(task)}
-                  projectColor={props.projectColorOf(task)}
-                  showSprint={props.showSprint}
                   subtasks={subtasks}
                   mergeRequests={mergeRequests}
                   variants={variants}
-                  statusKeywords={props.statusKeywords}
                   attentionTaskIds={props.attentionTaskIds}
                   liveRunTaskIds={props.liveRunTaskIds}
                   runPurposes={props.runPurposes}
                   runStartedAt={props.runStartedAt}
                   mergingTaskIds={props.mergingTaskIds}
-                  display={props.display}
                   selected={task.id === props.selectedTaskId}
-                  selectedTaskId={props.selectedTaskId}
                   shelved
                   onToggleShelved={() => props.onToggleShelved(task.id)}
                   onMoveTo={props.onMoveTask && (() => props.onMoveTask?.(task.id))}
-                  afterMergePipeline={props.afterMergePipeline}
-                  mrRebaseButton={props.mrRebaseButton}
-                  mrMergeButton={props.mrMergeButton}
                   onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
                   onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
                   draggable
                   dragging={task.id === props.draggingId}
                   onSelect={() => props.onSelectTask(task.id)}
-                  onSelectSubtask={props.onSelectTask}
                   onDragStart={(e) => {
                     e.dataTransfer.setData('text/plain', task.id);
                     e.dataTransfer.effectAllowed = 'move';

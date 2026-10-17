@@ -516,29 +516,12 @@ export const DEFAULT_CLOUD_SETTINGS: CloudSettings = {
 export type PriorityDisplay = 'color' | 'mono' | 'off';
 
 export interface BoardDisplaySettings {
-  /** Every JIRA label on the issue, as chips. */
-  showLabels: boolean;
-  /** The `Project: <name>` line. */
-  showProjectName: boolean;
   /**
-   * The parent epic's NAME (not its key). Off by default: it is the newest of the
-   * three, the longest string on the card, and the one most boards don't need.
-   */
-  showEpicName: boolean;
-  /**
-   * Which priority indicator the cards wear. Defaults to `color`, which is what every
-   * board looked like before this was a choice.
+   * Which priority indicator the ticket drawer and the detail pane's own title wear.
+   * Defaults to `color`, which is what every board looked like before this was a choice.
+   * The v9 board card itself draws no priority mark (memory *board-colour-budget*).
    */
   priorityDisplay: PriorityDisplay;
-  /**
-   * The assignee's avatar (Phase 24: native tickets). **Off by default** — a board with no
-   * ticket project has nobody to assign a card to, and turning this on would draw nothing
-   * for anybody, so the acceptance bar is that a database with no ticket project renders a
-   * board byte-identical to before this setting existed.
-   */
-  showAssignee: boolean;
-  /** Story points, as a chip. Off by default — see {@link showAssignee}. */
-  showPoints: boolean;
   /**
    * The board columns NOT shown — an explicit list, replacing the per-tracker
    * `showDoneColumn` booleans ({@link JiraSettings.showDoneColumn},
@@ -558,14 +541,9 @@ export interface BoardDisplaySettings {
   hiddenColumns?: BoardColumn[];
 }
 
-/** Labels and project name on, epic/assignee/points off — see {@link BoardDisplaySettings}. */
+/** See {@link BoardDisplaySettings}. */
 export const DEFAULT_BOARD_DISPLAY: BoardDisplaySettings = {
-  showLabels: true,
-  showProjectName: true,
-  showEpicName: false,
   priorityDisplay: 'color',
-  showAssignee: false,
-  showPoints: false,
 };
 
 /**
