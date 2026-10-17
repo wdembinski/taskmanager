@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  parseHunks,
   parsePatch,
   WORD_DIFF_MAX_CHARS,
   WORD_DIFF_MAX_TOKENS,
@@ -38,6 +39,52 @@ import {
 const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'patches');
 
 const fixture = (name: string): string => readFileSync(join(FIXTURES_DIR, `${name}.patch`), 'utf8');
+
+const PATCH_FIXTURE_NAMES = readdirSync(FIXTURES_DIR)
+  .filter((name) => name.endsWith('.patch'))
+  .map((name) => name.slice(0, -'.patch'.length));
+
+/**
+ * `__fixtures__/forge/` holds trimmed, real forge API responses, captured as follows:
+ *
+ *   github-pr-files.json   GET /repos/{o}/{r}/pulls/{n}/files against a scratch PR
+ *                           (https://github.com/wdembinski/tm-fixture-scratch/pull/1) set up to
+ *                           exercise exactly the three cases below in one response: a modified
+ *                           file with no trailing newline, a modified binary file, and a pure
+ *                           (content-identical) rename.
+ *   gitlab-mr-diffs.json    GET /projects/:id/merge_requests/:iid/diffs against public
+ *                           gitlab.com projects (unauthenticated), sourced from three merge
+ *                           requests since no single one had all three cases:
+ *                             - modified, no trailing newline:
+ *                               https://gitlab.com/gitlab-org/gitlab/-/merge_requests/241191
+ *                             - modified binary:
+ *                               https://gitlab.com/gitlab-org/gitlab/-/merge_requests/104338
+ *                             - pure rename:
+ *                               https://gitlab.com/gitlab-org/gitlab/-/merge_requests/255723
+ */
+const FORGE_FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'forge');
+
+const forgeFixture = <T>(name: string): T =>
+  JSON.parse(readFileSync(join(FORGE_FIXTURES_DIR, `${name}.json`), 'utf8')) as T;
+
+interface GithubForgeFile {
+  filename: string;
+  status: string;
+  previous_filename?: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  patch?: string;
+}
+
+interface GitlabForgeDiff {
+  old_path: string;
+  new_path: string;
+  renamed_file: boolean;
+  new_file: boolean;
+  deleted_file: boolean;
+  diff: string;
+}
 
 /**
  * Every hunk's own invariant: del/context `oldLine` runs consecutively from `oldStart`, add/
@@ -292,6 +339,106 @@ describe('copied — a hunk body is consumed by count, not by line prefix', () =
 describe("parsePatch('')", () => {
   it('returns no files', () => {
     expect(parsePatch('')).toEqual([]);
+  });
+});
+
+describe('parseHunks — forge fixtures', () => {
+  const githubFiles = forgeFixture<GithubForgeFile[]>('github-pr-files');
+  const gitlabDiffs = forgeFixture<GitlabForgeDiff[]>('gitlab-mr-diffs');
+
+  describe('github-pr-files.json', () => {
+    it('modified.txt: a single hunk whose added line lacks a trailing newline', () => {
+      const file = githubFiles.find((f) => f.filename === 'modified.txt')!;
+      const hunks = parseHunks(file.patch ?? '');
+      expect(hunks.map((h) => h.header)).toEqual(['@@ -1,3 +1,3 @@']);
+      hunks.forEach(assertLineNumbers);
+      expect(hunks[0].lines.find((l) => l.kind === 'add')?.noNewlineAtEof).toBe(true);
+      expect(hunks[0].lines.find((l) => l.kind === 'del')?.noNewlineAtEof).toBeUndefined();
+    });
+
+    it('image.png: a binary file (no patch key) has no hunks', () => {
+      const file = githubFiles.find((f) => f.filename === 'image.png')!;
+      expect(file.patch).toBeUndefined();
+      expect(parseHunks(file.patch ?? '')).toEqual([]);
+    });
+
+    it('rename-dst.txt: a pure rename (no patch key) has no hunks', () => {
+      const file = githubFiles.find((f) => f.filename === 'rename-dst.txt')!;
+      expect(file.status).toBe('renamed');
+      expect(file.previous_filename).toBe('rename-src.txt');
+      expect(file.patch).toBeUndefined();
+      expect(parseHunks(file.patch ?? '')).toEqual([]);
+    });
+  });
+
+  describe('gitlab-mr-diffs.json', () => {
+    it('schema_migrations file: a single hunk whose added line lacks a trailing newline', () => {
+      const entry = gitlabDiffs.find((d) => d.new_path === 'db/schema_migrations/20260616100000')!;
+      const hunks = parseHunks(entry.diff);
+      expect(hunks.map((h) => h.header)).toEqual(['@@ -1 +1 @@']);
+      hunks.forEach(assertLineNumbers);
+      expect(hunks[0].lines.find((l) => l.kind === 'add')?.noNewlineAtEof).toBe(true);
+      expect(hunks[0].lines.find((l) => l.kind === 'del')?.noNewlineAtEof).toBeUndefined();
+    });
+
+    it('markdown_logo.png: a binary file (diff is git’s own notice, not hunks) has no hunks', () => {
+      const entry = gitlabDiffs.find((d) => d.new_path === 'doc/user/img/markdown_logo.png')!;
+      expect(entry.diff).toContain('Binary files');
+      expect(parseHunks(entry.diff)).toEqual([]);
+    });
+
+    it('constants.js: a pure rename (diff: "") has no hunks', () => {
+      const entry = gitlabDiffs.find((d) => d.renamed_file)!;
+      expect(entry.old_path).toBe('ee/spec/frontend/msw_integration/core/constants.js');
+      expect(entry.diff).toBe('');
+      expect(parseHunks(entry.diff)).toEqual([]);
+    });
+  });
+});
+
+describe("parseHunks('')", () => {
+  it('returns no hunks', () => {
+    expect(parseHunks('')).toEqual([]);
+  });
+});
+
+describe('parseHunks — CRLF body', () => {
+  it('strips \\r from every line, same as parsePatch', () => {
+    const body = '@@ -1,2 +1,2 @@\r\n context\r\n-old\r\n+new\r\n';
+    const hunks = parseHunks(body);
+    expect(hunks).toHaveLength(1);
+    for (const line of hunks[0].lines) {
+      expect(line.text).not.toContain('\r');
+    }
+  });
+});
+
+/**
+ * `parsePatch` delegates every file's hunk body to `parseHunks` (`review.ts`'s `hunksIn`
+ * is the shared walker underneath both). This proves that delegation for every fixture
+ * under `__fixtures__/patches/`: strip each file section down to its first `@@` line
+ * onward — the header-less body a forge hands `parseHunks` directly — and check it
+ * reproduces exactly the hunks `parsePatch` attached to that file section.
+ */
+describe('parseHunks — delegation equivalence with parsePatch', () => {
+  it.each(PATCH_FIXTURE_NAMES)('matches parsePatch’s own hunks file-by-file in %s', (name) => {
+    const text = fixture(name);
+    const files = parsePatch(text);
+    const lines = text.split('\n');
+    const starts: number[] = [];
+    lines.forEach((line, i) => {
+      if (line.startsWith('diff --git ')) starts.push(i);
+    });
+    expect(starts).toHaveLength(files.length);
+
+    files.forEach((file, i) => {
+      const start = starts[i];
+      const end = i + 1 < starts.length ? starts[i + 1] : lines.length;
+      const firstHunkOffset = lines.slice(start, end).findIndex((line) => line.startsWith('@@ '));
+      const body =
+        firstHunkOffset === -1 ? '' : lines.slice(start + firstHunkOffset, end).join('\n');
+      expect(parseHunks(body)).toEqual(file.hunks);
+    });
   });
 });
 

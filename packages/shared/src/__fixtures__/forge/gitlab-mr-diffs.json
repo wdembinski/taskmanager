@@ -1,0 +1,26 @@
+[
+  {
+    "old_path": "db/schema_migrations/20260616100000",
+    "new_path": "db/schema_migrations/20260616100000",
+    "renamed_file": false,
+    "new_file": false,
+    "deleted_file": false,
+    "diff": "@@ -1 +1 @@\n-0f6aa1f7fe4b6a0d687c7a894fef1e0b21d1c02b1217c927918951c200a8dc30\n+0f6aa1f7fe4b6a0d687c7a894fef1e0b21d1c02b1217c927918951c200a8dc30\n\\ No newline at end of file\n"
+  },
+  {
+    "old_path": "doc/user/img/markdown_logo.png",
+    "new_path": "doc/user/img/markdown_logo.png",
+    "renamed_file": false,
+    "new_file": false,
+    "deleted_file": false,
+    "diff": "Binary files a/doc/user/img/markdown_logo.png and b/doc/user/img/markdown_logo.png differ\n"
+  },
+  {
+    "old_path": "ee/spec/frontend/msw_integration/core/constants.js",
+    "new_path": "ee/spec/frontend/integration/core/constants.js",
+    "renamed_file": true,
+    "new_file": false,
+    "deleted_file": false,
+    "diff": ""
+  }
+]
