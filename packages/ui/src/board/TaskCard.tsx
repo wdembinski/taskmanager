@@ -113,14 +113,8 @@ import {
   isChainLinkDrag,
   type LinkDropState,
 } from './chainDrag';
-import {
-  ACCENT,
-  ATTENTION_TINT,
-  FLUO,
-  PIPELINE_COLOR,
-  RING,
-  STATUS_INDICATOR_COLOR,
-} from '../theme';
+import { ACCENT, RING } from '../theme';
+import { FLUO_VAR, PIPELINE_VAR, STATUS_INDICATOR_VAR } from '../tokens';
 import { PriorityGlyph } from '../PriorityGlyph';
 import { AssigneeDisplay } from '../projects/AssigneeDisplay';
 import { TrackerMark, shortTicketKey } from '../tracker';
@@ -189,9 +183,13 @@ const RUN_BAND_RAD = (RUN_BAND_ANGLE * Math.PI) / 180;
 const RUN_BAND_DX = (RUN_BAND_PERIOD * Math.sin(RUN_BAND_RAD)).toFixed(2);
 const RUN_BAND_DY = (RUN_BAND_PERIOD * -Math.cos(RUN_BAND_RAD)).toFixed(2);
 
-/** `FLUO.cyan` (#22E4FF) as channels, so the band can vary only its alpha. */
-const RUN_BAND_RGB = '34, 228, 255';
-const runBandCyan = (alpha: number): string => `rgba(${RUN_BAND_RGB}, ${alpha})`;
+/**
+ * `FLUO_VAR.cyan` at a given alpha, via `color-mix` rather than an `rgba(...)` triplet — the
+ * var already tracks the resolved scheme's cyan, so mixing it toward transparent is the band's
+ * only way to vary alpha without pinning itself back to one scheme's literal channels.
+ */
+const runBandCyan = (alpha: number): string =>
+  `color-mix(in srgb, ${FLUO_VAR.cyan} ${Math.round(alpha * 100)}%, transparent)`;
 
 /**
  * The crest, sampled as a RAISED COSINE — `0.5 · (1 − cos 2πt)` at each eighth — instead of
@@ -380,7 +378,7 @@ const useStyles = makeStyles({
    * boxShadow variant either: Griffel would have the later class REPLACE `boxShadow`,
    * removing the ring from exactly the card that needs it.
    */
-  stepLoud: { backgroundColor: ATTENTION_TINT },
+  stepLoud: { backgroundColor: 'var(--tm-attention-tint)' },
   /** An MR row is a link, but it must look exactly like the step rows above it. */
   mrRow: { textDecoration: 'none', color: 'inherit' },
   /** The approval glyph, at the row's trailing edge opposite the pipeline dot. */
@@ -426,15 +424,15 @@ const useStyles = makeStyles({
    */
   dotRunning: {
     animationName: {
-      '0%, 100%': { backgroundColor: FLUO.cyanDeep },
-      '50%': { backgroundColor: FLUO.cyan },
+      '0%, 100%': { backgroundColor: FLUO_VAR.cyanDeep },
+      '50%': { backgroundColor: FLUO_VAR.cyan },
     },
     animationDuration: '1s',
     animationIterationCount: 'infinite',
     animationTimingFunction: 'ease-in-out',
     '@media (prefers-reduced-motion: reduce)': {
       animationName: 'none',
-      backgroundColor: FLUO.cyan,
+      backgroundColor: FLUO_VAR.cyan,
     },
   },
   stepTitle: {
@@ -581,7 +579,6 @@ const useStyles = makeStyles({
   },
   /** A step, or a loop. Dimmed, and the drop bounces — see `dropEffectFor`. */
   linkRefused: { opacity: 0.35 },
-  agentIcon: { fontSize: AGENT_ICON_SIZE, flexShrink: 0, display: 'flex', color: '#ffffff' },
   /**
    * The automation-origin glyph: a neutral token, no new colour. Colour budget (memory
    * *board-colour-budget*) — colour is for things that MOVE, and "an automation started
@@ -656,9 +653,11 @@ const useStyles = makeStyles({
       backgroundImage: `linear-gradient(${runBandCyan(0.26)}, ${runBandCyan(0.26)})`,
     },
   },
-  // The same white the agent glyph wears — see `typeIcon` for why the type is no longer
-  // one of the things the board spends colour on.
-  icon: { fontSize: '18px', flexShrink: 0, display: 'flex', color: '#ffffff' },
+  // The same ink the card's own title wears — see `typeIcon` for why the type is no longer
+  // one of the things the board spends colour on. `colorNeutralForeground1`, not a literal
+  // white: a literal would read fine in dark (the card's near-black fill) and vanish in
+  // light, where the card's fill is near-white.
+  icon: { fontSize: '18px', flexShrink: 0, display: 'flex', color: tokens.colorNeutralForeground1 },
   /**
    * The card's headline. Sets no `color`, deliberately: it takes
    * `colorNeutralForeground1` — the editor grey `main.tsx` picks over Fluent's white — and it
@@ -685,8 +684,8 @@ const useStyles = makeStyles({
   },
   chipRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
   chip: {
-    backgroundColor: '#12836b',
-    color: '#ffffff',
+    backgroundColor: 'var(--tm-label-chip-bg)',
+    color: 'var(--tm-label-chip-ink)',
     fontSize: '11px',
     fontWeight: 600,
     letterSpacing: '0.03em',
@@ -891,9 +890,11 @@ export function typeIcon(task: Task): JSX.Element {
 export function verdictIcon(verdict: MrVerdict): JSX.Element {
   switch (verdict) {
     case 'merged':
-      return <MergeFilled style={{ color: FLUO.violet }} aria-label="Merged" />;
+      return <MergeFilled style={{ color: FLUO_VAR.violet }} aria-label="Merged" />;
     case 'blocked':
-      return <PresenceBlockedRegular style={{ color: FLUO.red }} aria-label="Cannot be merged" />;
+      return (
+        <PresenceBlockedRegular style={{ color: FLUO_VAR.red }} aria-label="Cannot be merged" />
+      );
     case 'closed':
       return (
         <BranchRequestClosedFilled
@@ -902,16 +903,16 @@ export function verdictIcon(verdict: MrVerdict): JSX.Element {
         />
       );
     case 'approved':
-      return <CheckmarkCircleFilled style={{ color: FLUO.green }} aria-label="Approved" />;
+      return <CheckmarkCircleFilled style={{ color: FLUO_VAR.green }} aria-label="Approved" />;
     case 'unopposed':
       return (
         <CheckmarkCircleRegular
-          style={{ color: FLUO.green }}
+          style={{ color: FLUO_VAR.green }}
           aria-label="Nothing blocking the merge — but no approval was required, and none was given"
         />
       );
     case 'changes-requested':
-      return <DismissCircleFilled style={{ color: FLUO.red }} aria-label="Changes requested" />;
+      return <DismissCircleFilled style={{ color: FLUO_VAR.red }} aria-label="Changes requested" />;
     case 'awaiting':
       return (
         <PersonFilled
@@ -2006,7 +2007,7 @@ export function TaskCard({
                       style={
                         stepRun.spinner
                           ? undefined
-                          : { backgroundColor: STATUS_INDICATOR_COLOR[step.status] }
+                          : { backgroundColor: STATUS_INDICATOR_VAR[step.status] }
                       }
                     />
                   </span>
@@ -2141,7 +2142,7 @@ export function TaskCard({
                         style={
                           stage.status === 'running'
                             ? undefined
-                            : { backgroundColor: PIPELINE_COLOR[stage.status] }
+                            : { backgroundColor: PIPELINE_VAR[stage.status] }
                         }
                       />
                     ))}
@@ -2150,7 +2151,7 @@ export function TaskCard({
                   <span className={styles.stepSlot} title={`Pipeline: ${mr.pipelineStatus}`}>
                     <span
                       className={styles.stepDot}
-                      style={{ backgroundColor: PIPELINE_COLOR[mr.pipelineStatus] }}
+                      style={{ backgroundColor: PIPELINE_VAR[mr.pipelineStatus] }}
                     />
                   </span>
                 )}
@@ -2175,7 +2176,7 @@ export function TaskCard({
                     size="small"
                     appearance="transparent"
                     className={styles.approval}
-                    icon={<MergeRegular style={{ color: FLUO.green }} />}
+                    icon={<MergeRegular style={{ color: FLUO_VAR.green }} />}
                     title={`Merge this ${mrNoun(mr.provider)}`}
                     aria-label={`Merge this ${mrNoun(mr.provider)}`}
                     onClick={(e) => {
@@ -2191,7 +2192,7 @@ export function TaskCard({
                     size="small"
                     appearance="transparent"
                     className={styles.approval}
-                    icon={<ArrowSyncRegular style={{ color: FLUO.red }} />}
+                    icon={<ArrowSyncRegular style={{ color: FLUO_VAR.red }} />}
                     title={`Ask ${forgeName(mr.provider)} to rebase this branch`}
                     aria-label={`Rebase this ${mrNoun(mr.provider)}`}
                     onClick={(e) => {

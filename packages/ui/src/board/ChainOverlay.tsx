@@ -38,7 +38,7 @@
 import { makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import type { Task } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
-import { FLUO } from '../theme';
+import { FLUO_VAR } from '../tokens';
 import {
   CHIP_SIZE,
   buildChainDrawing,
@@ -96,7 +96,7 @@ const useStyles = makeStyles({
    * dash rather than to nothing.
    */
   releasing: {
-    stroke: FLUO.cyan,
+    stroke: FLUO_VAR.cyan,
     strokeDasharray: '6 6',
     animationName: { from: { strokeDashoffset: 12 }, to: { strokeDashoffset: 0 } },
     animationDuration: '0.6s',
@@ -160,7 +160,7 @@ const useStyles = makeStyles({
   inert: { pointerEvents: 'none' },
   headRest: { fill: tokens.colorNeutralStroke2 },
   headLit: { fill: tokens.colorBrandStroke1 },
-  headLive: { fill: FLUO.cyan },
+  headLive: { fill: FLUO_VAR.cyan },
   /** The dangling-end count: quiet, because it is a fact about the FILTER, not about work. */
   chipBox: {
     fill: tokens.colorNeutralBackground3,

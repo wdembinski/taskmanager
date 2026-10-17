@@ -7,8 +7,8 @@
  * counter sat beside it, while the step rows underneath already showed which step was live.
  * The glyph was going to be on the row anyway, so animating it costs no space at all.
  *
- * **Two glyphs, cross-faded.** At rest it is the OUTLINE (`AgentsRegular`) in white: an
- * agent owns this card, and nothing more. While it works it is the SOLID one, pulsing. That
+ * **Two glyphs, cross-faded.** At rest it is the OUTLINE (`AgentsRegular`) in the card's own
+ * ink: an agent owns this card, and nothing more. While it works it is the SOLID one, pulsing. That
  * is a weight change as well as a colour change, so the running state reads even at a glance
  * that misses the colour — and it is the one moment the card has earned the extra ink.
  *
@@ -23,7 +23,7 @@
  */
 import { makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import { AgentsFilled, AgentsRegular } from '@fluentui/react-icons';
-import { FLUO } from './theme';
+import { FLUO_VAR } from './tokens';
 
 const useStyles = makeStyles({
   /**
@@ -36,8 +36,9 @@ const useStyles = makeStyles({
     display: 'inline-flex',
     width: '1em',
     height: '1em',
-    // White at rest: the glyph's job then is only to say "an agent owns this card".
-    color: '#ffffff',
+    // The same ink the card's title wears at rest: the glyph's job then is only to say "an
+    // agent owns this card". Not a literal white — it would vanish on a light card.
+    color: tokens.colorNeutralForeground1,
   },
   /** Both layers occupy the whole box, so the two shapes sit exactly on top of each other. */
   layer: {
@@ -64,12 +65,12 @@ const useStyles = makeStyles({
     // Griffel compiles this object into its own `@keyframes` rule.
     animationName: {
       '0%, 100%': {
-        color: FLUO.cyanDeep,
+        color: FLUO_VAR.cyanDeep,
         filter: `drop-shadow(0 0 0 ${tokens.colorTransparentBackground})`,
       },
       '50%': {
-        color: FLUO.cyan,
-        filter: `drop-shadow(0 0 4px ${FLUO.cyan})`,
+        color: FLUO_VAR.cyan,
+        filter: `drop-shadow(0 0 4px ${FLUO_VAR.cyan})`,
       },
     },
     animationDuration: '1.4s',
@@ -79,8 +80,8 @@ const useStyles = makeStyles({
     // with its glow, permanently. A glyph that fell back to white would say nothing at all.
     '@media (prefers-reduced-motion: reduce)': {
       animationName: 'none',
-      color: FLUO.cyan,
-      filter: `drop-shadow(0 0 3px ${FLUO.cyan})`,
+      color: FLUO_VAR.cyan,
+      filter: `drop-shadow(0 0 3px ${FLUO_VAR.cyan})`,
     },
   },
 });

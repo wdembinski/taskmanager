@@ -129,7 +129,7 @@ describe('tokenCssVars', () => {
     };
     for (const scheme of ['light', 'dark'] as const) {
       const vars: Record<string, string> = tokenCssVars(scheme);
-      const fluo: Record<string, string> = FLUO_BY_SCHEME[scheme];
+      const fluo = FLUO_BY_SCHEME[scheme] as unknown as Record<string, string>;
       for (const [key, varName] of Object.entries(fluoVarNames)) {
         expect(vars[varName]).toBe(fluo[key]);
       }
@@ -192,7 +192,7 @@ describe('FLUO_VAR / STATUS_INDICATOR_VAR / PIPELINE_VAR', () => {
     const match = value.match(/^var\(--tm-fluo-(.+)\)$/);
     if (!match) return value;
     const camelKey = match[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-    return (FLUO_BY_SCHEME[scheme] as Record<string, string>)[camelKey];
+    return (FLUO_BY_SCHEME[scheme] as unknown as Record<string, string>)[camelKey];
   }
 
   it('STATUS_INDICATOR_VAR resolves to the same colour as statusIndicatorColor, proving the shared role table', () => {

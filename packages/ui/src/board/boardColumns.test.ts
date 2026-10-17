@@ -7,7 +7,7 @@ import { chainComponent } from '@tm/shared/taskChain';
 import type { RunState } from '@tm/shared/board';
 import { runPhase } from '@tm/shared/board';
 import type { VariantGroupState } from '@tm/shared/variants';
-import { STATUS_INDICATOR_COLOR } from '../theme';
+import { STATUS_INDICATOR_VAR } from '../tokens';
 import {
   COLUMN_META,
   cardBadgeStatus,
@@ -151,9 +151,9 @@ describe('cardBadgeStatus', () => {
 
 describe('variantStripTone', () => {
   it('colours a row a run still owns', () => {
-    expect(variantStripTone('running')).toBe(STATUS_INDICATOR_COLOR.running);
-    expect(variantStripTone('waiting-input')).toBe(STATUS_INDICATOR_COLOR['waiting-input']);
-    expect(variantStripTone('blocked-by-limit')).toBe(STATUS_INDICATOR_COLOR['blocked-by-limit']);
+    expect(variantStripTone('running')).toBe(STATUS_INDICATOR_VAR.running);
+    expect(variantStripTone('waiting-input')).toBe(STATUS_INDICATOR_VAR['waiting-input']);
+    expect(variantStripTone('blocked-by-limit')).toBe(STATUS_INDICATOR_VAR['blocked-by-limit']);
   });
 
   it('greys out every settled outcome alike, not just done', () => {

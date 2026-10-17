@@ -33,6 +33,10 @@ const useStyles = makeStyles({
     padding: '4px',
     borderRadius: tokens.borderRadiusMedium,
     border: '1px solid transparent',
+    // A faint lane over the canvas, not a surface of its own — `SEMANTIC.lane` (`tokens.ts`),
+    // taken straight from the v9 mockup's own lane rects. The sticky header above stays
+    // opaque canvas (`KanbanColumn.header`), so this never shows through it.
+    backgroundColor: 'var(--tm-lane)',
   },
   columnOver: {
     border: `1px dashed ${tokens.colorBrandStroke1}`,
