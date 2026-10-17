@@ -198,8 +198,17 @@ describe('readAppearanceEnv', () => {
     expect(readAppearanceEnv(win).backdropFilterSupported).toBe(false);
   });
 
-  it('always reports no native material', () => {
+  it('defaults native material to null when the caller passes none', () => {
     expect(readAppearanceEnv(fakeWin({})).nativeMaterial).toBeNull();
+  });
+
+  it('passes a given native material straight through', () => {
+    expect(readAppearanceEnv(fakeWin({}), 'mica').nativeMaterial).toBe('mica');
+    expect(readAppearanceEnv(fakeWin({}), 'acrylic').nativeMaterial).toBe('acrylic');
+  });
+
+  it('passes an explicit null straight through', () => {
+    expect(readAppearanceEnv(fakeWin({}), null).nativeMaterial).toBeNull();
   });
 });
 

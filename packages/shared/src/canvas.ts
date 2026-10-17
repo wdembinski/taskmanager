@@ -7,6 +7,9 @@
  */
 export type WindowScheme = 'light' | 'dark';
 
+/** The Windows window-chrome materials Electron's `backgroundMaterial` can paint — see F13.7. */
+export type NativeMaterial = 'mica' | 'acrylic';
+
 export const WINDOW_CANVAS: Record<WindowScheme, string> = {
   light: '#F7F8FA',
   dark: '#202326',

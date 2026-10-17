@@ -27,6 +27,7 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['window:toggleMaximize', 'window-os'],
   ['window:close', 'window-os'],
   ['window:isMaximized', 'window-os'],
+  ['window:nativeMaterial', 'window-os'],
   ['update:install', 'window-os'],
   ['attachment:open', 'window-os'],
   ['auth:signIn', 'window-os'],

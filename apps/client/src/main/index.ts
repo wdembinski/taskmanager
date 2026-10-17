@@ -10,6 +10,7 @@
  * usage-limit gate) from here too.
  */
 import { join } from 'node:path';
+import { release as osRelease } from 'node:os';
 import {
   app,
   BrowserWindow,
@@ -31,7 +32,13 @@ import { registerMediaPermissionGuard } from './mediaPermission';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 import { runShutdownSteps, type ShutdownStep } from './shutdown';
-import { readSavedAppearance } from './store';
+import { readSavedWindowSettings } from './store';
+import {
+  isRemoteSession,
+  windowMaterialFor,
+  windowsBuildOf,
+  type WindowMaterial,
+} from './windowMaterial';
 
 // Nothing in main used to report a failure anywhere the user could see it. A throw
 // during startup (v0.25.0 on Linux: a wrong-ABI better_sqlite3.node) left the window
@@ -116,13 +123,21 @@ protocol.registerSchemesAsPrivileged([
  * and Electron does not allow ESM preload scripts inside the OS sandbox. This is
  * the standard electron-vite configuration.
  *
- * `backgroundColor` comes from the caller rather than a literal here: it must match
- * whichever scheme the renderer is about to mount (see `whenReady`/`activate` below,
- * both of which resolve it via `readSavedAppearance` before this runs), or the window
+ * `backgroundColor`/`material` come from the caller rather than literals here: they must
+ * match whichever scheme the renderer is about to mount (see `whenReady`/`activate` below,
+ * both of which resolve them via `windowAppearance` before this runs), or the window
  * flashes the wrong colour for the moment between first paint and the renderer's own
- * `useResolvedAppearance` taking over.
+ * `useResolvedAppearance` taking over. That anti-flash colour only matters on the opaque
+ * path — a window painted with a native material is transparent instead, so there is
+ * nothing underneath for a wrong colour to flash.
  */
-function createWindow(backgroundColor: string): BrowserWindow {
+function createWindow({
+  backgroundColor,
+  material,
+}: {
+  backgroundColor: string;
+  material: WindowMaterial;
+}): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -135,6 +150,10 @@ function createWindow(backgroundColor: string): BrowserWindow {
     // avoids a flash of the WRONG scheme before paint.
     frame: false,
     backgroundColor,
+    // Only passed when the spike's checks (`windowMaterialFor`) actually clear the native
+    // material — Linux and pre-22621 Windows get exactly today's options, with no
+    // `backgroundMaterial` key at all.
+    ...(material !== 'none' ? { backgroundMaterial: material } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -203,15 +222,34 @@ function createWindow(backgroundColor: string): BrowserWindow {
 }
 
 /**
- * The window colour to create (or re-create) the window with — read straight off disk
- * via {@link readSavedAppearance} rather than `engine.store`, because `whenReady` needs
- * an answer before `registerIpcHandlers` has opened the real connection at all. The
- * `activate` path below could read the live store instead, but uses this same helper so
- * the two creation sites can never resolve a scheme two different ways.
+ * The window colour and material to create (or re-create) the window with — read straight
+ * off disk via {@link readSavedWindowSettings} rather than `engine.store`, because
+ * `whenReady` needs an answer before `registerIpcHandlers` has opened the real connection
+ * at all. The `activate` path below could read the live store instead, but uses this same
+ * helper so the two creation sites can never resolve a scheme (or a material) two different
+ * ways.
+ *
+ * When `windowMaterialFor` grants a native material, `backgroundColor` is fully transparent
+ * (`'#00000000'`) instead of the resolved scheme colour — the material paints the chrome
+ * itself, and leaving an opaque colour behind it would defeat the material entirely (F13.6's
+ * spike finding).
  */
-function windowBackgroundColor(): string {
-  const appearance = readSavedAppearance(app.getPath('userData'));
-  return WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)];
+function windowAppearance(): { backgroundColor: string; material: WindowMaterial } {
+  const { appearance, transparency } = readSavedWindowSettings(app.getPath('userData'));
+  const material = windowMaterialFor(
+    process.platform,
+    windowsBuildOf(osRelease()),
+    { transparency },
+    {
+      remoteSession: isRemoteSession(process.env),
+      reducedTransparency: nativeTheme.prefersReducedTransparency,
+    },
+  );
+  const backgroundColor =
+    material === 'none'
+      ? WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)]
+      : '#00000000';
+  return { backgroundColor, material };
 }
 
 // Holds the engine so we can shut its sessions and database down cleanly on quit.
@@ -292,13 +330,14 @@ void app.whenReady().then(() => {
   // any renderer) exists, and must NOT be re-registered from `activate` below.
   registerMediaPermissionGuard(session.defaultSession);
 
-  const window = createWindow(windowBackgroundColor());
+  const appearance = windowAppearance();
+  const window = createWindow(appearance);
   try {
     // The engine needs the window so it can push live session events to the UI.
     // Everything here — opening the database, migrations, the scheduler — happens
     // BEFORE the first ipcMain.handle(), so a throw leaves the UI with no backend
     // at all. Catch it and say so instead of failing silently.
-    engine = registerIpcHandlers(window);
+    engine = registerIpcHandlers(window, appearance.material);
   } catch (err) {
     reportFatal('failed to start', err, true);
     return;
@@ -307,7 +346,7 @@ void app.whenReady().then(() => {
   // macOS convention: re-create a window when the dock icon is clicked and no
   // windows are open. Harmless on Windows/Linux.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(windowBackgroundColor());
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(windowAppearance());
   });
 });
 
