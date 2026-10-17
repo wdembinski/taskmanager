@@ -580,16 +580,22 @@ export class DiffService {
   }
 
   /**
-   * The project (and the remote on it) whose `origin`/`upstream`/… points at `req`'s forge
-   * repo — every remote of every repo-backed project counts, so a fork checkout matches
-   * through `upstream` even when its `origin` is the user's own fork. `null` when nothing
-   * matches, or when the deps this needs (`listProjects`, `refGitFor`) are absent.
+   * The project (and the remote on it) whose `origin`/`upstream`/… points at `host`/
+   * `repoPath` — every remote of every repo-backed project counts, so a fork checkout
+   * matches through `upstream` even when its `origin` is the user's own fork. `null` when
+   * nothing matches, or when the deps this needs (`listProjects`, `refGitFor`) are absent.
+   *
+   * Public because F15.9's queue service calls this directly to fill `ReviewQueueItem.
+   * projectId` for every row of a refresh, without needing `matchPrProject`'s own addition
+   * on top (the `refGit`, which only resolving a diff needs in order to fetch).
    */
-  private async matchPrProject(req: PrLocalRequest): Promise<{
+  async matchProject(
+    host: string,
+    repoPath: string,
+  ): Promise<{
     project: Project;
     remote: { name: string; fetchUrl: string; pushUrl: string };
     parsedRemote: RemoteRef;
-    refGit: ReviewRefGit;
   } | null> {
     const refGitFor = this.deps.refGitFor;
     if (!refGitFor) return null;
@@ -602,14 +608,31 @@ export class DiffService {
         const parsed = parseRemoteUrl(remote.fetchUrl);
         if (!parsed) continue;
         if (
-          parsed.host.toLowerCase() === req.host.toLowerCase() &&
-          parsed.path.toLowerCase() === req.subject.repoPath.toLowerCase()
+          parsed.host.toLowerCase() === host.toLowerCase() &&
+          parsed.path.toLowerCase() === repoPath.toLowerCase()
         ) {
-          return { project, remote, parsedRemote: parsed, refGit };
+          return { project, remote, parsedRemote: parsed };
         }
       }
     }
     return null;
+  }
+
+  /**
+   * {@link matchProject}, plus the `refGit` only resolving a diff needs (to fetch the PR's
+   * refs) — the extra `matchProject` itself does not return, since the queue service's own
+   * call has nothing to fetch.
+   */
+  private async matchPrProject(req: PrLocalRequest): Promise<{
+    project: Project;
+    remote: { name: string; fetchUrl: string; pushUrl: string };
+    parsedRemote: RemoteRef;
+    refGit: ReviewRefGit;
+  } | null> {
+    const refGitFor = this.deps.refGitFor;
+    if (!refGitFor) return null;
+    const match = await this.matchProject(req.host, req.subject.repoPath);
+    return match ? { ...match, refGit: refGitFor(match.project) } : null;
   }
 
   /**

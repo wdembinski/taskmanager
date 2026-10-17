@@ -478,6 +478,211 @@ plus a "monochrome code" setting. Chrome around the diff gets no new colour (mem
     `syncedAt` unchanged), an agent card leaving `in-review`, and a PR that is both mine and
     requested (shown once, under *My PRs/MRs*).
 
+  - **Design decisions, taken against the current code — step 2 writes these, it does not
+    re-derive them:**
+    - **Segments, not queues, are the unit every refresh reconciles.** `requested` is really
+      two independent network calls — GitHub's `listReviewRequests()` and GitLab's
+      `listReviewerMergeRequests(username)` (both already implemented, F15.7) — so it splits
+      into segments `requested:github` and `requested:gitlab`; `mine` (a synchronous read of
+      `store.listMergeRequests()`, no forge call) and `agent` (a synchronous read of the
+      store's own tasks) are each one segment. Reconciliation happens per segment, never per
+      queue: a GitHub outage must not touch GitLab's rows in the same `requested` queue, and
+      vice versa. Every segment answers `{ rows: ReviewQueueItem[]; complete: boolean } |
+      'failure'` for one refresh.
+    - **Forge-disabled is a complete empty answer; a throw (including "no token") is a
+      failure.** `store.getSettings().github.enabled` / `.gitlab.enabled` is checked BEFORE
+      building a client — when off, the segment answers `{ rows: [], complete: true }`
+      straight away, same as any other complete pass, so turning an integration off clears
+      its rows out of the cache instead of leaving them stranded forever. Only once enabled
+      is a client actually built: `ipc.ts`'s own `buildGitHubClient`/`buildGitLabClient`
+      (`ipc.ts:2227-2233`) already throw when no token is saved, and that throw — along with
+      any network failure from the list call itself, and a `requested:gitlab` segment with
+      no cached username yet (`store.loadGitLabIdentity()` returns null, so
+      `reviewer_username` cannot be asked for) — is the `failure` case: no writes, existing
+      rows and `syncedAt` left exactly as stored.
+    - **Reconciliation against the cache, per the three outcomes:** `failure` writes
+      nothing for that segment's subjects. `complete: false` (GitHub/GitLab's own
+      `truncated`, or a GitHub repo whose id could not be resolved — see below) upserts every
+      row the segment DID return with a fresh `syncedAt`, and deletes nothing — a row for a
+      repo that could not be resolved this round is simply absent from the returned set, so
+      its last cached state, if any, survives untouched under its own, older `syncedAt`.
+      `complete: true` upserts every returned row, then deletes every cached row already in
+      this exact segment (same queue, same `subject.provider` for a `requested:*` segment)
+      whose `subjectId` is not among the ones just returned.
+    - **The cache read filters the one `review_queue` table by `subject.provider` in
+      memory, not by a schema column.** The table (`store.ts:2151-2157`) is keyed
+      `(subjectId, queue)` with `row` holding the whole `ReviewQueueItem` as JSON — there is
+      no `provider` column to scope a `requested:github`-only delete to, so reconciling a
+      `requested:*` segment reads every cached `requested` row, parses `row.subject.provider`
+      out of the JSON, and only ever upserts/deletes the ones matching this segment's own
+      provider. `mine`/`agent` need no such filter — each is already its own whole queue.
+    - **`DiffService.matchProject(host, repoPath)` is extracted from the existing
+      `matchPrProject` (`diffService.ts:588-613`), which then calls it.** The two project/
+      remote loops stay byte-identical; only the parameter source changes from
+      `req.host`/`req.subject.repoPath` to two plain strings, and the return narrows to just
+      `{ project, remote, parsedRemote } | null` (no `refGit` — that stays `matchPrProject`'s
+      own addition on top, since only it needs to fetch):
+      ```ts
+      async matchProject(host: string, repoPath: string): Promise<{
+        project: Project;
+        remote: { name: string; fetchUrl: string; pushUrl: string };
+        parsedRemote: RemoteRef;
+      } | null> { /* the existing double loop, comparing against host/repoPath directly */ }
+
+      private async matchPrProject(req: PrLocalRequest) {
+        const refGitFor = this.deps.refGitFor;
+        if (!refGitFor) return null;
+        const match = await this.matchProject(req.host, req.subject.repoPath);
+        return match ? { ...match, refGit: refGitFor(match.project) } : null;
+      }
+      ```
+      `matchProject` becomes a public method (the queue service calls it directly);
+      `matchPrProject` stays private. Behaviour for every existing `resolvePrLocal` caller is
+      unchanged.
+    - **The GitHub repo-id map is rebuilt once per `refresh()`, never persisted.** A fresh
+      `Map<string, number>` keyed by the lowercased `owner/repo` string `repoRefFromApiUrl`
+      already parses off `repository_url` (`describePullRequest.ts:52`, the same helper
+      `ipc.ts` imports) is seeded for free from every row `store.listMergeRequests()` already
+      loaded this refresh (`projectPath` → `repoId`, both already on `MergeRequest` —
+      `mergeRequest.ts:90,92`), then filled on demand with one new
+      `GitHubClient.getRepository(owner, repo)` call per still-unseen `owner/repo` the
+      `requested:github` segment's rows name — the same shape as `getBranchProtection`
+      (`githubClient.ts:1105-1113`):
+      ```ts
+      getRepository(owner: string, repo: string): Promise<{ id: number; full_name: string }> {
+        return this.request<{ id: number; full_name: string }>(repoPath(owner, repo));
+      }
+      ```
+      Rebuilding the map every refresh rather than caching it across refreshes is deliberate:
+      a repo id never changes, so there is no staleness to chase, and refilling it costs
+      nothing (`merge_requests` is already loaded; the GET only fires for a repo nothing has
+      named yet). GitLab needs no such map — `GitLabMergeRequest.project_id` is already the
+      numeric id (`gitlabClient.ts:39`).
+    - **`GitLabMergeRequest` gains an `author` field; `GitHubSearchIssueItem` already has
+      one.** GitHub's search rows already carry `user?.login` (`githubClient.ts:89`);
+      GitLab's list/detail endpoints return an `author` object by default but the client's
+      own type never declared it (only `GitLabNote.author` does, `gitlabClient.ts:97`), so
+      this step widens `GitLabMergeRequest` with the identical
+      `author?: { id?: number; username?: string; name?: string } | null;` and reads
+      `mr.author?.name ?? mr.author?.username ?? ''`.
+    - **`author` for `mine` and `agent` rows has no forge payload to read it from.** `mine`
+      rows are, by construction, always authored by the signed-in user
+      (`listMyMergeRequests`/`listMyPullRequests` already scope to
+      `created_by_me`/`author:@me` — `gitlabClient.ts:400-411`, `githubClient.ts:638-639`),
+      so their `author` is read from the already-cached
+      `store.loadGitHubIdentity()`/`loadGitLabIdentity()` (`.login`/`.username`) for the
+      row's own `provider`, falling back to `''` when that identity has never been resolved.
+      `agent` rows have no author concept at all — a card is not authored by anyone in the
+      forge sense — so `author: ''` there, deliberately.
+    - **`requested` rows never need a `taskId` lookup.** Dedup (below) only ever removes a
+      subject from `requested` when the SAME subject is present in `mine` — and every `mine`
+      row comes from `store.listMergeRequests()`, the one place `taskId` is already computed
+      (`MergeRequest.taskId`/`openedForTaskId`). So any `requested` row that survives dedup,
+      by definition, has no matching `mine` row to borrow a `taskId` from; `requested` rows
+      always answer `taskId: null` rather than re-running a match dedup already proved would
+      fail.
+    - **`agent` rows map directly off `Task`, with no forge concepts to resolve.**
+      `subject: { kind: 'task', taskId: task.id }`, `subjectId: taskSubjectId(task.id)`,
+      `title: task.title`, `projectId: task.projectId` (known already — no `matchProject`
+      call needed), `taskId: task.id`, `repoPath:` the owning project's `name` (display
+      only, same as every other queue), `ref: ''`, `headSha: null` (resolved lazily by
+      `DiffService` once the workspace actually opens the subject, not eagerly here),
+      `draft: false`, `updatedAt: task.workedAt!` (non-null by construction — see the
+      predicate below), `author: ''`.
+    - **The `agent` segment's predicate, read straight off the store:** every task, across
+      every project (`store.listProjects().flatMap(p => store.getTasks(p.id))`, the same
+      cross-project read `ipc.ts:946` already uses), with `parentTaskId == null` (top-level —
+      a step of an approved plan is not its own review subject), `status === 'in-review'`,
+      `workedAt != null` (something actually ran) and `landedAt == null` (not already
+      merged). Always `complete: true` — a store read cannot truncate or go offline.
+    - **Enrichment (`projectId`, `draftCount`, `viewedCount`) runs once per `refresh()`,
+      after every segment's raw rows are collected — not per segment.** All of a refresh's
+      rows (`requested:github` ∪ `requested:gitlab` ∪ `mine` ∪ `agent`, before dedup) share
+      one pass: a `Map<string, ProjectId | null>` memoizes `matchProject` by
+      `` `${host}\n${repoPath}` `` so ten PRs on the same repo cost one match;
+      `draftCount`/`viewedCount` are fetched in one grouped query each
+      (`countUnsentDrafts`/`countViewedMarks`, below) over the whole batch's `subjectId`s
+      rather than one query per row.
+    - **Two new `Store` reads, grouped rather than per-id**, since a refresh can touch dozens
+      of subjects at once:
+      - `countUnsentDrafts(subjectIds: readonly string[]): Record<string, number>` —
+        `SELECT subjectId, COUNT(*) FROM review_drafts WHERE sentAt IS NULL AND subjectId IN
+        (...) GROUP BY subjectId`; a subject absent from the result means 0.
+      - `countViewedMarks(subjectIds: readonly string[]): Record<string, number>` — the same
+        shape over `review_viewed`. Documented as an upper bound on both the store method and
+        `ReviewQueueItem.viewedCount` itself: it counts every stored mark regardless of
+        whether its `blobSha` still matches, which only `viewedState` (F15.3) —
+        recomputed once a subject's own summary is loaded, F15.10 — can tell apart from a
+        `changed` file.
+    - **The `review_queue` cache reads/writes, shaped around the table as it already
+      exists (`store.ts:2151-2157`), not a new schema:**
+      - `listReviewQueueRows(queue: ReviewQueue): Array<{ item: ReviewQueueItem; syncedAt:
+        number }>` — every cached row for one queue, `row` JSON-parsed, paired with its own
+        `syncedAt` so `snapshot()` can compute `asOf` without a second read.
+      - `upsertReviewQueueRows(queue: ReviewQueue, items: readonly ReviewQueueItem[],
+        syncedAt: number): void` — one `INSERT … ON CONFLICT(subjectId, queue) DO UPDATE` per
+        item, `row` re-serialised, `syncedAt` set to the one value for the whole batch.
+      - `deleteReviewQueueRows(queue: ReviewQueue, subjectIds: readonly string[]): void` —
+        `DELETE … WHERE queue = ? AND subjectId IN (...)`, the one call a complete segment's
+        reconciliation uses to drop what it no longer returned.
+
+      No new store method lists tasks for the `agent` segment — `listProjects`/`getTasks`
+      already answer it, and the `in-review`/`workedAt`/`landedAt` predicate is queue-service
+      business logic, not a storage concern.
+    - **Dedup happens in `snapshot()`, on the cached rows, every time — never baked into what
+      `refresh()` writes.** After reading every queue's cached rows, drop any `requested` row
+      whose `subjectId` also appears in `mine`. Doing it at read time rather than write time
+      is why a `requested` row that stops being deduped (the human's `mine` row lands, or the
+      PR closes) does not need `refresh()` to run again first, and why a `requested` row that
+      WAS deduped keeps living quietly in the cache, ready to reappear the moment its `mine`
+      row disappears — the case this ticket's own acceptance list calls out: "a PR that is
+      both mine and requested, shown once, under *My PRs/MRs*."
+    - **`ReviewQueuesSnapshot` (new, `review.ts`):**
+      ```ts
+      export interface ReviewQueuesSnapshot {
+        items: ReviewQueueItem[];
+        asOf: Record<ReviewQueue, number | null>;
+        partial: ReviewQueue[];
+      }
+      ```
+      `asOf[queue]` is the OLDEST `syncedAt` among that queue's currently cached rows, taken
+      AFTER dedup removes rows (a deduped-away `requested` row must not drag its own queue's
+      "as of" back) — `null` for a queue with no rows at all (never synced). `partial` lists
+      every queue where ANY of its segments' most recent refresh was `failure` or
+      `complete: false` — tracked in memory only, one `Record<ReviewQueue, boolean>` on the
+      service itself, defaulting every queue to "not partial" until the first `refresh()`
+      this session actually says otherwise (a freshly booted app shows whatever is cached
+      with no staleness badge until it has asked at least once).
+    - **`ReviewQueueService`'s own shape:**
+      ```ts
+      export interface ReviewQueueServiceDeps {
+        store: Pick<Store, 'listReviewQueueRows' | 'upsertReviewQueueRows' |
+          'deleteReviewQueueRows' | 'countUnsentDrafts' | 'countViewedMarks' |
+          'listMergeRequests' | 'listProjects' | 'getTasks' | 'getSettings' |
+          'loadGitHubIdentity' | 'loadGitLabIdentity'>;
+        diffs: Pick<DiffService, 'matchProject' | 'pruneReviewRefs'>;
+        github(): GitHubClient; // throws when disabled/no token — ipc.ts's buildGitHubClient
+        gitlab(): GitLabClient; // same, buildGitLabClient
+        emit(event: 'review:queues:changed'): void;
+      }
+      ```
+      `github`/`gitlab` are factories rather than live client instances so a token saved
+      mid-session is picked up on the very next refresh, the same way every other forge call
+      in the app already works. `refresh()` de-dupes concurrent callers behind one shared
+      in-flight promise, computes every segment, writes the reconciliation above, recomputes
+      `partial`, calls `emit('review:queues:changed')` only when the deduped snapshot actually
+      changed from the previous one (this ticket's acceptance list requires silence on an
+      unchanged forge outage, not an event every 5 minutes), and finally calls
+      `diffs.pruneReviewRefs` with the union of every subjectId left in the `review_queue`
+      cache across all three queues post-reconciliation (pre-dedup — a deduped-out
+      `requested` row is still a live PR worth keeping its ref for), exactly where
+      `diffService.ts:616-619` already says the queue service will call it. `refreshLocal()`
+      runs only the `mine`+`agent` segments (no forge call, so no in-flight dedup needed) and
+      still fires `review:queues:changed` on a real change, but never prunes refs. `open()`
+      returns `snapshot()` synchronously and fires `refresh()` without awaiting it. `start()`
+      calls `refresh()` once, then `setInterval(() => void this.refresh(), 5 * 60_000).unref()`;
+      `stop()` clears that interval.
+
 - [ ] F15.10 Expose the subject, context, viewed and queue channels over IPC @needs: F15.8 Build the forge-api diff source, F15.9 Build the review queue service with complete-answer-only removal, F15.3 Implement splitRows, expandContext and viewedState
 
   - Register `review:queues`, `review:refreshQueues`, `review:subjectSummary`,

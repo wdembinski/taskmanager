@@ -26,8 +26,14 @@ import {
 import { stagesFromJobs } from './pipelineStages';
 import { PIPELINE_IN_FLIGHT, type FetchedMergeRequest } from './gitlabSync';
 
-/** `references.full` is `group/repo!12`; the path is everything before the `!`. */
-function projectPathOf(mr: GitLabMergeRequest): string {
+/**
+ * `references.full` is `group/repo!12`; the path is everything before the `!`.
+ *
+ * Exported for F15.9's queue service, which needs the same path off a bare
+ * `requested:gitlab` search row — one with no detail call behind it at all, let alone this
+ * module's own `stale`-gated one.
+ */
+export function projectPathOf(mr: GitLabMergeRequest): string {
   const full = mr.references?.full;
   if (full && full.includes('!')) return full.slice(0, full.indexOf('!'));
   // Fall back to the web URL: `https://host/group/repo/-/merge_requests/12`.

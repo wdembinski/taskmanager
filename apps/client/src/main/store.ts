@@ -130,6 +130,7 @@ import type { JiraIdentityCache } from './jira/identity';
 import type { GitLabIdentityCache } from './gitlab/identity';
 import type { GitHubIdentityCache } from './github/identity';
 import type {
+  ForgeProvider,
   MergeRequest,
   MergeRequestState,
   PipelineStage,
@@ -139,7 +140,12 @@ import type {
 import type { AttentionItem } from '@shared/attention';
 import { isLinkGate, type LinkGate, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
-import { taskSubjectId, type ReviewComment } from '@shared/review';
+import {
+  taskSubjectId,
+  type ReviewComment,
+  type ReviewQueue,
+  type ReviewQueueItem,
+} from '@shared/review';
 import type { ParsedTask } from './planParser';
 import { type ReviewCommentRow, reviewCommentToRow, rowToReviewComment } from './reviewCommentRows';
 import { splitProjectTag } from './projectTagMigration';
@@ -1078,6 +1084,42 @@ export interface Store {
    * the `sentAt IS NULL` guard is what F6.9's "exactly one message" rests on.
    */
   markReviewSent(taskId: string, ids: readonly string[], at: number): ReviewComment[];
+
+  /**
+   * Every cached row in `review_queue`, across all three queues, each paired with its own
+   * `syncedAt` — `ReviewQueuesSnapshot.asOf` is computed from this without a second read.
+   * Dedup (dropping a `requested` row whose subject also sits in `mine`) is the caller's
+   * job, not this read's (F15.9's queue service does it in `snapshot()`, every time).
+   */
+  listReviewQueue(): Array<{ item: ReviewQueueItem; syncedAt: number }>;
+  /**
+   * Reconcile one refresh segment's rows into `review_queue`, in one transaction. A segment
+   * is a whole queue (`mine`, `agent`) or one provider's half of `requested` — `provider` is
+   * set only for the latter, since the table carries no provider column of its own and a
+   * `requested:github` refresh must never touch `requested:gitlab`'s rows (or vice versa);
+   * segment membership for the delete below is read back out of each cached row's own
+   * `subject.provider`, not a schema column.
+   *
+   * Every row in `rows` is upserted under the given `syncedAt`. When `complete` is true,
+   * every OTHER cached row in this exact segment is then deleted — it is no longer part of
+   * the forge's (or store's) answer. When `complete` is false (a truncated search, or a
+   * forge outage upstream), nothing is deleted: a row this round did not mention keeps its
+   * last known state under its own, older `syncedAt`.
+   */
+  applyReviewQueue(
+    segment: { queue: ReviewQueue; provider?: ForgeProvider },
+    rows: readonly ReviewQueueItem[],
+    syncedAt: number,
+    opts: { complete: boolean },
+  ): void;
+  /**
+   * Unsent draft counts, grouped by `subjectId` — a subject absent from the map has none.
+   * Ungrouped by caller-supplied ids deliberately: a refresh's enrichment pass wants every
+   * subject's count in one query rather than one query per row.
+   */
+  countReviewDrafts(): Map<string, number>;
+  /** Viewed-mark counts, grouped by `subjectId` — see {@link countReviewDrafts} for the shape. */
+  countReviewViewed(): Map<string, number>;
 
   /**
    * Persist one open inbox item, with the kind-specific `context` its answer path needs
@@ -3840,6 +3882,34 @@ export function createStore(dbPath: string): Store {
   const deleteViewedForSubject = db.prepare(`DELETE FROM review_viewed WHERE subjectId = ?`);
   const deleteQueueForSubject = db.prepare(`DELETE FROM review_queue WHERE subjectId = ?`);
 
+  // review_queue (F15.9): `applyReviewQueue` reconciles one refresh segment at a time, and
+  // `listReviewQueue` hands every cached row back for `snapshot()` to dedup and group by
+  // queue. See the `Store` interface above for why a segment, not a schema column, decides
+  // what a complete pass may delete.
+  const selectReviewQueueAll = db.prepare(
+    `SELECT subjectId, queue, row, syncedAt FROM review_queue`,
+  );
+  const selectReviewQueueByQueue = db.prepare(
+    `SELECT subjectId, row FROM review_queue WHERE queue = ?`,
+  );
+  const upsertReviewQueueRowStmt = db.prepare(
+    `INSERT INTO review_queue (subjectId, queue, row, syncedAt)
+     VALUES (@subjectId, @queue, @row, @syncedAt)
+     ON CONFLICT(subjectId, queue) DO UPDATE SET
+       row = excluded.row, syncedAt = excluded.syncedAt`,
+  );
+  const deleteReviewQueueRowStmt = db.prepare(
+    `DELETE FROM review_queue WHERE subjectId = ? AND queue = ?`,
+  );
+  // Grouped rather than per-id, like upsertReviewQueueRowStmt's batch above: a refresh's
+  // enrichment pass touches dozens of subjects at once.
+  const countUnsentDraftsStmt = db.prepare(
+    `SELECT subjectId, COUNT(*) AS n FROM review_drafts WHERE sentAt IS NULL GROUP BY subjectId`,
+  );
+  const countViewedMarksStmt = db.prepare(
+    `SELECT subjectId, COUNT(*) AS n FROM review_viewed GROUP BY subjectId`,
+  );
+
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
        (id, runId, taskId, projectId, taskTitle, kind, prompt, options, toolName, reason,
@@ -6519,6 +6589,55 @@ export function createStore(dbPath: string): Store {
       });
       tx();
       return stamped;
+    },
+
+    listReviewQueue() {
+      return (
+        selectReviewQueueAll.all() as Array<{
+          subjectId: string;
+          queue: ReviewQueue;
+          row: string;
+          syncedAt: number;
+        }>
+      ).map((r) => ({ item: JSON.parse(r.row) as ReviewQueueItem, syncedAt: r.syncedAt }));
+    },
+
+    applyReviewQueue(segment, rows, syncedAt, opts) {
+      const tx = db.transaction(() => {
+        for (const item of rows) {
+          upsertReviewQueueRowStmt.run({
+            subjectId: item.subjectId,
+            queue: segment.queue,
+            row: JSON.stringify(item),
+            syncedAt,
+          });
+        }
+        if (!opts.complete) return;
+        const kept = new Set(rows.map((item) => item.subjectId));
+        const cached = selectReviewQueueByQueue.all(segment.queue) as Array<{
+          subjectId: string;
+          row: string;
+        }>;
+        for (const cachedRow of cached) {
+          if (kept.has(cachedRow.subjectId)) continue;
+          if (segment.provider) {
+            const subject = (JSON.parse(cachedRow.row) as ReviewQueueItem).subject;
+            if (subject.kind !== 'pr' || subject.provider !== segment.provider) continue;
+          }
+          deleteReviewQueueRowStmt.run(cachedRow.subjectId, segment.queue);
+        }
+      });
+      tx();
+    },
+
+    countReviewDrafts() {
+      const rows = countUnsentDraftsStmt.all() as Array<{ subjectId: string; n: number }>;
+      return new Map(rows.map((r) => [r.subjectId, r.n]));
+    },
+
+    countReviewViewed() {
+      const rows = countViewedMarksStmt.all() as Array<{ subjectId: string; n: number }>;
+      return new Map(rows.map((r) => [r.subjectId, r.n]));
     },
 
     saveAttention(item, context) {

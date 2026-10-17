@@ -127,6 +127,9 @@ export const EVENT_FANOUT = {
   // Automations (F1) — the whole list, like `label:changed`, reproducible from
   // `automation:list`.
   'automations:changed': { kind: 'replace-last' },
+  // Review workspace (F15.9) — the whole, already-deduped snapshot, reproducible from
+  // `review:queues` (F15.10), like every other whole-list event above.
+  'review:queues:changed': { kind: 'replace-last' },
 
   'window:maximizedChanged': {
     kind: 'drop',
