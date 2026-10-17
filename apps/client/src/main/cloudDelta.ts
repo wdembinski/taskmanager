@@ -19,7 +19,7 @@ import { AUTOMATION_RUNS_PER_SYNC, type MirrorDelta } from '@protocol/wire';
 import type { Automation, AutomationRun } from '@shared/automation';
 import type { Project, Task } from '@shared/model';
 
-export type CloudEntity = 'task' | 'project' | 'automation' | 'automationRun';
+export type CloudEntity = 'task' | 'project' | 'automation' | 'automationRun' | 'milestone';
 export type CloudOp = 'insert' | 'update' | 'delete';
 
 export interface CloudOutboxRow {
