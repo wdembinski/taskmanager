@@ -16,11 +16,14 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { AddRegular, DeleteRegular } from '@fluentui/react-icons';
-import type { Milestone } from '@tm/shared/model';
+import { AddRegular, ArchiveRegular, DeleteRegular } from '@fluentui/react-icons';
+import type { Milestone, Task } from '@tm/shared/model';
 import { ColorSwatches } from '../ColorSwatches';
 import { useTransport } from '../transport';
+import { ArchiveMilestoneDialog } from './ArchiveMilestoneDialog';
+import { archiveDialogModel, type ArchiveDialogModel } from './archiveDialog';
 import { dateToInput, inputToDate } from './ticketFields';
+import { useArchiveAction } from './useArchiveAction';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '360px' },
@@ -33,18 +36,26 @@ const useStyles = makeStyles({
 export interface MilestoneListProps {
   projectId: string;
   milestones: Milestone[];
+  /** This project's tickets — what `archiveDialogModel` checks for open work before a
+   *  milestone archives in one click. */
+  tickets: Task[];
 }
 
 /** What a save may change — always resent alongside the milestone's other fields, since
  *  `MilestoneInput.name` is required on every `milestone:save` call, edit or create alike. */
 type MilestonePatch = { name?: string; dueAt?: number | null; color?: string; closed?: boolean };
 
-export function MilestoneList({ projectId, milestones }: MilestoneListProps): JSX.Element {
+export function MilestoneList({ projectId, milestones, tickets }: MilestoneListProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
+  const { archive } = useArchiveAction();
   const [draftName, setDraftName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dialogTarget, setDialogTarget] = useState<{
+    milestone: Milestone;
+    model: ArchiveDialogModel;
+  } | null>(null);
 
   async function add(): Promise<void> {
     const name = draftName.trim();
@@ -85,6 +96,33 @@ export function MilestoneList({ projectId, milestones }: MilestoneListProps): JS
       await transport.invoke('milestone:remove', milestone.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Open tickets need a choice before this milestone can archive — compute the model fresh
+   *  (rather than trusting a stale one) and let the dialog ask, with no round trip. No open
+   *  tickets: archive in one click, Undo included. A `choice-required` refusal means the list
+   *  this read went stale between the click and the write landing — the same dialog opens,
+   *  seeded with what is now known. */
+  async function archiveMilestone(milestone: Milestone): Promise<void> {
+    setError(null);
+    const model = archiveDialogModel(milestone, tickets, milestones);
+    if (model.needsDialog) {
+      setDialogTarget({ milestone, model });
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await archive({ kind: 'milestone', id: milestone.id }, milestone.name);
+      if (!result.ok) {
+        if ('reason' in result && result.reason === 'choice-required') {
+          setDialogTarget({ milestone, model: archiveDialogModel(milestone, tickets, milestones) });
+        } else {
+          setError(result.message);
+        }
+      }
     } finally {
       setBusy(false);
     }
@@ -131,6 +169,17 @@ export function MilestoneList({ projectId, milestones }: MilestoneListProps): JS
               checked={milestone.closed}
               onChange={(_e, d) => void save(milestone, { closed: Boolean(d.checked) })}
             />
+            {milestone.archivedAt == null && (
+              <Button
+                size="small"
+                appearance="subtle"
+                icon={<ArchiveRegular />}
+                disabled={busy}
+                aria-label={`Archive ${milestone.name}`}
+                title="Archive this milestone"
+                onClick={() => void archiveMilestone(milestone)}
+              />
+            )}
             <Button
               size="small"
               appearance="subtle"
@@ -164,6 +213,12 @@ export function MilestoneList({ projectId, milestones }: MilestoneListProps): JS
           Add
         </Button>
       </div>
+
+      <ArchiveMilestoneDialog
+        milestone={dialogTarget?.milestone ?? null}
+        model={dialogTarget?.model ?? null}
+        onClose={() => setDialogTarget(null)}
+      />
     </div>
   );
 }
