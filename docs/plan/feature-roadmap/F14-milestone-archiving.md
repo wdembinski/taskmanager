@@ -355,6 +355,23 @@ from disagreeing — the same reason F12 made one panel.
   - Acceptance: `backlogView.test.ts` and `ganttLayout.test.ts` cases — an archived milestone
     no longer widens `ganttWindow`, its marker is gone, the toggle brings both back. Gates
     green.
+  - **Decisions taken without asking:**
+    - **One "Include archived" toggle, not three.** `Projects.tsx` owns the single
+      `includeArchived`/`onIncludeArchivedChange` pair and threads it into `BacklogTable`,
+      `TimelinePane` and `GraphPane` alike, so flipping it in any one pane's toolbar affects
+      all three. A per-pane toggle would let the Timeline show an archived milestone while
+      the Graph still hid its ticket, which is not a state the project has — archived is a
+      property of the data, not of whichever view is open.
+    - **The acceptance note's `ganttWindow` is `ganttRange`.** No function named
+      `ganttWindow` exists in `ganttLayout.ts`; the drawn span is computed by `ganttRange`,
+      which already ran every ticket's dates through the new `ganttMilestones` filter before
+      this step started. Read as the same thing the spec meant.
+    - **A stub only draws for a link whose other end is still visible.** `archivedStubs`
+      (`GraphPane.tsx`) keeps a hidden ticket on the canvas only when it is one end of a
+      `blocks` or chain link to a ticket that is not hidden; a hidden ticket linked only to
+      other hidden tickets, or with no link at all, draws nothing. There is nothing left on
+      screen for a dangling edge to reach, so a stub with no visible counterpart would be a
+      node pointing at empty space.
 
 ### F14 · Phase 3 — Archive, restore and the Archived view
 

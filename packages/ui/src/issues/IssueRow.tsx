@@ -122,12 +122,20 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightSemibold,
     color: `var(--tm-attention, ${tokens.colorPaletteDarkOrangeForeground1})`,
   },
+  archived: {
+    flexShrink: 0,
+    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+  },
 });
 
 export interface IssueRowProps {
   task: Task;
   ctx: IssueRowContext;
   selected?: boolean;
+  /** Whether this row is hidden by default (F14.6) — the caller already decided this with
+   *  `archivedBy`, so the row only draws the quiet "Archived" tag rather than re-deriving it. */
+  archived?: boolean;
   onSelect?: (id: string) => void;
   onOpen?: (id: string) => void;
 }
@@ -136,6 +144,7 @@ export function IssueRow({
   task,
   ctx,
   selected = false,
+  archived = false,
   onSelect,
   onOpen,
 }: IssueRowProps): JSX.Element {
@@ -160,6 +169,7 @@ export function IssueRow({
         {parts.title}
       </Text>
       <span className={styles.cluster}>
+        {archived && <Text className={styles.archived}>Archived</Text>}
         {parts.run && <span className={styles.run}>{parts.run.label}</span>}
         {parts.mr && (
           <Link

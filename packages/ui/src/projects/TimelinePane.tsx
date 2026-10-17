@@ -98,14 +98,16 @@ import {
   Caption1,
   MessageBar,
   MessageBarBody,
+  ToggleButton,
   makeStyles,
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import type { Milestone, Task, TicketLink } from '@tm/shared/model';
+import type { Milestone, Project, Task, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
 import { canLink, LINK_REFUSAL_MESSAGE, type LinkGate, type TaskLink } from '@tm/shared/taskChain';
 import { canLinkTickets, TICKET_LINK_REFUSAL_MESSAGE } from '@tm/shared/ticketLinks';
+import { archiveIndexOf, visibleTickets } from '@tm/shared/trackerArchive';
 import { ChainLinkPopover } from '../board/ChainLinkPopover';
 import { rubberBandPath, type AnchorRect } from '../board/chainArrows';
 import { FoldToggle } from '../FoldToggle';
@@ -237,6 +239,7 @@ const BAR_INSET = 6;
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, height: '100%' },
+  toolbar: { display: 'flex', alignItems: 'center', gap: '8px' },
   scroll: {
     flex: 1,
     minHeight: 0,
@@ -419,6 +422,15 @@ export interface TimelinePaneProps {
   selectedTicketId?: string | null;
   /** Open a ticket in the shared detail pane. */
   onSelectTicket: (id: string) => void;
+  /** `Projects.tsx`'s own ticket-project list, for this pane's own `ArchiveIndex` (F14.6) —
+   *  built here from `milestones`, this project's own tickets and `projects` the same way
+   *  `Projects.tsx` builds `BacklogTable`'s. */
+  projects?: Project[] | null;
+  /** The "Include archived" toggle (F14.6) — shared with the Backlog's own, rendered in this
+   *  pane's toolbar; skips archived milestones (`ganttRange`/`ganttMarkers`) and hidden
+   *  tickets (`visibleTickets`) when off. */
+  includeArchived?: boolean;
+  onIncludeArchivedChange?: (includeArchived: boolean) => void;
 }
 
 function rowLabel(ticket: Pick<Task, 'ticketKey' | 'title'>): {
@@ -433,6 +445,9 @@ export function TimelinePane({
   milestones,
   selectedTicketId,
   onSelectTicket,
+  projects,
+  includeArchived = false,
+  onIncludeArchivedChange,
 }: TimelinePaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -517,6 +532,22 @@ export function TimelinePane({
     [settings],
   );
 
+  /** This pane's own archive lookup (F14.6) — `Projects.tsx`'s `archiveIndex` built the same
+   *  way, over milestones from the `milestones` prop, epics from this project's own tickets,
+   *  and tracker projects from `projects`. */
+  const archiveIndex = useMemo(
+    () => archiveIndexOf(milestones, tickets ?? [], projects ?? []),
+    [milestones, tickets, projects],
+  );
+  /** `tickets`, with every archived-hidden row dropped unless `includeArchived` is set — fed
+   *  to `ganttRange`, `ganttRows` and (through `rows`) the unscheduled tray and dependency
+   *  paths, so a hidden ticket drops out of all four the same way an out-of-list endpoint
+   *  already does. */
+  const visible = useMemo(
+    () => visibleTickets(tickets ?? [], archiveIndex, { includeArchived }),
+    [tickets, archiveIndex, includeArchived],
+  );
+
   const toggleEpic = useCallback(
     (epicId: string) => {
       const onBoard = new Set(
@@ -541,8 +572,8 @@ export function TimelinePane({
   // day gets — so the first scale (any width at all) is purely to learn that count, and the
   // second is the one actually drawn from. See `ganttLayout.ts`'s `ganttTicks`.
   const range = useMemo(
-    () => ganttRange(tickets ?? [], milestones, now),
-    [tickets, milestones, now],
+    () => ganttRange(visible, milestones, now, { includeArchived }),
+    [visible, milestones, now, includeArchived],
   );
   const dayCount = useMemo(() => ganttTicks(ganttScale(range, 1)).days.length, [range]);
   const chartWidth = Math.max(1, dayCount) * PX_PER_DAY;
@@ -789,12 +820,15 @@ export function TimelinePane({
   );
 
   const ticks = useMemo(() => ganttTicks(scale), [scale]);
-  const markers = useMemo(() => ganttMarkers(milestones, scale), [milestones, scale]);
+  const markers = useMemo(
+    () => ganttMarkers(milestones, scale, { includeArchived }),
+    [milestones, scale, includeArchived],
+  );
   const today = todayX(scale, now);
 
   const rows = useMemo(
-    () => ganttRows(tickets ?? [], scale, collapsedEpicIds),
-    [tickets, scale, collapsedEpicIds],
+    () => ganttRows(visible, scale, collapsedEpicIds),
+    [visible, scale, collapsedEpicIds],
   );
   const scheduledRows = useMemo(() => rows.filter((r) => r.bar !== null), [rows]);
   const unscheduledRows = useMemo(() => rows.filter((r) => r.bar === null), [rows]);
@@ -944,12 +978,22 @@ export function TimelinePane({
 
   return (
     <div className={styles.root}>
+      <div className={styles.toolbar}>
+        <ToggleButton
+          size="small"
+          appearance="subtle"
+          checked={includeArchived}
+          onClick={() => onIncludeArchivedChange?.(!includeArchived)}
+        >
+          Include archived
+        </ToggleButton>
+      </div>
       {dragError && (
         <MessageBar intent="error">
           <MessageBarBody>{dragError}</MessageBarBody>
         </MessageBar>
       )}
-      {rows.length === 0 ? (
+      {tickets.length === 0 ? (
         <Body1 className={styles.empty}>No tickets in this project yet.</Body1>
       ) : (
         <div className={styles.scroll}>

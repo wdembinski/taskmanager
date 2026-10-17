@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Milestone, Task } from '@tm/shared/model';
+import { archiveIndexOf, visibleTickets } from '@tm/shared/trackerArchive';
 import {
   DAY_MS,
   GANTT_ROW_HEIGHT,
@@ -10,6 +11,7 @@ import {
   ganttDependencyPath,
   ganttEpicBands,
   ganttMarkers,
+  ganttMilestones,
   ganttRange,
   ganttRows,
   ganttScale,
@@ -86,6 +88,52 @@ describe('ganttRange', () => {
     const range = ganttRange(tickets, [milestone({ dueAt: null })], 50 * DAY_MS);
     expect(range.start).toBeLessThanOrEqual(50 * DAY_MS);
     expect(range.end).toBeGreaterThanOrEqual(50 * DAY_MS);
+  });
+
+  it('ignores an archived milestone due far outside the tickets’ own span (F14.6)', () => {
+    const tickets = [ticket({ startAt: 10 * DAY_MS, dueAt: 12 * DAY_MS })];
+    const archived = milestone({ dueAt: 200 * DAY_MS, archivedAt: 1 });
+    const range = ganttRange(tickets, [archived], 10 * DAY_MS);
+    expect(range.end).toBeLessThan(200 * DAY_MS);
+  });
+
+  it('`includeArchived: true` restores an archived milestone’s widening (F14.6)', () => {
+    const tickets = [ticket({ startAt: 10 * DAY_MS, dueAt: 12 * DAY_MS })];
+    const archived = milestone({ dueAt: 200 * DAY_MS, archivedAt: 1 });
+    const range = ganttRange(tickets, [archived], 10 * DAY_MS, { includeArchived: true });
+    expect(range.end).toBeGreaterThan(200 * DAY_MS);
+  });
+
+  it('a ticket on an archived milestone, filtered through `visibleTickets`, no longer widens the range (F14.6)', () => {
+    const archivedMilestone = milestone({ id: 'm-archived', archivedAt: 1 });
+    const onTrack = ticket({ startAt: 10 * DAY_MS, dueAt: 12 * DAY_MS });
+    const onArchived = ticket({
+      milestoneId: archivedMilestone.id,
+      startAt: 200 * DAY_MS,
+      dueAt: 210 * DAY_MS,
+    });
+    const index = archiveIndexOf([archivedMilestone], [], []);
+    const visible = visibleTickets([onTrack, onArchived], index);
+    expect(visible).toEqual([onTrack]);
+    const range = ganttRange(visible, [], 10 * DAY_MS);
+    expect(range.end).toBeLessThan(200 * DAY_MS);
+  });
+});
+
+describe('ganttMilestones', () => {
+  it('drops an archived milestone, keeps an active one', () => {
+    const active = milestone({ archivedAt: null });
+    const archived = milestone({ archivedAt: 1 });
+    expect(ganttMilestones([active, archived])).toEqual([active]);
+  });
+
+  it('`includeArchived: true` keeps both', () => {
+    const active = milestone({ archivedAt: null });
+    const archived = milestone({ archivedAt: 1 });
+    expect(ganttMilestones([active, archived], { includeArchived: true })).toEqual([
+      active,
+      archived,
+    ]);
   });
 });
 
@@ -235,6 +283,21 @@ describe('ganttRows', () => {
     const rows = ganttRows([orphan], scale, new Set());
     expect(rows[0].bar).toBeNull();
   });
+
+  it('gives a ticket on an archived milestone no row, once filtered through `visibleTickets` (F14.6)', () => {
+    const archivedMilestone = milestone({ id: 'm-archived', archivedAt: 1 });
+    const onTrack = ticket({ startAt: 1 * DAY_MS, dueAt: 2 * DAY_MS });
+    const onArchived = ticket({
+      milestoneId: archivedMilestone.id,
+      startAt: 3 * DAY_MS,
+      dueAt: 4 * DAY_MS,
+    });
+    const index = archiveIndexOf([archivedMilestone], [], []);
+    const visible = visibleTickets([onTrack, onArchived], index);
+    const rows = ganttRows(visible, scale, new Set());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(onTrack.id);
+  });
 });
 
 describe('ganttEpicBands', () => {
@@ -308,6 +371,18 @@ describe('ganttMarkers', () => {
   it('skips a milestone with no due date', () => {
     const markers = ganttMarkers([milestone({ dueAt: null })], scale);
     expect(markers).toHaveLength(0);
+  });
+
+  it('omits an archived milestone’s marker (F14.6)', () => {
+    const archived = milestone({ dueAt: 10 * DAY_MS, archivedAt: 1 });
+    const markers = ganttMarkers([archived], scale);
+    expect(markers).toHaveLength(0);
+  });
+
+  it('`includeArchived: true` restores an archived milestone’s marker (F14.6)', () => {
+    const archived = milestone({ dueAt: 10 * DAY_MS, archivedAt: 1 });
+    const markers = ganttMarkers([archived], scale, { includeArchived: true });
+    expect(markers).toHaveLength(1);
   });
 });
 

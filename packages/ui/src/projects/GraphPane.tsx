@@ -72,13 +72,33 @@
  * `positions`/`ticketGraph:saveLayout` store for every node regardless of kind. The zone itself
  * sizes to enclose its children (or a small empty band, for a childless epic) and always
  * renders — including with zero children — since the zone IS the epic, not a summary of it.
+ *
+ * **Archived stubs (F14.6).** `tickets` from the seed still holds every ticket, archived or
+ * not — `visible` (`visibleTickets`) is what actually reaches `layoutNodes`, so a hidden
+ * ticket's own node, and an archived epic's whole zone, simply stop being drawn. A hidden
+ * ticket that is one end of a `blocks` dependency or chain link to a ticket still ON screen
+ * does not just vanish, though — a dangling edge would be confusing in a way an absent node
+ * is not, so `archivedStubs` picks those out and `layoutNodes` draws each as a compact,
+ * read-only `archivedStub` node (`ArchivedStubNode`) instead: never nested under an epic zone
+ * even if it has one, not draggable into a link (`connectable: false`) and not erasable from
+ * the canvas (`deletable: false` — the ticket itself still exists, only restoring it from the
+ * Archived view brings its real node back). The edge touching it draws dashed and in
+ * `tokens.colorNeutralStroke3` regardless of its own kind — cyan is this pane's one colour for
+ * "moving" (see above), and an edge ending at a stub is not something that can move. With
+ * `includeArchived` on, `visible` already holds everything, so `hidden` — and therefore
+ * `archivedStubs` — is empty: nothing is a stub, every ticket draws as its ordinary node.
+ * `handleConnect`/`handleEdgeClick` still resolve against the full `tickets` list rather than
+ * `visible`, so editing or deleting the link a stub is drawn for keeps working the same way it
+ * always has.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Caption1,
   MessageBar,
   MessageBarBody,
+  ToggleButton,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import {
@@ -95,9 +115,10 @@ import {
   type NodeProps,
   type OnNodeDrag,
 } from '@xyflow/react';
-import type { Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
+import type { Milestone, Project, Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { isEpic, typeIconKeyFor } from '@tm/shared/tickets';
+import { archiveIndexOf, visibleTickets } from '@tm/shared/trackerArchive';
 import { PaneLoading } from '../PaneLoading';
 import { FLUO_VAR } from '../tokens';
 import { useTransport } from '../transport';
@@ -115,6 +136,13 @@ const useStyles = makeStyles({
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     borderRadius: tokens.borderRadiusMedium,
   },
+  toolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '8px 10px',
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
   canvas: { flex: 1, minHeight: 0 },
   card: {
     display: 'flex',
@@ -126,6 +154,13 @@ const useStyles = makeStyles({
     borderRadius: tokens.borderRadiusMedium,
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     backgroundColor: tokens.colorNeutralBackground1,
+  },
+  /** An archived stub's own card — `card`'s dashed twin, declared after it so Griffel resolves
+   *  the `border` clash in this class's favour. Same footprint, so a stub never reads as a
+   *  smaller or more important node than the ordinary ticket it is standing in for. */
+  stubCard: {
+    border: `1px dashed ${tokens.colorNeutralStroke2}`,
+    backgroundColor: tokens.colorNeutralBackground2,
   },
   head: {
     display: 'flex',
@@ -139,6 +174,9 @@ const useStyles = makeStyles({
     fontWeight: 600,
     fontFamily: 'monospace',
   },
+  /** A stub's key and its "Archived" caption — both muted, declared after `key` so Griffel
+   *  resolves the `color` clash in this class's favour. */
+  muted: { color: tokens.colorNeutralForeground3 },
   title: {
     color: tokens.colorNeutralForeground1,
     overflow: 'hidden',
@@ -211,7 +249,29 @@ function EpicZoneNode({ data }: NodeProps<Node<EpicZoneData>>): JSX.Element {
   );
 }
 
-const NODE_TYPES = { ticket: TicketNode, epicZone: EpicZoneNode };
+/** An archived ticket that is one end of a link to a still-visible one (F14.6) — never a
+ *  "real" node for the ticket (that would mean it isn't hidden), only a stand-in so the link
+ *  stays drawn instead of silently dropping. `card`'s own layout, dashed and muted, with the
+ *  same type glyph `TicketNode` draws — a stub is still THAT ticket, not an anonymous dot. */
+type ArchivedStubData = { ticket: Task };
+
+function ArchivedStubNode({ data }: NodeProps<Node<ArchivedStubData>>): JSX.Element {
+  const styles = useStyles();
+  const { ticket } = data;
+  return (
+    <div className={mergeClasses(styles.card, styles.stubCard)}>
+      <Handle type="target" position={Position.Left} />
+      <div className={styles.head}>
+        <span className={styles.type}>{issueTypeGlyph(typeIconKeyFor(ticket))}</span>
+        <span className={mergeClasses(styles.key, styles.muted)}>{ticket.ticketKey ?? '—'}</span>
+      </div>
+      <Caption1 className={styles.muted}>Archived</Caption1>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  );
+}
+
+const NODE_TYPES = { ticket: TicketNode, epicZone: EpicZoneNode, archivedStub: ArchivedStubNode };
 
 /** Grid geometry for the fallback layout — the numbers only need to keep un-saved nodes
  *  from overlapping each other. Applies to top-level nodes only — an epic's own children lay
@@ -262,7 +322,10 @@ function childGridPosition(i: number): { x: number; y: number } {
   };
 }
 
-export type GraphNode = Node<TicketNodeData, 'ticket'> | Node<EpicZoneData, 'epicZone'>;
+export type GraphNode =
+  | Node<TicketNodeData, 'ticket'>
+  | Node<EpicZoneData, 'epicZone'>
+  | Node<ArchivedStubData, 'archivedStub'>;
 
 /**
  * One node per ticket — except an epic (`isEpic`), which becomes an `epicZone` container
@@ -281,10 +344,21 @@ export type GraphNode = Node<TicketNodeData, 'ticket'> | Node<EpicZoneData, 'epi
  * link endpoints — but cheap to guard, the same reasoning {@link dependencyEdges} drops a
  * dangling edge for) falls back to an ordinary top-level `ticket` node instead of a stray
  * `parentId` React Flow would refuse to resolve.
+ *
+ * `stubs` (F14.6, see {@link archivedStubs}) are archived tickets that did not make it into
+ * `tickets` at all but still need a node so the link they are drawn for has somewhere to land —
+ * each becomes a top-level `archivedStub` node, laid out AFTER every ordinary top-level ticket
+ * so the two share one "others" grid-fallback sequence rather than two independent ones that
+ * could land on the same slot. Never nested under an epic zone, even when the stub's own
+ * `epicTaskId` would otherwise have put it there — the zone itself is either drawn (the epic is
+ * visible) or it isn't (gone along with every one of its children), and a stub does not belong
+ * inside a zone that may not even be on screen. `connectable: false`/`deletable: false` on every
+ * stub — it is not really here, only standing in for a ticket this view has chosen to hide.
  */
 export function layoutNodes(
   tickets: Task[],
   saved: Record<string, { x: number; y: number }>,
+  stubs: Task[] = [],
 ): GraphNode[] {
   const epics = tickets.filter((t) => isEpic(t));
   const epicIds = new Set(epics.map((e) => e.id));
@@ -363,6 +437,30 @@ export function layoutNodes(
     });
   }
 
+  for (const ticket of stubs) {
+    const position = saved[ticket.id];
+    if (position) {
+      nodes.push({
+        id: ticket.id,
+        type: 'archivedStub',
+        position,
+        data: { ticket },
+        connectable: false,
+        deletable: false,
+      });
+      continue;
+    }
+    const fallback = gridPosition(otherGridIndex++);
+    nodes.push({
+      id: ticket.id,
+      type: 'archivedStub',
+      position: { x: fallback.x + OTHER_GRID_OFFSET_X, y: fallback.y },
+      data: { ticket },
+      connectable: false,
+      deletable: false,
+    });
+  }
+
   return nodes;
 }
 
@@ -371,33 +469,86 @@ const DEPENDENCY_STROKE = tokens.colorNeutralStroke1;
 /** Cyan execution chain — `TimelinePane.chain`'s own colour, `FLUO_VAR.cyan` (`GRAPH_INK.live`'s
  *  own budget: the one coloured thing on an otherwise monochrome drawing). */
 const CHAIN_STROKE = FLUO_VAR.cyan;
+/** An edge touching an archived stub (F14.6) — muted and dashed regardless of its own kind,
+ *  `tokens.colorNeutralStroke3`: cyan is this pane's one colour for "moving", and an edge
+ *  ending at a stub is not something that can. Outranks {@link CHAIN_STROKE} as much as
+ *  {@link DEPENDENCY_STROKE}. */
+const STUB_STROKE = tokens.colorNeutralStroke3;
+const STUB_DASH = '4 3';
+
+/**
+ * The hidden tickets `layoutNodes` should still draw a node for — one end of a `blocks`
+ * dependency or chain link whose OTHER end is still visible. A hidden ticket with no such link
+ * (or whose links are to other hidden tickets only) yields no stub: there is nothing left on
+ * screen for a dangling edge to reach. Each qualifying ticket is returned once, in `hidden`'s
+ * own order, even if it is the hidden end of several such links.
+ */
+export function archivedStubs(
+  hidden: Task[],
+  links: TicketLink[],
+  chainLinks: TaskLink[],
+  visibleIds: Set<string>,
+): Task[] {
+  const hiddenIds = new Set(hidden.map((t) => t.id));
+  const stubIds = new Set<string>();
+  const note = (fromId: string, toId: string): void => {
+    if (hiddenIds.has(fromId) && visibleIds.has(toId)) stubIds.add(fromId);
+    if (hiddenIds.has(toId) && visibleIds.has(fromId)) stubIds.add(toId);
+  };
+  for (const link of links) {
+    if (link.type === 'blocks') note(link.fromTaskId, link.toTaskId);
+  }
+  for (const link of chainLinks) {
+    note(link.fromTaskId, link.toTaskId);
+  }
+  return hidden.filter((ticket) => stubIds.has(ticket.id));
+}
 
 /** One `blocks` dependency edge per link of that type — the others (`relates`, `duplicates`,
  *  …) are documentary and drawn nowhere in this app yet. Dropped, not just unstyled, if either
- *  end is not among `nodeIds` — a React Flow edge naming a missing node warns to the console. */
-function dependencyEdges(links: TicketLink[], nodeIds: Set<string>): Edge[] {
+ *  end is not among `nodeIds` — a React Flow edge naming a missing node warns to the console.
+ *  An edge with either end in `stubIds` draws muted and dashed instead of its ordinary grey
+ *  (see {@link STUB_STROKE}). */
+export function dependencyEdges(
+  links: TicketLink[],
+  nodeIds: Set<string>,
+  stubIds: Set<string>,
+): Edge[] {
   return links
     .filter((l) => l.type === 'blocks' && nodeIds.has(l.fromTaskId) && nodeIds.has(l.toTaskId))
-    .map((l) => ({
-      id: l.id,
-      source: l.fromTaskId,
-      target: l.toTaskId,
-      style: { stroke: DEPENDENCY_STROKE, strokeWidth: 1.5 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: DEPENDENCY_STROKE },
-    }));
+    .map((l) => {
+      const toStub = stubIds.has(l.fromTaskId) || stubIds.has(l.toTaskId);
+      const stroke = toStub ? STUB_STROKE : DEPENDENCY_STROKE;
+      return {
+        id: l.id,
+        source: l.fromTaskId,
+        target: l.toTaskId,
+        style: toStub
+          ? { stroke, strokeWidth: 1.5, strokeDasharray: STUB_DASH }
+          : { stroke, strokeWidth: 1.5 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+      };
+    });
 }
 
-/** One execution-chain edge per chain link — same shape as {@link dependencyEdges}, cyan. */
-function chainEdges(links: TaskLink[], nodeIds: Set<string>): Edge[] {
+/** One execution-chain edge per chain link — same shape as {@link dependencyEdges}, cyan unless
+ *  it touches a stub, in which case {@link STUB_STROKE} wins over the cyan too. */
+export function chainEdges(links: TaskLink[], nodeIds: Set<string>, stubIds: Set<string>): Edge[] {
   return links
     .filter((l) => nodeIds.has(l.fromTaskId) && nodeIds.has(l.toTaskId))
-    .map((l) => ({
-      id: l.id,
-      source: l.fromTaskId,
-      target: l.toTaskId,
-      style: { stroke: CHAIN_STROKE, strokeWidth: 1.5 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: CHAIN_STROKE },
-    }));
+    .map((l) => {
+      const toStub = stubIds.has(l.fromTaskId) || stubIds.has(l.toTaskId);
+      const stroke = toStub ? STUB_STROKE : CHAIN_STROKE;
+      return {
+        id: l.id,
+        source: l.fromTaskId,
+        target: l.toTaskId,
+        style: toStub
+          ? { stroke, strokeWidth: 1.5, strokeDasharray: STUB_DASH }
+          : { stroke, strokeWidth: 1.5 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+      };
+    });
 }
 
 export interface GraphPaneProps {
@@ -408,9 +559,26 @@ export interface GraphPaneProps {
   selectedTicketId?: string | null;
   /** Open a ticket in the shared detail pane. */
   onSelectTicket: (id: string) => void;
+  /** `Projects.tsx`'s own `registries.milestones` — `TimelinePane`'s own prop, for this pane's
+   *  `ArchiveIndex` (F14.6), built the same way `TimelinePane.archiveIndex` is. */
+  milestones?: Milestone[];
+  /** `Projects.tsx`'s own ticket-project list, for the archive lookup (F14.6). */
+  projects?: Project[] | null;
+  /** The "Include archived" toggle (F14.6), shared with the Backlog's and Timeline's own —
+   *  drops hidden nodes (`visibleTickets`) and stubs the links a still-visible one keeps
+   *  (`archivedStubs`) when off. */
+  includeArchived?: boolean;
+  onIncludeArchivedChange?: (includeArchived: boolean) => void;
 }
 
-export function GraphPane({ projectId, onSelectTicket }: GraphPaneProps): JSX.Element {
+export function GraphPane({
+  projectId,
+  onSelectTicket,
+  milestones,
+  projects,
+  includeArchived = false,
+  onIncludeArchivedChange,
+}: GraphPaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [tickets, setTickets] = useState<Task[] | null>(null);
@@ -482,6 +650,32 @@ export function GraphPane({ projectId, onSelectTicket }: GraphPaneProps): JSX.El
     };
   }, [transport]);
 
+  /** This pane's own archive lookup (F14.6) — `TimelinePane.archiveIndex`'s own shape, over
+   *  `milestones`, epics from this project's own `tickets`, and tracker projects from
+   *  `projects`. */
+  const archiveIndex = useMemo(
+    () => archiveIndexOf(milestones ?? [], tickets ?? [], projects ?? []),
+    [milestones, tickets, projects],
+  );
+  /** `tickets`, with every archived-hidden row dropped unless `includeArchived` is set — the
+   *  only list `layoutNodes`'s ordinary (non-stub) pass ever sees. */
+  const visible = useMemo(
+    () => visibleTickets(tickets ?? [], archiveIndex, { includeArchived }),
+    [tickets, archiveIndex, includeArchived],
+  );
+  const visibleIds = useMemo(() => new Set(visible.map((t) => t.id)), [visible]);
+  /** Everything `visible` left out — empty whenever `includeArchived` is set, since `visible`
+   *  then holds every ticket `tickets` does. */
+  const hidden = useMemo(
+    () => (tickets ?? []).filter((t) => !visibleIds.has(t.id)),
+    [tickets, visibleIds],
+  );
+  const stubs = useMemo(
+    () => archivedStubs(hidden, links, chainLinks, visibleIds),
+    [hidden, links, chainLinks, visibleIds],
+  );
+  const stubIds = useMemo(() => new Set(stubs.map((t) => t.id)), [stubs]);
+
   // Managed node state (`useNodesState`, React Flow's own `applyNodeChanges` wrapper) rather
   // than a plain `useMemo` — a fully-controlled `nodes` prop with no `onNodesChange` can't
   // absorb React Flow's live position deltas mid-drag, so nothing moved on screen until
@@ -493,7 +687,7 @@ export function GraphPane({ projectId, onSelectTicket }: GraphPaneProps): JSX.El
   // position is preserved.
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>([]);
   useEffect(() => {
-    const laidOut = layoutNodes(tickets ?? [], positions);
+    const laidOut = layoutNodes(visible, positions, stubs);
     setNodes((current) => {
       const currentById = new Map(current.map((n) => [n.id, n]));
       return laidOut.map((n) => {
@@ -503,11 +697,14 @@ export function GraphPane({ projectId, onSelectTicket }: GraphPaneProps): JSX.El
           : n;
       });
     });
-  }, [tickets, positions, setNodes]);
+  }, [visible, stubs, positions, setNodes]);
   const nodeIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
   const edges = useMemo(
-    () => [...dependencyEdges(links, nodeIds), ...chainEdges(chainLinks, nodeIds)],
-    [links, chainLinks, nodeIds],
+    () => [
+      ...dependencyEdges(links, nodeIds, stubIds),
+      ...chainEdges(chainLinks, nodeIds, stubIds),
+    ],
+    [links, chainLinks, nodeIds, stubIds],
   );
 
   // The debounce timer, `ModelField`'s own ref-based shape: cleared and restarted on every
@@ -646,6 +843,16 @@ export function GraphPane({ projectId, onSelectTicket }: GraphPaneProps): JSX.El
 
   return (
     <div className={styles.root}>
+      <div className={styles.toolbar}>
+        <ToggleButton
+          size="small"
+          appearance="subtle"
+          checked={includeArchived}
+          onClick={() => onIncludeArchivedChange?.(!includeArchived)}
+        >
+          Include archived
+        </ToggleButton>
+      </div>
       {deleteError && (
         <MessageBar intent="error">
           <MessageBarBody>{deleteError}</MessageBarBody>

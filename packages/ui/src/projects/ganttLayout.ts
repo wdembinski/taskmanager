@@ -117,8 +117,22 @@ function startOfLocalDay(ms: number): Date {
 }
 
 /**
- * The window the timeline draws — every ticket's `startAt`/`dueAt` and every milestone's
- * `dueAt`, padded and floored to a minimum span.
+ * `milestones`, with an archived one dropped unless `includeArchived` is set — the one filter
+ * {@link ganttRange} and {@link ganttMarkers} both run first, so an archived milestone can
+ * neither widen the drawn range nor draw its own marker (F14.6), the same "Include archived"
+ * switch `BacklogTable`'s own toggle flips.
+ */
+export function ganttMilestones(
+  milestones: readonly Milestone[],
+  opts?: { includeArchived?: boolean },
+): Milestone[] {
+  if (opts?.includeArchived) return milestones as Milestone[];
+  return milestones.filter((m) => m.archivedAt == null);
+}
+
+/**
+ * The window the timeline draws — every ticket's `startAt`/`dueAt` and every non-archived
+ * milestone's `dueAt` ({@link ganttMilestones}), padded and floored to a minimum span.
  *
  * `now` is the fallback centre for a project with nothing dated at all, not merely a tie-
  * breaker: a fresh project's timeline still has to draw SOMETHING, and "today" is the only
@@ -131,13 +145,14 @@ export function ganttRange(
   tickets: readonly Task[],
   milestones: readonly Milestone[],
   now: number,
+  opts?: { includeArchived?: boolean },
 ): GanttRange {
   const instants: number[] = [];
   for (const t of tickets) {
     if (t.startAt != null) instants.push(t.startAt);
     if (t.dueAt != null) instants.push(t.dueAt);
   }
-  for (const m of milestones) {
+  for (const m of ganttMilestones(milestones, opts)) {
     if (m.dueAt != null) instants.push(m.dueAt);
   }
   if (instants.length === 0) instants.push(now);
@@ -335,12 +350,18 @@ export function ganttEpicBands(rows: readonly GanttRow[]): GanttEpicBand[] {
 }
 
 /**
- * Every dated milestone as a vertical marker — one per calendar day it falls on, so two
- * milestones due the same day get the same `x` and are told apart by `stackIndex` instead of
- * landing on top of each other.
+ * Every dated, non-archived milestone ({@link ganttMilestones}) as a vertical marker — one per
+ * calendar day it falls on, so two milestones due the same day get the same `x` and are told
+ * apart by `stackIndex` instead of landing on top of each other.
  */
-export function ganttMarkers(milestones: readonly Milestone[], scale: GanttScale): GanttMarker[] {
-  const dated = milestones.filter((m): m is Milestone & { dueAt: number } => m.dueAt != null);
+export function ganttMarkers(
+  milestones: readonly Milestone[],
+  scale: GanttScale,
+  opts?: { includeArchived?: boolean },
+): GanttMarker[] {
+  const dated = ganttMilestones(milestones, opts).filter(
+    (m): m is Milestone & { dueAt: number } => m.dueAt != null,
+  );
   const sorted = [...dated].sort((a, b) => a.dueAt - b.dueAt);
   const stackByX = new Map<number, number>();
   return sorted.map((m) => {

@@ -7,8 +7,14 @@
 import type { BoardColumn, Task } from '@tm/shared/model';
 import { columnForTask } from '@tm/shared/board';
 import { isEpic } from '@tm/shared/tickets';
+import type { ArchiveIndex } from '@tm/shared/trackerArchive';
 import { columnBadge } from '../taskStatus';
-import { type BacklogSortKey, filterTickets, sortBacklog } from './backlogView';
+import {
+  archiveVisibleTickets,
+  type BacklogSortKey,
+  filterTickets,
+  sortBacklog,
+} from './backlogView';
 
 export interface BacklogStatusGroup {
   column: BoardColumn;
@@ -28,20 +34,24 @@ const STATUS_ORDER: readonly BoardColumn[] = [
 ];
 
 /**
- * `tickets`, filtered (`filterTickets`) and sorted (`sortBacklog`) exactly as the epic-grouped
- * view is, then bucketed by the column each is in (`columnForTask`) instead of by epic. An
- * epic is never one of the rows here — dropped (`isEpic`) rather than grouped, since this view
- * has no header for it to sit under. A column with nothing in it is omitted rather than
- * rendered empty: every non-epic ticket appears in exactly one group's `tickets`, always.
+ * `tickets`, with archived rows dropped (`archiveVisibleTickets`, F14.6) exactly as
+ * `backlogRows` does, filtered (`filterTickets`) and sorted (`sortBacklog`) exactly as the
+ * epic-grouped view is, then bucketed by the column each is in (`columnForTask`) instead of
+ * by epic. An epic is never one of the rows here — dropped (`isEpic`) rather than grouped,
+ * since this view has no header for it to sit under. A column with nothing in it is omitted
+ * rather than rendered empty: every non-epic ticket appears in exactly one group's `tickets`,
+ * always.
  */
 export function backlogStatusGroups(
   tickets: readonly Task[],
   query: string,
   sortKey: BacklogSortKey,
+  archive?: { index: ArchiveIndex; includeArchived?: boolean },
 ): BacklogStatusGroup[] {
-  const sorted = sortBacklog(filterTickets(tickets, query), sortKey).filter(
-    (ticket) => !isEpic(ticket),
-  );
+  const sorted = sortBacklog(
+    filterTickets(archiveVisibleTickets(tickets, archive), query),
+    sortKey,
+  ).filter((ticket) => !isEpic(ticket));
 
   const buckets = new Map<BoardColumn, Task[]>();
   for (const ticket of sorted) {

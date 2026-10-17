@@ -41,6 +41,7 @@ import { agentProjectsOf } from '@tm/shared/agentProjects';
 import '@xyflow/react/dist/style.css';
 import { ownsTickets, type Project } from '@tm/shared/model';
 import { DEFAULT_BOARD_DISPLAY, type AppSettings } from '@tm/shared/settings';
+import { archiveIndexOf } from '@tm/shared/trackerArchive';
 import { PaneLoading } from '../PaneLoading';
 import { TaskDetailHost } from '../TaskDetailHostView';
 import { useTransport } from '../transport';
@@ -97,6 +98,10 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
    *  wherever the selection itself starts over: a fresh list/timeline/graph pick, or a
    *  project switch. */
   const [history, setHistory] = useState<PanelHistory>(EMPTY_HISTORY);
+  /** The Backlog/Timeline/Graph "Include archived" toggle (F14.6) — off by default, and reset
+   *  on a project switch the same way `viewState` is: a project picked up fresh has nothing
+   *  archived-but-shown to carry over from the last one. */
+  const [includeArchived, setIncludeArchived] = useState(false);
 
   const seed = useCallback(async () => {
     const [allProjects, allSettings] = await Promise.all([
@@ -127,6 +132,7 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
   useEffect(() => {
     dispatch({ type: 'reset' });
     setHistory(EMPTY_HISTORY);
+    setIncludeArchived(false);
   }, [selectedProjectId]);
 
   // Keeps the reducer's own `seen`/`label`/deletion-notice bookkeeping current — see
@@ -153,6 +159,14 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
   const ticketsById = useMemo(
     () => new Map((ticketsLoad.tickets ?? []).map((t) => [t.id, t] as const)),
     [ticketsLoad.tickets],
+  );
+
+  /** The Backlog's own archive lookup (F14.6) — milestones from the registries, epics from
+   *  this project's own tickets (every ticket is offered, not only the epics; `archiveIndexOf`
+   *  only ever looks an id up by exact match), and projects from the admin list. */
+  const archiveIndex = useMemo(
+    () => archiveIndexOf(registries.milestones, ticketsLoad.tickets ?? [], projects ?? []),
+    [registries.milestones, ticketsLoad.tickets, projects],
   );
 
   const breadcrumb = useMemo(() => {
@@ -368,6 +382,9 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
                 selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
                 onOpenTicket={openTicket}
+                archiveIndex={archiveIndex}
+                includeArchived={includeArchived}
+                onIncludeArchivedChange={setIncludeArchived}
               />
             )}
             {view === 'timeline' && (
@@ -377,6 +394,9 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
                 milestones={registries.milestones}
                 selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
+                projects={projects}
+                includeArchived={includeArchived}
+                onIncludeArchivedChange={setIncludeArchived}
               />
             )}
             {view === 'graph' && (
@@ -385,6 +405,10 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
                 projectId={selectedProject.id}
                 selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
+                milestones={registries.milestones}
+                projects={projects}
+                includeArchived={includeArchived}
+                onIncludeArchivedChange={setIncludeArchived}
               />
             )}
           </>
