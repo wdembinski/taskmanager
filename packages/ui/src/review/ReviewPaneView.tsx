@@ -27,7 +27,7 @@
  * suppresses that — it opens in a bottom sheet instead, shared by a brand new comment and an
  * Edit on an existing draft alike (`state.editor !== null` either way).
  */
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
 import {
   Body1,
@@ -65,7 +65,14 @@ import {
   type FileLoad,
   type ReviewState,
 } from './reviewState';
-import { buildFileTree, selectionLabel, sendRefusalText, summaryTotals } from './reviewView';
+import {
+  buildFileTree,
+  effectiveDiffLayout,
+  selectionLabel,
+  sendRefusalText,
+  summaryTotals,
+} from './reviewView';
+import { useDiffLayout } from './useDiffLayout';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px' },
@@ -79,6 +86,11 @@ const useStyles = makeStyles({
   notice: { color: tokens.colorNeutralForeground3 },
   link: { color: tokens.colorBrandForegroundLink },
   body: { display: 'flex', gap: '10px', minHeight: 0 },
+  // The wide pane's own width (excluding the file tree) — what `effectiveDiffLayout` checks
+  // against `SPLIT_MIN_WIDTH_PX` — shares `DiffView`'s own flex basis so wrapping it here
+  // changes nothing about the layout `styles.body` already produces.
+  diffContainer: { flex: '2 1 480px', minWidth: 0 },
+  layoutPill: { display: 'flex', gap: '2px' },
   unsent: { color: tokens.colorNeutralForeground3 },
   note: { width: '320px', display: 'flex', flexDirection: 'column', gap: '6px', padding: '4px' },
   // Compact layout (F3.8): a single-column body, no file tree beside the diff — `Files (n)`
@@ -168,6 +180,52 @@ function excerptLines(
   return rangeLines(load.file, range);
 }
 
+/**
+ * The wide pane's own diff container width, for `effectiveDiffLayout`'s `SPLIT_MIN_WIDTH_PX`
+ * check — modeled on `useCardAnchors`' own measure loop: a `ResizeObserver` schedules a single
+ * rAF-debounced remeasure, and a width that did not change triggers no re-render. Starts
+ * `null` (not measured yet) rather than `0`, so a first render before the observer reports in
+ * never reads as "too narrow for split".
+ */
+function useWidePaneWidth(): {
+  containerRef: (el: HTMLDivElement | null) => void;
+  widthPx: number | null;
+} {
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+  const [widthPx, setWidthPx] = useState<number | null>(null);
+  const frame = useRef<number | null>(null);
+
+  const measure = useCallback(() => {
+    if (!container) return;
+    const next = container.clientWidth;
+    setWidthPx((prev) => (prev === next ? prev : next));
+  }, [container]);
+
+  const schedule = useCallback(() => {
+    if (frame.current !== null) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = null;
+      measure();
+    });
+  }, [measure]);
+
+  useEffect(() => {
+    if (!container) return;
+    const ro = new ResizeObserver(schedule);
+    ro.observe(container);
+    schedule();
+    return () => {
+      ro.disconnect();
+      if (frame.current !== null) {
+        cancelAnimationFrame(frame.current);
+        frame.current = null;
+      }
+    };
+  }, [container, schedule]);
+
+  return { containerRef: setContainer, widthPx };
+}
+
 export function ReviewPaneView({
   taskId,
   state,
@@ -197,6 +255,8 @@ export function ReviewPaneView({
   const [wrap, setWrap] = useState(true);
   const [filesOpen, setFilesOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
+  const [preferredDiffLayout, setPreferredDiffLayout] = useDiffLayout();
+  const { containerRef: diffContainerRef, widthPx: diffWidthPx } = useWidePaneWidth();
 
   let body: JSX.Element | null = null;
   if (summary === null) {
@@ -256,25 +316,28 @@ export function ReviewPaneView({
         onDelete={onDelete}
       />
     ) : (
-      <DiffView
-        taskId={taskId}
-        diffId={summary.summary.diffId}
-        summary={summary.summary}
-        files={state.files}
-        expanded={state.expanded}
-        selectedPath={state.selectedPath}
-        comments={state.comments}
-        editor={state.editor}
-        canComment={canComment(state, readOnly)}
-        monochrome={monochrome}
-        onToggleExpanded={onToggleExpanded}
-        onClickLine={onClickLine}
-        onEditDraft={onEditDraft}
-        onSave={onSave}
-        onCancel={onCancel}
-        onEdit={onEdit}
-        onDelete={onDelete}
-      />
+      <div ref={diffContainerRef} className={styles.diffContainer}>
+        <DiffView
+          taskId={taskId}
+          diffId={summary.summary.diffId}
+          summary={summary.summary}
+          files={state.files}
+          expanded={state.expanded}
+          selectedPath={state.selectedPath}
+          comments={state.comments}
+          editor={state.editor}
+          canComment={canComment(state, readOnly)}
+          layout={effectiveDiffLayout(preferredDiffLayout, diffWidthPx, compact)}
+          monochrome={monochrome}
+          onToggleExpanded={onToggleExpanded}
+          onClickLine={onClickLine}
+          onEditDraft={onEditDraft}
+          onSave={onSave}
+          onCancel={onCancel}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      </div>
     );
 
     body = compact ? (
@@ -413,6 +476,22 @@ export function ReviewPaneView({
           {summary.summary.includesWorkingTree && (
             <Caption1 className={styles.uncommitted}>Includes uncommitted changes</Caption1>
           )}
+          <div className={styles.layoutPill} role="group" aria-label="Diff layout">
+            <Button
+              size="small"
+              appearance={preferredDiffLayout === 'unified' ? 'primary' : 'subtle'}
+              onClick={() => setPreferredDiffLayout('unified')}
+            >
+              Unified
+            </Button>
+            <Button
+              size="small"
+              appearance={preferredDiffLayout === 'split' ? 'primary' : 'subtle'}
+              onClick={() => setPreferredDiffLayout('split')}
+            >
+              Split
+            </Button>
+          </div>
           <span className={styles.spacer} />
           <Caption1 className={styles.unsent}>{unsentCount(state)} unsent</Caption1>
           <Popover trapFocus positioning="below-end">
