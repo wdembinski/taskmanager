@@ -285,6 +285,12 @@ export interface GitHubBranchProtection {
   } | null;
 }
 
+/** `GET /repos/{owner}/{repo}` — just enough to resolve a search row's owner/repo to an id. */
+export interface GitHubRepository {
+  id: number;
+  full_name: string;
+}
+
 /**
  * One row of `GET /repos/{owner}/{repo}/pulls/{number}/files` — one changed file on a pull
  * request.
@@ -1204,5 +1210,15 @@ export class GitHubClient {
    */
   listReviewRequests(maxPages = 5): Promise<GitHubSearchResult> {
     return this.searchIssues('is:pr is:open review-requested:@me archived:false', maxPages);
+  }
+
+  /**
+   * A repository's numeric id — `GET /repos/{owner}/{repo}`. A search row carries only
+   * `repository_url` (owner/repo, no id), so the `requested` queue's repo-id map falls
+   * back to this one call per still-unseen repository, the same shape as
+   * {@link getBranchProtection}.
+   */
+  getRepository(owner: string, repo: string): Promise<GitHubRepository> {
+    return this.request<GitHubRepository>(repoPath(owner, repo));
   }
 }

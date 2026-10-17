@@ -67,6 +67,12 @@ export interface GitLabMergeRequest {
   head_pipeline?: { id?: number; status?: string; web_url?: string } | null;
   pipeline?: { id?: number; status?: string; web_url?: string } | null;
   reviewers?: Array<{ id: number; username?: string }> | null;
+  /**
+   * Returned by default on both the list and detail endpoints, like `GitLabNote.author`
+   * above — the client's own type just never declared it until F15.9 needed an author for
+   * the `requested` queue's rows.
+   */
+  author?: { id?: number; username?: string; name?: string } | null;
 }
 
 /**

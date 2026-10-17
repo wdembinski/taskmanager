@@ -382,6 +382,7 @@ app.on('before-quit', () => {
           { name: 'cloudPoller', run: () => live.cloudPoller.dispose() },
           { name: 'cloudBoardPuller', run: () => live.cloudBoardPuller.dispose() },
           { name: 'assignmentPoller', run: () => live.assignmentPoller.dispose() },
+          { name: 'reviewQueueService', run: () => live.reviewQueueService.stop() },
           // Before `sessions`, deliberately: killing the sessions pushes a last burst of
           // events through `send`, and there is nobody left to deliver them to.
           { name: 'cloudEvents', run: () => live.cloudEvents.dispose() },

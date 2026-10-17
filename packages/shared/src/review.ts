@@ -123,6 +123,19 @@ export interface ReviewQueueItem {
   fileCount: number | null;
 }
 
+/**
+ * What `review:queues` hands over: every queue's rows, already deduped (a `requested` row
+ * also present in `mine` is dropped there, not here), plus the staleness the UI needs to
+ * show instead of pretending a cached answer is live.
+ */
+export interface ReviewQueuesSnapshot {
+  items: ReviewQueueItem[];
+  /** The oldest `syncedAt` among a queue's rows, taken AFTER dedup; `null` if never synced. */
+  asOf: Record<ReviewQueue, number | null>;
+  /** Queues whose most recent refresh left at least one segment incomplete or failed. */
+  partial: ReviewQueue[];
+}
+
 /** Where a subject's diff came from: a local worktree, a ref fetched for the review, or the forge's own API. */
 export type ReviewSource = 'worktree' | 'local-ref' | 'forge-api';
 

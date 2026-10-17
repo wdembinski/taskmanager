@@ -290,6 +290,7 @@ import { Updater } from './updater';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 import { createDiffGit, createReviewRefGit, DiffService } from './review/diffService';
+import { ReviewQueueService } from './review/queueService';
 import { ReviewService } from './review/reviewService';
 import { bucketUsageDaily, DAY_MS, normalizeDailyOptions } from '@shared/usage';
 import {
@@ -447,6 +448,9 @@ export interface Engine {
    *  timer is already `unref`'d, so this is only needed to stop it from firing against a
    *  store that is about to close. */
   stopAutoArchiveSweep: () => void;
+  /** The three review queues (F15.9) — its own 5-minute timer, `stop()`ped like every other
+   *  one here. */
+  reviewQueueService: ReviewQueueService;
 }
 
 /**
@@ -477,6 +481,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   // the same way as `cloudSkillPusher` just above.
   const cloudWorkflowPusher = new CloudWorkflowPusher();
 
+  // F15.9's review queue service — declared here, ahead of `send` below, for the same
+  // forward-reference reason `forgeToken` is (see its own comment further down): `send` is
+  // only ever CALLED once this whole function has finished setting up, well after this is
+  // assigned its real value a few hundred lines below. The definite-assignment assertion
+  // says so explicitly, the same way `forgeToken`'s own forward reference relies on it
+  // implicitly.
+  let reviewQueueService!: ReviewQueueService;
+  // `mergeRequests:changed`/`task:changed` fire far too often (every forge sync tick, every
+  // card edit) to run a store-only `refreshLocal()` on each one inline, so they are
+  // coalesced to one call about a second after the last of a burst — still fast enough that
+  // a card leaving `in-review` drops out of the queue without waiting for the 5-minute timer.
+  let localRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleLocalRefresh = (): void => {
+    if (localRefreshTimer) clearTimeout(localRefreshTimer);
+    localRefreshTimer = setTimeout(() => {
+      localRefreshTimer = null;
+      void reviewQueueService.refreshLocal();
+    }, 1_000);
+  };
+
   // Small helper: push an event to the UI unless the window is gone.
   //
   // This is the single choke point for the whole `IpcEvents` surface — `webContents.send`
@@ -504,6 +528,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       mainWindow.setBackgroundColor(
         WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)],
       );
+    }
+    // A merge-request sync landing, or any card edit (including a status change that could
+    // move a card into or out of `in-review`) — either is worth a `mine`/`agent` reread
+    // without waiting for the 5-minute timer. See `scheduleLocalRefresh`'s own comment.
+    if (channel === 'mergeRequests:changed' || channel === 'task:changed') {
+      scheduleLocalRefresh();
     }
   };
 
@@ -2237,6 +2267,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     if (!cipher) throw new Error('No GitHub token saved — add one in Settings.');
     return new GitHubClient({ baseUrl, token: decryptSecret(cipher, forgeName('github')) });
   };
+
+  // F15.9: built from the same client factories above, so a token saved mid-session is
+  // picked up on the very next refresh — exactly how every other forge call in this file
+  // already works. Assigning the forward-declared `let` from up near `send` rather than
+  // redeclaring it keeps that hook live.
+  reviewQueueService = new ReviewQueueService({
+    store,
+    diffs,
+    github: buildGitHubClient,
+    gitlab: buildGitLabClient,
+    emit: (snapshot) => send('review:queues:changed', snapshot),
+  });
 
   /**
    * The GitHub builder above, one source over — same guard, same reason — but a raw API
@@ -5958,6 +6000,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   // channel is live, so a network stall can never delay handler registration.
   updater.start();
 
+  // F15.9: the first refresh goes out once every channel is live, same reasoning as the
+  // updater just above. Not awaited — `registerIpcHandlers` returns synchronously, and the
+  // sidebar reads the cached `snapshot()` until this lands.
+  void reviewQueueService.start();
+
   return {
     sessions,
     scheduler,
@@ -5980,5 +6027,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     updater,
     windowTracker,
     stopAutoArchiveSweep,
+    reviewQueueService,
   };
 }

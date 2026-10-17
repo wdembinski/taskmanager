@@ -34,9 +34,18 @@
  *    leaves another card's alone; `removeProject` does the same for every task in the
  *    project, leaving a task outside it alone.
  * 6. `syncTasksFromPlan` keeps a surviving task's drafts and drops a dropped task's.
+ * 7. (F15.9) `applyReviewQueue`'s complete-answer-only removal: an INCOMPLETE pass upserts
+ *    what it returned and deletes nothing, in or out of its own segment; a COMPLETE pass
+ *    upserts what it returned and deletes every other cached row in that EXACT segment
+ *    only — a sibling segment (the other provider's half of `requested`, or `mine`) is
+ *    never touched, because segment membership is read back out of each row's own
+ *    `subject.provider`, not a schema column.
+ * 8. (F15.9) `countReviewDrafts`/`countReviewViewed` are grouped reads over every subject:
+ *    the former counts only UNSENT drafts, the latter every stored mark regardless of
+ *    whether its `blobSha` still matches anything.
  *
- * Prove the checks matter yourself with either of these two mutations to
- * `apps/client/src/main/store.ts` — both verified to go red while writing this script,
+ * Prove the checks matter yourself with any of these mutations to
+ * `apps/client/src/main/store.ts` — all verified to go red while writing this script,
  * then reverted:
  *
  *   - Comment out the one-shot copy's body (the `if (!selectState.get(REVIEW_DRAFTS_COPY_KEY))`
@@ -45,6 +54,13 @@
  *   - Delete the `deleteDraftsForSubject.run(subjectId)` / `deleteViewedForSubject...` /
  *     `deleteQueueForSubject...` trio from `deleteTaskDeep`: check 5's "deleteTask removes
  *     that card's drafts/viewed/queue rows" goes red, because the rows survive the delete.
+ *   - In `applyReviewQueue`'s implementation, drop the `if (!opts.complete) return;` guard
+ *     so the delete pass always runs: check 7's "incomplete: the row the pass did NOT
+ *     return survives untouched" goes red, because an incomplete pass starts deleting rows
+ *     it simply didn't mention.
+ *   - Remove the `if (segment.provider) { ... continue; }` filter from that same delete
+ *     loop: check 7's "the other provider segment is untouched" goes red, because a
+ *     `requested:github` pass starts deleting `requested:gitlab`'s rows too.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync } from 'node:fs';
@@ -534,6 +550,133 @@ let sentAt;
 
   const afterDrop = store.listReviewComments(dropTask.id);
   check("a dropped task's drafts do not survive the re-sync", afterDrop.length === 0);
+
+  store.close();
+}
+
+// ──────── Check 7: review_queue — applyReviewQueue's complete-answer-only removal ────
+{
+  const store = createStore(dbPath);
+
+  const queueItem = (subjectId, queue, provider, overrides = {}) => ({
+    subjectId,
+    queue,
+    subject:
+      provider === 'task'
+        ? { kind: 'task', taskId: subjectId.slice('task:'.length) }
+        : { kind: 'pr', provider, repoId: 1, repoPath: 'acme/repo', number: 1 },
+    title: 'A title',
+    author: '',
+    repoPath: 'acme/repo',
+    ref: '#1',
+    headSha: null,
+    draft: false,
+    updatedAt: Date.now(),
+    projectId: null,
+    taskId: null,
+    draftCount: 0,
+    viewedCount: 0,
+    fileCount: null,
+    ...overrides,
+  });
+
+  // Seed two requested:github rows, one requested:gitlab row and one mine row, all at the
+  // same old syncedAt.
+  store.applyReviewQueue(
+    { queue: 'requested', provider: 'github' },
+    [queueItem('gh-1-1', 'requested', 'github'), queueItem('gh-1-2', 'requested', 'github')],
+    1000,
+    { complete: true },
+  );
+  store.applyReviewQueue(
+    { queue: 'requested', provider: 'gitlab' },
+    [queueItem('gl-1-1', 'requested', 'gitlab')],
+    1000,
+    { complete: true },
+  );
+  store.applyReviewQueue(
+    { queue: 'mine' },
+    [queueItem('gh-2-1', 'mine', 'github')],
+    1000,
+    { complete: true },
+  );
+  check('queue seed: every row landed', store.listReviewQueue().length === 4);
+
+  // An INCOMPLETE requested:github pass that returns only ONE of its two rows must not
+  // delete the other, and must not touch requested:gitlab or mine at all.
+  store.applyReviewQueue(
+    { queue: 'requested', provider: 'github' },
+    [queueItem('gh-1-1', 'requested', 'github', { title: 'refreshed' })],
+    2000,
+    { complete: false },
+  );
+  let rows = store.listReviewQueue();
+  const bySubject = (id) => rows.find((r) => r.item.subjectId === id);
+  check(
+    'incomplete: the row the pass returned was refreshed',
+    bySubject('gh-1-1')?.syncedAt === 2000 && bySubject('gh-1-1')?.item.title === 'refreshed',
+  );
+  check(
+    'incomplete: the row the pass did NOT return survives, untouched',
+    bySubject('gh-1-2')?.syncedAt === 1000,
+  );
+  check('incomplete: the other provider segment is untouched', bySubject('gl-1-1')?.syncedAt === 1000);
+  check('incomplete: the mine segment is untouched', bySubject('gh-2-1')?.syncedAt === 1000);
+  check('incomplete: nothing at all was deleted', rows.length === 4);
+
+  // A COMPLETE requested:github pass that returns only gh-1-1 must delete gh-1-2 — and
+  // still leave requested:gitlab and mine alone.
+  store.applyReviewQueue(
+    { queue: 'requested', provider: 'github' },
+    [queueItem('gh-1-1', 'requested', 'github', { title: 'final' })],
+    3000,
+    { complete: true },
+  );
+  rows = store.listReviewQueue();
+  const bySubject2 = (id) => rows.find((r) => r.item.subjectId === id);
+  check('complete: the row the pass did not return was deleted', bySubject2('gh-1-2') === undefined);
+  check(
+    'complete: the row the pass DID return survives, refreshed',
+    bySubject2('gh-1-1')?.syncedAt === 3000 && bySubject2('gh-1-1')?.item.title === 'final',
+  );
+  check('complete: requested:gitlab is still untouched', bySubject2('gl-1-1')?.syncedAt === 1000);
+  check('complete: mine is still untouched', bySubject2('gh-2-1')?.syncedAt === 1000);
+  check('complete: exactly one row was removed', rows.length === 3);
+
+  store.close();
+}
+
+// ──────── Check 8: countReviewDrafts / countReviewViewed are grouped reads ───────────
+{
+  const store = createStore(dbPath);
+  const countsTask = store.createTask('personal', { title: 'A task for counts' });
+  const subj = subjectIdFor(countsTask.id);
+  const unsent = store.addReviewComment(makeCommentInput(countsTask.id, { body: 'one' }));
+  store.addReviewComment(makeCommentInput(countsTask.id, { body: 'two' }));
+  store.markReviewSent(countsTask.id, [unsent.id], Date.now());
+  check(
+    'setup: one draft on the task is now sent, one is still a draft',
+    store.listReviewComments(countsTask.id).filter((c) => c.sentAt === null).length === 1,
+  );
+
+  const drafts = store.countReviewDrafts();
+  check('countReviewDrafts counts only the unsent draft, not the sent one', drafts.get(subj) === 1);
+
+  const raw = new Database(dbPath);
+  const insertViewed = raw.prepare(
+    `INSERT INTO review_viewed (subjectId, path, blobSha, viewedAt) VALUES (?, ?, ?, ?)`,
+  );
+  insertViewed.run(subj, 'a.ts', 'sha-a', Date.now());
+  insertViewed.run(subj, 'b.ts', 'sha-b', Date.now());
+  raw.close();
+
+  const viewed = store.countReviewViewed();
+  check('countReviewViewed counts every stored mark for the subject', viewed.get(subj) === 2);
+  check(
+    'countReviewDrafts/countReviewViewed answer nothing for an unknown subject',
+    store.countReviewDrafts().get('task:no-such-task') === undefined &&
+      store.countReviewViewed().get('task:no-such-task') === undefined,
+  );
 
   store.close();
 }

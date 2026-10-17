@@ -80,6 +80,7 @@ import type {
   ReviewCommentInput,
   ReviewCommentPatch,
   ReviewDeleteResult,
+  ReviewQueuesSnapshot,
   ReviewSendResult,
   ReviewUpdateResult,
 } from './review';
@@ -1983,6 +1984,15 @@ export interface IpcEvents {
    * recorder to push on, for whatever DOES want to react live (a toast, a badge count).
    */
   'activity:appended': ActivityRow;
+
+  /**
+   * One of the three review queues changed — a refresh landed, a card left `in-review`, or
+   * a `mine`/`agent` row changed shape (F15.9). Carries the whole, already-deduped
+   * snapshot, like `mergeRequests:changed` does for its own list, so every open Reviews
+   * pane replaces rather than patches. Fired only when the deduped snapshot actually
+   * differs from the previous one — a forge outage that changes nothing stays silent.
+   */
+  'review:queues:changed': ReviewQueuesSnapshot;
 }
 
 /** Convenience: the set of valid invoke channel names. */
