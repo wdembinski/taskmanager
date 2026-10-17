@@ -1,14 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import type { DiffFileEntry, DiffLine, DiffSummary } from '@tm/shared/review';
+import type {
+  DiffFile,
+  DiffFileEntry,
+  DiffHunk,
+  DiffLine,
+  DiffSummary,
+  ReviewComment,
+} from '@tm/shared/review';
 import { DIFF_COLLAPSE_LINES } from '@tm/shared/review';
 import { EMPTY_REVIEW, summaryArrived, summaryLoadStarted } from './reviewState';
 import {
   buildFileTree,
   defaultExpanded,
+  effectiveDiffLayout,
   fetchablePaths,
   fileLoadNotice,
   pairWordDiffs,
+  parseDiffLayout,
   selectionLabel,
+  splitCellComments,
+  splitCellTarget,
+  splitRows,
   statusLetter,
   summaryTotals,
   type FileTreeDir,
@@ -299,5 +311,263 @@ describe('selectionLabel', () => {
       anchor: { side: 'new' as const, line: 14 },
     };
     expect(selectionLabel(selection)).toBe('Lines 10 (old)–14 (new)');
+  });
+});
+
+function diffLine(partial: Partial<DiffLine> & { text: string }): DiffLine {
+  return { kind: 'context', ...partial };
+}
+
+function diffHunk(lines: DiffLine[], overrides: Partial<DiffHunk> = {}): DiffHunk {
+  return {
+    oldStart: 1,
+    oldLines: lines.length,
+    newStart: 1,
+    newLines: lines.length,
+    header: '@@ -1 +1 @@',
+    lines,
+    ...overrides,
+  };
+}
+
+function diffFile(hunks: DiffHunk[]): DiffFile {
+  return { diffId: 'diff-1', path: 'src/example.ts', hunks };
+}
+
+function reviewComment(overrides: Partial<ReviewComment> = {}): ReviewComment {
+  return {
+    id: 'c1',
+    taskId: 'task-1',
+    diffId: 'diff-1',
+    path: 'src/example.ts',
+    side: 'old',
+    line: 1,
+    body: 'a comment',
+    excerpt: 'excerpt',
+    createdAt: 0,
+    updatedAt: 0,
+    sentAt: null,
+    ...overrides,
+  };
+}
+
+describe('splitCellTarget', () => {
+  it('maps a 3-del + 1-add run: left tracks each del, right only the first row', () => {
+    const lines = [
+      diffLine({ kind: 'del', text: 'a', oldLine: 1 }),
+      diffLine({ kind: 'del', text: 'b', oldLine: 2 }),
+      diffLine({ kind: 'del', text: 'c', oldLine: 3 }),
+      diffLine({ kind: 'add', text: 'x', newLine: 1 }),
+    ];
+    const [rows] = splitRows(diffFile([diffHunk(lines, { oldLines: 3, newLines: 1 })]));
+
+    expect(rows).toHaveLength(3);
+    expect(splitCellTarget(rows[0], 'old')).toEqual({
+      diffLine: lines[0],
+      anchor: { side: 'old', line: 1 },
+    });
+    expect(splitCellTarget(rows[1], 'old')).toEqual({
+      diffLine: lines[1],
+      anchor: { side: 'old', line: 2 },
+    });
+    expect(splitCellTarget(rows[2], 'old')).toEqual({
+      diffLine: lines[2],
+      anchor: { side: 'old', line: 3 },
+    });
+    expect(splitCellTarget(rows[0], 'new')).toEqual({
+      diffLine: lines[3],
+      anchor: { side: 'new', line: 1 },
+    });
+    expect(splitCellTarget(rows[1], 'new')).toBeNull();
+    expect(splitCellTarget(rows[2], 'new')).toBeNull();
+  });
+
+  it('maps a 1-del + 3-add run: right tracks each add, left only the first row', () => {
+    const lines = [
+      diffLine({ kind: 'del', text: 'a', oldLine: 1 }),
+      diffLine({ kind: 'add', text: 'x', newLine: 1 }),
+      diffLine({ kind: 'add', text: 'y', newLine: 2 }),
+      diffLine({ kind: 'add', text: 'z', newLine: 3 }),
+    ];
+    const [rows] = splitRows(diffFile([diffHunk(lines, { oldLines: 1, newLines: 3 })]));
+
+    expect(rows).toHaveLength(3);
+    expect(splitCellTarget(rows[0], 'new')).toEqual({
+      diffLine: lines[1],
+      anchor: { side: 'new', line: 1 },
+    });
+    expect(splitCellTarget(rows[1], 'new')).toEqual({
+      diffLine: lines[2],
+      anchor: { side: 'new', line: 2 },
+    });
+    expect(splitCellTarget(rows[2], 'new')).toEqual({
+      diffLine: lines[3],
+      anchor: { side: 'new', line: 3 },
+    });
+    expect(splitCellTarget(rows[0], 'old')).toEqual({
+      diffLine: lines[0],
+      anchor: { side: 'old', line: 1 },
+    });
+    expect(splitCellTarget(rows[1], 'old')).toBeNull();
+    expect(splitCellTarget(rows[2], 'old')).toBeNull();
+  });
+
+  it('gives a context row two non-null targets sharing the same DiffLine', () => {
+    const lines = [diffLine({ text: 'unchanged', oldLine: 5, newLine: 7 })];
+    const [rows] = splitRows(diffFile([diffHunk(lines)]));
+    const [row] = rows;
+
+    const left = splitCellTarget(row, 'old');
+    const right = splitCellTarget(row, 'new');
+    expect(left).toEqual({ diffLine: lines[0], anchor: { side: 'old', line: 5 } });
+    expect(right).toEqual({ diffLine: lines[0], anchor: { side: 'new', line: 7 } });
+    expect(left?.diffLine).toBe(right?.diffLine);
+  });
+
+  it('leaves the left target null for every row of a pure-add file', () => {
+    const lines = [
+      diffLine({ kind: 'add', text: 'a', newLine: 1 }),
+      diffLine({ kind: 'add', text: 'b', newLine: 2 }),
+      diffLine({ kind: 'add', text: 'c', newLine: 3 }),
+    ];
+    const [rows] = splitRows(
+      diffFile([diffHunk(lines, { oldStart: 0, oldLines: 0, newStart: 1, newLines: 3 })]),
+    );
+
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(splitCellTarget(row, 'old')).toBeNull();
+    }
+  });
+
+  it('leaves the right target null for every row of a lone del run', () => {
+    const lines = [
+      diffLine({ kind: 'del', text: 'a', oldLine: 1 }),
+      diffLine({ kind: 'del', text: 'b', oldLine: 2 }),
+    ];
+    const [rows] = splitRows(diffFile([diffHunk(lines, { oldLines: 2, newLines: 0 })]));
+
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(splitCellTarget(row, 'new')).toBeNull();
+    }
+  });
+
+  it('maps every split row back to the right DiffLine, across every row shape', () => {
+    const hunks: DiffHunk[] = [
+      diffHunk(
+        [
+          diffLine({ kind: 'del', text: 'a', oldLine: 1 }),
+          diffLine({ kind: 'del', text: 'b', oldLine: 2 }),
+          diffLine({ kind: 'del', text: 'c', oldLine: 3 }),
+          diffLine({ kind: 'add', text: 'x', newLine: 1 }),
+        ],
+        { oldLines: 3, newLines: 1 },
+      ),
+      diffHunk(
+        [
+          diffLine({ kind: 'del', text: 'a', oldLine: 1 }),
+          diffLine({ kind: 'add', text: 'x', newLine: 1 }),
+          diffLine({ kind: 'add', text: 'y', newLine: 2 }),
+          diffLine({ kind: 'add', text: 'z', newLine: 3 }),
+        ],
+        { oldLines: 1, newLines: 3 },
+      ),
+      diffHunk([diffLine({ text: 'ctx', oldLine: 5, newLine: 7 })]),
+      diffHunk(
+        [
+          diffLine({ kind: 'add', text: 'a', newLine: 1 }),
+          diffLine({ kind: 'add', text: 'b', newLine: 2 }),
+        ],
+        { oldStart: 0, oldLines: 0, newStart: 1, newLines: 2 },
+      ),
+      diffHunk(
+        [
+          diffLine({ kind: 'del', text: 'a', oldLine: 1 }),
+          diffLine({ kind: 'del', text: 'b', oldLine: 2 }),
+        ],
+        { oldLines: 2, newLines: 0 },
+      ),
+    ];
+
+    for (const hunk of hunks) {
+      const [rows] = splitRows(diffFile([hunk]));
+      for (const row of rows) {
+        if (row.leftIndex !== null) {
+          expect(row.left).toBe(hunk.lines[row.leftIndex]);
+          expect(splitCellTarget(row, 'old')?.anchor.line).toBe(hunk.lines[row.leftIndex].oldLine);
+        }
+        if (row.rightIndex !== null) {
+          expect(row.right).toBe(hunk.lines[row.rightIndex]);
+          expect(splitCellTarget(row, 'new')?.anchor.line).toBe(hunk.lines[row.rightIndex].newLine);
+        }
+      }
+    }
+  });
+});
+
+describe('splitCellComments', () => {
+  it('shows an old-side comment under the left cell only, on a context row', () => {
+    const lines = [diffLine({ text: 'unchanged', oldLine: 5, newLine: 7 })];
+    const [rows] = splitRows(diffFile([diffHunk(lines)]));
+    const [row] = rows;
+    const oldComment = reviewComment({ side: 'old', line: 5 });
+
+    expect(splitCellComments([oldComment], row, 'old')).toEqual([oldComment]);
+    expect(splitCellComments([oldComment], row, 'new')).toEqual([]);
+  });
+
+  it('shows a new-side comment under the right cell only, on a context row', () => {
+    const lines = [diffLine({ text: 'unchanged', oldLine: 5, newLine: 7 })];
+    const [rows] = splitRows(diffFile([diffHunk(lines)]));
+    const [row] = rows;
+    const newComment = reviewComment({ side: 'new', line: 7 });
+
+    expect(splitCellComments([newComment], row, 'new')).toEqual([newComment]);
+    expect(splitCellComments([newComment], row, 'old')).toEqual([]);
+  });
+
+  it('yields [] for a padded null side', () => {
+    const lines = [diffLine({ kind: 'del', text: 'a', oldLine: 1 })];
+    const [rows] = splitRows(diffFile([diffHunk(lines, { oldLines: 1, newLines: 0 })]));
+    const [row] = rows;
+    const newComment = reviewComment({ side: 'new', line: 1 });
+
+    expect(splitCellComments([newComment], row, 'new')).toEqual([]);
+  });
+});
+
+describe('parseDiffLayout', () => {
+  it('reads split only when stored exactly so', () => {
+    expect(parseDiffLayout('split')).toBe('split');
+  });
+
+  it('falls back to unified for anything else', () => {
+    expect(parseDiffLayout('unified')).toBe('unified');
+    expect(parseDiffLayout(null)).toBe('unified');
+    expect(parseDiffLayout(undefined)).toBe('unified');
+    expect(parseDiffLayout('junk')).toBe('unified');
+  });
+});
+
+describe('effectiveDiffLayout', () => {
+  it('keeps split at the minimum width and with a null (unmeasured) width', () => {
+    expect(effectiveDiffLayout('split', 900, false)).toBe('split');
+    expect(effectiveDiffLayout('split', null, false)).toBe('split');
+  });
+
+  it('falls back to unified just below the minimum width', () => {
+    expect(effectiveDiffLayout('split', 899, false)).toBe('unified');
+  });
+
+  it('falls back to unified on touch regardless of width', () => {
+    expect(effectiveDiffLayout('split', 1200, true)).toBe('unified');
+    expect(effectiveDiffLayout('split', null, true)).toBe('unified');
+  });
+
+  it('never turns unified into split', () => {
+    expect(effectiveDiffLayout('unified', 1200, false)).toBe('unified');
+    expect(effectiveDiffLayout('unified', null, false)).toBe('unified');
+    expect(effectiveDiffLayout('unified', 900, true)).toBe('unified');
   });
 });

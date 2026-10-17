@@ -97,11 +97,9 @@ export const SPLIT_MIN_WIDTH_PX = 900;
 /**
  * `'split'` only when stored exactly so; anything else — never written, or junk from an older
  * build — reads as `'unified'`, same rule `parseFold` uses for a boolean flag.
- *
- * Stub for now; the real parse lands with the layout toggle in a later step.
  */
-export function parseDiffLayout(_raw: string | null | undefined): DiffLayout {
-  throw new Error('not implemented');
+export function parseDiffLayout(raw: string | null | undefined): DiffLayout {
+  return raw === 'split' ? 'split' : 'unified';
 }
 
 /**
@@ -109,15 +107,16 @@ export function parseDiffLayout(_raw: string | null | undefined): DiffLayout {
  * gutter-as-button rendering has no split form) or the pane is narrower than
  * {@link SPLIT_MIN_WIDTH_PX}. A `null` width — not measured yet, SSR/headless — does NOT force
  * unified, so a first render before `ResizeObserver` reports in still honours the preference.
- *
- * Stub for now; the real decision lands with `DiffView`'s width fallback in a later step.
  */
 export function effectiveDiffLayout(
-  _preferred: DiffLayout,
-  _widthPx: number | null,
-  _touch: boolean,
+  preferred: DiffLayout,
+  widthPx: number | null,
+  touch: boolean,
 ): DiffLayout {
-  throw new Error('not implemented');
+  if (preferred === 'unified') return 'unified';
+  if (touch) return 'unified';
+  if (widthPx !== null && widthPx < SPLIT_MIN_WIDTH_PX) return 'unified';
+  return 'split';
 }
 
 /** One split cell's own `DiffLine` and the comment anchor a gutter click on it targets. */
@@ -132,26 +131,28 @@ export interface SplitCellTarget {
  * {@link DiffSide}-picking `canonicalTarget`, a context row therefore has TWO targets, one per
  * side. `null` for a blank cell (that side's `DiffLine` is `null`) or a line missing that
  * side's number.
- *
- * Stub for now; the real mapping lands with its tests in the next step.
  */
-export function splitCellTarget(_row: SplitRow, _side: DiffSide): SplitCellTarget | null {
-  throw new Error('not implemented');
+export function splitCellTarget(row: SplitRow, side: DiffSide): SplitCellTarget | null {
+  const diffLine = side === 'old' ? row.left : row.right;
+  if (diffLine === null) return null;
+  const line = side === 'old' ? diffLine.oldLine : diffLine.newLine;
+  if (line === undefined) return null;
+  return { diffLine, anchor: { side, line } };
 }
 
 /**
  * The comments to show under one side of a split row: those whose `side` matches `side` and
  * whose `line` matches that side's target line — an old-side comment never lands under the new
  * cell even on a context row, where both cells hold the same `DiffLine`.
- *
- * Stub for now; the real mapping lands with its tests in the next step.
  */
 export function splitCellComments(
-  _comments: readonly ReviewComment[],
-  _row: SplitRow,
-  _side: DiffSide,
+  comments: readonly ReviewComment[],
+  row: SplitRow,
+  side: DiffSide,
 ): readonly ReviewComment[] {
-  throw new Error('not implemented');
+  const target = splitCellTarget(row, side);
+  if (target === null) return [];
+  return comments.filter((c) => c.side === target.anchor.side && c.line === target.anchor.line);
 }
 
 /**
