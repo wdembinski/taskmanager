@@ -1,5 +1,5 @@
 /**
- * Unit tests for the pure review_comments row mapper. No database, no Electron —
+ * Unit tests for the pure review_drafts row mapper. No database, no Electron —
  * see the module doc for why this stays importable under plain vitest.
  */
 import { describe, expect, it } from 'vitest';
@@ -29,7 +29,7 @@ describe('reviewCommentToRow / rowToReviewComment', () => {
     const row = reviewCommentToRow(comment);
     expect(row).toEqual<ReviewCommentRow>({
       id: 'c1',
-      taskId: 't1',
+      subjectId: 'task:t1',
       diffId: 'd1',
       path: 'src/foo.ts',
       oldPath: null,
@@ -108,5 +108,10 @@ describe('reviewCommentToRow / rowToReviewComment', () => {
     };
     const back = rowToReviewComment(row);
     expect('start' in back).toBe(false);
+  });
+
+  it('falls back to an empty taskId when subjectId is not a task — a case a task-keyed read can never hit', () => {
+    const row: ReviewCommentRow = { ...reviewCommentToRow(baseComment()), subjectId: 'gh-1-2' };
+    expect(rowToReviewComment(row).taskId).toBe('');
   });
 });
