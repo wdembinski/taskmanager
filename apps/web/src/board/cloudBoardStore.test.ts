@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardResponse } from '@tm/protocol/wire';
-import type { Project, Task } from '@tm/shared/model';
+import type { Milestone, Project, Task } from '@tm/shared/model';
 import {
   EMPTY_BOARD_STATE,
   PENDING_STATUS_TIMEOUT_MS,
@@ -9,6 +9,7 @@ import {
   expirePendingStatusChanges,
   isTaskPending,
   mergeProject,
+  mirroredMilestones,
   queuePendingStatusChange,
 } from './cloudBoardStore';
 
@@ -35,6 +36,21 @@ function project(overrides: Partial<Project> = {}): Project {
     createdAt: 0,
     ...overrides,
   } as Project;
+}
+
+function milestone(overrides: Partial<Milestone> = {}): Milestone {
+  return {
+    id: 'm1',
+    projectId: 'p1',
+    name: 'A milestone',
+    description: '',
+    dueAt: null,
+    color: '',
+    closed: false,
+    archivedAt: null,
+    createdAt: 0,
+    ...overrides,
+  };
 }
 
 function boardResponse(overrides: Partial<BoardResponse> = {}): BoardResponse {
@@ -203,6 +219,101 @@ describe('mergeProject', () => {
     const state = mergeProject(seeded, project({ id: 'p1' }));
     expect(state.projects['other']).toBeDefined();
     expect(state.tasks).toBe(seeded.tasks);
+  });
+});
+
+describe('applyBoardResponse milestones', () => {
+  it('upserts milestones by id', () => {
+    const state = applyBoardResponse(
+      EMPTY_BOARD_STATE,
+      boardResponse({ deltas: { ...boardResponse().deltas, milestones: [milestone()] } }),
+    );
+    expect(state.milestones['m1']?.name).toBe('A milestone');
+  });
+
+  it('replaces the same id when it comes back archived', () => {
+    const seeded = applyBoardResponse(
+      EMPTY_BOARD_STATE,
+      boardResponse({ deltas: { ...boardResponse().deltas, milestones: [milestone()] } }),
+    );
+    const state = applyBoardResponse(
+      seeded,
+      boardResponse({
+        deltas: { ...boardResponse().deltas, milestones: [milestone({ archivedAt: 500 })] },
+      }),
+    );
+    expect(state.milestones['m1']?.archivedAt).toBe(500);
+  });
+
+  it('drops a deleted milestone id', () => {
+    const seeded = applyBoardResponse(
+      EMPTY_BOARD_STATE,
+      boardResponse({ deltas: { ...boardResponse().deltas, milestones: [milestone()] } }),
+    );
+    const state = applyBoardResponse(
+      seeded,
+      boardResponse({ deltas: { ...boardResponse().deltas, deletedMilestoneIds: ['m1'] } }),
+    );
+    expect(state.milestones['m1']).toBeUndefined();
+  });
+
+  it('drops a milestone whose project was deleted in the same response', () => {
+    const seeded = applyBoardResponse(
+      EMPTY_BOARD_STATE,
+      boardResponse({ deltas: { ...boardResponse().deltas, milestones: [milestone()] } }),
+    );
+    const state = applyBoardResponse(
+      seeded,
+      boardResponse({ deltas: { ...boardResponse().deltas, deletedProjectIds: ['p1'] } }),
+    );
+    expect(state.milestones['m1']).toBeUndefined();
+  });
+
+  it('leaves milestones untouched when a response carries neither field', () => {
+    const seeded = applyBoardResponse(
+      EMPTY_BOARD_STATE,
+      boardResponse({ deltas: { ...boardResponse().deltas, milestones: [milestone()] } }),
+    );
+    const state = applyBoardResponse(seeded, boardResponse());
+    expect(state.milestones['m1']?.name).toBe('A milestone');
+  });
+});
+
+describe('mirroredMilestones', () => {
+  it('returns every mirrored milestone with no project filter', () => {
+    const state = applyBoardResponse(
+      EMPTY_BOARD_STATE,
+      boardResponse({
+        deltas: {
+          ...boardResponse().deltas,
+          milestones: [
+            milestone({ id: 'm1', projectId: 'p1' }),
+            milestone({ id: 'm2', projectId: 'p2' }),
+          ],
+        },
+      }),
+    );
+    expect(
+      mirroredMilestones(state)
+        .map((m) => m.id)
+        .sort(),
+    ).toEqual(['m1', 'm2']);
+  });
+
+  it('narrows to one project when given an id', () => {
+    const state = applyBoardResponse(
+      EMPTY_BOARD_STATE,
+      boardResponse({
+        deltas: {
+          ...boardResponse().deltas,
+          milestones: [
+            milestone({ id: 'm1', projectId: 'p1' }),
+            milestone({ id: 'm2', projectId: 'p2' }),
+          ],
+        },
+      }),
+    );
+    expect(mirroredMilestones(state, 'p1').map((m) => m.id)).toEqual(['m1']);
   });
 });
 
