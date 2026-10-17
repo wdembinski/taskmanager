@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@tm/shared/model';
+import { archiveIndexOf } from '@tm/shared/trackerArchive';
 import {
   NO_EPIC_GROUP,
   backlogRows,
@@ -155,5 +156,98 @@ describe('backlogRows', () => {
     expect(total).toBe(tickets.length - 1);
     const epicGroup = rows.find((g) => g.epicId === 'e1');
     expect(epicGroup?.tickets.map((t) => t.ticketKey)).toEqual(['TM-2', 'TM-10']);
+  });
+
+  describe('with an archive index (F14.6)', () => {
+    it('hides a ticket whose milestone is archived', () => {
+      const archived = ticket({ milestoneId: 'm1' });
+      const live = ticket({ milestoneId: 'm2' });
+      const index = archiveIndexOf(
+        [
+          { id: 'm1', archivedAt: 1_000 },
+          { id: 'm2', archivedAt: null },
+        ],
+        [],
+        [],
+      );
+      const rows = backlogRows([archived, live], '', 'key', { index });
+      expect(rows.flatMap((g) => g.tickets).map((t) => t.id)).toEqual([live.id]);
+    });
+
+    it('hides a ticket whose epic is archived, and drops the group too', () => {
+      const epic = ticket({
+        id: 'e1',
+        issueType: 'epic',
+        title: 'Epic one',
+        trackerArchivedAt: 2_000,
+      });
+      const child = ticket({ epicTaskId: 'e1' });
+      const index = archiveIndexOf([], [epic], []);
+      const rows = backlogRows([epic, child], '', 'key', { index });
+      expect(rows.find((g) => g.epicId === 'e1')).toBeUndefined();
+      expect(rows.flatMap((g) => g.tickets)).toHaveLength(0);
+    });
+
+    it('hides a ticket whose tracker project is archived', () => {
+      const archived = ticket({ projectId: 'p1' });
+      const live = ticket({ projectId: 'p2' });
+      const index = archiveIndexOf(
+        [],
+        [],
+        [
+          { id: 'p1', archivedAt: 1_000 },
+          { id: 'p2', archivedAt: null },
+        ],
+      );
+      const rows = backlogRows([archived, live], '', 'key', { index });
+      expect(rows.flatMap((g) => g.tickets).map((t) => t.id)).toEqual([live.id]);
+    });
+
+    it('hides a ticket archived itself', () => {
+      const archived = ticket({ trackerArchivedAt: 5_000 });
+      const live = ticket();
+      const index = archiveIndexOf([], [], []);
+      const rows = backlogRows([archived, live], '', 'key', { index });
+      expect(rows.flatMap((g) => g.tickets).map((t) => t.id)).toEqual([live.id]);
+    });
+
+    it('brings every one of them back with includeArchived', () => {
+      const archivedMilestone = ticket({ milestoneId: 'm1' });
+      const epic = ticket({ id: 'e1', issueType: 'epic', trackerArchivedAt: 2_000 });
+      const epicChild = ticket({ epicTaskId: 'e1' });
+      const archivedProject = ticket({ projectId: 'p1' });
+      const selfArchived = ticket({ trackerArchivedAt: 5_000 });
+      const index = archiveIndexOf(
+        [{ id: 'm1', archivedAt: 1_000 }],
+        [epic],
+        [{ id: 'p1', archivedAt: 3_000 }],
+      );
+      const rows = backlogRows(
+        [archivedMilestone, epic, epicChild, archivedProject, selfArchived],
+        '',
+        'key',
+        { index, includeArchived: true },
+      );
+      const ids = rows.flatMap((g) => g.tickets).map((t) => t.id);
+      expect(new Set(ids)).toEqual(
+        new Set([archivedMilestone.id, epicChild.id, archivedProject.id, selfArchived.id]),
+      );
+    });
+
+    it('never hides a JIRA row, whatever is archived around it', () => {
+      const jiraTicket = ticket({
+        source: 'jira',
+        milestoneId: 'm1',
+        projectId: 'p1',
+        trackerArchivedAt: 1,
+      });
+      const index = archiveIndexOf(
+        [{ id: 'm1', archivedAt: 1_000 }],
+        [],
+        [{ id: 'p1', archivedAt: 1_000 }],
+      );
+      const rows = backlogRows([jiraTicket], '', 'key', { index });
+      expect(rows.flatMap((g) => g.tickets).map((t) => t.id)).toEqual([jiraTicket.id]);
+    });
   });
 });

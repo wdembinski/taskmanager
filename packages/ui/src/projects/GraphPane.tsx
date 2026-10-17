@@ -95,7 +95,7 @@ import {
   type NodeProps,
   type OnNodeDrag,
 } from '@xyflow/react';
-import type { Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
+import type { Project, Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { isEpic, typeIconKeyFor } from '@tm/shared/tickets';
 import { PaneLoading } from '../PaneLoading';
@@ -408,6 +408,13 @@ export interface GraphPaneProps {
   selectedTicketId?: string | null;
   /** Open a ticket in the shared detail pane. */
   onSelectTicket: (id: string) => void;
+  /** `Projects.tsx`'s own ticket-project list, for the archive lookup (F14.6) — wired through
+   *  here so a later step can build this pane's own `ArchiveIndex`; unused until then. */
+  projects?: Project[] | null;
+  /** The "Include archived" toggle (F14.6) — unused until a later step drops hidden nodes
+   *  here the way `BacklogTable` already drops hidden rows. */
+  includeArchived?: boolean;
+  onIncludeArchivedChange?: (includeArchived: boolean) => void;
 }
 
 export function GraphPane({ projectId, onSelectTicket }: GraphPaneProps): JSX.Element {

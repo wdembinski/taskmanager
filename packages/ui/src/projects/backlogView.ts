@@ -5,6 +5,7 @@
 import type { Task } from '@tm/shared/model';
 import { parseTicketKey } from '@tm/shared/ticketKey';
 import { isEpic } from '@tm/shared/tickets';
+import { visibleTickets, type ArchiveIndex } from '@tm/shared/trackerArchive';
 
 /**
  * The bucket every ticket with no epic — or one that names an epic not on this board — lands
@@ -122,11 +123,40 @@ export function groupTickets(tickets: readonly Task[]): BacklogGroup[] {
   return groups;
 }
 
-/** The whole pipeline a `BacklogTable` renders from: filter, then sort, then group. */
+/**
+ * `tickets`, with every row `visibleTickets` (F14) would hide dropped — or the very same
+ * array when `archive` is absent or nothing is actually hidden, the same identity shortcut
+ * {@link filterTickets} applies for a blank query, so a caller downstream still sees no
+ * change on a render where nothing archived changed.
+ */
+export function archiveVisibleTickets(
+  tickets: readonly Task[],
+  archive?: { index: ArchiveIndex; includeArchived?: boolean },
+): Task[] {
+  if (!archive) return tickets as Task[];
+  const visible = visibleTickets(tickets, archive.index, {
+    includeArchived: archive.includeArchived,
+  });
+  return visible.length === tickets.length ? (tickets as Task[]) : visible;
+}
+
+/**
+ * The whole pipeline a `BacklogTable` renders from: drop archived rows, then filter, then
+ * sort, then group.
+ *
+ * `archive`, when given, runs FIRST — `groupTickets` only ever sees already-visible rows, so
+ * an archived epic's own group vanishes along with it, and its children vanish with it too
+ * (through `archivedBy`'s epic step, not because the group did) rather than falling into
+ * {@link NO_EPIC_GROUP}. Omitted entirely for a caller with no archive index yet to build,
+ * the same optional shape `bucketBoardCards` (F14.5) already takes.
+ */
 export function backlogRows(
   tickets: readonly Task[],
   query: string,
   sortKey: BacklogSortKey,
+  archive?: { index: ArchiveIndex; includeArchived?: boolean },
 ): BacklogGroup[] {
-  return groupTickets(sortBacklog(filterTickets(tickets, query), sortKey));
+  return groupTickets(
+    sortBacklog(filterTickets(archiveVisibleTickets(tickets, archive), query), sortKey),
+  );
 }

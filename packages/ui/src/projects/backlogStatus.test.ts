@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@tm/shared/model';
+import { archiveIndexOf } from '@tm/shared/trackerArchive';
 import { backlogStatusGroups } from './backlogStatus';
 
 let seq = 0;
@@ -90,5 +91,29 @@ describe('backlogStatusGroups', () => {
     const all = groups.flatMap((g) => g.tickets);
     expect(all).toHaveLength(tickets.length - 1);
     expect(new Set(all.map((t) => t.id)).size).toBe(all.length);
+  });
+
+  it('drops a ticket whose milestone is archived, and brings it back with includeArchived (F14.6)', () => {
+    const archived = ticket({ milestoneId: 'm1', status: 'in-progress' });
+    const live = ticket({ milestoneId: 'm2', status: 'in-progress' });
+    const index = archiveIndexOf(
+      [
+        { id: 'm1', archivedAt: 1_000 },
+        { id: 'm2', archivedAt: null },
+      ],
+      [],
+      [],
+    );
+
+    const hidden = backlogStatusGroups([archived, live], '', 'key', { index }).flatMap(
+      (g) => g.tickets,
+    );
+    expect(hidden.map((t) => t.id)).toEqual([live.id]);
+
+    const shown = backlogStatusGroups([archived, live], '', 'key', {
+      index,
+      includeArchived: true,
+    }).flatMap((g) => g.tickets);
+    expect(new Set(shown.map((t) => t.id))).toEqual(new Set([archived.id, live.id]));
   });
 });

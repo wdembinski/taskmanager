@@ -102,7 +102,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import type { Milestone, Task, TicketLink } from '@tm/shared/model';
+import type { Milestone, Project, Task, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
 import { canLink, LINK_REFUSAL_MESSAGE, type LinkGate, type TaskLink } from '@tm/shared/taskChain';
 import { canLinkTickets, TICKET_LINK_REFUSAL_MESSAGE } from '@tm/shared/ticketLinks';
@@ -419,6 +419,13 @@ export interface TimelinePaneProps {
   selectedTicketId?: string | null;
   /** Open a ticket in the shared detail pane. */
   onSelectTicket: (id: string) => void;
+  /** `Projects.tsx`'s own ticket-project list, for the archive lookup (F14.6) — wired through
+   *  here so a later step can build this pane's own `ArchiveIndex`; unused until then. */
+  projects?: Project[] | null;
+  /** The "Include archived" toggle (F14.6) — unused until a later step skips archived rows
+   *  here the way `BacklogTable` already does. */
+  includeArchived?: boolean;
+  onIncludeArchivedChange?: (includeArchived: boolean) => void;
 }
 
 function rowLabel(ticket: Pick<Task, 'ticketKey' | 'title'>): {

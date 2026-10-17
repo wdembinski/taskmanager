@@ -26,6 +26,7 @@ import {
 import { AddRegular, SearchRegular } from '@fluentui/react-icons';
 import type { Person, Project, Task } from '@tm/shared/model';
 import { delegatedAgentName } from '@tm/shared/tickets';
+import { archivedBy, type ArchiveIndex } from '@tm/shared/trackerArchive';
 import { IssueRow } from '../issues/IssueRow';
 import type { IssueRowContext } from '../issues/issueRowParts';
 import { PaneLoading } from '../PaneLoading';
@@ -75,6 +76,13 @@ export interface BacklogTableProps {
   onSelectTicket: (id: string) => void;
   /** A row's Enter/double-click — opens the ticket straight to full screen. */
   onOpenTicket: (id: string) => void;
+  /** `Projects.tsx`'s own archive lookup (F14.6) — built once per project switch, over the
+   *  project's milestones, epics and tracker projects. */
+  archiveIndex: ArchiveIndex;
+  /** Whether archived tickets are shown at all — off by default, the same "Include archived"
+   *  switch the Archived view and a direct link already flip. */
+  includeArchived: boolean;
+  onIncludeArchivedChange: (includeArchived: boolean) => void;
 }
 
 /** The agent delegated to a ticket, by name — `undefined` for anything not native or
@@ -96,6 +104,9 @@ export function BacklogTable({
   selectedTicketId,
   onSelectTicket,
   onOpenTicket,
+  archiveIndex,
+  includeArchived,
+  onIncludeArchivedChange,
 }: BacklogTableProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -128,8 +139,11 @@ export function BacklogTable({
   }, [transport]);
 
   const groups = useMemo(
-    () => (tickets ? backlogStatusGroups(tickets, query, sortKey) : []),
-    [tickets, query, sortKey],
+    () =>
+      tickets
+        ? backlogStatusGroups(tickets, query, sortKey, { index: archiveIndex, includeArchived })
+        : [],
+    [tickets, query, sortKey, archiveIndex, includeArchived],
   );
 
   if (tickets === null) {
@@ -148,6 +162,14 @@ export function BacklogTable({
           onChange={(_e, d) => setQuery(d.value)}
           placeholder="Search title, key or label…"
         />
+        <ToggleButton
+          size="small"
+          appearance="subtle"
+          checked={includeArchived}
+          onClick={() => onIncludeArchivedChange(!includeArchived)}
+        >
+          Include archived
+        </ToggleButton>
         <ToggleButton
           size="small"
           appearance="subtle"
@@ -197,6 +219,7 @@ export function BacklogTable({
                     task={ticket}
                     ctx={ctx}
                     selected={ticket.id === selectedTicketId}
+                    archived={includeArchived && archivedBy(ticket, archiveIndex) !== null}
                     onSelect={onSelectTicket}
                     onOpen={onOpenTicket}
                   />
