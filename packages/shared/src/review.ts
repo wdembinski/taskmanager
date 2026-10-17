@@ -4,6 +4,13 @@
  * This module is the contract every later F6 card builds on — the diff and comment shapes,
  * and the result variants a diff read can come back with instead of data.
  *
+ * F15 (`docs/plan/feature-roadmap/F15-review-workspace.md`) widens the same contract from
+ * "a card's diff" to any **review subject** — a card's own branch, or a forge pull request —
+ * read from any of three sources (a worktree, a fetched ref, or the forge's own API). A
+ * `subjectId` is the one key drafts, viewed marks and queue rows all share; `ReviewSource`
+ * and `ReviewCapabilities` let the UI ask what a given subject's diff can do without
+ * special-casing which source answered it.
+ *
  * Two rules sit behind the cap constants below:
  *
  *  - **One file at a time over the relay.** A web client fetches a file's patch or an image
@@ -14,6 +21,7 @@
  *    to stay comfortably under it.
  */
 
+import type { ForgeProvider } from './mergeRequest';
 import type { ChatRefusal } from './model';
 
 export const DIFF_FILE_MAX_BYTES = 256_000; // one file's patch text
@@ -38,6 +46,105 @@ export function isCollapsedByDefault(
   return GENERATED_FILE.test(entry.path) && entry.additions + entry.deletions > DIFF_COLLAPSE_LINES;
 }
 
+/**
+ * What a review is being done on: a card's own branch, or a forge pull request. `repoPath`
+ * is for display only — {@link subjectId} never embeds it, so a repository rename does not
+ * change a PR's key.
+ */
+export type ReviewSubject =
+  | { kind: 'task'; taskId: string }
+  | { kind: 'pr'; provider: ForgeProvider; repoId: number; repoPath: string; number: number };
+
+/** Everything {@link parseSubjectId} can recover from a `subjectId` — `repoPath` cannot be. */
+export type ReviewSubjectKey =
+  | { kind: 'task'; taskId: string }
+  | { kind: 'pr'; provider: ForgeProvider; repoId: number; number: number };
+
+const PR_SUBJECT_ID = /^(gh|gl)-(\d+)-(\d+)$/;
+
+/**
+ * The stable string key for a review subject: `task:<taskId>` for a card, or the same
+ * `gh-<repoId>-<n>` / `gl-<repoId>-<n>` form `MergeRequest.id` already uses
+ * (`github/githubPrSync.ts`, `gitlab/gitlabSync.ts`) for a PR — so a PR's drafts and viewed
+ * marks line up with its merge-request row for free.
+ */
+export function subjectId(subject: ReviewSubject): string {
+  if (subject.kind === 'task') return taskSubjectId(subject.taskId);
+  const prefix = subject.provider === 'github' ? 'gh' : 'gl';
+  return `${prefix}-${subject.repoId}-${subject.number}`;
+}
+
+/** Convenience for the common case: a task's own `subjectId`. */
+export function taskSubjectId(taskId: string): string {
+  return `task:${taskId}`;
+}
+
+/**
+ * Recovers {@link ReviewSubjectKey} from a `subjectId`, or `null` when `id` matches neither
+ * shape. A task id may contain any characters, so `task:` plus a non-empty rest is enough;
+ * a PR id is matched strictly against `gh-<repoId>-<number>` / `gl-<repoId>-<number>`.
+ */
+export function parseSubjectId(id: string): ReviewSubjectKey | null {
+  if (id.startsWith('task:')) {
+    const taskId = id.slice('task:'.length);
+    return taskId === '' ? null : { kind: 'task', taskId };
+  }
+  const match = PR_SUBJECT_ID.exec(id);
+  if (!match) return null;
+  const [, provider, repoId, number] = match;
+  return {
+    kind: 'pr',
+    provider: provider === 'gh' ? 'github' : 'gitlab',
+    repoId: Number(repoId),
+    number: Number(number),
+  };
+}
+
+/** The three review queues: pull requests waiting on you, your own, and agent cards. */
+export type ReviewQueue = 'requested' | 'mine' | 'agent';
+
+/** One row in a review queue — enough to list and open a subject without resolving its diff. */
+export interface ReviewQueueItem {
+  subjectId: string;
+  queue: ReviewQueue;
+  subject: ReviewSubject;
+  title: string;
+  author: string;
+  repoPath: string;
+  ref: string;
+  headSha: string | null;
+  draft: boolean;
+  updatedAt: number;
+  projectId: string | null;
+  taskId: string | null;
+  draftCount: number;
+  viewedCount: number;
+  fileCount: number | null;
+}
+
+/** Where a subject's diff came from: a local worktree, a ref fetched for the review, or the forge's own API. */
+export type ReviewSource = 'worktree' | 'local-ref' | 'forge-api';
+
+/** What a diff source can do, so the UI never has to infer it from {@link ReviewSource} alone. */
+export interface ReviewCapabilities {
+  expandContext: boolean;
+  aiReview: boolean;
+  sendToAgent: boolean;
+  publish: boolean;
+}
+
+/**
+ * `worktree`'s capabilities: a task's own branch/worktree exists, so context can be expanded
+ * and an AI reviewer can run in it, and an agent can be sent the batched review. There is
+ * nothing to publish to — a task has no PR until one is opened on F18's path.
+ */
+export const WORKTREE_CAPABILITIES: ReviewCapabilities = {
+  expandContext: true,
+  aiReview: true,
+  sendToAgent: true,
+  publish: false,
+};
+
 /** One file's row in a `DiffSummary`. `path` is repo-relative — never a host path (WSL). */
 export interface DiffFileEntry {
   path: string;
@@ -48,6 +155,8 @@ export interface DiffFileEntry {
   binary: boolean;
   image: boolean;
   bytes: number;
+  /** The new-side git blob SHA, when the source can supply one. Keys {@link ReviewViewedMark}. */
+  newBlobSha?: string;
 }
 
 /**
@@ -64,6 +173,10 @@ export interface DiffSummary {
   includesWorkingTree: boolean;
   files: DiffFileEntry[];
   truncated: boolean;
+  /** The subject this diff was read for. Optional: typecheck cannot find every existing builder. */
+  subjectId?: string;
+  source?: ReviewSource;
+  capabilities?: ReviewCapabilities;
 }
 
 export type DiffLineKind = 'context' | 'add' | 'del';
@@ -414,6 +527,14 @@ export interface DiffImage {
 }
 
 export type DiffSide = 'old' | 'new';
+
+/** One file marked read in a subject's diff. Stale once `path`'s blob SHA moves past `blobSha`. */
+export interface ReviewViewedMark {
+  subjectId: string;
+  path: string;
+  blobSha: string;
+  viewedAt: number;
+}
 
 /**
  * A draft until `sentAt` is set. `excerpt` is the quoted anchor text, so an outdated comment

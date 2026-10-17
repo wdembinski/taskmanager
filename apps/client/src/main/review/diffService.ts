@@ -33,6 +33,8 @@ import {
   DIFF_IMAGE_MAX_BYTES,
   DIFF_SUMMARY_MAX_FILES,
   parsePatch,
+  taskSubjectId,
+  WORKTREE_CAPABILITIES,
   type DiffFile,
   type DiffFileEntry,
   type DiffFileResult,
@@ -179,6 +181,9 @@ export class DiffService {
         includesWorkingTree: resolved.includesWorkingTree,
         files,
         truncated,
+        subjectId: taskSubjectId(taskId),
+        source: 'worktree',
+        capabilities: WORKTREE_CAPABILITIES,
       },
     };
   }
