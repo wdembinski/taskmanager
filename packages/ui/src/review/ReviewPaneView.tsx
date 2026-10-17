@@ -134,6 +134,9 @@ export interface ReviewPaneViewProps {
   /** `'compact'` for the compact full-screen card screen's own Changes tab (F3.8); `undefined`
    * (wide) everywhere else. */
   layout?: 'wide' | 'compact';
+  /** Whether the diff shows syntax colour at all — `ReviewPane`'s own live read of
+   * `AppSettings.monochromeCode` (F15.11), carried straight through to {@link DiffView}. */
+  monochrome?: boolean;
   onReload: () => void;
   onSelectFile: (path: string) => void;
   onToggleExpanded: (path: string) => void;
@@ -171,6 +174,7 @@ export function ReviewPaneView({
   error,
   unreachable,
   layout,
+  monochrome,
   onReload,
   onSelectFile,
   onToggleExpanded,
@@ -240,6 +244,7 @@ export function ReviewPaneView({
         canComment={canComment(state, readOnly)}
         touch
         wrap={wrap}
+        monochrome={monochrome}
         selection={state.selection}
         onToggleExpanded={onToggleExpanded}
         onClickLine={onClickLine}
@@ -261,6 +266,7 @@ export function ReviewPaneView({
         comments={state.comments}
         editor={state.editor}
         canComment={canComment(state, readOnly)}
+        monochrome={monochrome}
         onToggleExpanded={onToggleExpanded}
         onClickLine={onClickLine}
         onEditDraft={onEditDraft}

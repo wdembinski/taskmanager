@@ -12,8 +12,11 @@
  *
  * Colour budget (memory *board-colour-budget*, and F6's own design doc): the ONLY colour
  * here is added/removed content — a line's own tint at its subtlest step, and the inner
- * word highlight one step stronger so it reads against that tint. Everything else
- * (gutters, headers, notices) stays on neutral tokens.
+ * word highlight one step stronger so it reads against that tint — plus, now, syntax
+ * highlighting (F15.11): five hues on the code's own text (keywords, strings, comments,
+ * numbers, titles), which is content INSIDE the code surface, same as the add/del tint it
+ * sits on top of. Everything else (gutters, headers, notices) stays on neutral tokens,
+ * unchanged.
  *
  * **Touch mode** (`touch`, wired from `ReviewPaneView`'s compact layout): the hover-only "+"
  * button has no equivalent on a touchscreen, so it is dropped entirely and the whole
@@ -50,9 +53,20 @@ import type {
   ReviewComment,
   WordSegment,
 } from '@tm/shared/review';
-import { MONO, fontPx } from '../theme';
+import { MONO, SYNTAX, fontPx } from '../theme';
 import { useTransport } from '../transport';
 import { CommentThread } from './CommentThread';
+import {
+  MAX_FILE_LINES,
+  highlightHunk,
+  languageForPath,
+  loadLanguage,
+  mergeSegments,
+  scheduleIdle,
+  type HunkHighlight,
+  type SyntaxScope,
+  type SyntaxSegment,
+} from './highlight';
 import {
   rangeLines,
   renderedIndex,
@@ -165,6 +179,13 @@ const useStyles = makeStyles({
   text: { flex: 1, minWidth: 0, paddingRight: '8px' },
   wordAdd: { backgroundColor: tokens.colorPaletteGreenBackground2 },
   wordDel: { backgroundColor: tokens.colorPaletteRedBackground2 },
+  // Syntax highlighting (F15.11) — colour only, never a background: the add/del tint above
+  // already owns that, and `DiffLineRow`'s merge rule relies on these never fighting it.
+  synKeyword: { color: SYNTAX.keyword },
+  synString: { color: SYNTAX.string },
+  synComment: { color: SYNTAX.comment },
+  synNumber: { color: SYNTAX.number },
+  synTitle: { color: SYNTAX.title },
   images: { display: 'flex', gap: '12px', padding: '10px', flexWrap: 'wrap' },
   imageFigure: { margin: 0, display: 'flex', flexDirection: 'column', gap: '4px' },
   imagePreview: { maxWidth: '320px', maxHeight: '320px', borderRadius: tokens.borderRadiusSmall },
@@ -206,6 +227,9 @@ export interface DiffViewProps {
   /** Whether a line wraps (`pre-wrap`, the default — wide rendering is unchanged) or scrolls
    * sideways instead (`pre`, `false`). */
   wrap?: boolean;
+  /** Whether the diff shows syntax colour at all (F15.11, `AppSettings.monochromeCode`
+   * inverted) — `false`/unset highlights, same as before this setting existed. */
+  monochrome?: boolean;
   /** Compact mode's tap-selected line/range, before a comment is started on it. */
   selection?: LineSelection | null;
   onToggleExpanded: (path: string) => void;
@@ -231,6 +255,7 @@ export function DiffView({
   canComment,
   touch = false,
   wrap = true,
+  monochrome = false,
   selection = null,
   onToggleExpanded,
   onClickLine,
@@ -275,6 +300,7 @@ export function DiffView({
             canComment={canComment}
             touch={touch}
             wrap={wrap}
+            monochrome={monochrome}
             onToggleExpanded={onToggleExpanded}
             onClickLine={onClickLine}
             onTapLine={onTapLine}
@@ -371,6 +397,7 @@ function FileSection({
   canComment,
   touch,
   wrap,
+  monochrome,
   onToggleExpanded,
   ...handlers
 }: {
@@ -385,6 +412,7 @@ function FileSection({
   canComment: boolean;
   touch: boolean;
   wrap: boolean;
+  monochrome: boolean;
   onToggleExpanded: (path: string) => void;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
@@ -446,6 +474,7 @@ function FileSection({
           canComment={canComment}
           touch={touch}
           wrap={wrap}
+          monochrome={monochrome}
           {...handlers}
         />
       )}
@@ -464,6 +493,7 @@ function FileBody({
   canComment,
   touch,
   wrap,
+  monochrome,
   ...handlers
 }: {
   taskId: string;
@@ -476,8 +506,11 @@ function FileBody({
   canComment: boolean;
   touch: boolean;
   wrap: boolean;
+  monochrome: boolean;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
+  const loadedHunks = load?.status === 'loaded' ? load.file.hunks : EMPTY_HUNKS;
+  const hunkHighlights = useHunkHighlights(entry.path, loadedHunks, monochrome);
 
   if (entry.image) {
     return <ImageDiffBody taskId={taskId} diffId={diffId} path={entry.path} />;
@@ -532,11 +565,65 @@ function FileBody({
           touch={touch}
           wrap={wrap}
           highlighted={highlighted}
+          syntax={hunkHighlights[i]}
           {...handlers}
         />
       ))}
     </div>
   );
+}
+
+/** A stable empty array, so `useHunkHighlights` sees the same dependency identity across
+ * renders while a file isn't `loaded` yet — a fresh `[]` every render would restart its
+ * effect for no reason. */
+const EMPTY_HUNKS: readonly DiffHunk[] = [];
+
+/**
+ * Resolves `path`'s language, loads its grammar, then highlights each of `hunks` through
+ * {@link scheduleIdle} — one hunk at a time, so a large file never blocks a frame. Returns
+ * each hunk's {@link HunkHighlight} as soon as it lands, indexed by its position in `hunks`;
+ * a hunk not yet highlighted (or never going to be) is simply absent.
+ *
+ * Skips all of it — returning `[]` and doing no work — when `monochrome` is set, when `path`
+ * has no known language, or when the file is over {@link MAX_FILE_LINES}: a file that big is
+ * already a lot to render plain, and highlighting it would cost more than a diff this size is
+ * ever read for.
+ */
+function useHunkHighlights(
+  path: string,
+  hunks: readonly DiffHunk[],
+  monochrome: boolean,
+): ReadonlyArray<HunkHighlight | undefined> {
+  const [highlights, setHighlights] = useState<ReadonlyArray<HunkHighlight | undefined>>([]);
+
+  useEffect(() => {
+    setHighlights([]);
+    if (monochrome) return;
+    const lang = languageForPath(path);
+    if (lang === null) return;
+    const totalLines = hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
+    if (totalLines > MAX_FILE_LINES) return;
+
+    const controller = new AbortController();
+    void loadLanguage(lang).then(() => {
+      if (controller.signal.aborted) return;
+      scheduleIdle(
+        hunks.map((hunk, i) => () => {
+          const result = highlightHunk(lang, hunk);
+          setHighlights((prev) => {
+            const next = prev.slice();
+            next[i] = result;
+            return next;
+          });
+        }),
+        controller.signal,
+      );
+    });
+
+    return () => controller.abort();
+  }, [path, hunks, monochrome]);
+
+  return highlights;
 }
 
 /** For an `add`/`context` row, a comment anchors to the NEW side; a `del` row has no new side
@@ -568,6 +655,7 @@ function Hunk({
   touch,
   wrap,
   highlighted,
+  syntax,
   onClickLine,
   onTapLine,
   onEditDraft,
@@ -584,6 +672,9 @@ function Hunk({
   touch: boolean;
   wrap: boolean;
   highlighted: ReadonlySet<DiffLine> | null;
+  /** This hunk's own syntax highlight, once {@link useHunkHighlights} has resolved it —
+   * `undefined` renders every one of its lines plain. */
+  syntax: HunkHighlight | undefined;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
   const words = pairWordDiffs(hunk.lines);
@@ -599,12 +690,17 @@ function Hunk({
           editor.anchor.line === target.line
             ? editor
             : null;
+        // A `del` line only ever exists on the OLD side; everything else (add/context) is
+        // read from the NEW side — same side `canonicalTarget` picks, and for context lines
+        // the two sides' text (and so segmentation) agree anyway.
+        const segments = line.kind === 'del' ? syntax?.old.get(i) : syntax?.new.get(i);
         return (
           <div key={i}>
             <DiffLineRow
               path={path}
               line={line}
               words={words[i]}
+              segments={segments}
               target={target}
               canComment={canComment}
               touch={touch}
@@ -633,6 +729,7 @@ function DiffLineRow({
   path,
   line,
   words,
+  segments,
   target,
   canComment,
   touch,
@@ -644,6 +741,9 @@ function DiffLineRow({
   path: string;
   line: DiffLine;
   words: readonly WordSegment[] | null;
+  /** This line's own syntax segments, once resolved — `undefined` renders plain (or, with
+   * `words` present, renders the word diff with no syntax colour on top of it yet). */
+  segments: readonly SyntaxSegment[] | undefined;
   target: { side: DiffSide; line: number } | null;
   canComment: boolean;
   touch: boolean;
@@ -695,23 +795,65 @@ function DiffLineRow({
         </>
       )}
       <span className={styles.text}>
-        {words
-          ? words.map((segment, i) => (
+        {words && segments
+          ? mergeSegments(segments, words).map((segment, i) => (
               <span
                 key={i}
-                data-word={segment.kind}
+                data-word={segment.word}
                 className={mergeClasses(
-                  segment.kind === 'add' && styles.wordAdd,
-                  segment.kind === 'del' && styles.wordDel,
+                  segment.word === 'add' && styles.wordAdd,
+                  segment.word === 'del' && styles.wordDel,
+                  scopeClass(styles, segment.scope),
                 )}
               >
                 {segment.text}
               </span>
             ))
-          : line.text || ' '}
+          : words
+            ? words.map((segment, i) => (
+                <span
+                  key={i}
+                  data-word={segment.kind}
+                  className={mergeClasses(
+                    segment.kind === 'add' && styles.wordAdd,
+                    segment.kind === 'del' && styles.wordDel,
+                  )}
+                >
+                  {segment.text}
+                </span>
+              ))
+            : segments
+              ? segments.map((segment, i) => (
+                  <span key={i} className={scopeClass(styles, segment.scope)}>
+                    {segment.text}
+                  </span>
+                ))
+              : line.text || ' '}
       </span>
     </div>
   );
+}
+
+/** The one `makeStyles` class a {@link SyntaxScope} maps to — `null` (and anything
+ * `SCOPE_MAP` in `highlight.ts` doesn't bucket) renders with no colour class at all. */
+function scopeClass(
+  styles: Record<'synKeyword' | 'synString' | 'synComment' | 'synNumber' | 'synTitle', string>,
+  scope: SyntaxScope | null,
+): string | undefined {
+  switch (scope) {
+    case 'keyword':
+      return styles.synKeyword;
+    case 'string':
+      return styles.synString;
+    case 'comment':
+      return styles.synComment;
+    case 'number':
+      return styles.synNumber;
+    case 'title':
+      return styles.synTitle;
+    default:
+      return undefined;
+  }
 }
 
 type ImageLoad =
