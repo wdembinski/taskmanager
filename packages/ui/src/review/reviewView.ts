@@ -10,13 +10,7 @@
  * `ReviewPaneView` is a component you cannot (this workspace has no DOM test harness). Same
  * split `gitGraphView.ts` makes for the commit graph, for the same reason.
  */
-import type {
-  DiffFileEntry,
-  DiffFileStatus,
-  DiffSide,
-  DiffSummary,
-  ReviewSendRefusal,
-} from '@tm/shared/review';
+import type { DiffFileStatus, DiffSide, DiffSummary, ReviewSendRefusal } from '@tm/shared/review';
 import { formatAge } from '../countdown';
 import { REFUSAL_HINT } from '../taskChat';
 import {
@@ -27,89 +21,19 @@ import {
   type ReviewState,
 } from './reviewState';
 
-/** A leaf: one changed file. */
-export interface FileTreeFile {
-  kind: 'file';
-  entry: DiffFileEntry;
-}
-
 /**
- * A branch. `name` is the collapsed chain's whole label (`src/main/review`), `path` is that
- * same chain's full repo-relative prefix — identical to `name` when the chain starts at the
- * root, longer when an ancestor chain collapsed above it too.
+ * `buildFileTree` and its `FileTree*` types now live in `reviewState.ts`, alongside the
+ * `navigationOrder` keyboard navigation needs built from the same tree — this module already
+ * imports runtime values from that one (`filesToLoad`, `isCollapsedByDefault`, above), so the
+ * reverse import would be a genuine cycle. Re-exported here unchanged, the same shape as
+ * `pairWordDiffs` below, so `FileTree.tsx`/`ReviewPaneView.tsx` need no changes.
  */
-export interface FileTreeDir {
-  kind: 'dir';
-  name: string;
-  path: string;
-  children: FileTreeNode[];
-}
-
-export type FileTreeNode = FileTreeDir | FileTreeFile;
-
-type RawDir = { kind: 'dir'; children: Map<string, RawNode> };
-type RawNode = RawDir | { kind: 'file'; entry: DiffFileEntry };
-
-function insert(root: RawDir, entry: DiffFileEntry): void {
-  const parts = entry.path.split('/');
-  let node = root;
-  for (let i = 0; i < parts.length - 1; i += 1) {
-    const part = parts[i];
-    const existing = node.children.get(part);
-    const dir: RawDir =
-      existing && existing.kind === 'dir' ? existing : { kind: 'dir', children: new Map() };
-    node.children.set(part, dir);
-    node = dir;
-  }
-  node.children.set(parts[parts.length - 1], { kind: 'file', entry });
-}
-
-/**
- * Walks `name`/`node` down a chain of directories that each hold exactly one child, and that
- * child is itself a directory — `src` → `main` → `review` becomes one node labelled
- * `src/main/review` whose children are `review`'s own. Stops at the first directory that holds
- * more than one entry, or whose only entry is a file.
- */
-function collapseChain(name: string, node: RawDir): { name: string; node: RawDir } {
-  let label = name;
-  let current = node;
-  while (current.children.size === 1) {
-    const [[onlyName, onlyChild]] = current.children;
-    if (onlyChild.kind !== 'dir') break;
-    label = `${label}/${onlyName}`;
-    current = onlyChild;
-  }
-  return { name: label, node: current };
-}
-
-/** Directories first, then files, each alphabetically by its own displayed name. */
-function buildChildren(node: RawDir, parentPath: string): FileTreeNode[] {
-  const dirs: FileTreeDir[] = [];
-  const files: FileTreeFile[] = [];
-  for (const [key, child] of node.children) {
-    if (child.kind === 'file') {
-      files.push({ kind: 'file', entry: child.entry });
-      continue;
-    }
-    const { name, node: collapsed } = collapseChain(key, child);
-    const path = parentPath ? `${parentPath}/${name}` : name;
-    dirs.push({ kind: 'dir', name, path, children: buildChildren(collapsed, path) });
-  }
-  dirs.sort((a, b) => a.name.localeCompare(b.name));
-  files.sort((a, b) => a.entry.path.localeCompare(b.entry.path));
-  return [...dirs, ...files];
-}
-
-/**
- * Groups `entries` by directory into a tree, collapsing a chain of single-child directories
- * into one node (`src/main/review`) the way `FileTree.tsx` wants to render it — one branch per
- * meaningful fork, not one per path segment.
- */
-export function buildFileTree(entries: readonly DiffFileEntry[]): FileTreeNode[] {
-  const root: RawDir = { kind: 'dir', children: new Map() };
-  for (const entry of entries) insert(root, entry);
-  return buildChildren(root, '');
-}
+export {
+  buildFileTree,
+  type FileTreeDir,
+  type FileTreeFile,
+  type FileTreeNode,
+} from './reviewState';
 
 /** The single-letter badge `FileTree`'s aside slot shows for a file's status. */
 export function statusLetter(status: DiffFileStatus): 'A' | 'M' | 'D' | 'R' | 'C' {
