@@ -213,6 +213,9 @@ export interface DiffFile {
  * header lines, not in any hunk — so parsing returns one `PatchFile` per file instead of a
  * bare hunk list. A one-file read (F6.6) takes `parsePatch(t)[0]?.hunks ?? []`.
  *
+ * A file's hunks are parsed by {@link parseHunks}'s own logic, which a forge body reaches
+ * directly — there is one hunk parser, not two.
+ *
  * `parsePatch`'s own contract, fixed here for F6.2's implementation step:
  *
  * - **CRLF.** Split on `\n` and strip one trailing `\r` per line, so a CRLF-transported patch
@@ -428,6 +431,40 @@ function parseHunk(lines: string[], i: number, end: number): { hunk: DiffHunk; n
   };
 }
 
+/**
+ * Every hunk in `lines[start, end)`: walk the range, and on a line starting `@@ ` parse one
+ * hunk by count and resume after it. Any other line found outside a hunk is skipped — a
+ * stray `Binary files … differ`, or the `---`/`+++` pair older GitLab versions prepend to a
+ * header-less body, does no harm.
+ */
+function hunksIn(lines: string[], start: number, end: number): DiffHunk[] {
+  const hunks: DiffHunk[] = [];
+  let i = start;
+  while (i < end) {
+    if (lines[i].startsWith('@@ ')) {
+      const parsed = parseHunk(lines, i, end);
+      hunks.push(parsed.hunk);
+      i = parsed.next;
+    } else {
+      i += 1;
+    }
+  }
+  return hunks;
+}
+
+/**
+ * Parse a header-less diff body into hunks, as a forge returns one file's patch directly —
+ * GitHub's `patch` field, GitLab's `diff` field — with no `diff --git`/`---`/`+++` lines in
+ * front of it. Same line contract as {@link PatchFile}'s (CRLF, counts, kinds, no-newline
+ * marker). `[]` for empty input; a missing or empty body (binary, oversized, or a pure
+ * rename with no content change) is also `[]`.
+ */
+export function parseHunks(text: string): DiffHunk[] {
+  if (!text) return [];
+  const lines = text.split('\n').map(stripTrailingCr);
+  return hunksIn(lines, 0, lines.length);
+}
+
 /** One file's section, from its `diff --git` line up to (not including) `end`. */
 function parseFileSection(lines: string[], start: number, end: number): PatchFile {
   const { a: gitA, b: gitB } = parseGitDiffHeader(lines[start]);
@@ -441,14 +478,13 @@ function parseFileSection(lines: string[], start: number, end: number): PatchFil
   let minusPath: string | null | undefined;
   let plusPath: string | null | undefined;
   let binary = false;
-  const hunks: DiffHunk[] = [];
+  let firstHunk = end;
 
   for (let i = start + 1; i < end; i += 1) {
     const line = lines[i];
     if (line.startsWith('@@ ')) {
-      const parsed = parseHunk(lines, i, end);
-      hunks.push(parsed.hunk);
-      i = parsed.next - 1;
+      firstHunk = i;
+      break;
     } else if (line.startsWith('new file mode')) {
       newFile = true;
     } else if (line.startsWith('deleted file mode')) {
@@ -473,6 +509,8 @@ function parseFileSection(lines: string[], start: number, end: number): PatchFil
     }
     // old/new mode, similarity/dissimilarity index, index: recognised, nothing to extract.
   }
+
+  const hunks = hunksIn(lines, firstHunk, end);
 
   let status: DiffFileStatus;
   if (renameFrom !== undefined && renameTo !== undefined) status = 'renamed';

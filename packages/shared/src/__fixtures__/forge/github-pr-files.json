@@ -1,0 +1,25 @@
+[
+  {
+    "filename": "image.png",
+    "status": "modified",
+    "additions": 0,
+    "deletions": 0,
+    "changes": 0
+  },
+  {
+    "filename": "modified.txt",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "patch": "@@ -1,3 +1,3 @@\n line1\n line2\n-line3\n+line3-changed\n\\ No newline at end of file"
+  },
+  {
+    "filename": "rename-dst.txt",
+    "status": "renamed",
+    "previous_filename": "rename-src.txt",
+    "additions": 0,
+    "deletions": 0,
+    "changes": 0
+  }
+]
