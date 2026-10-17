@@ -53,6 +53,7 @@ import {
   type InboxState,
 } from './inboxState';
 import { PaneLoading } from './PaneLoading';
+import { GlassPane } from './shell/GlassPane';
 import { REFUSAL_HINT } from './taskChat';
 import { useTransport } from './transport';
 import { useInitialLoad } from './useInitialLoad';
@@ -74,7 +75,17 @@ const useStyles = makeStyles({
     minHeight: 0,
     height: '100%',
   },
-  list: { display: 'flex', flexDirection: 'column', gap: '4px', overflowY: 'auto', minHeight: 0 },
+  list: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    padding: '12px',
+    overflowY: 'auto',
+    minHeight: 0,
+  },
+  // Wraps each row's own `Button` — see the module header on why glass wraps rather than
+  // replaces it (the 44px touch target and click behaviour stay the Button's).
+  card: { padding: '12px' },
   row: {
     display: 'flex',
     alignItems: 'center',
@@ -95,6 +106,7 @@ const useStyles = makeStyles({
   empty: { color: tokens.colorNeutralForeground3, padding: '12px' },
   detail: { display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', minHeight: 0 },
   back: { alignSelf: 'flex-start' },
+  detailPane: { padding: '12px' },
 });
 
 type InboxAction =
@@ -250,17 +262,19 @@ export function CompactInbox(): JSX.Element {
         >
           Back
         </Button>
-        {isAnswerKind(openItem.kind) ? (
-          <CompactAnswerView
-            item={openItem}
-            now={now}
-            onAnswer={answer}
-            onChat={(message) => chat(openItem.id, openItem.taskId, message)}
-            onDismiss={dismiss}
-          />
-        ) : (
-          <InboxItem item={openItem} onAnswer={answer} onDismiss={dismiss} />
-        )}
+        <GlassPane className={styles.detailPane}>
+          {isAnswerKind(openItem.kind) ? (
+            <CompactAnswerView
+              item={openItem}
+              now={now}
+              onAnswer={answer}
+              onChat={(message) => chat(openItem.id, openItem.taskId, message)}
+              onDismiss={dismiss}
+            />
+          ) : (
+            <InboxItem item={openItem} onAnswer={answer} onDismiss={dismiss} />
+          )}
+        </GlassPane>
       </div>
     );
   }
@@ -295,27 +309,28 @@ export function CompactInbox(): JSX.Element {
           {sorted.map((item) => {
             const deadline = questionDeadline(item, now);
             return (
-              <Button
-                key={item.id}
-                appearance="subtle"
-                className={styles.row}
-                onClick={() => dispatch({ type: 'opened', id: item.id })}
-              >
-                <Text truncate wrap={false} className={styles.rowTitle}>
-                  {item.taskTitle}
-                </Text>
-                <div className={styles.rowMeta}>
-                  <KindBadge kind={item.kind} />
-                  <Caption1>{formatAge(item.createdAt, now)}</Caption1>
-                  {deadline && (
-                    <Caption1>
-                      {deadline.kind === 'expired'
-                        ? 'expired'
-                        : formatCountdown(deadline.remainingMs)}
-                    </Caption1>
-                  )}
-                </div>
-              </Button>
+              <GlassPane key={item.id} className={styles.card}>
+                <Button
+                  appearance="subtle"
+                  className={styles.row}
+                  onClick={() => dispatch({ type: 'opened', id: item.id })}
+                >
+                  <Text truncate wrap={false} className={styles.rowTitle}>
+                    {item.taskTitle}
+                  </Text>
+                  <div className={styles.rowMeta}>
+                    <KindBadge kind={item.kind} />
+                    <Caption1>{formatAge(item.createdAt, now)}</Caption1>
+                    {deadline && (
+                      <Caption1>
+                        {deadline.kind === 'expired'
+                          ? 'expired'
+                          : formatCountdown(deadline.remainingMs)}
+                      </Caption1>
+                    )}
+                  </div>
+                </Button>
+              </GlassPane>
             );
           })}
         </div>

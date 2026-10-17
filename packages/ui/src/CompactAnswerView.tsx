@@ -25,6 +25,7 @@ import {
   Text,
   Textarea,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
@@ -49,6 +50,7 @@ import { questionDeadline } from './attentionUrgency';
 import { Markdown } from './chat/MarkdownView';
 import { formatCountdown } from './countdown';
 import { draftKey, useDraft } from './drafts';
+import { GlassPane } from './shell/GlassPane';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '12px' },
@@ -98,6 +100,10 @@ const useStyles = makeStyles({
   },
   optionWhy: { color: tokens.colorNeutralForeground3 },
   decide: { display: 'flex', flexDirection: 'column', gap: '10px' },
+  // The bar wrapping this view's primary buttons — `actionBar` is the `GlassPane`, `actions`
+  // just the flex row inside it, so a wider caller (none today) could still use the flex row
+  // without the pane.
+  actionBar: { padding: '12px' },
   actions: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
   // Fluent's largest Button size is 40px tall — 4px under the 44px touch-target floor every
   // other control on this screen already clears (`option`, `row` above). These three are the
@@ -230,15 +236,17 @@ function AnswerQuestions({
         </MessageBar>
       )}
 
-      <Button
-        appearance="primary"
-        size="large"
-        className={styles.primaryAction}
-        disabled={busy || !isComplete(questions, draft)}
-        onClick={() => void send(draft)}
-      >
-        {draft.phase === 'failed' ? 'Try again' : 'Send answer'}
-      </Button>
+      <GlassPane className={mergeClasses(styles.actionBar, styles.actions)}>
+        <Button
+          appearance="primary"
+          size="large"
+          className={styles.primaryAction}
+          disabled={busy || !isComplete(questions, draft)}
+          onClick={() => void send(draft)}
+        >
+          {draft.phase === 'failed' ? 'Try again' : 'Send answer'}
+        </Button>
+      </GlassPane>
     </div>
   );
 }
@@ -305,7 +313,7 @@ function AnswerDecision({
           <MessageBarBody>{error}</MessageBarBody>
         </MessageBar>
       )}
-      <div className={styles.actions}>
+      <GlassPane className={mergeClasses(styles.actionBar, styles.actions)}>
         <Button
           appearance="primary"
           size="large"
@@ -327,7 +335,7 @@ function AnswerDecision({
         >
           {isPlan ? 'Re-plan' : 'Deny'}
         </Button>
-      </div>
+      </GlassPane>
     </div>
   );
 }

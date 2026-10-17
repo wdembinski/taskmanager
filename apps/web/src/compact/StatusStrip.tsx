@@ -22,6 +22,10 @@
  *   (`CompactShell`'s slot). The full text is repeated in an `aria-label` on the line's
  *   container so it is still available to a screen reader or on tap-and-hold; a tap-to-expand
  *   interaction is explicitly out of scope for v1.
+ * - **No glass here (F13.17)** — a line of text, not a pane. The background sits on the
+ *   canvas (`var(--tm-canvas)`) rather than `colorNeutralBackground1`'s flat surface, and the
+ *   calm-state text uses `var(--tm-text-muted)`; the error/warning intents keep the Fluent
+ *   status tokens since those colours carry meaning `tm-text-muted` doesn't.
  */
 import { Caption1, makeStyles, tokens } from '@fluentui/react-components';
 import type { ClientPresence } from '@tm/protocol/wire';
@@ -38,9 +42,9 @@ const useStyles = makeStyles({
     flexShrink: 0,
     overflow: 'hidden',
     whiteSpace: 'nowrap',
-    backgroundColor: tokens.colorNeutralBackground1,
+    backgroundColor: 'var(--tm-canvas)',
   },
-  text: { overflow: 'hidden', textOverflow: 'ellipsis' },
+  text: { overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--tm-text-muted)' },
   error: { color: tokens.colorStatusDangerForeground1 },
   warning: { color: tokens.colorStatusWarningForeground1 },
 });
