@@ -22,6 +22,15 @@
  * spans every row it might cross. It takes fixed pixel `width`/`height`, no `viewBox` — see
  * `ganttLayout.ts`'s header for why a Gantt has to stay 1px = 1px.
  *
+ * **The colour budget.** A bar, an epic's bar, and the "today" line are all monochrome —
+ * none of them is moving or asking for a decision, so none of them gets a colour, the same
+ * budget `GRAPH_INK` states for the commit graph. The one exception is the execution-chain
+ * arrow (`MARKER.chain`/`styles.chain`), `FLUO_VAR.cyan` — the app's one colour for "moving",
+ * same as `ChainOverlay`'s `releasing` state. Everything else that still reads brand
+ * (`colorBrandStroke1`) is an interaction the pointer is doing right now, not a static fact
+ * about a ticket: the connect knob's hover/drag state, the rubber-band line it drags, and
+ * whichever arrow is currently selected.
+ *
  * An undated ticket (`ganttBar` → null) never gets a bar; it is listed in the unscheduled
  * tray below the chart instead, which is what "→ the unscheduled tray" in `ganttLayout.ts`'s
  * own docs refers to.
@@ -101,7 +110,7 @@ import { ChainLinkPopover } from '../board/ChainLinkPopover';
 import { rubberBandPath, type AnchorRect } from '../board/chainArrows';
 import { FoldToggle } from '../FoldToggle';
 import { PaneLoading } from '../PaneLoading';
-import { FLUO } from '../theme';
+import { FLUO_VAR } from '../tokens';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import {
@@ -295,14 +304,14 @@ const useStyles = makeStyles({
     '&:hover [data-connect-handle]': { opacity: 1, pointerEvents: 'auto' },
   },
   bar: {
-    fill: tokens.colorBrandBackground2,
-    stroke: tokens.colorBrandStroke1,
+    fill: tokens.colorNeutralBackground3,
+    stroke: tokens.colorNeutralStroke1,
     strokeWidth: '1px',
     pointerEvents: 'auto',
     cursor: 'grab',
   },
   barStatic: { cursor: 'pointer' },
-  barEpic: { fill: tokens.colorBrandBackground, opacity: 0.85 },
+  barEpic: { fill: tokens.colorNeutralForeground3, opacity: 0.85 },
   /** The chart half of an epic band — one rect per `GanttEpicBand`, drawn first so every bar,
    *  arrow and guide line paints over it. Same fill as `labelBanded`, so the zone reads as one
    *  continuous region across the sticky label column and the scrollable chart. */
@@ -359,9 +368,9 @@ const useStyles = makeStyles({
     pointerEvents: 'none',
   },
   guide: { stroke: tokens.colorNeutralStroke2, strokeDasharray: '3 3' },
-  today: { stroke: tokens.colorBrandStroke1, strokeWidth: '1.5px', strokeDasharray: '4 3' },
+  today: { stroke: tokens.colorNeutralForeground3, strokeWidth: '1.5px', strokeDasharray: '4 3' },
   dependency: { fill: 'none', stroke: tokens.colorNeutralStroke1, strokeWidth: '1.5px' },
-  chain: { fill: 'none', stroke: FLUO.cyan, strokeWidth: '1.5px' },
+  chain: { fill: 'none', stroke: FLUO_VAR.cyan, strokeWidth: '1.5px' },
   /**
    * The arrow you have SELECTED — `ChainOverlay.selected`'s own look, thicker and in the
    * brand colour regardless of which kind of arrow it is. Declared after `dependency`/`chain`
@@ -382,7 +391,7 @@ const useStyles = makeStyles({
     cursor: 'pointer',
   },
   headDependency: { fill: tokens.colorNeutralStroke1 },
-  headChain: { fill: FLUO.cyan },
+  headChain: { fill: FLUO_VAR.cyan },
   tray: {
     borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
     paddingTop: '8px',
