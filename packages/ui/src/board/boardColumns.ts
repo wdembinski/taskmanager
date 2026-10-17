@@ -18,7 +18,7 @@ import {
 import { priorityRank } from '@tm/shared/priority';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import { variantGroupState, type VariantGroupState } from '@tm/shared/variants';
-import { STATUS_INDICATOR_COLOR } from '../theme';
+import { STATUS_INDICATOR_VAR } from '../tokens';
 
 export type { BoardColumn } from '@tm/shared/model';
 export {
@@ -82,13 +82,13 @@ export function cardBadgeStatus(task: Task, run: RunState): TaskStatus | null {
  * indicator colour — the same vocabulary the step dots elsewhere on the card already use —
  * while a run still owns it, and a flat grey once it has settled, whatever the outcome.
  *
- * Settled rows deliberately give up `STATUS_INDICATOR_COLOR`'s green/red: a strip where
+ * Settled rows deliberately give up `STATUS_INDICATOR_VAR`'s green/red: a strip where
  * "done" and "failed" each kept their own colour would read as verdicts worth comparing at a
  * glance on the BOARD, when that comparison is the compare view's job, not this one. The
  * segment still running or waiting on the human is the only one worth the eye here.
  */
 export function variantStripTone(status: TaskStatus): string {
-  return isRunStatus(status) ? STATUS_INDICATOR_COLOR[status] : tokens.colorNeutralForeground4;
+  return isRunStatus(status) ? STATUS_INDICATOR_VAR[status] : tokens.colorNeutralForeground4;
 }
 
 /** A card as the board renders it: the card itself plus the steps that travel with it. */

@@ -44,7 +44,7 @@ import {
   type PipelineStatus,
 } from '@tm/shared/mergeRequest';
 import { ConfirmMergeDialog } from './ConfirmMergeDialog';
-import { FLUO, PIPELINE_COLOR } from './theme';
+import { FLUO_VAR, PIPELINE_VAR } from './tokens';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px' },
@@ -88,8 +88,8 @@ const useStyles = makeStyles({
    */
   stageDotRunning: {
     animationName: {
-      '0%, 100%': { backgroundColor: FLUO.cyanDeep },
-      '50%': { backgroundColor: FLUO.cyan },
+      '0%, 100%': { backgroundColor: FLUO_VAR.cyanDeep },
+      '50%': { backgroundColor: FLUO_VAR.cyan },
     },
     animationDuration: '1s',
     animationIterationCount: 'infinite',
@@ -97,7 +97,7 @@ const useStyles = makeStyles({
     // Without motion the dot must still read as the live one, so hold it at the bright end.
     '@media (prefers-reduced-motion: reduce)': {
       animationName: 'none',
-      backgroundColor: FLUO.cyan,
+      backgroundColor: FLUO_VAR.cyan,
     },
   },
 });
@@ -331,7 +331,7 @@ export function MergeRequests({
                   size="small"
                   appearance="outline"
                   icon={<ArrowSyncRegular />}
-                  style={{ color: FLUO.red, borderColor: FLUO.red }}
+                  style={{ color: FLUO_VAR.red, borderColor: FLUO_VAR.red }}
                   onClick={() => onRebase(mr.id)}
                   title={`Ask ${forgeName(mr.provider)} to rebase this branch`}
                 >
@@ -342,7 +342,7 @@ export function MergeRequests({
                   appearance="tint"
                   size="small"
                   color={verdict === 'changes-requested' ? 'danger' : 'informative'}
-                  style={verdict === 'merged' ? { color: FLUO.violet } : undefined}
+                  style={verdict === 'merged' ? { color: FLUO_VAR.violet } : undefined}
                 >
                   {verdictSummary(mr)}
                 </Badge>
@@ -357,7 +357,7 @@ export function MergeRequests({
                   size="small"
                   appearance="outline"
                   icon={<MergeRegular />}
-                  style={{ color: FLUO.green, borderColor: FLUO.green }}
+                  style={{ color: FLUO_VAR.green, borderColor: FLUO_VAR.green }}
                   onClick={() => setMergingMr(mr)}
                   title={`Merge this ${mrNoun(mr.provider)}`}
                 >
@@ -368,7 +368,7 @@ export function MergeRequests({
                   <Badge
                     appearance="outline"
                     size="small"
-                    style={{ color: FLUO.green, borderColor: FLUO.green }}
+                    style={{ color: FLUO_VAR.green, borderColor: FLUO_VAR.green }}
                   >
                     ready to merge
                   </Badge>
@@ -387,7 +387,7 @@ export function MergeRequests({
                   key={blocker}
                   appearance="outline"
                   size="small"
-                  style={{ color: FLUO.red, borderColor: FLUO.red }}
+                  style={{ color: FLUO_VAR.red, borderColor: FLUO_VAR.red }}
                 >
                   {mergeBlockerLabel(blocker, mr.provider)}
                 </Badge>
@@ -420,7 +420,7 @@ export function MergeRequests({
                       style={
                         stage.status === 'running'
                           ? undefined
-                          : { backgroundColor: PIPELINE_COLOR[stage.status] }
+                          : { backgroundColor: PIPELINE_VAR[stage.status] }
                       }
                     />
                     {stage.name}

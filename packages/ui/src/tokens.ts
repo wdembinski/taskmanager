@@ -38,9 +38,82 @@ export interface RunTokens {
   pill: string;
 }
 
+export interface FluoPalette {
+  /** Moving: running, starting, in progress. Also every spinner in the app. */
+  cyan: string;
+  /** The spinner's track — the ring behind the moving arc. */
+  cyanDim: string;
+  /** The spinner's dark half, opaque. */
+  cyanDeep: string;
+  /** Finished well: done, a passed stage. */
+  green: string;
+  /** Finished badly: failed. */
+  red: string;
+  /** Stopped and wants a human: waiting, blocked, a cancelled pipeline. */
+  amber: string;
+  /** In review — the one column that is neither in flight nor finished. */
+  violet: string;
+}
+
+/**
+ * The high-key indicator palette, per scheme. Dark is today's `FLUO` from `theme.ts`,
+ * moved here unchanged. Defined ahead of {@link SEMANTIC} because `SEMANTIC[scheme].fluo`
+ * is this, not a copy of it — one table, so a card's running cyan and the graph's live
+ * branch cyan can never drift apart.
+ */
+export const FLUO_BY_SCHEME: Record<ColorScheme, FluoPalette> = {
+  light: {
+    cyan: '#07748C',
+    cyanDim: 'rgba(7, 116, 140, 0.20)',
+    cyanDeep: '#8FD3E0',
+    green: '#1A7F37',
+    red: '#CF222E',
+    amber: '#B7791F',
+    violet: '#8250DF',
+  },
+  dark: {
+    cyan: '#22E4FF',
+    cyanDim: 'rgba(34, 228, 255, 0.22)',
+    cyanDeep: '#285258',
+    green: '#2BFF88',
+    red: '#FF4D6A',
+    amber: '#FFC53D',
+    violet: '#C77DFF',
+  },
+};
+
+/**
+ * The tint an "attention" row takes instead of a border; see `theme.ts`'s `ATTENTION_TINT`.
+ * Defined ahead of {@link SEMANTIC} so `SEMANTIC[scheme].attentionTint` can be this, not a
+ * copy of it.
+ */
+export const ATTENTION_TINT_BY_SCHEME: Record<ColorScheme, string> = {
+  light: 'rgba(242, 169, 0, 0.16)',
+  dark: 'rgba(242, 169, 0, 0.13)',
+};
+
+export interface LabelChipTokens {
+  /** The chip's fill. One green for every label until Phase 24 brings a label's own
+   * colour in — mirrors `theme.ts`'s (orphaned, pre-token) `ACCENT.chipGreen`. */
+  bg: string;
+  /** Text/glyph colour on {@link LabelChipTokens.bg}. */
+  ink: string;
+}
+
+/**
+ * Scheme-independent on purpose, like {@link LabelChipTokens} are stated once here: the
+ * chip's own fill/ink pair is what carries its contrast, not the canvas it floats on, so
+ * there is no reading in which the two schemes would want to differ — and an unreadable
+ * chip in light mode would be a separate bug from this ticket, not dark's to fix twice.
+ */
+const LABEL_CHIP: LabelChipTokens = { bg: '#12836b', ink: '#ffffff' };
+
 export interface SemanticTokens {
   /** The window behind everything. */
   canvas: string;
+  /** A `KanbanColumn`'s body — a faint tint over {@link SemanticTokens.canvas}, not a
+   * surface of its own; the header stays opaque canvas so scrolled cards pass under it. */
+  lane: string;
   /** Two static hazes under a 90px blur; never animated. */
   wash: WashTokens;
   /** Every pane, with `backdrop-filter: blur(24px)` — near-opaque, a hint of frost only. */
@@ -69,7 +142,14 @@ export interface SemanticTokens {
   attention: string;
   /** Text/glyph colour on {@link SemanticTokens.attention}. */
   attentionInk: string;
+  /** The tint an "attention" row takes instead of a border (an MR row, a step row). */
+  attentionTint: string;
   run: RunTokens;
+  /** A task/pipeline status's label chip. See `theme.ts`'s (orphaned) `ACCENT.chipGreen`. */
+  labelChip: LabelChipTokens;
+  /** The high-key indicator palette for this scheme — dots, glyphs, spinners. Identical
+   * object to {@link FLUO_BY_SCHEME}`[scheme]`, not a copy. */
+  fluo: FluoPalette;
   mono: string;
   sans: string;
 }
@@ -77,6 +157,8 @@ export interface SemanticTokens {
 export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
   light: {
     canvas: WINDOW_CANVAS.light,
+    // From the v9 mockup's own `rx="10" fill="rgba(15,23,42,0.025)"` lane rects.
+    lane: 'rgba(15, 23, 42, 0.025)',
     wash: {
       a: 'rgba(212, 228, 245, 0.45)',
       b: 'rgba(226, 224, 244, 0.35)',
@@ -100,15 +182,20 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     statusGradientInk: '#FFFFFF',
     attention: UNREAD_ORANGE,
     attentionInk: '#1b1b1b',
+    attentionTint: ATTENTION_TINT_BY_SCHEME.light,
     run: {
       ink: '#07748C',
       pill: '#E6FAFE',
     },
+    labelChip: LABEL_CHIP,
+    fluo: FLUO_BY_SCHEME.light,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
   },
   dark: {
     canvas: WINDOW_CANVAS.dark,
+    // From the v9 mockup's own `rx="10" fill="rgba(255,255,255,0.025)"` lane rects.
+    lane: 'rgba(255, 255, 255, 0.025)',
     wash: {
       a: 'rgba(18, 58, 99, 0.45)',
       b: 'rgba(43, 37, 89, 0.4)',
@@ -132,54 +219,15 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     statusGradientInk: '#FFFFFF',
     attention: UNREAD_ORANGE,
     attentionInk: '#1b1b1b',
+    attentionTint: ATTENTION_TINT_BY_SCHEME.dark,
     run: {
       ink: '#22E4FF',
       pill: 'rgba(34, 228, 255, 0.12)',
     },
+    labelChip: LABEL_CHIP,
+    fluo: FLUO_BY_SCHEME.dark,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
-  },
-};
-
-export interface FluoPalette {
-  /** Moving: running, starting, in progress. Also every spinner in the app. */
-  cyan: string;
-  /** The spinner's track — the ring behind the moving arc. */
-  cyanDim: string;
-  /** The spinner's dark half, opaque. */
-  cyanDeep: string;
-  /** Finished well: done, a passed stage. */
-  green: string;
-  /** Finished badly: failed. */
-  red: string;
-  /** Stopped and wants a human: waiting, blocked, a cancelled pipeline. */
-  amber: string;
-  /** In review — the one column that is neither in flight nor finished. */
-  violet: string;
-}
-
-/**
- * The high-key indicator palette, per scheme. Dark is today's `FLUO` from `theme.ts`,
- * moved here unchanged.
- */
-export const FLUO_BY_SCHEME: Record<ColorScheme, FluoPalette> = {
-  light: {
-    cyan: '#07748C',
-    cyanDim: 'rgba(7, 116, 140, 0.20)',
-    cyanDeep: '#8FD3E0',
-    green: '#1A7F37',
-    red: '#CF222E',
-    amber: '#B7791F',
-    violet: '#8250DF',
-  },
-  dark: {
-    cyan: '#22E4FF',
-    cyanDim: 'rgba(34, 228, 255, 0.22)',
-    cyanDeep: '#285258',
-    green: '#2BFF88',
-    red: '#FF4D6A',
-    amber: '#FFC53D',
-    violet: '#C77DFF',
   },
 };
 
@@ -200,11 +248,6 @@ export const CODE_BY_SCHEME: Record<ColorScheme, CodeSurfaceTokens> = {
     inlineBg: '#1d2a3a',
     border: '#26364a',
   },
-};
-
-export const ATTENTION_TINT_BY_SCHEME: Record<ColorScheme, string> = {
-  light: 'rgba(242, 169, 0, 0.16)',
-  dark: 'rgba(242, 169, 0, 0.13)',
 };
 
 export interface ScrollThumbTokens {
@@ -231,25 +274,72 @@ export const SCROLL_THUMB_BY_SCHEME: Record<ColorScheme, ScrollThumbTokens> = {
 };
 
 /**
+ * What a `TaskStatus`/`PipelineStatus` indicator colour actually says, underneath the two
+ * different vocabularies: nothing is happening (`neutral`, Fluent's own grey, since "idle"
+ * needs no scheme lookup), or one of {@link FluoPalette}'s five moving/finished states.
+ *
+ * Shared so `statusIndicatorColor`/`pipelineColor` (and their CSS-var twins below) read the
+ * mapping once each, from the same two tables {@link STATUS_ROLE}/{@link PIPELINE_ROLE} — a
+ * status and a pipeline status that mean the same thing (both "running", both "failed") can
+ * no longer drift onto two different fluo keys by a typo in one of two near-identical object
+ * literals.
+ */
+export type IndicatorRole = 'neutral' | keyof FluoPalette;
+
+/** `TaskStatus` → {@link IndicatorRole}. See `theme.ts`'s `STATUS_INDICATOR_COLOR`. */
+const STATUS_ROLE: Record<TaskStatus, IndicatorRole> = {
+  pending: 'neutral',
+  stopped: 'neutral',
+  cancelled: 'neutral',
+  'in-progress': 'cyan',
+  running: 'cyan',
+  'in-review': 'violet',
+  'waiting-input': 'amber',
+  'blocked-by-limit': 'amber',
+  blocked: 'amber',
+  done: 'green',
+  failed: 'red',
+};
+
+/** `PipelineStatus` → {@link IndicatorRole}. See `theme.ts`'s `PIPELINE_COLOR`. */
+const PIPELINE_ROLE: Record<PipelineStatus, IndicatorRole> = {
+  unknown: 'neutral',
+  none: 'neutral',
+  created: 'neutral',
+  pending: 'neutral',
+  manual: 'neutral',
+  skipped: 'neutral',
+  running: 'cyan',
+  success: 'green',
+  failed: 'red',
+  canceled: 'amber',
+};
+
+/** One role table, resolved against one palette — the whole of `statusIndicatorColor` and
+ * `pipelineColor`'s shared logic. */
+function roleColors<K extends string>(
+  roles: Record<K, IndicatorRole>,
+  resolve: (role: IndicatorRole) => string,
+): Record<K, string> {
+  const out = {} as Record<K, string>;
+  for (const key of Object.keys(roles) as K[]) {
+    out[key] = resolve(roles[key]);
+  }
+  return out;
+}
+
+function roleToFluoColor(role: IndicatorRole, fluo: FluoPalette): string {
+  return role === 'neutral' ? tokens.colorNeutralForeground4 : fluo[role];
+}
+
+/**
  * A task status as an indicator colour, for the given scheme. See `theme.ts`'s
  * `STATUS_INDICATOR_COLOR` (the dark entries, kept under their current name for existing
  * callers).
  */
 export function statusIndicatorColor(scheme: ColorScheme): Record<TaskStatus, string> {
   const fluo = FLUO_BY_SCHEME[scheme];
-  return {
-    pending: tokens.colorNeutralForeground4,
-    stopped: tokens.colorNeutralForeground4,
-    cancelled: tokens.colorNeutralForeground4,
-    'in-progress': fluo.cyan,
-    running: fluo.cyan,
-    'in-review': fluo.violet,
-    'waiting-input': fluo.amber,
-    'blocked-by-limit': fluo.amber,
-    blocked: fluo.amber,
-    done: fluo.green,
-    failed: fluo.red,
-  };
+  return roleColors(STATUS_ROLE, (role) => roleToFluoColor(role, fluo));
 }
 
 /**
@@ -258,19 +348,46 @@ export function statusIndicatorColor(scheme: ColorScheme): Record<TaskStatus, st
  */
 export function pipelineColor(scheme: ColorScheme): Record<PipelineStatus, string> {
   const fluo = FLUO_BY_SCHEME[scheme];
-  return {
-    unknown: tokens.colorNeutralForeground4,
-    none: tokens.colorNeutralForeground4,
-    created: tokens.colorNeutralForeground4,
-    pending: tokens.colorNeutralForeground4,
-    manual: tokens.colorNeutralForeground4,
-    skipped: tokens.colorNeutralForeground4,
-    running: fluo.cyan,
-    success: fluo.green,
-    failed: fluo.red,
-    canceled: fluo.amber,
-  };
+  return roleColors(PIPELINE_ROLE, (role) => roleToFluoColor(role, fluo));
 }
+
+/**
+ * {@link FluoPalette}, but every value is a `var(--tm-fluo-*)` reference into whichever
+ * scheme's `tokenCssVars` is currently stamped on the provider root, rather than a literal
+ * resolved once in JS for one scheme. A component that reads `FLUO_VAR.cyan` — in a
+ * `backgroundColor`, or inside a raw `color-mix(...)`/`drop-shadow(...)` CSS value — tracks
+ * an appearance change for free; `FLUO.*` (`theme.ts`, still the dark literals) never did,
+ * which is exactly what F13.14 is replacing it with.
+ */
+export const FLUO_VAR: FluoPalette = {
+  cyan: 'var(--tm-fluo-cyan)',
+  cyanDim: 'var(--tm-fluo-cyan-dim)',
+  cyanDeep: 'var(--tm-fluo-cyan-deep)',
+  green: 'var(--tm-fluo-green)',
+  red: 'var(--tm-fluo-red)',
+  amber: 'var(--tm-fluo-amber)',
+  violet: 'var(--tm-fluo-violet)',
+};
+
+function roleToFluoVar(role: IndicatorRole): string {
+  return role === 'neutral' ? tokens.colorNeutralForeground4 : FLUO_VAR[role];
+}
+
+/**
+ * {@link statusIndicatorColor}, scheme-free: every entry is either a Fluent token (already
+ * `var(--colorNeutralForeground4)`, already theme-aware) or a {@link FLUO_VAR} entry. A
+ * consumer that switches to this never needs to pass — or re-render on — a `scheme` again.
+ */
+export const STATUS_INDICATOR_VAR: Record<TaskStatus, string> = roleColors(
+  STATUS_ROLE,
+  roleToFluoVar,
+);
+
+/** {@link pipelineColor}, scheme-free — see {@link STATUS_INDICATOR_VAR}. */
+export const PIPELINE_VAR: Record<PipelineStatus, string> = roleColors(
+  PIPELINE_ROLE,
+  roleToFluoVar,
+);
 
 export interface GraphInkTokens {
   line: string;
