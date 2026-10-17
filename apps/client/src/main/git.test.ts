@@ -960,6 +960,25 @@ describe('parsePorcelainPaths', () => {
   });
 });
 
+describe('parsePorcelainPaths', () => {
+  it('reads the path past the two-letter status code and the space', () => {
+    expect(parsePorcelainPaths(' M a.txt\n?? b.txt\nA  c.txt\n')).toEqual([
+      'a.txt',
+      'b.txt',
+      'c.txt',
+    ]);
+  });
+
+  it('keeps only the new name of a rename, not the arrow or the old one', () => {
+    expect(parsePorcelainPaths('R  old.txt -> new.txt\n')).toEqual(['new.txt']);
+  });
+
+  it('is empty for an empty or blank-only status', () => {
+    expect(parsePorcelainPaths('')).toEqual([]);
+    expect(parsePorcelainPaths('\n\n')).toEqual([]);
+  });
+});
+
 describe('redactSecrets', () => {
   it('strips a token out of text, in raw and URL-encoded form', () => {
     const token = 'ghp_a/b+c';
