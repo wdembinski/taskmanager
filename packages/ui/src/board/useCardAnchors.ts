@@ -21,9 +21,17 @@
  * already the one thing holding every card's DOM node, so it is the cheapest place in the app
  * to know, and the alternative was threading two more callbacks through `KanbanColumn` into
  * `TaskCard` for a fact only the overlay wants.
+ *
+ * The same measure pass also reads the board's wiring space for `chainRoute`'s router: every
+ * `[data-board-column]` element's content-space extent (`KanbanColumn`'s own root) and every
+ * `[data-board-column-header]`'s bottom edge (the sticky header). A card's column is read off
+ * its nearest `[data-board-column]` ancestor rather than passed in, since the column already
+ * has to carry that marker for its own extent to be measured — asking the DOM once is cheaper
+ * than threading a second index through `KanbanColumn`/`TaskCard` alongside `anchorRef`.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AnchorRect } from './chainArrows';
+import type { ColumnBand, RouteLayout } from './chainRoute';
 
 /** The overlay's own box: the board's visible width, and everything down to the last card. */
 export interface AnchorBounds {
@@ -42,6 +50,12 @@ export interface CardAnchors {
   anchorRef: (taskId: string) => (el: HTMLDivElement | null) => void;
   rects: ReadonlyMap<string, AnchorRect>;
   bounds: AnchorBounds;
+  /** Every card's column index, for `chainRoute`'s `RouteCard.column`. Absent for a card
+   *  whose nearest `[data-board-column]` ancestor was not found — the compact board's single
+   *  column still carries the marker, so this is populated there too. */
+  cardColumns: ReadonlyMap<string, number>;
+  /** The board's wiring space — where the columns and the bus band sit — for `routeChainLinks`. */
+  layout: RouteLayout;
   hoveredTaskId: string | null;
   /**
    * A pointer's VIEWPORT coordinates (a drag event's `clientX`/`clientY`) turned into the
@@ -75,6 +89,32 @@ function sameRects(
   return true;
 }
 
+/** Whether two card→column maps agree, so an idle re-measure re-renders nothing. */
+function sameColumns(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, ca] of a) {
+    if (b.get(id) !== ca) return false;
+  }
+  return true;
+}
+
+/** Whether two layouts agree, field by field — `columns` included, since a column resizing
+ *  is exactly the case a `ResizeObserver` on the cards alone would miss. */
+function sameLayout(a: RouteLayout, b: RouteLayout): boolean {
+  if (a.busTop !== b.busTop || a.busBottom !== b.busBottom || a.boardWidth !== b.boardWidth) {
+    return false;
+  }
+  if (a.columns.length !== b.columns.length) return false;
+  for (let i = 0; i < a.columns.length; i++) {
+    if (a.columns[i].left !== b.columns[i].left || a.columns[i].right !== b.columns[i].right) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const EMPTY_LAYOUT: RouteLayout = { columns: [], busTop: 0, busBottom: 0, boardWidth: 0 };
+
 /**
  * @param revision anything whose identity changes when the set or order of the cards does
  *   — `MyTasks` passes its `cardsByColumn` memo. Re-sorting a column is invisible to a
@@ -84,6 +124,8 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
   const [rects, setRects] = useState<ReadonlyMap<string, AnchorRect>>(() => new Map());
   const [bounds, setBounds] = useState<AnchorBounds>({ width: 0, height: 0 });
+  const [cardColumns, setCardColumns] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const [layout, setLayout] = useState<RouteLayout>(EMPTY_LAYOUT);
   const [hoveredTaskId, setHoveredTaskId] = useState<string | null>(null);
 
   const elements = useRef(new Map<string, HTMLElement>());
@@ -127,6 +169,41 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
       const width = root.clientWidth;
       const height = Math.max(root.clientHeight, Math.ceil(lowest) + 8);
       return prev.width === width && prev.height === height ? prev : { width, height };
+    });
+
+    // The columns' own extent, in the same content space — left to right in document order,
+    // which is also the board's left-to-right order (`gridAutoFlow: 'column'` never reorders).
+    const columnEls = Array.from(root.querySelectorAll<HTMLElement>('[data-board-column]'));
+    const columnIndexOf = new Map<Element, number>(columnEls.map((el, i) => [el, i]));
+    const columns: ColumnBand[] = columnEls.map((el) => {
+      const b = el.getBoundingClientRect();
+      const left = b.left - base.left + sx;
+      return { left, right: left + b.width };
+    });
+
+    // The bus band: below every column header, above every column's topmost card.
+    let busTop = 0;
+    for (const el of root.querySelectorAll<HTMLElement>('[data-board-column-header]')) {
+      const b = el.getBoundingClientRect();
+      busTop = Math.max(busTop, b.bottom - base.top + sy);
+    }
+
+    const nextColumns = new Map<string, number>();
+    let busBottom = Infinity;
+    for (const [id, el] of elements.current) {
+      if (!el.isConnected) continue;
+      const columnEl = el.closest('[data-board-column]');
+      const index = columnEl ? columnIndexOf.get(columnEl) : undefined;
+      if (index !== undefined) nextColumns.set(id, index);
+      const top = next.get(id)?.top;
+      if (top !== undefined) busBottom = Math.min(busBottom, top);
+    }
+    if (!Number.isFinite(busBottom)) busBottom = busTop;
+
+    setCardColumns((prev) => (sameColumns(prev, nextColumns) ? prev : nextColumns));
+    setLayout((prev) => {
+      const next: RouteLayout = { columns, busTop, busBottom, boardWidth: root.clientWidth };
+      return sameLayout(prev, next) ? prev : next;
     });
   }, []);
 
@@ -202,5 +279,14 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
   // The cards changed, or were re-ordered — see `revision`.
   useEffect(schedule, [schedule, revision]);
 
-  return { containerRef: setContainer, anchorRef, rects, bounds, hoveredTaskId, toContentPoint };
+  return {
+    containerRef: setContainer,
+    anchorRef,
+    rects,
+    bounds,
+    cardColumns,
+    layout,
+    hoveredTaskId,
+    toContentPoint,
+  };
 }

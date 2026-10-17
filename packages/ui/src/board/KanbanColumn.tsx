@@ -76,6 +76,13 @@ const useStyles = makeStyles({
     minHeight: '40px',
     flex: 1,
   },
+  /**
+   * While a chain's links are being drawn over the board, the space between the sticky
+   * header and the first card IS the bus band `chainRoute` routes distant links through —
+   * `useCardAnchors`' `busTop`/`busBottom`. ~18px holds two lanes (`LANE_GAP`, `chainRoute.ts`)
+   * clear of both the header above and the first card's own top edge below.
+   */
+  listLinked: { paddingTop: '18px' },
   empty: { color: tokens.colorNeutralForeground4, padding: '8px 4px' },
   /**
    * The compact board's one visible column (F3.5) — no sticky header (there is only one
@@ -171,6 +178,13 @@ export interface KanbanColumnProps {
    * Passed through like `anchorRef`: the column neither starts one nor acts on one.
    */
   linkDrag?: LinkDragState | null;
+  /**
+   * At least one chain link is actually being drawn over the board (`links.length > 0`, and
+   * — once the switch exists — the mode is not Off). Widens the gap above the first card
+   * (`listLinked`) so the bus band `chainRoute` routes distant links through has somewhere to
+   * be; absent or false leaves the column exactly as it was before this ticket.
+   */
+  linksDrawn?: boolean;
   onLinkStart?: (taskId: string) => void;
   onLinkEnd?: () => void;
   onLinkTo?: (fromTaskId: string, toTaskId: string) => void;
@@ -237,6 +251,10 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
 
   return (
     <div
+      // The router's own anchor (`useCardAnchors`/`chainRoute`): its content-space left/right
+      // is one column's gutter wall, and a card's nearest ancestor with this attribute is how
+      // its column index is read back, without threading a second index through every card.
+      data-board-column={props.column}
       className={mergeClasses(
         styles.column,
         over && styles.columnOver,
@@ -267,14 +285,20 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
       }}
     >
       {!compact && (
-        <div className={styles.header}>
+        <div className={styles.header} data-board-column-header="">
           <Text weight="semibold" size={200} className={styles.headerLabel}>
             {props.label}
           </Text>
           <Caption1 className={styles.count}>({props.cards.length})</Caption1>
         </div>
       )}
-      <div className={mergeClasses(styles.list, compact && styles.listCompact)}>
+      <div
+        className={mergeClasses(
+          styles.list,
+          compact && styles.listCompact,
+          props.linksDrawn && styles.listLinked,
+        )}
+      >
         {props.cards.length === 0 ? (
           <Caption1 className={styles.empty}>—</Caption1>
         ) : (

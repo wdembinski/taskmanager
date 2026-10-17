@@ -42,8 +42,8 @@ export interface RouteCard {
 
 /**
  * One routed link — the polyline it follows, plus the three points a consumer hangs
- * anything on. Same `start`/`end`/`mid` contract as `chainArrows`' `ArrowRoute`, so
- * `ChainOverlay` and `ChainLinkPopover` do not have to change shape to draw through here.
+ * anything on. Same `start`/`end`/`mid` contract `chainArrows`' `ChainArrow` now extends this
+ * with, so `ChainOverlay` and `ChainLinkPopover` do not have to change shape to draw through here.
  */
 export interface RoutedLink {
   linkId: string;

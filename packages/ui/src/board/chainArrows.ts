@@ -6,6 +6,10 @@
  * reachability — can be tested without a browser. The component's only job is to map the
  * states this module returns onto strokes; it decides no geometry and no meaning.
  *
+ * The routing itself lives in `chainRoute.ts` — every link's path through the board's
+ * gutters and bus band, never over the cards between its ends. This file asks it for that
+ * geometry and dresses it in the states a link actually carries (lit, blocked, releasing).
+ *
  * Coordinates are the board's **content space**: the scroll container's padding box plus
  * its scroll offset (see `useCardAnchors`). That is the space an absolutely-positioned
  * child of the scroll container lives in, which is why the overlay can be laid out once
@@ -14,6 +18,7 @@
 import { isRunStatus } from '@tm/shared/board';
 import type { Task } from '@tm/shared/model';
 import { LINK_GATE_LABEL, linkSatisfied, type LinkGate, type TaskLink } from '@tm/shared/taskChain';
+import { routeChainLinks, type RouteCard, type RouteLayout, type RoutedLink } from './chainRoute';
 
 /**
  * Where one card is, in board content space.
@@ -39,27 +44,11 @@ export interface Point {
 }
 
 /**
- * A drawn cubic, plus the three points anything hung ON the arrow needs.
- *
- * The `d` alone was enough while an arrow was only ever a line. A SELECTED arrow is not:
- * it wears a dot at each end (so you can see which two cards it actually joins, which a
- * thicker stroke on its own does not settle when three arrows leave the same edge) and it
- * carries the gate popover at its middle. Parsing those back out of the `d` string would
- * be re-deriving numbers this function had in hand.
+ * One drawn arrow: the routed line `routeChainLinks` plans for its link (`linkId`, `points`,
+ * `d`, `start`, `end`, `mid` — a SELECTED arrow wears a dot at each end and carries the gate
+ * popover at `mid`), plus everything the stroke has to say about the link's own state.
  */
-export interface ArrowRoute {
-  d: string;
-  /** Where it leaves the predecessor, and where it lands on the successor. */
-  start: Point;
-  end: Point;
-  /** The curve at t = ½ — where the gate popover hangs. */
-  mid: Point;
-}
-
-/** One drawn arrow: where it goes, and everything the stroke has to say about it. */
-export interface ChainArrow extends ArrowRoute {
-  /** The link's id — what the click handler addresses. */
-  linkId: string;
+export interface ChainArrow extends RoutedLink {
   fromTaskId: string;
   toTaskId: string;
   gate: LinkGate;
@@ -109,15 +98,6 @@ export interface ChainDrawing {
 const MIN_BOW = 20;
 /** ...and at most, so a link right across a wide board does not balloon into a semicircle. */
 const MAX_BOW = 240;
-/**
- * The same, for the loop a link inside one column makes out into the gutter beside it.
- *
- * Deliberately narrow — a gutter is about 20px wide, and a loop that bowed proportionally
- * to its drop simply swapped which cards it crossed, sailing out over the NEXT column
- * instead of down through its own. Kept to the gutter, the loop reads as a bracket beside
- * the column, which is also exactly what a link to the next column over looks like.
- */
-const LOOP_BOW = { min: 14, max: 24 } as const;
 
 /** The stub's length, and the count chip's box. */
 const STUB_LENGTH = 26;
@@ -136,81 +116,8 @@ function curve(x1: number, y1: number, c1: number, c2: number, x2: number, y2: n
   return `M ${r(x1)} ${r(y1)} C ${r(c1)} ${r(y1)}, ${r(c2)} ${r(y2)}, ${r(x2)} ${r(y2)}`;
 }
 
-/** The same cubic, with its ends and its middle kept rather than thrown away. */
-function route(x1: number, y1: number, c1: number, c2: number, x2: number, y2: number): ArrowRoute {
-  return {
-    d: curve(x1, y1, c1, c2, x2, y2),
-    start: { x: r(x1), y: r(y1) },
-    end: { x: r(x2), y: r(y2) },
-    mid: {
-      // A cubic at t = ½ is (P₀ + 3P₁ + 3P₂ + P₃)/8. Both control points sit LEVEL with
-      // their own end (see `curve`), so the y term collapses to the mean of the two ends
-      // — which is why this is a two-line calculation rather than a Bézier evaluator.
-      x: r((x1 + 3 * c1 + 3 * c2 + x2) / 8),
-      y: r((y1 + y2) / 2),
-    },
-  };
-}
-
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, value));
-}
-
-/**
- * The route from one card to another — a cubic Bézier that leaves and enters horizontally,
- * at the middle of whichever edges FACE each other.
- *
- * Horizontal at both ends because that is what makes a chain readable as a chain: an arrow
- * always grows straight out of one card and lands square on another, so a route can be
- * followed at a glance instead of picked out of a thicket of diagonals.
- *
- * The edges are chosen by where the target actually sits, which is the whole trick and the
- * one thing worth reading twice. A board's chains mostly run BACKWARDS — the card doing the
- * work is in In Progress and the card waiting on it is still in To Do, to its left — so
- * always leaving a right edge for a left edge would drag the commonest arrow on the board
- * straight across the target card to reach its far side. Facing edges keep every curve in
- * the gutter BETWEEN the two cards, where it crosses nothing:
- *
- *   - target to the right — leave the right edge, enter the left;
- *   - target to the left — leave the left edge, enter the right;
- *   - **columns overlapping** (a link inside one column, where neither is clear of the
- *     other) — leave the right edge and enter the target's right edge too, so the whole
- *     curve loops out into the gutter beside the column rather than cutting down through
- *     the cards stacked between them. `orient="auto"` turns the arrowhead to match.
- *
- * That last loop goes out on the LEFT instead when there is no room on the right, which is
- * the rightmost column — where the board's own edge clips it. Both gutters cannot be
- * missing at once: a column with neither is a board one column wide.
- *
- * The bow scales with the gap so a link between distant columns eases across instead of
- * jinking, and is floored so even two cards a hair apart get a visible curve rather than a
- * kink.
- *
- * @param boardWidth the overlay's width, for the loop's choice of side. Left off, the loop
- *   always takes the right — which is what a test measuring the shape wants.
- */
-export function arrowRoute(from: AnchorRect, to: AnchorRect, boardWidth = Infinity): ArrowRoute {
-  const y1 = from.top + from.height / 2;
-  const y2 = to.top + to.height / 2;
-
-  if (to.left >= from.right) {
-    const b = clamp((to.left - from.right) * 0.5, MIN_BOW, MAX_BOW);
-    return route(from.right, y1, from.right + b, to.left - b, to.left, y2);
-  }
-  if (to.right <= from.left) {
-    const b = clamp((from.left - to.right) * 0.5, MIN_BOW, MAX_BOW);
-    return route(from.left, y1, from.left - b, to.right + b, to.right, y2);
-  }
-  const b = clamp(Math.abs(y2 - y1) * 0.3, LOOP_BOW.min, LOOP_BOW.max);
-  if (Math.max(from.right, to.right) + b <= boardWidth - EDGE) {
-    return route(from.right, y1, from.right + b, to.right + b, to.right, y2);
-  }
-  return route(from.left, y1, from.left - b, to.left - b, to.left, y2);
-}
-
-/** Just the `d` of {@link arrowRoute}, for a caller that only wants to draw the line. */
-export function arrowPath(from: AnchorRect, to: AnchorRect, boardWidth = Infinity): string {
-  return arrowRoute(from, to, boardWidth).d;
 }
 
 /**
@@ -219,13 +126,13 @@ export function arrowPath(from: AnchorRect, to: AnchorRect, boardWidth = Infinit
  * It leaves the handle — the card's RIGHT edge — because that is where your finger closed
  * on it, and a line that starts anywhere else reads as having come loose from the grab. It
  * leaves horizontally for the same reason every settled arrow does, so the shape you drag
- * out is the shape you will get.
+ * out is the shape you will get. Kept as a free bow rather than routed through the gutters
+ * `routeChainLinks` uses: the drag has no target column yet to route TO, only a pointer.
  *
- * A pointer to the LEFT of the handle therefore gets the same outward loop `arrowRoute`
- * draws for a link inside one column: out of the right edge, round, and back. That is the
- * honest picture — the arrow it becomes will enter the target's facing edge, and a band
- * that instead sprang from the card's left edge would be drawing from a handle that isn't
- * there.
+ * A pointer to the LEFT of the handle gets the same outward loop a same-column link's route
+ * makes into its gutter: out of the right edge, round, and back. That is the honest picture
+ * — the arrow it becomes will enter the target's facing edge, and a band that instead sprang
+ * from the card's left edge would be drawing from a handle that isn't there.
  */
 export function rubberBandPath(from: AnchorRect, at: Point): string {
   const y1 = from.top + from.height / 2;
@@ -328,6 +235,10 @@ export interface ChainDrawingInput {
   links: readonly TaskLink[];
   /** Where each card currently is. A card absent from this map is not on the board. */
   anchors: ReadonlyMap<string, AnchorRect>;
+  /** Each card's column index (`useCardAnchors`' own), for `routeChainLinks`' `RouteCard`. A
+   *  card absent here routes as if it were not on the board, same as a card absent from
+   *  `anchors` — there is no gutter to leave it through without knowing which column it's in. */
+  cardColumns: ReadonlyMap<string, number>;
   /** Every task, including ones the board is not showing — the gates read their state. */
   tasksById: ReadonlyMap<string, Task>;
   /** The ids the engine has a live run for, so an arrow can say "releasing" a beat early. */
@@ -336,6 +247,8 @@ export interface ChainDrawingInput {
   litTaskIds: ReadonlySet<string>;
   /** The overlay's width, for clamping the stubs. */
   boardWidth: number;
+  /** The board's wiring space — where the columns and the bus band sit. */
+  layout: RouteLayout;
 }
 
 /**
@@ -345,9 +258,16 @@ export interface ChainDrawingInput {
  * this board's business, and a stub for them would have nothing to attach to.
  */
 export function buildChainDrawing(input: ChainDrawingInput): ChainDrawing {
-  const { links, anchors, tasksById, litTaskIds, boardWidth } = input;
+  const { links, anchors, cardColumns, tasksById, litTaskIds, boardWidth, layout } = input;
   const running = input.runningTaskIds ?? new Set<string>();
   const lit = litLinkIds(links, litTaskIds);
+
+  const cards: RouteCard[] = [];
+  for (const [taskId, rect] of anchors) {
+    const column = cardColumns.get(taskId);
+    if (column !== undefined) cards.push({ taskId, column, rect });
+  }
+  const routed = routeChainLinks(cards, links, layout);
 
   const arrows: ChainArrow[] = [];
   /** (taskId, side) → the hidden links behind one stub. */
@@ -370,6 +290,12 @@ export function buildChainDrawing(input: ChainDrawingInput): ChainDrawing {
       continue;
     }
 
+    // Both ends are on the board but not routed — their column was not known yet (a card
+    // mid-mount, before `useCardAnchors`' own measure pass has read its `data-board-column`
+    // ancestor). Nothing to draw this frame; the next measure settles it.
+    const route = routed.get(link.id);
+    if (!route) continue;
+
     // Waiting is asked of the SHARED gate logic, never re-derived here: the board and the
     // engine that releases the card must agree about what "after" means for this pair.
     const blocked = !linkSatisfied(link, fromTask);
@@ -379,11 +305,10 @@ export function buildChainDrawing(input: ChainDrawingInput): ChainDrawing {
     const releasing = blocked && sourceRunning;
     const gateWords = LINK_GATE_LABEL[link.gate];
     arrows.push({
-      linkId: link.id,
+      ...route,
       fromTaskId: link.fromTaskId,
       toTaskId: link.toTaskId,
       gate: link.gate,
-      ...arrowRoute(from, to, boardWidth),
       lit: lit.has(link.id),
       blocked,
       releasing,
@@ -413,4 +338,16 @@ export function buildChainDrawing(input: ChainDrawingInput): ChainDrawing {
   }
 
   return { arrows, stubs };
+}
+
+/**
+ * Where one link's arrow currently hangs its gate popover, or `null` when the link is not
+ * drawn as an arrow at all (an end off the board, or not yet routed — see `buildChainDrawing`).
+ *
+ * A host computes its own `ChainDrawing` via `useMemo` for exactly this lookup, so the
+ * popover's position comes from the SAME routed geometry `ChainOverlay` draws rather than a
+ * second route recomputed by hand.
+ */
+export function linkMidpoint(drawing: ChainDrawing, linkId: string): Point | null {
+  return drawing.arrows.find((a) => a.linkId === linkId)?.mid ?? null;
 }

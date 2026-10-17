@@ -22,6 +22,7 @@ import {
   Option,
   Switch,
   ToggleButton,
+  mergeClasses,
 } from '@fluentui/react-components';
 import {
   ArchiveRegular,
@@ -76,7 +77,7 @@ import { doneSwitchLabel, doneSwitchTitle } from '@ui/board/doneSwitchLabel';
 import { BoardDisplayMenu } from '@ui/board/BoardDisplayMenu';
 import { ChainOverlay } from '@ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@ui/board/ChainLinkPopover';
-import { arrowRoute } from '@ui/board/chainArrows';
+import { buildChainDrawing, linkMidpoint } from '@ui/board/chainArrows';
 import {
   isChainLinkDrag,
   linkDropStates,
@@ -109,6 +110,9 @@ import type { BoardCard, BoardColumn } from '@ui/board/boardColumns';
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
 ) as Record<BoardColumn, string>;
+
+/** A stable empty set — `buildChainDrawing`'s `litTaskIds` when only the geometry matters. */
+const EMPTY_TASK_IDS: ReadonlySet<string> = new Set();
 
 /**
  * The optimistic half of the main process's `humanStatusPatch`: where a status the human
@@ -1111,15 +1115,30 @@ export function MyTasks({
     () => links.find((l) => l.id === selectedLinkId) ?? null,
     [links, selectedLinkId],
   );
-  const selectedLinkAt = useMemo(() => {
-    if (!selectedLink) return null;
-    const from = anchors.rects.get(selectedLink.fromTaskId);
-    const to = anchors.rects.get(selectedLink.toTaskId);
-    // An endpoint the board is not showing has a stub rather than an arrow, and a stub is
-    // a fact about the FILTER — there is no curve to hang a gate picker on.
-    if (!from || !to) return null;
-    return arrowRoute(from, to, anchors.bounds.width).mid;
-  }, [selectedLink, anchors.rects, anchors.bounds.width]);
+  // The same routed geometry `ChainOverlay` draws, memoised once here rather than recomputed
+  // by hand — an endpoint the board is not showing has a stub rather than an arrow, and
+  // `linkMidpoint` already returns null for exactly that case.
+  const chainDrawing = useMemo(
+    () =>
+      buildChainDrawing({
+        links,
+        anchors: anchors.rects,
+        cardColumns: anchors.cardColumns,
+        tasksById,
+        litTaskIds: EMPTY_TASK_IDS,
+        boardWidth: anchors.bounds.width,
+        layout: anchors.layout,
+      }),
+    [links, anchors.rects, anchors.cardColumns, tasksById, anchors.bounds.width, anchors.layout],
+  );
+  const selectedLinkAt = useMemo(
+    () => (selectedLink ? linkMidpoint(chainDrawing, selectedLink.id) : null),
+    [selectedLink, chainDrawing],
+  );
+
+  // Widens the gutters (`columnsLinked`/`listLinked`) only while there is something to route
+  // through them — a board with no links yet keeps its ordinary, narrower gap.
+  const linksDrawn = links.length > 0;
 
   // Delete or Backspace erases the selected arrow, Escape lets it go. On the window rather
   // than on the path, because an SVG `<path>` cannot hold focus — and never while the caret
@@ -1338,7 +1357,7 @@ export function MyTasks({
         */}
         <div
           ref={anchors.containerRef}
-          className={layout.columns}
+          className={mergeClasses(layout.columns, linksDrawn && layout.columnsLinked)}
           onDragEnd={() => {
             setDraggingId(null);
             // Covers every way a link drag can end that is not a drop on a card: escaped,
@@ -1429,6 +1448,7 @@ export function MyTasks({
               shownLaterStepTaskIds={shownLaterSteps}
               onToggleLaterSteps={toggleLaterSteps}
               anchorRef={anchors.anchorRef}
+              linksDrawn={linksDrawn}
               linkDrag={linkDrag}
               onLinkStart={(taskId) => {
                 // Drawing a new arrow puts the old one's panel away — it is a real DOM box
@@ -1473,6 +1493,8 @@ export function MyTasks({
           <ChainOverlay
             links={links}
             anchors={anchors.rects}
+            cardColumns={anchors.cardColumns}
+            layout={anchors.layout}
             tasksById={tasksById}
             runningTaskIds={liveRuns}
             selectedTaskId={selectedTaskId}

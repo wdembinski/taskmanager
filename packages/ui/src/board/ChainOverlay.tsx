@@ -35,7 +35,7 @@
  * whole layer goes inert while a link is being DRAGGED, because then the cards underneath
  * are the targets and an arrow lying across one must not intercept the drop (see `inert`).
  */
-import { makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
+import { Caption1, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import type { Task } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { FLUO_VAR } from '../tokens';
@@ -47,6 +47,7 @@ import {
   type ChainArrow,
 } from './chainArrows';
 import type { LinkDragState } from './chainDrag';
+import type { RouteLayout } from './chainRoute';
 
 /** Marker ids. One overlay per board, but namespaced so they cannot collide with anything. */
 const MARKER = {
@@ -174,6 +175,40 @@ const useStyles = makeStyles({
     // The chip is a label on a line, not a target: never let a drag select its digits.
     userSelect: 'none',
   },
+  /**
+   * The small OPEN circle at a routed link's source — background fill, stroke in the
+   * line's own colour (`strokeOf`, minus the dash/inert classes, which a 3px ring has no
+   * use for). Marks which end a fan of links leaves FROM; the target already has the
+   * arrowhead marker, so only one end needs a second symbol.
+   */
+  sourceDot: { fill: tokens.colorNeutralBackground1, strokeWidth: '1.3px' },
+  /**
+   * The legend (`ChainLegend`): the three line styles an arrow can wear, explained once
+   * rather than inferred from ink. The last item in the board's grid, spanning every column
+   * so it never becomes a track of its own, then pinned to the bottom-right corner within
+   * that span — `justifySelf` for the side (the grid has no horizontal scroll to chase),
+   * `position: sticky` for the one axis the board DOES scroll.
+   */
+  legend: {
+    position: 'sticky',
+    insetBlockEnd: '10px',
+    gridColumn: '1 / -1',
+    justifySelf: 'end',
+    width: 'fit-content',
+    zIndex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    padding: '4px 12px',
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundColor: tokens.colorNeutralBackground1,
+    boxShadow: tokens.shadow8,
+    // Read, never touched — clicking through to whatever sits beneath it is more useful
+    // than a legend that can intercept a drag meant for the board under it.
+    pointerEvents: 'none',
+  },
+  legendEntry: { display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' },
+  legendLabel: { color: tokens.colorNeutralForeground3 },
 });
 
 /** The arrowhead, drawn once per colour — SVG markers do not inherit their path's stroke. */
@@ -201,6 +236,10 @@ export interface ChainOverlayProps {
   links: readonly TaskLink[];
   /** Where each card is, in the scroll container's content space. */
   anchors: ReadonlyMap<string, AnchorRect>;
+  /** Each card's column index — `useCardAnchors`' own, for `routeChainLinks`. */
+  cardColumns: ReadonlyMap<string, number>;
+  /** The board's wiring space — where the columns and the bus band sit. */
+  layout: RouteLayout;
   /** Every task on the board — the gates read the predecessor's own state. */
   tasksById: ReadonlyMap<string, Task>;
   /** The engine's live runs, so an arrow says "releasing" as soon as the session spawns. */
@@ -243,10 +282,12 @@ export function ChainOverlay(props: ChainOverlayProps): JSX.Element | null {
   const { arrows, stubs } = buildChainDrawing({
     links: props.links,
     anchors: props.anchors,
+    cardColumns: props.cardColumns,
     tasksById: props.tasksById,
     runningTaskIds: props.runningTaskIds,
     litTaskIds,
     boardWidth: props.width,
+    layout: props.layout,
   });
   if (arrows.length === 0 && stubs.length === 0 && !band) return null;
 
@@ -271,112 +312,166 @@ export function ChainOverlay(props: ChainOverlayProps): JSX.Element | null {
     );
   const headOf = (a: Pick<ChainArrow, 'lit' | 'releasing'>): string =>
     `url(#${a.releasing ? MARKER.live : a.lit ? MARKER.lit : MARKER.rest})`;
+  /** The source dot's own colour — `strokeOf` minus `blocked`/`inert`, neither of which a
+   *  3px ring has anything to show for (no dash, and it takes no pointer events to begin with). */
+  const dotColorOf = (a: Pick<ChainArrow, 'lit' | 'releasing'>): string =>
+    mergeClasses(a.lit ? styles.lit : styles.resting, a.releasing && styles.releasing);
 
   return (
-    <svg
-      className={styles.layer}
-      width={props.width}
-      height={props.height}
-      // Decoration over a board that says all of this in words elsewhere; the `<title>`s
-      // are there for the pointer, not for a screen reader to wade through.
-      aria-hidden="true"
-    >
-      <defs>
-        <Head id={MARKER.rest} className={styles.headRest} />
-        <Head id={MARKER.lit} className={styles.headLit} />
-        <Head id={MARKER.live} className={styles.headLive} />
-      </defs>
+    <>
+      <svg
+        className={styles.layer}
+        width={props.width}
+        height={props.height}
+        // Decoration over a board that says all of this in words elsewhere; the `<title>`s
+        // are there for the pointer, not for a screen reader to wade through.
+        aria-hidden="true"
+      >
+        <defs>
+          <Head id={MARKER.rest} className={styles.headRest} />
+          <Head id={MARKER.lit} className={styles.headLit} />
+          <Head id={MARKER.live} className={styles.headLive} />
+        </defs>
 
-      {arrows.map((a) => {
-        const selected = a.linkId === props.selectedLinkId;
-        const stroke = strokeOf(a, selected);
-        return (
-          <g key={a.linkId} data-link-id={a.linkId}>
-            <title>{a.title}</title>
-            {/* First, so it sits UNDER the visible stroke and cannot be what a click lands
+        {arrows.map((a) => {
+          const selected = a.linkId === props.selectedLinkId;
+          const stroke = strokeOf(a, selected);
+          return (
+            <g key={a.linkId} data-link-id={a.linkId}>
+              <title>{a.title}</title>
+              {/* First, so it sits UNDER the visible stroke and cannot be what a click lands
                 on when the pointer is dead on the line — and so the hairline stays crisp.
                 Gone entirely mid-drag: a 14px invisible band across the cards is the worst
                 possible thing to have lying over a drop target. */}
-            {!dragging && (
-              <path
-                d={a.d}
-                className={styles.hit}
-                onClick={(e) => {
-                  // The board below clears the selection on any click that reaches it.
-                  e.stopPropagation();
-                  props.onSelectLink?.(a.linkId);
-                }}
-              />
-            )}
-            {a.gate === 'stacked' ? (
-              <>
+              {!dragging && (
                 <path
                   d={a.d}
-                  className={stroke}
-                  markerEnd={headOf(a)}
-                  transform={`translate(0 ${-DOUBLE_GAP})`}
+                  className={styles.hit}
+                  onClick={(e) => {
+                    // The board below clears the selection on any click that reaches it.
+                    e.stopPropagation();
+                    props.onSelectLink?.(a.linkId);
+                  }}
                 />
-                {/* No second head: one arrow, drawn twice, still points once. */}
-                <path d={a.d} className={stroke} transform={`translate(0 ${DOUBLE_GAP})`} />
-              </>
-            ) : (
-              <path d={a.d} className={stroke} markerEnd={headOf(a)} />
-            )}
-            {selected && (
+              )}
+              {a.gate === 'stacked' ? (
+                <>
+                  <path
+                    d={a.d}
+                    className={stroke}
+                    markerEnd={headOf(a)}
+                    transform={`translate(0 ${-DOUBLE_GAP})`}
+                  />
+                  {/* No second head: one arrow, drawn twice, still points once. */}
+                  <path d={a.d} className={stroke} transform={`translate(0 ${DOUBLE_GAP})`} />
+                </>
+              ) : (
+                <path d={a.d} className={stroke} markerEnd={headOf(a)} />
+              )}
+              {selected ? (
+                <>
+                  <circle cx={a.start.x} cy={a.start.y} r={3.5} className={styles.endpoint} />
+                  <circle cx={a.end.x} cy={a.end.y} r={3.5} className={styles.endpoint} />
+                </>
+              ) : (
+                // The open source dot — which end a fan of links leaves FROM; the target
+                // already has the arrowhead, so only this end needs a second symbol.
+                <circle
+                  cx={a.start.x}
+                  cy={a.start.y}
+                  r={3}
+                  className={mergeClasses(styles.sourceDot, dotColorOf(a))}
+                />
+              )}
+            </g>
+          );
+        })}
+
+        {stubs.map((s) => (
+          <g key={s.key}>
+            <title>{s.title}</title>
+            <path
+              d={s.d}
+              className={mergeClasses(
+                styles.path,
+                s.lit ? styles.lit : styles.resting,
+                dragging && styles.inert,
+              )}
+              markerEnd={headOf({ lit: s.lit, releasing: false })}
+            />
+            {s.chip && (
               <>
-                <circle cx={a.start.x} cy={a.start.y} r={3.5} className={styles.endpoint} />
-                <circle cx={a.end.x} cy={a.end.y} r={3.5} className={styles.endpoint} />
+                <rect
+                  x={s.chip.cx - CHIP_SIZE.width / 2}
+                  y={s.chip.cy - CHIP_SIZE.height / 2}
+                  width={CHIP_SIZE.width}
+                  height={CHIP_SIZE.height}
+                  rx={CHIP_SIZE.height / 2}
+                  className={styles.chipBox}
+                />
+                <text
+                  x={s.chip.cx}
+                  y={s.chip.cy}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  className={styles.chipText}
+                >
+                  {s.count}
+                </text>
               </>
             )}
           </g>
-        );
-      })}
+        ))}
 
-      {stubs.map((s) => (
-        <g key={s.key}>
-          <title>{s.title}</title>
-          <path
-            d={s.d}
-            className={mergeClasses(
-              styles.path,
-              s.lit ? styles.lit : styles.resting,
-              dragging && styles.inert,
-            )}
-            markerEnd={headOf({ lit: s.lit, releasing: false })}
-          />
-          {s.chip && (
-            <>
-              <rect
-                x={s.chip.cx - CHIP_SIZE.width / 2}
-                y={s.chip.cy - CHIP_SIZE.height / 2}
-                width={CHIP_SIZE.width}
-                height={CHIP_SIZE.height}
-                rx={CHIP_SIZE.height / 2}
-                className={styles.chipBox}
-              />
-              <text
-                x={s.chip.cx}
-                y={s.chip.cy}
-                textAnchor="middle"
-                dominantBaseline="central"
-                className={styles.chipText}
-              >
-                {s.count}
-              </text>
-            </>
-          )}
-        </g>
-      ))}
-
-      {/* Last, so the line you are dragging is never hidden behind an arrow that already
+        {/* Last, so the line you are dragging is never hidden behind an arrow that already
           exists — the one shape on this layer that follows your hand. */}
-      {band && (
-        <path
-          d={band.d}
-          className={mergeClasses(styles.band, band.valid ? styles.bandValid : styles.bandRefused)}
-        />
-      )}
-    </svg>
+        {band && (
+          <path
+            d={band.d}
+            className={mergeClasses(
+              styles.band,
+              band.valid ? styles.bandValid : styles.bandRefused,
+            )}
+          />
+        )}
+      </svg>
+      {arrows.length > 0 && <ChainLegend />}
+    </>
+  );
+}
+
+/**
+ * The three line styles any arrow can wear, explained once rather than inferred from ink —
+ * the mockup's own legend. Reuses the arrows' own classes (`path`/`resting`/`blocked`/
+ * `releasing`) rather than a second set of colours, so the legend can never drift from what
+ * the board is actually drawing.
+ */
+function ChainLegend(): JSX.Element {
+  const styles = useStyles();
+  return (
+    <div className={styles.legend} aria-hidden="true">
+      <LegendEntry
+        cls={mergeClasses(styles.path, styles.resting, styles.blocked, styles.releasing)}
+        label="starting next"
+      />
+      <LegendEntry
+        cls={mergeClasses(styles.path, styles.resting, styles.blocked)}
+        label="waits for merge"
+      />
+      <LegendEntry cls={mergeClasses(styles.path, styles.resting)} label="already satisfied" />
+    </div>
+  );
+}
+
+function LegendEntry({ cls, label }: { cls: string; label: string }): JSX.Element {
+  const styles = useStyles();
+  return (
+    <span className={styles.legendEntry}>
+      <svg width="22" height="8" aria-hidden="true">
+        <line x1="1" y1="4" x2="21" y2="4" className={cls} />
+      </svg>
+      <Caption1 className={styles.legendLabel}>{label}</Caption1>
+    </span>
   );
 }
 

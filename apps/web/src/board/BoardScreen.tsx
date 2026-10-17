@@ -35,7 +35,7 @@
  * lands without needing a desktop Client to apply it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Caption1, makeStyles } from '@fluentui/react-components';
+import { Button, Caption1, makeStyles, mergeClasses } from '@fluentui/react-components';
 import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
 import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
@@ -48,7 +48,7 @@ import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
 import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
-import { arrowRoute } from '@tm/ui/board/chainArrows';
+import { buildChainDrawing, linkMidpoint } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
 import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/board/shelvedCards';
@@ -109,6 +109,9 @@ const RELAY_NOTICE =
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
 ) as Record<BoardColumn, string>;
+
+/** A stable empty set — `buildChainDrawing`'s `litTaskIds` when only the geometry matters. */
+const EMPTY_TASK_IDS: ReadonlySet<string> = new Set();
 
 export interface BoardScreenProps {
   state: CloudBoardState;
@@ -504,13 +507,37 @@ export function BoardScreen({
     () => extras.chainLinks.find((l) => l.id === selectedLinkId) ?? null,
     [extras.chainLinks, selectedLinkId],
   );
-  const selectedLinkAt = useMemo(() => {
-    if (!selectedLink) return null;
-    const from = anchors.rects.get(selectedLink.fromTaskId);
-    const to = anchors.rects.get(selectedLink.toTaskId);
-    if (!from || !to) return null;
-    return arrowRoute(from, to, anchors.bounds.width).mid;
-  }, [selectedLink, anchors.rects, anchors.bounds.width]);
+  // The same routed geometry `ChainOverlay` draws, memoised once here rather than recomputed
+  // by hand — an endpoint the board is not showing has a stub rather than an arrow, and
+  // `linkMidpoint` already returns null for exactly that case.
+  const chainDrawing = useMemo(
+    () =>
+      buildChainDrawing({
+        links: extras.chainLinks,
+        anchors: anchors.rects,
+        cardColumns: anchors.cardColumns,
+        tasksById,
+        litTaskIds: EMPTY_TASK_IDS,
+        boardWidth: anchors.bounds.width,
+        layout: anchors.layout,
+      }),
+    [
+      extras.chainLinks,
+      anchors.rects,
+      anchors.cardColumns,
+      tasksById,
+      anchors.bounds.width,
+      anchors.layout,
+    ],
+  );
+  const selectedLinkAt = useMemo(
+    () => (selectedLink ? linkMidpoint(chainDrawing, selectedLink.id) : null),
+    [selectedLink, chainDrawing],
+  );
+
+  // Widens the gutters (`columnsLinked`/`listLinked`) only while there is something to route
+  // through them — a board with no links yet keeps its ordinary, narrower gap.
+  const linksDrawn = extras.chainLinks.length > 0;
 
   // Delete or Backspace erases the selected arrow, Escape lets it go — the desktop's own
   // keyboard contract, on the window rather than the path because an SVG `<path>` cannot
@@ -869,7 +896,10 @@ export function BoardScreen({
             />
           )
         ) : (
-          <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
+          <div
+            className={mergeClasses(layout.columns, linksDrawn && layout.columnsLinked)}
+            onClick={() => setSelectedLinkId(null)}
+          >
             {allowedDropColumns({ hiddenColumns, pending: false }).map((column) => (
               <KanbanColumn
                 key={column}
@@ -897,6 +927,7 @@ export function BoardScreen({
                 shownLaterStepTaskIds={shownLaterSteps}
                 onToggleLaterSteps={toggleLaterSteps}
                 anchorRef={anchors.anchorRef}
+                linksDrawn={linksDrawn}
                 linkDrag={linkDrag}
                 onLinkStart={(taskId) => {
                   setSelectedLinkId(null);
@@ -951,6 +982,8 @@ export function BoardScreen({
             <ChainOverlay
               links={extras.chainLinks}
               anchors={anchors.rects}
+              cardColumns={anchors.cardColumns}
+              layout={anchors.layout}
               tasksById={tasksById}
               runningTaskIds={extras.liveRunTaskIds}
               selectedTaskId={selectedTaskId}

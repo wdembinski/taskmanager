@@ -1,14 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
-import {
-  arrowPath,
-  arrowRoute,
-  buildChainDrawing,
-  litLinkIds,
-  rubberBandPath,
-  type AnchorRect,
-} from './chainArrows';
+import { buildChainDrawing, litLinkIds, rubberBandPath, type AnchorRect } from './chainArrows';
+import type { RouteLayout } from './chainRoute';
 
 const rect = (left: number, top: number, width = 240, height = 80): AnchorRect => ({
   left,
@@ -48,48 +42,6 @@ function points(d: string): number[] {
   return d.match(/-?\d+(\.\d+)?/g)!.map(Number);
 }
 
-describe('arrowPath', () => {
-  it('leaves the right edge for a target to the right, and enters its left', () => {
-    const [x1, y1, , , , , x2, y2] = points(arrowPath(rect(0, 0), rect(400, 200)));
-    expect([x1, y1]).toEqual([240, 40]);
-    expect([x2, y2]).toEqual([400, 240]);
-  });
-
-  it('leaves and enters horizontally, so every arrow on the board reads the same way', () => {
-    const [, y1, , c1y, , c2y, , y2] = points(arrowPath(rect(0, 0), rect(400, 200)));
-    expect(c1y).toBe(y1);
-    expect(c2y).toBe(y2);
-  });
-
-  it('turns round for a target to the LEFT rather than crossing it to reach its far side', () => {
-    // The commonest link on a board: the card doing the work is further right than the one
-    // waiting on it. Facing edges — source's left, target's right — keep the curve between
-    // them, where the old right-to-left routing dragged it straight over the target card.
-    const [x1, , c1x, , c2x, , x2] = points(arrowPath(rect(400, 0), rect(0, 200)));
-    expect(x1).toBe(400); // the source's LEFT edge
-    expect(x2).toBe(240); // the target's RIGHT edge
-    expect(c1x).toBeLessThan(x1); // both control points in the gutter between them
-    expect(c2x).toBeGreaterThan(x2);
-  });
-
-  it('loops a link inside one column out into the gutter, clear of the cards between', () => {
-    const [x1, , c1x, , c2x, , x2] = points(arrowPath(rect(0, 0), rect(0, 400)));
-    // Both ends on the right edge, and the whole curve lives to the right of it.
-    expect(x1).toBe(240);
-    expect(x2).toBe(240);
-    expect(c1x).toBeGreaterThan(240);
-    expect(c2x).toBeGreaterThan(240);
-  });
-
-  it('loops on the LEFT in the rightmost column, where the board edge would clip it', () => {
-    const [x1, , c1x, , c2x, , x2] = points(arrowPath(rect(560, 0), rect(560, 400), 810));
-    expect(x1).toBe(560); // the left edge, both ends
-    expect(x2).toBe(560);
-    expect(c1x).toBeLessThan(560);
-    expect(c2x).toBeLessThan(560);
-  });
-});
-
 describe('litLinkIds', () => {
   // a → b → c, with d branching off b, and e feeding a.
   const links = [
@@ -122,27 +74,6 @@ describe('litLinkIds', () => {
   });
 });
 
-describe('arrowRoute', () => {
-  it('reports the ends the selected arrow puts its dots on', () => {
-    const { start, end } = arrowRoute(rect(0, 0), rect(400, 200));
-    expect(start).toEqual({ x: 240, y: 40 });
-    expect(end).toEqual({ x: 400, y: 240 });
-  });
-
-  it('anchors the popover on the curve at t = ½', () => {
-    // Both control points sit level with their own end, so y is the mean of the two ends.
-    const { mid } = arrowRoute(rect(0, 0), rect(400, 200));
-    expect(mid).toEqual({ x: 320, y: 140 });
-  });
-
-  it('follows the bow rather than the chord when the curve loops out', () => {
-    // Two cards in one column: the arrow loops into the gutter to the right, so its middle
-    // is well clear of the straight line between them — which is where the panel belongs.
-    const { mid } = arrowRoute(rect(0, 0), rect(0, 400));
-    expect(mid.x).toBeGreaterThan(240);
-  });
-});
-
 describe('rubberBandPath', () => {
   it('leaves the handle — the card’s right edge, level with where arrows leave', () => {
     const [x1, y1] = points(rubberBandPath(rect(0, 0), { x: 600, y: 300 }));
@@ -167,30 +98,49 @@ describe('buildChainDrawing', () => {
     ['a', rect(0, 0)],
     ['b', rect(400, 0)],
   ]);
+  // 'a' and 'b' sit one column apart — enough for `routeChainLinks` to draw an adjacent
+  // link through the gutter between them. The bus band sits above both cards' top (0).
+  const cardColumns = new Map([
+    ['a', 0],
+    ['b', 1],
+  ]);
+  const layout: RouteLayout = {
+    columns: [
+      { left: 0, right: 240 },
+      { left: 400, right: 640 },
+    ],
+    busTop: -40,
+    busBottom: -10,
+    boardWidth: 800,
+  };
 
   it('dashes an arrow whose target is still waiting, and animates it while the source runs', () => {
     const links = [link('l1', 'a', 'b')];
     const waiting = buildChainDrawing({
       links,
       anchors,
+      cardColumns,
       tasksById: new Map([
         ['a', task('a')],
         ['b', task('b')],
       ]),
       litTaskIds: new Set(),
       boardWidth: 800,
+      layout,
     });
     expect(waiting.arrows[0]).toMatchObject({ blocked: true, releasing: false });
 
     const running = buildChainDrawing({
       links,
       anchors,
+      cardColumns,
       tasksById: new Map([
         ['a', task('a', { status: 'running' })],
         ['b', task('b')],
       ]),
       litTaskIds: new Set(),
       boardWidth: 800,
+      layout,
     });
     expect(running.arrows[0]).toMatchObject({ blocked: true, releasing: true });
   });
@@ -199,12 +149,14 @@ describe('buildChainDrawing', () => {
     const drawing = buildChainDrawing({
       links: [link('l1', 'a', 'b')],
       anchors,
+      cardColumns,
       tasksById: new Map([
         ['a', task('a', { landedAt: 1 })],
         ['b', task('b')],
       ]),
       litTaskIds: new Set(),
       boardWidth: 800,
+      layout,
     });
     expect(drawing.arrows[0]).toMatchObject({ blocked: false, releasing: false });
   });
@@ -213,9 +165,11 @@ describe('buildChainDrawing', () => {
     const drawing = buildChainDrawing({
       links: [link('l1', 'a', 'gone'), link('l2', 'a', 'alsoGone'), link('l3', 'missing', 'a')],
       anchors: new Map([['a', rect(300, 0)]]),
+      cardColumns: new Map([['a', 0]]),
       tasksById: new Map([['a', task('a')]]),
       litTaskIds: new Set(),
       boardWidth: 800,
+      layout,
     });
     expect(drawing.arrows).toHaveLength(0);
     expect(drawing.stubs).toHaveLength(2);
@@ -227,9 +181,11 @@ describe('buildChainDrawing', () => {
     const drawing = buildChainDrawing({
       links: [link('l1', 'x', 'y')],
       anchors,
+      cardColumns,
       tasksById: new Map(),
       litTaskIds: new Set(),
       boardWidth: 800,
+      layout,
     });
     expect(drawing).toEqual({ arrows: [], stubs: [] });
   });
@@ -239,9 +195,11 @@ describe('buildChainDrawing', () => {
     const tight = buildChainDrawing({
       links: [link('l1', 'missing', 'a')],
       anchors: new Map([['a', rect(4, 0)]]),
+      cardColumns: new Map([['a', 0]]),
       tasksById: new Map([['a', task('a')]]),
       litTaskIds: new Set(),
       boardWidth: 800,
+      layout,
     });
     expect(tight.stubs[0].chip).toBeNull();
     expect(tight.stubs[0].title).toContain('1 card');
@@ -249,9 +207,11 @@ describe('buildChainDrawing', () => {
     const roomy = buildChainDrawing({
       links: [link('l1', 'missing', 'a')],
       anchors: new Map([['a', rect(300, 0)]]),
+      cardColumns: new Map([['a', 0]]),
       tasksById: new Map([['a', task('a')]]),
       litTaskIds: new Set(),
       boardWidth: 800,
+      layout,
     });
     expect(roomy.stubs[0].chip).not.toBeNull();
   });
