@@ -29,7 +29,8 @@
   },
   "dependencies": {
     "@tm/protocol": "workspace:*",
-    "@tm/shared": "workspace:*"
+    "@tm/shared": "workspace:*",
+    "highlight.js": "^11.12.0"
   },
   "peerDependencies": {
     "@fluentui/react-components": "^9.54.0",

@@ -11,6 +11,13 @@
 // react/react-dom/Fluent are peerDependencies (this package renders into the host app's
 // own React tree, and a second React copy breaks hooks) — externalized here so the build
 // doesn't bundle them.
+//
+// `highlight.js` is externalized too, but for a different reason: `highlight.ts` dynamically
+// imports each language grammar (`highlight.js/lib/languages/*`) one at a time so only the
+// languages actually in view ever load. If esbuild inlined those into this package's `dist`,
+// every grammar would end up in one chunk regardless; externalizing both the core package and
+// the `highlight.js/lib/languages/*` subpaths leaves that import graph intact for the
+// consuming app's own bundler (apps/web's Vite) to split into one chunk per language.
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
@@ -26,5 +33,7 @@ export default defineConfig({
     '@fluentui/react-components',
     '@fluentui/react-icons',
     '@xyflow/react',
+    'highlight.js',
+    /^highlight\.js\//,
   ],
 });
