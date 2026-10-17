@@ -38,11 +38,13 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
+import { ArchiveRegular } from '@fluentui/react-icons';
 import { hasRepo, ownsTickets, type Project } from '@tm/shared/model';
 import { PaneLoading } from '../PaneLoading';
 import { useInitialLoad } from '../useInitialLoad';
 import { useTransport } from '../transport';
 import { ProjectForm } from './ProjectForm';
+import { useArchiveAction } from './useArchiveAction';
 
 const useStyles = makeStyles({
   pane: { display: 'flex', flexDirection: 'column', gap: '16px' },
@@ -63,6 +65,7 @@ const useStyles = makeStyles({
 export function ProjectAdmin(): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
+  const { archive } = useArchiveAction();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ open: boolean; project?: Project }>({ open: false });
@@ -81,6 +84,21 @@ export function ProjectAdmin(): JSX.Element {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /** One click, Undo included — a ticket project has no open-tickets choice to make, unlike
+   *  a milestone. Both the archive and the Undo change the row `project:list` returns, which
+   *  nothing pushes, so each re-reads it rather than trusting the toast alone. */
+  async function archiveProject(project: Project): Promise<void> {
+    setError(null);
+    const result = await archive(
+      { kind: 'project', id: project.id },
+      project.name,
+      undefined,
+      () => void refresh(),
+    );
+    if (result.ok) await refresh();
+    else setError(result.message);
   }
 
   if (!projects) {
@@ -157,6 +175,17 @@ export function ProjectAdmin(): JSX.Element {
                     <Button size="small" onClick={() => setDialog({ open: true, project })}>
                       Edit
                     </Button>
+                    {ownsTickets(project) && !project.archivedAt && (
+                      <Button
+                        size="small"
+                        appearance="subtle"
+                        icon={<ArchiveRegular />}
+                        aria-label={`Archive ${project.name}`}
+                        onClick={() => void archiveProject(project)}
+                      >
+                        Archive
+                      </Button>
+                    )}
                     <Button size="small" onClick={() => void remove(project)}>
                       Remove
                     </Button>

@@ -28,6 +28,8 @@ import {
   Dropdown,
   Field,
   Input,
+  MessageBar,
+  MessageBarBody,
   Option,
   Popover,
   PopoverSurface,
@@ -37,7 +39,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { SettingsRegular } from '@fluentui/react-icons';
+import { ArchiveRegular, SettingsRegular } from '@fluentui/react-icons';
 import type { Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
 import { delegatedAgentName, isEpic } from '@tm/shared/tickets';
 import { draftKey, useDraft } from '../drafts';
@@ -48,6 +50,7 @@ import { MilestoneList } from './MilestoneList';
 import { PersonAvatar } from './PersonAvatar';
 import { dateToInput, splitLabels, ticketPatchFor, type TicketDraft } from './ticketFields';
 import { TicketTypeFields } from './TicketTypeFields';
+import { useArchiveAction } from './useArchiveAction';
 
 const NONE = '';
 
@@ -60,6 +63,12 @@ const useStyles = makeStyles({
   optionRow: { display: 'flex', alignItems: 'center', gap: '6px' },
   agentRow: { display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' },
   agentSep: { color: tokens.colorNeutralForeground3 },
+  epicArchiveRow: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    alignItems: 'flex-start',
+  },
 });
 
 export interface TicketFieldsSectionProps {
@@ -95,9 +104,12 @@ export function TicketFieldsSection({
 }: TicketFieldsSectionProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
+  const { archive } = useArchiveAction();
 
   /** One inline message per field, cleared on the next attempt or the next success. */
   const [errors, setErrors] = useState<Partial<Record<keyof TicketDraft, string>>>({});
+  const [epicArchiveError, setEpicArchiveError] = useState<string | null>(null);
+  const [epicArchiveBusy, setEpicArchiveBusy] = useState(false);
 
   const labelsDraft = useDraft(draftKey(ticket.id, 'labelsText'), (ticket.labels ?? []).join(', '));
   const storyPointsDraft = useDraft(
@@ -149,6 +161,22 @@ export function TicketFieldsSection({
     void saveField(field, draft.value).then((ok) => {
       if (ok) draft.commit();
     });
+  }
+
+  /** One click, Undo included — an epic has no open-ticket choice to make, unlike a
+   *  milestone: archiving it never moves anything, it only hides the epic itself. */
+  async function archiveEpic(): Promise<void> {
+    setEpicArchiveError(null);
+    setEpicArchiveBusy(true);
+    try {
+      const result = await archive(
+        { kind: 'epic', id: ticket.id },
+        ticket.ticketKey ?? ticket.title,
+      );
+      if (!result.ok) setEpicArchiveError(result.message);
+    } finally {
+      setEpicArchiveBusy(false);
+    }
   }
 
   return (
@@ -205,7 +233,11 @@ export function TicketFieldsSection({
                 </PopoverTrigger>
                 <PopoverSurface>
                   <Subtitle2>Milestones</Subtitle2>
-                  <MilestoneList projectId={ticket.projectId} milestones={milestones} />
+                  <MilestoneList
+                    projectId={ticket.projectId}
+                    milestones={milestones}
+                    tickets={tickets}
+                  />
                 </PopoverSurface>
               </Popover>
             )}
@@ -385,6 +417,25 @@ export function TicketFieldsSection({
           </Dropdown>
         </Field>
       </div>
+
+      {isEpic(ticket) && !readOnly && ticket.trackerArchivedAt == null && (
+        <div className={styles.epicArchiveRow}>
+          {epicArchiveError && (
+            <MessageBar intent="error">
+              <MessageBarBody>{epicArchiveError}</MessageBarBody>
+            </MessageBar>
+          )}
+          <Button
+            appearance="outline"
+            size="small"
+            icon={<ArchiveRegular />}
+            disabled={epicArchiveBusy}
+            onClick={() => void archiveEpic()}
+          >
+            Archive epic
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

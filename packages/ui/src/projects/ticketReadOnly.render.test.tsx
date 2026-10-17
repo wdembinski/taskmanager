@@ -60,8 +60,8 @@ function renderLinks(readOnly: boolean): string {
   );
 }
 
-function renderFields(readOnly: boolean): string {
-  const main = ticket({ id: 'main' });
+function renderFields(readOnly: boolean, overrides: Partial<Task> = {}): string {
+  const main = ticket({ id: 'main', ...overrides });
   return renderToStaticMarkup(
     <TransportProvider transport={stubTransport}>
       <TicketFieldsSection
@@ -103,5 +103,15 @@ describe('TicketFieldsSection readOnly', () => {
     const html = renderFields(false);
     expect(html).toContain('Manage milestones');
     expect(html).toContain('Manage labels');
+  });
+
+  it('hides the epic archive button when read-only', () => {
+    const html = renderFields(true, { issueType: 'epic' });
+    expect(html).not.toContain('Archive epic');
+  });
+
+  it('shows the epic archive button otherwise', () => {
+    const html = renderFields(false, { issueType: 'epic' });
+    expect(html).toContain('Archive epic');
   });
 });
