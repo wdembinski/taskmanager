@@ -146,6 +146,7 @@ import {
   type ReviewComment,
   type ReviewQueue,
   type ReviewQueueItem,
+  type ReviewViewedMark,
 } from '@shared/review';
 import type { ParsedTask } from './planParser';
 import { type ReviewCommentRow, reviewCommentToRow, rowToReviewComment } from './reviewCommentRows';
@@ -1121,6 +1122,19 @@ export interface Store {
   countReviewDrafts(): Map<string, number>;
   /** Viewed-mark counts, grouped by `subjectId` — see {@link countReviewDrafts} for the shape. */
   countReviewViewed(): Map<string, number>;
+  /** Every file one subject has marked read, in no particular order — `review:viewed`'s read. */
+  listReviewViewed(subjectId: string): ReviewViewedMark[];
+  /**
+   * Mark one file read: upsert on `(subjectId, path)`, so marking an already-viewed file
+   * again just bumps `blobSha`/`viewedAt` rather than erroring. Returns the subject's marks
+   * after the write, so a caller never has to re-read to see its own change.
+   */
+  setReviewViewed(mark: ReviewViewedMark): ReviewViewedMark[];
+  /**
+   * Unmark one file — `review:setViewed` with `blobSha: null`. A no-op if the file was never
+   * marked. Returns the subject's marks after the write, same as {@link setReviewViewed}.
+   */
+  clearReviewViewed(subjectId: string, path: string): ReviewViewedMark[];
 
   /**
    * Persist one open inbox item, with the kind-specific `context` its answer path needs
@@ -3883,6 +3897,22 @@ export function createStore(dbPath: string): Store {
   const deleteViewedForSubject = db.prepare(`DELETE FROM review_viewed WHERE subjectId = ?`);
   const deleteQueueForSubject = db.prepare(`DELETE FROM review_queue WHERE subjectId = ?`);
 
+  // review_viewed (F15.10): listReviewViewed/setReviewViewed/clearReviewViewed's own
+  // statements, beside the subject-wide delete above. setReviewViewed upserts on the
+  // table's own primary key; clearReviewViewed is deleteViewedForSubject narrowed to one path.
+  const selectViewedForSubject = db.prepare(
+    `SELECT subjectId, path, blobSha, viewedAt FROM review_viewed WHERE subjectId = ?`,
+  );
+  const upsertViewedStmt = db.prepare(
+    `INSERT INTO review_viewed (subjectId, path, blobSha, viewedAt)
+     VALUES (@subjectId, @path, @blobSha, @viewedAt)
+     ON CONFLICT(subjectId, path) DO UPDATE SET
+       blobSha = excluded.blobSha, viewedAt = excluded.viewedAt`,
+  );
+  const deleteViewedRowStmt = db.prepare(
+    `DELETE FROM review_viewed WHERE subjectId = ? AND path = ?`,
+  );
+
   // review_queue (F15.9): `applyReviewQueue` reconciles one refresh segment at a time, and
   // `listReviewQueue` hands every cached row back for `snapshot()` to dedup and group by
   // queue. See the `Store` interface above for why a segment, not a schema column, decides
@@ -6643,6 +6673,20 @@ export function createStore(dbPath: string): Store {
     countReviewViewed() {
       const rows = countViewedMarksStmt.all() as Array<{ subjectId: string; n: number }>;
       return new Map(rows.map((r) => [r.subjectId, r.n]));
+    },
+
+    listReviewViewed(subjectId) {
+      return selectViewedForSubject.all(subjectId) as ReviewViewedMark[];
+    },
+
+    setReviewViewed(mark) {
+      upsertViewedStmt.run(mark);
+      return selectViewedForSubject.all(mark.subjectId) as ReviewViewedMark[];
+    },
+
+    clearReviewViewed(subjectId, path) {
+      deleteViewedRowStmt.run(subjectId, path);
+      return selectViewedForSubject.all(subjectId) as ReviewViewedMark[];
     },
 
     saveAttention(item, context) {

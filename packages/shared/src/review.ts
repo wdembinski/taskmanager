@@ -29,6 +29,7 @@ export const DIFF_IMAGE_MAX_BYTES = 512_000; // one image side, base64
 export const DIFF_SUMMARY_MAX_FILES = 1000; // summary lists at most this many
 export const DIFF_COLLAPSE_LINES = 2000; // generated/lock files above this collapse
 export const DIFF_CONTEXT_MAX_LINES = 2000; // one context read returns at most this many lines
+export const REVIEW_QUEUE_MAX_ROWS = 300; // one `review:queues` answer lists at most this many rows per queue
 
 export type DiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
 
@@ -134,6 +135,12 @@ export interface ReviewQueuesSnapshot {
   asOf: Record<ReviewQueue, number | null>;
   /** Queues whose most recent refresh left at least one segment incomplete or failed. */
   partial: ReviewQueue[];
+  /**
+   * Queues cut down to {@link REVIEW_QUEUE_MAX_ROWS} for this answer (F15.10's
+   * `review:queues`/`review:refreshQueues`) — distinct from `partial`, which is about the
+   * refresh itself coming back incomplete rather than this answer being capped.
+   */
+  truncated?: ReviewQueue[];
 }
 
 /** Where a subject's diff came from: a local worktree, a ref fetched for the review, or the forge's own API. */
@@ -216,6 +223,8 @@ export interface DiffSummary {
   subjectId?: string;
   source?: ReviewSource;
   capabilities?: ReviewCapabilities;
+  /** Set only on a `forge-api` answer reached by falling back off a failed `local-ref` attempt. */
+  fallbackReason?: string;
 }
 
 export type DiffLineKind = 'context' | 'add' | 'del';
@@ -687,6 +696,28 @@ export interface DiffContext {
 }
 
 export type DiffContextResult = { status: 'ok'; context: DiffContext } | DiffStale;
+
+/**
+ * One side's lines read for context expansion, from the side's raw text: split on `\n` and
+ * strip one trailing `\r` per line (same rule as {@link parsePatch}), then drop a single
+ * trailing empty element left by a trailing newline — it is not a line. `from` is clamped to
+ * `[1, total]`, and the read is capped at `DIFF_CONTEXT_MAX_LINES`; `truncated` is set when
+ * `to` was clipped by either bound. Never sets `tooLarge` — the byte cap is the caller's own
+ * check, made before `text` is even read.
+ */
+export function sliceContext(
+  text: string,
+  params: { diffId: string; path: string; side: DiffSide; from: number; to: number },
+): DiffContext {
+  const { diffId, path, side, from, to } = params;
+  const rawLines = text.split('\n').map(stripTrailingCr);
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+  const total = rawLines.length;
+  const start = Math.max(1, Math.min(from, total));
+  const cappedTo = Math.min(to, total, start + DIFF_CONTEXT_MAX_LINES - 1);
+  const slicedText = start > total ? [] : rawLines.slice(start - 1, cappedTo);
+  return { diffId, path, side, start, text: slicedText, truncated: to > cappedTo };
+}
 
 /** The three fields that locate a comment's anchor, with no dependency on it having an `id`. */
 export type ReviewAnchor = Pick<ReviewComment, 'side' | 'line' | 'start'>;

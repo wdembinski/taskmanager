@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { Project, Task } from '@shared/model';
 import type { MergeRequest } from '@shared/mergeRequest';
 import {
+  DIFF_CONTEXT_MAX_LINES,
   DIFF_FILE_MAX_BYTES,
   DIFF_IMAGE_MAX_BYTES,
   DIFF_SUMMARY_MAX_FILES,
@@ -578,6 +579,81 @@ describe('task:diffImage', () => {
     const { svc } = service(s);
     const { diffId } = await okSummary(svc);
     await expect(svc.image('t1', diffId, 'src/a.ts')).rejects.toThrow(/not an image/);
+  });
+});
+
+describe('task:diffContext', () => {
+  async function currentId(s: FakeState): Promise<string> {
+    return (await okSummary(service(s).svc)).diffId;
+  }
+
+  it(`answers tooLarge without reading the file above ${DIFF_FILE_MAX_BYTES} bytes`, async () => {
+    const huge = Buffer.alloc(DIFF_FILE_MAX_BYTES + 10, 'a');
+    const s = fakeState({ blobs: { 'WORK:src/a.ts': huge } });
+    const { svc, g } = service(s);
+    const res = await svc.context('t1', await currentId(s), 'src/a.ts', 'new', 1, 10);
+    if (res.status !== 'ok') throw new Error(res.status);
+    expect(res.context.tooLarge).toEqual({ bytes: huge.length });
+    expect(res.context.text).toEqual([]);
+    expect(g.calls).not.toContain('readFile WORK:src/a.ts');
+  });
+
+  it(`truncates a context read over ${DIFF_CONTEXT_MAX_LINES} lines`, async () => {
+    const longText = Array.from({ length: 3000 }, (_v, i) => `l${i}`).join('\n');
+    const s = fakeState({ blobs: { 'WORK:src/a.ts': Buffer.from(longText) } });
+    const res = await service(s).svc.context('t1', await currentId(s), 'src/a.ts', 'new', 1, 3000);
+    if (res.status !== 'ok') throw new Error(res.status);
+    expect(res.context.text).toHaveLength(DIFF_CONTEXT_MAX_LINES);
+    expect(res.context.truncated).toBe(true);
+  });
+
+  it('answers stale like a file read', async () => {
+    const s = fakeState();
+    const { svc } = service(s);
+    expect(await svc.context('t1', 'old-id', 'src/a.ts', 'new', 1, 3)).toMatchObject({
+      status: 'stale',
+    });
+  });
+
+  it('reads the old side from its oldPath at the merge base', async () => {
+    const s = fakeState({
+      entries: [
+        {
+          path: 'new.ts',
+          oldPath: 'old.ts',
+          status: 'renamed',
+          additions: 0,
+          deletions: 0,
+          binary: false,
+        },
+      ],
+      blobs: { [`${BASE_SHA}:old.ts`]: Buffer.from('line1\nline2\nline3') },
+    });
+    const { svc, g } = service(s);
+    const res = await svc.context('t1', await currentId(s), 'new.ts', 'old', 1, 3);
+    if (res.status !== 'ok') throw new Error(res.status);
+    expect(res.context.text).toEqual(['line1', 'line2', 'line3']);
+    expect(g.calls).toContain(`readFile ${BASE_SHA}:old.ts`);
+  });
+
+  it('reads the new side from the work tree', async () => {
+    const s = fakeState({ blobs: { 'WORK:src/a.ts': Buffer.from('line1\nline2') } });
+    const { svc, g } = service(s);
+    const res = await svc.context('t1', await currentId(s), 'src/a.ts', 'new', 1, 2);
+    if (res.status !== 'ok') throw new Error(res.status);
+    expect(res.context.text).toEqual(['line1', 'line2']);
+    expect(g.calls).toContain('readFile WORK:src/a.ts');
+  });
+
+  it('answers text: [] for the old side of an added file, with no git read at all', async () => {
+    const s = fakeState({
+      entries: [{ path: 'new.ts', status: 'added', additions: 1, deletions: 0, binary: false }],
+    });
+    const { svc, g } = service(s);
+    const res = await svc.context('t1', await currentId(s), 'new.ts', 'old', 1, 3);
+    if (res.status !== 'ok') throw new Error(res.status);
+    expect(res.context.text).toEqual([]);
+    expect(g.calls.some((c) => c.startsWith('readFile'))).toBe(false);
   });
 });
 

@@ -34,14 +34,19 @@ import {
   DIFF_SUMMARY_MAX_FILES,
   LOCAL_REF_CAPABILITIES,
   parsePatch,
+  sliceContext,
   subjectId,
   taskSubjectId,
   WORKTREE_CAPABILITIES,
+  type DiffContext,
+  type DiffContextResult,
   type DiffFile,
   type DiffFileEntry,
   type DiffFileResult,
+  type DiffImage,
   type DiffImageResult,
   type DiffImageSide,
+  type DiffSide,
   type DiffSummary,
   type DiffSummaryResult,
   type ReviewCapabilities,
@@ -226,11 +231,11 @@ export class DiffService {
   async summary(taskId: string): Promise<DiffSummaryResult> {
     const resolved = await this.resolveTask(taskId);
     if (resolved.status !== 'ok') return resolved;
-    return { status: 'ok', summary: await this.summaryOf(resolved) };
+    return { status: 'ok', summary: await this.summaryFor(resolved) };
   }
 
-  /** The file-list build `summary` and (eventually, F15.8/F15.10) other subject sources share. */
-  private async summaryOf(resolved: ResolvedDiff): Promise<DiffSummary> {
+  /** The file-list build `summary` and every other subject source share. */
+  async summaryFor(resolved: ResolvedDiff): Promise<DiffSummary> {
     const entries = await this.entries(resolved);
     const truncated = entries.length > DIFF_SUMMARY_MAX_FILES;
     const listed = entries.slice(0, DIFF_SUMMARY_MAX_FILES);
@@ -262,10 +267,14 @@ export class DiffService {
   async file(taskId: string, diffId: string, path: string): Promise<DiffFileResult> {
     const current = await this.current(taskId, diffId);
     if (current.status === 'stale') return current;
-    const { resolved } = current;
-    const entry = await this.entryFor(resolved, path);
-    const file = await this.fileFrom(resolved, entry, diffId);
+    const file = await this.fileIn(current.resolved, diffId, path);
     return { status: 'ok', file };
+  }
+
+  /** `file`'s body, for a caller that already holds a `ResolvedDiff` (`resolvePrLocal`'s own). */
+  async fileIn(resolved: ResolvedDiff, diffId: string, path: string): Promise<DiffFile> {
+    const entry = await this.entryFor(resolved, path);
+    return this.fileFrom(resolved, entry, diffId);
   }
 
   /**
@@ -338,7 +347,12 @@ export class DiffService {
   async image(taskId: string, diffId: string, path: string): Promise<DiffImageResult> {
     const current = await this.current(taskId, diffId);
     if (current.status === 'stale') return current;
-    const { resolved } = current;
+    const image = await this.imageIn(current.resolved, diffId, path);
+    return { status: 'ok', image };
+  }
+
+  /** `image`'s body, for a caller that already holds a `ResolvedDiff` (`resolvePrLocal`'s own). */
+  async imageIn(resolved: ResolvedDiff, diffId: string, path: string): Promise<DiffImage> {
     const entry = await this.entryFor(resolved, path);
     const mime = imageMimeOf(entry.path);
     if (!mime) throw new Error(`${path} is not an image this pane can preview.`);
@@ -350,7 +364,62 @@ export class DiffService {
       entry.status === 'deleted'
         ? null
         : await this.imageSide(resolved, resolved.to, entry.path, mime);
-    return { status: 'ok', image: { diffId, path: entry.path, old: oldSide, new: newSide } };
+    return { diffId, path: entry.path, old: oldSide, new: newSide };
+  }
+
+  async context(
+    taskId: string,
+    diffId: string,
+    path: string,
+    side: DiffSide,
+    from: number,
+    to: number,
+  ): Promise<DiffContextResult> {
+    const current = await this.current(taskId, diffId);
+    if (current.status === 'stale') return current;
+    const context = await this.contextIn(current.resolved, diffId, path, side, from, to);
+    return { status: 'ok', context };
+  }
+
+  /**
+   * `context`'s body, for a caller that already holds a `ResolvedDiff` (`resolvePrLocal`'s
+   * own). The ref is `baseSha` for `old` and `resolved.to` for `new` (`null` means the work
+   * tree); the path is `entry.oldPath ?? path` on the old side. Weighed BEFORE it is read, the
+   * same way {@link imageSide} is: an oversized blob is never pulled through the host just to
+   * be thrown away. A side that does not exist (the old side of an added file, the new side
+   * of a deleted one) answers `text: []` with no git call at all.
+   */
+  async contextIn(
+    resolved: ResolvedDiff,
+    diffId: string,
+    path: string,
+    side: DiffSide,
+    from: number,
+    to: number,
+  ): Promise<DiffContext> {
+    const entry = await this.entryFor(resolved, path);
+    const missing =
+      (side === 'old' && entry.status === 'added') ||
+      (side === 'new' && entry.status === 'deleted');
+    if (missing) {
+      return { diffId, path, side, start: 0, text: [], truncated: false };
+    }
+    const ref = side === 'old' ? resolved.baseSha : resolved.to;
+    const readPath = side === 'old' ? (entry.oldPath ?? path) : path;
+    const size = await resolved.git.fileSize(resolved.dir, ref, readPath);
+    if (size > DIFF_FILE_MAX_BYTES) {
+      return {
+        diffId,
+        path,
+        side,
+        start: 0,
+        text: [],
+        truncated: false,
+        tooLarge: { bytes: size },
+      };
+    }
+    const bytes = await resolved.git.readFile(resolved.dir, ref, readPath);
+    return sliceContext(bytes ? bytes.toString('utf8') : '', { diffId, path, side, from, to });
   }
 
   /**

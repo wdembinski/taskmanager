@@ -34,12 +34,12 @@
 import { createHash } from 'node:crypto';
 import { forgeName, type ForgeProvider } from '@shared/mergeRequest';
 import {
-  DIFF_CONTEXT_MAX_LINES,
   DIFF_FILE_MAX_BYTES,
   DIFF_IMAGE_MAX_BYTES,
   DIFF_SUMMARY_MAX_FILES,
   FORGE_API_CAPABILITIES,
   parseHunks,
+  sliceContext,
   subjectId,
   type DiffContextResult,
   type DiffFileEntry,
@@ -226,7 +226,7 @@ export class ForgeDiffSource {
   }
 
   /** The PR/MR detail read: head/base SHAs and the base branch's name. */
-  private async fetchDetail(subject: PrSubject): Promise<SubjectRevision> {
+  async detail(subject: PrSubject): Promise<SubjectRevision> {
     try {
       if (subject.provider === 'github') {
         const client = this.clientFor('github') as GitHubClient;
@@ -294,7 +294,7 @@ export class ForgeDiffSource {
    */
   async summary(subject: PrSubject): Promise<DiffSummary> {
     const sid = subjectId(subject);
-    const revision = await this.fetchDetail(subject);
+    const revision = await this.detail(subject);
     const { rows: rawRows, truncated: clientTruncated } = await this.fetchFiles(subject);
 
     const cappedByCount = rawRows.length > DIFF_SUMMARY_MAX_FILES;
@@ -409,12 +409,10 @@ export class ForgeDiffSource {
         },
       };
     }
-    const allLines = bytes.toString('utf8').split('\n');
-    const totalLines = allLines.length;
-    const start = Math.max(1, Math.min(from, totalLines));
-    const cappedTo = Math.min(to, totalLines, start + DIFF_CONTEXT_MAX_LINES - 1);
-    const text = start > totalLines ? [] : allLines.slice(start - 1, cappedTo);
-    return { status: 'ok', context: { diffId, path, side, start, text, truncated: to > cappedTo } };
+    return {
+      status: 'ok',
+      context: sliceContext(bytes.toString('utf8'), { diffId, path, side, from, to }),
+    };
   }
 
   private async readRawBytes(subject: PrSubject, ref: string, path: string): Promise<Buffer> {
@@ -454,7 +452,7 @@ export class ForgeDiffSource {
         : { status: 'ok', entry: await this.refetchRows(subject, known) };
     }
 
-    const revision = await this.fetchDetail(subject);
+    const revision = await this.detail(subject);
     this.subjectState.set(sid, revision);
     if (revision.diffId !== diffId) {
       return { status: 'stale', diffId, currentDiffId: revision.diffId };
