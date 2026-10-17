@@ -10,6 +10,7 @@ import type {
   AddProjectInput,
   BoardColumn,
   ManualStatus,
+  Milestone,
   Project,
   ProjectPatch,
   Task,
@@ -50,6 +51,14 @@ export interface MirrorDelta {
    */
   automationRuns?: AutomationRun[];
   deletedAutomationIds?: string[];
+  /**
+   * Milestones created or edited since the caller's last sync (F14.11) — optional under the
+   * same older-peer rule as the automation fields above: a v2 peer on either end never sends
+   * or reads them, and `buildMirrorDelta`/`buildMirrorDeltaWithin` treat a missing array the
+   * same as an empty one. Not a {@link PROTOCOL_VERSION} bump on its own, for the same reason.
+   */
+  milestones?: Milestone[];
+  deletedMilestoneIds?: string[];
 }
 
 /**
