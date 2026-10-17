@@ -738,6 +738,271 @@ export function markOutdated(comments: ReviewComment[], file: DiffFile): ReviewC
   });
 }
 
+/** One maximal `del` run paired with the `add` run right after it, as index ranges into `lines`. */
+export interface ChangeRun {
+  delStart: number;
+  delEnd: number;
+  addStart: number;
+  addEnd: number;
+}
+
+/**
+ * Every maximal `del` run paired with the `add` run immediately after it, as index ranges into
+ * `lines`. A run with no `add` right after it (a lone `del`) still comes back with
+ * `addStart === addEnd`; an `add` with no `del` right before it is never part of any run — the
+ * caller decides what that means on its own (`pairWordDiffs` leaves it `null`, `splitRows`
+ * gives it a row of its own).
+ */
+export function changeRuns(lines: readonly DiffLine[]): ChangeRun[] {
+  const runs: ChangeRun[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].kind !== 'del') {
+      i += 1;
+      continue;
+    }
+    const delStart = i;
+    while (i < lines.length && lines[i].kind === 'del') i += 1;
+    const delEnd = i;
+    const addStart = i;
+    while (i < lines.length && lines[i].kind === 'add') i += 1;
+    const addEnd = i;
+    runs.push({ delStart, delEnd, addStart, addEnd });
+  }
+  return runs;
+}
+
+/**
+ * The inner word-highlight for each line in one hunk's already-flattened lines, aligned
+ * positionally: every run of `del` lines immediately followed by a run of `add` lines pairs up
+ * index-for-index through `wordDiff`, shortest run first — a run with more dels than adds (or
+ * the reverse) leaves its unmatched tail `null`, same as every `context` line and every pair
+ * `wordDiff` gave up on (`wholeLine`), which reads as a plain whole-line change with no inner
+ * highlight rather than a stale one.
+ */
+export function pairWordDiffs(lines: readonly DiffLine[]): ReadonlyArray<WordSegment[] | null> {
+  const result = new Array<WordSegment[] | null>(lines.length).fill(null);
+  for (const { delStart, delEnd, addStart, addEnd } of changeRuns(lines)) {
+    const pairCount = Math.min(delEnd - delStart, addEnd - addStart);
+    for (let k = 0; k < pairCount; k += 1) {
+      const diff = wordDiff(lines[delStart + k].text, lines[addStart + k].text);
+      if (diff.wholeLine) continue;
+      result[delStart + k] = diff.old;
+      result[addStart + k] = diff.new;
+    }
+  }
+  return result;
+}
+
+/**
+ * One side-by-side row. `leftIndex`/`rightIndex` point into the owning hunk's `lines`, so the
+ * split renderer can look up that same index's entry in `pairWordDiffs(hunk.lines)` for either
+ * cell. `null` on a side means that side is blank for this row (a lone add/del, or a padded
+ * tail), never a context line — a context line always sets both.
+ */
+export interface SplitRow {
+  left: DiffLine | null;
+  right: DiffLine | null;
+  leftIndex: number | null;
+  rightIndex: number | null;
+}
+
+/**
+ * One hunk's lines rebuilt as side-by-side rows: a `context` line fills both sides; a del/add
+ * run from {@link changeRuns} pairs index-for-index, shortest run's tail padded `null` on the
+ * other side; an `add` with no `del` run right before it (never part of any {@link changeRuns}
+ * run) gets its own row with `left: null`.
+ */
+function splitHunkRows(lines: readonly DiffLine[]): SplitRow[] {
+  const runsByDelStart = new Map(changeRuns(lines).map((run) => [run.delStart, run]));
+  const rows: SplitRow[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const run = runsByDelStart.get(i);
+    if (run) {
+      const delCount = run.delEnd - run.delStart;
+      const addCount = run.addEnd - run.addStart;
+      const pairCount = Math.max(delCount, addCount);
+      for (let k = 0; k < pairCount; k += 1) {
+        const leftIndex = k < delCount ? run.delStart + k : null;
+        const rightIndex = k < addCount ? run.addStart + k : null;
+        rows.push({
+          left: leftIndex === null ? null : lines[leftIndex],
+          right: rightIndex === null ? null : lines[rightIndex],
+          leftIndex,
+          rightIndex,
+        });
+      }
+      i = run.addEnd;
+      continue;
+    }
+    if (lines[i].kind === 'add') {
+      rows.push({ left: null, right: lines[i], leftIndex: null, rightIndex: i });
+      i += 1;
+      continue;
+    }
+    rows.push({ left: lines[i], right: lines[i], leftIndex: i, rightIndex: i });
+    i += 1;
+  }
+  return rows;
+}
+
+/**
+ * `file.hunks` rebuilt as side-by-side rows, index-aligned with `file.hunks` — one row array
+ * per hunk, so a split renderer can still draw hunk headers and gap controls per hunk (F15.12).
+ * See {@link splitHunkRows} for how one hunk's own rows are built.
+ */
+export function splitRows(file: DiffFile): SplitRow[][] {
+  return file.hunks.map((hunk) => splitHunkRows(hunk.lines));
+}
+
+/**
+ * A side's first real line number, honouring the zero-count convention: when `count` is 0 (that
+ * side is empty), `start` is the line *before* where the change sits, so the first — and only —
+ * boundary line is `start + 1`.
+ */
+function firstLine(start: number, count: number): number {
+  return count === 0 ? start + 1 : start;
+}
+
+/** One past a side's last real line number — see {@link firstLine} for the zero-count case. */
+function endLine(start: number, count: number): number {
+  return count === 0 ? start + 1 : start + count;
+}
+
+/** Everything after a hunk header's `@@ -a,b +c,d @@` — the section text git appends, if any. */
+function hunkSectionText(header: string): string {
+  const match = HUNK_HEADER.exec(header);
+  return match ? header.slice(match[0].length) : '';
+}
+
+/**
+ * Recomputes a hunk's `oldStart`/`oldLines`/`newStart`/`newLines` and `header` from `lines`
+ * alone. `sectionText` is appended to the rebuilt `@@ -a,b +c,d @@` verbatim (empty for a
+ * standalone context hunk with no original hunk to carry it over from).
+ */
+function rebuildHunk(lines: DiffLine[], sectionText: string): DiffHunk {
+  const oldSide = lines.filter((line) => line.kind !== 'add');
+  const newSide = lines.filter((line) => line.kind !== 'del');
+  const oldStart = oldSide[0]?.oldLine ?? 0;
+  const newStart = newSide[0]?.newLine ?? 0;
+  return {
+    oldStart,
+    oldLines: oldSide.length,
+    newStart,
+    newLines: newSide.length,
+    header: `@@ -${oldStart},${oldSide.length} +${newStart},${newSide.length} @@${sectionText}`,
+    lines,
+  };
+}
+
+/**
+ * `file` with the lines read from the new blob (`lines.start` is `text[0]`'s new-side line
+ * number) merged into the gap before hunk index `gap` — `0` is the file start, `hunks.length`
+ * the gap after the last hunk. Returns `file` unchanged for a `tooLarge` file, an out-of-range
+ * `gap`, or a clip that keeps nothing.
+ *
+ * The gap's new-side bounds come from its neighbours (`[1, next.first)` at the file start,
+ * `[prev.end, next.first)` between hunks, `[prev.end, ∞)` at the file end — see {@link firstLine}
+ * and {@link endLine}), and `lines.text` is clipped to them so a kept line never overlaps or
+ * duplicates a changed line. Each kept line becomes `{ kind: 'context', text, newLine, oldLine:
+ * newLine + delta }`, where `delta` is `next.oldFirst - next.newFirst` before a hunk, or
+ * `prev.oldEnd - prev.newEnd` after the last one — old and new move in lockstep inside a gap, so
+ * both give the same answer between two hunks.
+ *
+ * The kept lines are merged by which neighbour they touch: a run reaching `prev`'s last line is
+ * appended to it, one reaching `next`'s first line is prepended to it, one reaching both joins
+ * `prev`, the new lines and `next` into a single contiguous hunk, and one reaching neither
+ * becomes its own context-only hunk in file order. `rebuildHunk` recomputes every touched
+ * hunk's counts, start and header.
+ */
+export function expandContext(
+  file: DiffFile,
+  gap: number,
+  lines: { start: number; text: readonly string[] },
+): DiffFile {
+  if (file.tooLarge) return file;
+  if (gap < 0 || gap > file.hunks.length) return file;
+
+  const prev = gap > 0 ? file.hunks[gap - 1] : undefined;
+  const next = gap < file.hunks.length ? file.hunks[gap] : undefined;
+  const low = prev ? endLine(prev.newStart, prev.newLines) : 1;
+  const high = next ? firstLine(next.newStart, next.newLines) : Infinity;
+  const delta = next
+    ? firstLine(next.oldStart, next.oldLines) - firstLine(next.newStart, next.newLines)
+    : prev
+      ? endLine(prev.oldStart, prev.oldLines) - endLine(prev.newStart, prev.newLines)
+      : 0;
+
+  const kept: DiffLine[] = [];
+  let firstKept: number | undefined;
+  let lastKept: number | undefined;
+  lines.text.forEach((text, idx) => {
+    const newLine = lines.start + idx;
+    if (newLine < low || newLine >= high) return;
+    firstKept ??= newLine;
+    lastKept = newLine;
+    kept.push({ kind: 'context', text, newLine, oldLine: newLine + delta });
+  });
+  if (kept.length === 0) return file;
+
+  const touchesPrev = prev !== undefined && firstKept === low;
+  const touchesNext = next !== undefined && lastKept === high - 1;
+
+  const leftPart = file.hunks.slice(0, Math.max(gap - 1, 0));
+  const rightPart = file.hunks.slice(gap + 1);
+
+  let middle: DiffHunk[];
+  if (touchesPrev && touchesNext) {
+    middle = [rebuildHunk([...prev.lines, ...kept, ...next.lines], hunkSectionText(prev.header))];
+  } else if (touchesPrev) {
+    const extended = rebuildHunk([...prev.lines, ...kept], hunkSectionText(prev.header));
+    middle = next ? [extended, next] : [extended];
+  } else if (touchesNext) {
+    const extended = rebuildHunk([...kept, ...next.lines], hunkSectionText(next.header));
+    middle = prev ? [prev, extended] : [extended];
+  } else {
+    const standalone = rebuildHunk(kept, '');
+    middle = [...(prev ? [prev] : []), standalone, ...(next ? [next] : [])];
+  }
+
+  return { ...file, hunks: [...leftPart, ...middle, ...rightPart] };
+}
+
+export type ViewedStatus = 'viewed' | 'changed' | 'unviewed';
+
+/**
+ * Each of `entries`' review status against `marks`, plus how many are `viewed` — what feeds
+ * `ReviewQueueItem.viewedCount`. `viewed` means a mark for the path has `blobSha` equal to the
+ * entry's `newBlobSha`; an entry with no `newBlobSha` can never be `viewed`, since there is
+ * nothing to check the mark against. `changed` means a mark exists but its SHA no longer
+ * matches — the author pushed again since it was viewed — and still counts as unviewed in
+ * `viewedCount`. A mark for a path not in `entries` is ignored; the caller is expected to have
+ * already filtered marks by `subjectId`.
+ */
+export function viewedState(
+  entries: readonly DiffFileEntry[],
+  marks: readonly ReviewViewedMark[],
+): { byPath: Record<string, ViewedStatus>; viewedCount: number } {
+  const markByPath = new Map(marks.map((mark) => [mark.path, mark]));
+  const byPath: Record<string, ViewedStatus> = {};
+  let viewedCount = 0;
+  for (const entry of entries) {
+    const mark = markByPath.get(entry.path);
+    let status: ViewedStatus;
+    if (!mark) {
+      status = 'unviewed';
+    } else if (entry.newBlobSha !== undefined && mark.blobSha === entry.newBlobSha) {
+      status = 'viewed';
+      viewedCount += 1;
+    } else {
+      status = 'changed';
+    }
+    byPath[entry.path] = status;
+  }
+  return { byPath, viewedCount };
+}
+
 function implicitSideLabel(side: DiffSide): string {
   return side === 'old' ? ' (old)' : '';
 }
