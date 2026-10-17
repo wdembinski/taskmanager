@@ -36,6 +36,7 @@ import type { AuthState } from '@shared/auth';
 import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
 import { hasPlan, hasRepo, ownsTickets, type Project, type Task } from '@shared/model';
+import { pickableProjects } from '@shared/trackerArchive';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from '@ui/Attention';
 import { ActivityScreen } from '@ui/activity/ActivityScreen';
@@ -305,7 +306,9 @@ export function App(): JSX.Element {
       window.api.invoke('project:list').then((projects) => {
         const projectList = projects.map((p) => p.project);
         setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
-        setSidebarProjectId((was) => was ?? projectList.find(ownsTickets)?.id ?? null);
+        setSidebarProjectId(
+          (was) => was ?? pickableProjects(projectList).find(ownsTickets)?.id ?? null,
+        );
       }),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 

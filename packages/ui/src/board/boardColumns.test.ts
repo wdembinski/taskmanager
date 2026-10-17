@@ -7,8 +7,10 @@ import { chainComponent } from '@tm/shared/taskChain';
 import type { RunState } from '@tm/shared/board';
 import { runPhase } from '@tm/shared/board';
 import type { VariantGroupState } from '@tm/shared/variants';
+import { archiveIndexOf } from '@tm/shared/trackerArchive';
 import { STATUS_INDICATOR_VAR } from '../tokens';
 import {
+  bucketBoardCards,
   COLUMN_META,
   cardBadgeStatus,
   columnForStatus,
@@ -522,6 +524,121 @@ describe('partitionShelved', () => {
     const before = cards.map((c) => c.task.id);
     partitionShelved(cards, new Set(['a']));
     expect(cards.map((c) => c.task.id)).toEqual(before);
+  });
+});
+
+describe('bucketBoardCards', () => {
+  it('excludes a shelved card from every column, putting it on the shelf instead', () => {
+    const onBoard = card('onBoard', { order: 0 });
+    const shelved = card('shelved', { order: 1 });
+    const { cardsByColumn, shelvedCards } = bucketBoardCards(
+      [onBoard, shelved],
+      new Map(),
+      null,
+      new Set(['shelved']),
+      undefined,
+    );
+    expect(cardsByColumn.get('todo')?.map((c) => c.task.id)).toEqual(['onBoard']);
+    expect(shelvedCards.map((c) => c.task.id)).toEqual(['shelved']);
+  });
+
+  it('counts a card with steps once, and its steps zero', () => {
+    const parent = card('parent', { order: 0 });
+    const step = card('step', { parentTaskId: 'parent', order: 0 });
+    const { cardsByColumn } = bucketBoardCards(
+      [parent, step],
+      new Map(),
+      null,
+      new Set(),
+      undefined,
+    );
+    const todo = cardsByColumn.get('todo') ?? [];
+    expect(todo.map((c) => c.task.id)).toEqual(['parent']);
+    expect(todo[0].subtasks.map((s) => s.id)).toEqual(['step']);
+  });
+
+  it('counts an orphan step — its parent not on this board — as a card of its own', () => {
+    const orphan = card('orphan', { parentTaskId: 'nowhere', order: 0 });
+    const { cardsByColumn } = bucketBoardCards([orphan], new Map(), null, new Set(), undefined);
+    expect(cardsByColumn.get('todo')?.map((c) => c.task.id)).toEqual(['orphan']);
+  });
+
+  it('narrows the counts to the focused chain', () => {
+    const a = card('a', { order: 0 });
+    const b = card('b', { order: 1 });
+    const { cardsByColumn } = bucketBoardCards(
+      [a, b],
+      new Map(),
+      new Set(['a']),
+      new Set(),
+      undefined,
+    );
+    expect(cardsByColumn.get('todo')?.map((c) => c.task.id)).toEqual(['a']);
+  });
+
+  describe('with an archive index (F14.5)', () => {
+    const archivedMilestone = card('archived', {
+      source: 'ticket',
+      milestoneId: 'm1',
+      order: 0,
+    });
+    const liveSibling = card('live', {
+      source: 'ticket',
+      milestoneId: 'm2',
+      order: 1,
+    });
+    const index = archiveIndexOf(
+      [
+        { id: 'm1', archivedAt: 1_000 },
+        { id: 'm2', archivedAt: null },
+      ],
+      [],
+      [],
+    );
+
+    it('hides a ticket whose milestone is archived, from every column', () => {
+      const { cardsByColumn, shelvedCards } = bucketBoardCards(
+        [archivedMilestone, liveSibling],
+        new Map(),
+        null,
+        new Set(),
+        undefined,
+        { index },
+      );
+      for (const cards of cardsByColumn.values()) {
+        expect(cards.map((c) => c.task.id)).not.toContain('archived');
+      }
+      expect(shelvedCards.map((c) => c.task.id)).not.toContain('archived');
+    });
+
+    it('keeps the unarchived sibling on the board', () => {
+      const { cardsByColumn } = bucketBoardCards(
+        [archivedMilestone, liveSibling],
+        new Map(),
+        null,
+        new Set(),
+        undefined,
+        { index },
+      );
+      expect(cardsByColumn.get('todo')?.map((c) => c.task.id)).toEqual(['live']);
+    });
+
+    it('brings the archived ticket back into its status column with includeArchived', () => {
+      const { cardsByColumn } = bucketBoardCards(
+        [archivedMilestone, liveSibling],
+        new Map(),
+        null,
+        new Set(),
+        undefined,
+        { index, includeArchived: true },
+      );
+      expect(
+        cardsByColumn
+          .get('todo')
+          ?.map((c) => c.task.id)
+          .sort(),
+      ).toEqual(['archived', 'live']);
+    });
   });
 });
 

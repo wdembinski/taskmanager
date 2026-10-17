@@ -3530,7 +3530,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('board:scopes', async () => {
     const personal = store.getProject(PERSONAL_PROJECT_ID);
     const scopes: BoardScope[] = personal
-      ? [{ id: personal.id, name: personal.name, color: personal.color, ownsTickets: false }]
+      ? [
+          {
+            id: personal.id,
+            name: personal.name,
+            color: personal.color,
+            ownsTickets: false,
+            archivedAt: null,
+          },
+        ]
       : [];
     for (const project of store.listProjects()) {
       if (isPersonalBoard(project.id)) continue;
@@ -3539,6 +3547,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
         name: project.name,
         color: project.color,
         ownsTickets: ownsTickets(project),
+        archivedAt: project.archivedAt,
       });
     }
     return scopes;

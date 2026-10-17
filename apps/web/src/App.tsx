@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, makeStyles } from '@fluentui/react-components';
 import { BOARD_COLUMNS, ownsTickets } from '@tm/shared/model';
+import { pickableProjects } from '@tm/shared/trackerArchive';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
 import { CommandPalette } from '@tm/ui/palette/CommandPalette';
@@ -289,7 +290,7 @@ function SignedInBoard({
    * mirrored locally for the board itself.
    */
   const sidebarProjectId = useMemo(
-    () => Object.values(board.state.projects).find(ownsTickets)?.id ?? null,
+    () => pickableProjects(Object.values(board.state.projects)).find(ownsTickets)?.id ?? null,
     [board.state.projects],
   );
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');

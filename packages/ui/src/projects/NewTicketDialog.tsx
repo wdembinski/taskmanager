@@ -35,6 +35,7 @@ import {
 } from '@fluentui/react-components';
 import type { IssueType, Task } from '@tm/shared/model';
 import { isEpic } from '@tm/shared/tickets';
+import { pickableEpics } from '@tm/shared/trackerArchive';
 import { useTransport } from '../transport';
 import { TicketTypeFields } from './TicketTypeFields';
 
@@ -86,7 +87,7 @@ export function NewTicketDialog({
     setError(null);
   }, [open, defaultEpicTaskId]);
 
-  const epicCandidates = tickets.filter(isEpic);
+  const epicCandidates = pickableEpics(tickets.filter(isEpic), epicTaskId);
 
   async function save(): Promise<void> {
     const trimmed = title.trim();

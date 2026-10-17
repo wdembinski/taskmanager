@@ -354,6 +354,12 @@ export interface BoardScope {
    * true, `task:create` when not. Personal always carries `false` — it owns no tickets.
    */
   ownsTickets: boolean;
+  /**
+   * This board's own `Project.archivedAt` — `null` for Personal, which can never be
+   * archived. Lets a scope picker drop archived boards via `pickableProjects` while
+   * still keeping one already selected visible.
+   */
+  archivedAt?: number | null;
 }
 
 /**
