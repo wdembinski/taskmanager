@@ -108,6 +108,86 @@ export interface LabelChipTokens {
  */
 const LABEL_CHIP: LabelChipTokens = { bg: '#12836b', ink: '#ffffff' };
 
+export interface StatusBarTokens {
+  /** The live/dead dot's "alive" fill. See `theme.ts`'s `ACCENT.liveGreen`. */
+  dotOk: string;
+  /** The live/dead dot's "dead" fill. See `theme.ts`'s `ACCENT.liveRed`. */
+  dotBad: string;
+  /**
+   * The ink for anything drawn directly on the bar's own fill — the gradient or the
+   * attention orange — without a ring of its own to carry its contrast (unlike
+   * {@link StatusBarTokens.dotOk}/{@link StatusBarTokens.dotBad}). Same value as
+   * {@link SemanticTokens.attentionInk}: it is the one dark ink that reads on both fills,
+   * not just the orange one `attentionInk` was picked for — see `tokens.test.ts`.
+   */
+  ink: string;
+  /** The quota bars' track, under either status-bar fill. */
+  quotaTrack: string;
+  /** The quota bar's fill at rest. */
+  quotaOk: string;
+  /** The quota bar's fill once a window crosses its warning threshold. */
+  quotaWarning: string;
+  /** The quota bar's fill once a window crosses its critical threshold. */
+  quotaCritical: string;
+}
+
+/**
+ * Scheme-independent like {@link LABEL_CHIP}: the status bar's own two fills
+ * (`statusGradient`/`attention`) are themselves identical in both schemes today, so there
+ * is nothing for these to differ over.
+ */
+const STATUS_BAR: StatusBarTokens = {
+  dotOk: '#3FB950',
+  dotBad: '#F85149',
+  ink: '#1b1b1b',
+  quotaTrack: 'rgba(255, 255, 255, 0.35)',
+  quotaOk: '#FFFFFF',
+  quotaWarning: '#FFC107',
+  quotaCritical: '#F85149',
+};
+
+export interface WindowCloseTokens {
+  /** The close button's fill under `:hover`. */
+  hover: string;
+  /** The close button's fill under `:active`. */
+  active: string;
+  /** Text/glyph colour on either {@link WindowCloseTokens.hover} or
+   *  {@link WindowCloseTokens.active}. */
+  ink: string;
+}
+
+/** Scheme-independent like {@link LABEL_CHIP}: Windows' own close-button red, not a brand
+ *  colour either scheme would want to restate. */
+const WINDOW_CLOSE: WindowCloseTokens = {
+  hover: '#c42b1c',
+  active: '#b3271a',
+  ink: '#ffffff',
+};
+
+export interface CodeSurfaceTokens {
+  bg: string;
+  inlineBg: string;
+  border: string;
+}
+
+/**
+ * Code surfaces in agent output — inline spans and fenced blocks, per scheme. Defined
+ * ahead of {@link SEMANTIC} because `SEMANTIC[scheme].code` is this, not a copy of it, the
+ * same way {@link FLUO_BY_SCHEME} is.
+ */
+export const CODE_BY_SCHEME: Record<ColorScheme, CodeSurfaceTokens> = {
+  light: {
+    bg: '#F3F6FA',
+    inlineBg: '#EAF0F7',
+    border: '#D6DEE8',
+  },
+  dark: {
+    bg: '#16202e',
+    inlineBg: '#1d2a3a',
+    border: '#26364a',
+  },
+};
+
 export interface SemanticTokens {
   /** The window behind everything. */
   canvas: string;
@@ -150,6 +230,15 @@ export interface SemanticTokens {
   /** The high-key indicator palette for this scheme — dots, glyphs, spinners. Identical
    * object to {@link FLUO_BY_SCHEME}`[scheme]`, not a copy. */
   fluo: FluoPalette;
+  /** Code surfaces in agent output — inline spans and fenced blocks. Identical object to
+   * {@link CODE_BY_SCHEME}`[scheme]`, not a copy. */
+  code: CodeSurfaceTokens;
+  /** The status bar's own furniture — the live/dead dot and the quota bars. Identical
+   * object to {@link STATUS_BAR} in both schemes; see its own docstring for why. */
+  statusBar: StatusBarTokens;
+  /** The title bar's close button. Identical object to {@link WINDOW_CLOSE} in both
+   * schemes; see its own docstring for why. */
+  windowClose: WindowCloseTokens;
   mono: string;
   sans: string;
 }
@@ -189,6 +278,9 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     },
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.light,
+    code: CODE_BY_SCHEME.light,
+    statusBar: STATUS_BAR,
+    windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
   },
@@ -226,27 +318,11 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     },
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.dark,
+    code: CODE_BY_SCHEME.dark,
+    statusBar: STATUS_BAR,
+    windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
-  },
-};
-
-export interface CodeSurfaceTokens {
-  bg: string;
-  inlineBg: string;
-  border: string;
-}
-
-export const CODE_BY_SCHEME: Record<ColorScheme, CodeSurfaceTokens> = {
-  light: {
-    bg: '#F3F6FA',
-    inlineBg: '#EAF0F7',
-    border: '#D6DEE8',
-  },
-  dark: {
-    bg: '#16202e',
-    inlineBg: '#1d2a3a',
-    border: '#26364a',
   },
 };
 
@@ -447,6 +523,18 @@ export function graphInk(scheme: ColorScheme): GraphInkTokens {
     live: FLUO_BY_SCHEME[scheme].cyan,
   };
 }
+
+/**
+ * {@link graphInk}, scheme-free — see {@link STATUS_INDICATOR_VAR}. `line`/`merge`/`dot`
+ * are already Fluent tokens (theme-aware on their own); only `live` needed the swap, from
+ * a `FLUO_BY_SCHEME` lookup to the matching {@link FLUO_VAR} entry.
+ */
+export const GRAPH_INK_VAR: GraphInkTokens = {
+  line: tokens.colorNeutralStroke2,
+  merge: tokens.colorNeutralStroke3,
+  dot: tokens.colorNeutralForeground3,
+  live: FLUO_VAR.cyan,
+};
 
 function kebabCase(segment: string): string {
   return segment.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
