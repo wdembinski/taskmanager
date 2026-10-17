@@ -748,7 +748,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     amber/red/green dots pass F13.2 in light; gates green; the human reviews the board in both
     themes against the mockup (there is no screenshot path for the Electron window).
 
-- [ ] F13.15 Move Projects, the Tickets list and the detail panel onto the new rows and panes @needs: F13.12 Build the shared issue row with the selected state, F13.14 Move the board onto tokens and glass without changing its anatomy
+- [x] F13.15 Move Projects, the Tickets list and the detail panel onto the new rows and panes @needs: F13.12 Build the shared issue row with the selected state, F13.14 Move the board onto tokens and glass without changing its anatomy
 
   - `BacklogTable` renders `IssueRow`s grouped by status as in the v9 list mockup;
     `TimelinePane` and `GraphPane` take token colours (Gantt bars and milestone markers
