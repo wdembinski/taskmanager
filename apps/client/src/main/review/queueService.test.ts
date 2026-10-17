@@ -320,7 +320,7 @@ function fakeStore(
   // keeps reading the SAME field `applyReviewQueue`'s closure reassigns. A spread would
   // have copied `rows` once at construction time, and every reassignment after that would
   // update `state.rows` while the test's own `store.rows` kept pointing at the stale array.
-  return Object.assign(state, {
+  const methods: ReviewQueueServiceDeps['store'] = {
     listReviewQueue: () => state.rows.map((r) => ({ item: { ...r.item }, syncedAt: r.syncedAt })),
     applyReviewQueue: (segment, items, syncedAt, opts) => {
       state.rows = reconcileSegment(
@@ -334,11 +334,12 @@ function fakeStore(
     countReviewViewed: () => state.viewedCounts,
     listMergeRequests: () => state.mergeRequests,
     listProjects: () => state.projects,
-    getTasks: (projectId: string) => state.tasksByProject.get(projectId) ?? [],
+    getTasks: (projectId) => state.tasksByProject.get(projectId) ?? [],
     getSettings: () => state.settings,
     loadGitHubIdentity: () => state.githubIdentity,
     loadGitLabIdentity: () => state.gitlabIdentity,
-  });
+  };
+  return Object.assign(state, methods);
 }
 
 function fakeGitHubClient(overrides: Partial<GitHubClient> = {}): GitHubClient {
