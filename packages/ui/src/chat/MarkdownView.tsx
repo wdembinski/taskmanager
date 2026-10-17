@@ -10,7 +10,8 @@ import { useState } from 'react';
 import { Button, Caption1, Text, makeStyles, tokens } from '@fluentui/react-components';
 import { CheckmarkRegular, CopyRegular } from '@fluentui/react-icons';
 import { parseInline, parseMarkdown, type Inline } from './markdown';
-import { CODE_BG, CODE_BORDER, CODE_INLINE_BG, MONO, fontPx } from '../theme';
+import { MONO, fontPx } from '../theme';
+import { CODE_VAR } from '../tokens';
 
 const useStyles = makeStyles({
   // 10px between blocks, and a line height with room to breathe: an agent's answer is
@@ -32,15 +33,15 @@ const useStyles = makeStyles({
     fontSize: fontPx(12),
     // Blue-tinted, not neutral: against the pane's dark grey a neutral fill was nearly
     // invisible, so `an inline span` read as ordinary prose.
-    backgroundColor: CODE_INLINE_BG,
+    backgroundColor: CODE_VAR.inlineBg,
     color: tokens.colorNeutralForeground1,
     borderRadius: tokens.borderRadiusSmall,
     padding: '1px 5px',
   },
   codeBlock: {
     borderRadius: tokens.borderRadiusMedium,
-    border: `1px solid ${CODE_BORDER}`,
-    backgroundColor: CODE_BG,
+    border: `1px solid ${CODE_VAR.border}`,
+    backgroundColor: CODE_VAR.bg,
     overflow: 'hidden',
   },
   codeHead: {
@@ -48,7 +49,7 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '8px',
     padding: '2px 4px 2px 10px',
-    borderBottom: `1px solid ${CODE_BORDER}`,
+    borderBottom: `1px solid ${CODE_VAR.border}`,
   },
   lang: { color: tokens.colorNeutralForeground3 },
   grow: { flex: 1 },
@@ -75,8 +76,8 @@ const useStyles = makeStyles({
     fontSize: fontPx(12),
     lineHeight: '1.4',
     whiteSpace: 'pre',
-    backgroundColor: CODE_BG,
-    border: `1px solid ${CODE_BORDER}`,
+    backgroundColor: CODE_VAR.bg,
+    border: `1px solid ${CODE_VAR.border}`,
     borderRadius: tokens.borderRadiusMedium,
   },
   /** Tables scroll rather than squeeze: a column crushed to two characters says nothing. */

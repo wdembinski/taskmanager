@@ -1,21 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import {
-  ATTENTION_TINT,
-  CODE_BG,
-  EDITOR_FOREGROUND,
-  FLUO,
-  GRAPH_INK,
-  PIPELINE_COLOR,
-  STATUS_INDICATOR_COLOR,
-  appDarkTheme,
-  appLightTheme,
-  pageBackground,
-} from './theme';
+import { AA, contrastRatio } from './contrast';
+import { EDITOR_FOREGROUND, appDarkTheme, appLightTheme, pageBackground } from './theme';
 import {
   ATTENTION_TINT_BY_SCHEME,
   CODE_BY_SCHEME,
+  CODE_VAR,
   FLUO_BY_SCHEME,
   FLUO_VAR,
+  GRAPH_INK_VAR,
   PIPELINE_VAR,
   SCROLL_THUMB_BY_SCHEME,
   SEMANTIC,
@@ -117,6 +109,40 @@ describe('tokenCssVars', () => {
     expect(tokenCssVars('dark')['--tm-attention-tint']).toBe(ATTENTION_TINT_BY_SCHEME.dark);
   });
 
+  it('emits --tm-code-* from SEMANTIC.code, matching CODE_BY_SCHEME', () => {
+    for (const scheme of ['light', 'dark'] as const) {
+      const vars = tokenCssVars(scheme);
+      expect(vars['--tm-code-bg']).toBe(CODE_BY_SCHEME[scheme].bg);
+      expect(vars['--tm-code-inline-bg']).toBe(CODE_BY_SCHEME[scheme].inlineBg);
+      expect(vars['--tm-code-border']).toBe(CODE_BY_SCHEME[scheme].border);
+    }
+  });
+
+  it('emits --tm-status-bar-* from SEMANTIC.statusBar', () => {
+    for (const scheme of ['light', 'dark'] as const) {
+      const vars = tokenCssVars(scheme);
+      const statusBar = SEMANTIC[scheme].statusBar;
+      expect(vars['--tm-status-bar-dot-ok']).toBe(statusBar.dotOk);
+      expect(vars['--tm-status-bar-dot-bad']).toBe(statusBar.dotBad);
+      expect(vars['--tm-status-bar-dot-ring']).toBe(statusBar.dotRing);
+      expect(vars['--tm-status-bar-ink']).toBe(statusBar.ink);
+      expect(vars['--tm-status-bar-quota-track']).toBe(statusBar.quotaTrack);
+      expect(vars['--tm-status-bar-quota-ok']).toBe(statusBar.quotaOk);
+      expect(vars['--tm-status-bar-quota-warning']).toBe(statusBar.quotaWarning);
+      expect(vars['--tm-status-bar-quota-critical']).toBe(statusBar.quotaCritical);
+    }
+  });
+
+  it('emits --tm-window-close-* from SEMANTIC.windowClose', () => {
+    for (const scheme of ['light', 'dark'] as const) {
+      const vars = tokenCssVars(scheme);
+      const windowClose = SEMANTIC[scheme].windowClose;
+      expect(vars['--tm-window-close-hover']).toBe(windowClose.hover);
+      expect(vars['--tm-window-close-active']).toBe(windowClose.active);
+      expect(vars['--tm-window-close-ink']).toBe(windowClose.ink);
+    }
+  });
+
   it('emits --tm-fluo-* from SEMANTIC.fluo, matching FLUO_BY_SCHEME', () => {
     const fluoVarNames: Record<string, string> = {
       cyan: '--tm-fluo-cyan',
@@ -144,12 +170,12 @@ describe('labelChip', () => {
 });
 
 describe('statusIndicatorColor / pipelineColor', () => {
-  // The keys come from the exported dark records, so the lists cannot drift from
-  // `theme.ts`'s own `TaskStatus`/`PipelineStatus` coverage.
-  const taskStatuses = Object.keys(STATUS_INDICATOR_COLOR) as Array<
-    keyof typeof STATUS_INDICATOR_COLOR
+  // The keys come from the scheme-free var exports, so the lists cannot drift from their
+  // own `TaskStatus`/`PipelineStatus` coverage.
+  const taskStatuses = Object.keys(STATUS_INDICATOR_VAR) as Array<
+    keyof typeof STATUS_INDICATOR_VAR
   >;
-  const pipelineStatuses = Object.keys(PIPELINE_COLOR) as Array<keyof typeof PIPELINE_COLOR>;
+  const pipelineStatuses = Object.keys(PIPELINE_VAR) as Array<keyof typeof PIPELINE_VAR>;
   const schemes = ['light', 'dark'] as const;
 
   it('resolves every TaskStatus to a non-empty string in both schemes', () => {
@@ -227,6 +253,37 @@ describe('graphInk', () => {
   });
 });
 
+describe('GRAPH_INK_VAR', () => {
+  it('reuses the Fluent-token fields from graphInk, scheme-free', () => {
+    const dark = graphInk('dark');
+    expect(GRAPH_INK_VAR.line).toBe(dark.line);
+    expect(GRAPH_INK_VAR.merge).toBe(dark.merge);
+    expect(GRAPH_INK_VAR.dot).toBe(dark.dot);
+  });
+
+  it('points live at --tm-fluo-cyan, which is FLUO_BY_SCHEME[scheme].cyan for both schemes', () => {
+    expect(GRAPH_INK_VAR.live).toBe(FLUO_VAR.cyan);
+    for (const scheme of ['light', 'dark'] as const) {
+      expect(FLUO_BY_SCHEME[scheme].cyan).toBe(graphInk(scheme).live);
+    }
+  });
+});
+
+describe('SEMANTIC.statusBar.ink', () => {
+  // Unlike the live/dead dot (which keeps a dark ring instead — see `StatusBar.tsx`), this
+  // ink has no ring to lean on, so it has to clear F13.2's own bar on every surface it is
+  // ever drawn on directly: all three statusGradientStops, and the attention fill.
+  it('passes F13.2 contrast (AA.nonText) against every statusGradientStops entry and attention, in both schemes', () => {
+    for (const scheme of ['light', 'dark'] as const) {
+      const s = SEMANTIC[scheme];
+      const surfaces: readonly string[] = [...s.statusGradientStops, s.attention];
+      for (const surface of surfaces) {
+        expect(contrastRatio(s.statusBar.ink, surface)).toBeGreaterThanOrEqual(AA.nonText);
+      }
+    }
+  });
+});
+
 describe('the two Fluent themes', () => {
   it('keeps the dark theme on the editor-grey body text', () => {
     expect(appDarkTheme.colorNeutralForeground1).toBe(EDITOR_FOREGROUND);
@@ -243,13 +300,24 @@ describe('the two Fluent themes', () => {
     expect(appLightTheme.colorNeutralBackground2).toBe(SEMANTIC.light.canvas);
     expect(appDarkTheme.colorNeutralBackground2).toBe(SEMANTIC.dark.canvas);
   });
+
+  // F13.16 step 4: this is what makes every Fluent `Dialog` a flat surface for free — Fluent's
+  // own `DialogSurface` paints `colorNeutralBackground1` with no override of its own, so pinning
+  // it here to `paneOpaque` (never `paneGlass`) is the whole of "every Fluent dialog (flat
+  // surface)"; `test/dialog-flat-surface.test.ts` guards the other half, that nothing routes a
+  // dialog onto `GlassPane` instead.
+  it('carries colorNeutralBackground1 as the scheme flat/opaque pane surface', () => {
+    expect(appLightTheme.colorNeutralBackground1).toBe(SEMANTIC.light.paneOpaque);
+    expect(appDarkTheme.colorNeutralBackground1).toBe(SEMANTIC.dark.paneOpaque);
+  });
 });
 
-describe('nothing visible moves for the dark-only app today', () => {
-  it('keeps the dark exports equal to the current literals', () => {
-    expect(FLUO.cyan).toBe('#22E4FF');
-    expect(CODE_BG).toBe('#16202e');
-    expect(ATTENTION_TINT).toBe('rgba(242, 169, 0, 0.13)');
-    expect(GRAPH_INK.live).toBe(FLUO.cyan);
+describe('CODE_VAR', () => {
+  it('points at the --tm-code-* custom property for every CodeSurfaceTokens key', () => {
+    expect(CODE_VAR).toEqual({
+      bg: 'var(--tm-code-bg)',
+      inlineBg: 'var(--tm-code-inline-bg)',
+      border: 'var(--tm-code-border)',
+    });
   });
 });

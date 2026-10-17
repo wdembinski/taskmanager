@@ -56,10 +56,22 @@ export interface FluoPalette {
 }
 
 /**
- * The high-key indicator palette, per scheme. Dark is today's `FLUO` from `theme.ts`,
- * moved here unchanged. Defined ahead of {@link SEMANTIC} because `SEMANTIC[scheme].fluo`
- * is this, not a copy of it — one table, so a card's running cyan and the graph's live
- * branch cyan can never drift apart.
+ * The high-key palette every *state indicator* is drawn in — dots, glyphs, spinners.
+ *
+ * Fluent's palette backgrounds (`colorPaletteGreenBackground3` is #0e700e) are meant to sit
+ * *behind* text, so as 6px dots on a dark pane they were barely there: "done" and "pending"
+ * differed by a shade of dark. These are picked to read at a glance at that size, which is
+ * the only job they have.
+ *
+ * Deliberately NOT the issue-type colours in `ACCENT` (`bugRed`, `storyGreen`): those say
+ * what a card *is*, and are drawn as larger glyphs where Fluent's weights are right. These
+ * say what it is *doing*. `pending`, `skipped` and friends stay neutral grey on purpose —
+ * "nothing is happening" is information too, and a fluo dot for it would make every idle
+ * row shout.
+ *
+ * Defined ahead of {@link SEMANTIC} because `SEMANTIC[scheme].fluo` is this, not a copy of
+ * it — one table, so a card's running cyan and the graph's live branch cyan can never drift
+ * apart.
  */
 export const FLUO_BY_SCHEME: Record<ColorScheme, FluoPalette> = {
   light: {
@@ -83,9 +95,9 @@ export const FLUO_BY_SCHEME: Record<ColorScheme, FluoPalette> = {
 };
 
 /**
- * The tint an "attention" row takes instead of a border; see `theme.ts`'s `ATTENTION_TINT`.
- * Defined ahead of {@link SEMANTIC} so `SEMANTIC[scheme].attentionTint` can be this, not a
- * copy of it.
+ * The tint an "attention" row takes instead of a border (an MR row, a step row) — shared so
+ * the same state never reads as two different ones across surfaces. Defined ahead of
+ * {@link SEMANTIC} so `SEMANTIC[scheme].attentionTint` can be this, not a copy of it.
  */
 export const ATTENTION_TINT_BY_SCHEME: Record<ColorScheme, string> = {
   light: 'rgba(242, 169, 0, 0.16)',
@@ -107,6 +119,96 @@ export interface LabelChipTokens {
  * chip in light mode would be a separate bug from this ticket, not dark's to fix twice.
  */
 const LABEL_CHIP: LabelChipTokens = { bg: '#12836b', ink: '#ffffff' };
+
+export interface StatusBarTokens {
+  /** The live/dead dot's "alive" fill. See `theme.ts`'s `ACCENT.liveGreen`. */
+  dotOk: string;
+  /** The live/dead dot's "dead" fill. See `theme.ts`'s `ACCENT.liveRed`. */
+  dotBad: string;
+  /** The dark ring around the dot, so it separates from both the gradient and the
+   *  attention orange it is ever drawn on. */
+  dotRing: string;
+  /**
+   * The ink for anything drawn directly on the bar's own fill — the gradient or the
+   * attention orange — without a ring of its own to carry its contrast (unlike
+   * {@link StatusBarTokens.dotOk}/{@link StatusBarTokens.dotBad}). Same value as
+   * {@link SemanticTokens.attentionInk}: it is the one dark ink that reads on both fills,
+   * not just the orange one `attentionInk` was picked for — see `tokens.test.ts`.
+   */
+  ink: string;
+  /** The quota bars' track, under either status-bar fill. */
+  quotaTrack: string;
+  /** The quota bar's fill at rest. */
+  quotaOk: string;
+  /** The quota bar's fill once a window crosses its warning threshold. */
+  quotaWarning: string;
+  /** The quota bar's fill once a window crosses its critical threshold. */
+  quotaCritical: string;
+}
+
+/**
+ * Scheme-independent like {@link LABEL_CHIP}: the status bar's own two fills
+ * (`statusGradient`/`attention`) are themselves identical in both schemes today, so there
+ * is nothing for these to differ over.
+ */
+const STATUS_BAR: StatusBarTokens = {
+  dotOk: '#3FB950',
+  dotBad: '#F85149',
+  dotRing: 'rgba(0, 0, 0, 0.45)',
+  ink: '#1b1b1b',
+  quotaTrack: 'rgba(255, 255, 255, 0.35)',
+  quotaOk: '#FFFFFF',
+  quotaWarning: '#FFC107',
+  quotaCritical: '#F85149',
+};
+
+export interface WindowCloseTokens {
+  /** The close button's fill under `:hover`. */
+  hover: string;
+  /** The close button's fill under `:active`. */
+  active: string;
+  /** Text/glyph colour on either {@link WindowCloseTokens.hover} or
+   *  {@link WindowCloseTokens.active}. */
+  ink: string;
+}
+
+/** Scheme-independent like {@link LABEL_CHIP}: Windows' own close-button red, not a brand
+ *  colour either scheme would want to restate. */
+const WINDOW_CLOSE: WindowCloseTokens = {
+  hover: '#c42b1c',
+  active: '#b3271a',
+  ink: '#ffffff',
+};
+
+export interface CodeSurfaceTokens {
+  bg: string;
+  inlineBg: string;
+  border: string;
+}
+
+/**
+ * Code surfaces in agent output — inline spans and fenced blocks, per scheme.
+ *
+ * A dark BLUE rather than a neutral near-black: against a dark pane's own grey a neutral
+ * code background is almost invisible, so inline code read as ordinary prose and a fenced
+ * block had no edge of its own. A slight hue shift separates "this is code" from "this is
+ * text" without adding a border to every span.
+ *
+ * Defined ahead of {@link SEMANTIC} because `SEMANTIC[scheme].code` is this, not a copy of
+ * it, the same way {@link FLUO_BY_SCHEME} is.
+ */
+export const CODE_BY_SCHEME: Record<ColorScheme, CodeSurfaceTokens> = {
+  light: {
+    bg: '#F3F6FA',
+    inlineBg: '#EAF0F7',
+    border: '#D6DEE8',
+  },
+  dark: {
+    bg: '#16202e',
+    inlineBg: '#1d2a3a',
+    border: '#26364a',
+  },
+};
 
 export interface SemanticTokens {
   /** The window behind everything. */
@@ -150,6 +252,15 @@ export interface SemanticTokens {
   /** The high-key indicator palette for this scheme — dots, glyphs, spinners. Identical
    * object to {@link FLUO_BY_SCHEME}`[scheme]`, not a copy. */
   fluo: FluoPalette;
+  /** Code surfaces in agent output — inline spans and fenced blocks. Identical object to
+   * {@link CODE_BY_SCHEME}`[scheme]`, not a copy. */
+  code: CodeSurfaceTokens;
+  /** The status bar's own furniture — the live/dead dot and the quota bars. Identical
+   * object to {@link STATUS_BAR} in both schemes; see its own docstring for why. */
+  statusBar: StatusBarTokens;
+  /** The title bar's close button. Identical object to {@link WINDOW_CLOSE} in both
+   * schemes; see its own docstring for why. */
+  windowClose: WindowCloseTokens;
   mono: string;
   sans: string;
 }
@@ -189,6 +300,9 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     },
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.light,
+    code: CODE_BY_SCHEME.light,
+    statusBar: STATUS_BAR,
+    windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
   },
@@ -226,27 +340,11 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     },
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.dark,
+    code: CODE_BY_SCHEME.dark,
+    statusBar: STATUS_BAR,
+    windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
-  },
-};
-
-export interface CodeSurfaceTokens {
-  bg: string;
-  inlineBg: string;
-  border: string;
-}
-
-export const CODE_BY_SCHEME: Record<ColorScheme, CodeSurfaceTokens> = {
-  light: {
-    bg: '#F3F6FA',
-    inlineBg: '#EAF0F7',
-    border: '#D6DEE8',
-  },
-  dark: {
-    bg: '#16202e',
-    inlineBg: '#1d2a3a',
-    border: '#26364a',
   },
 };
 
@@ -324,7 +422,7 @@ export const SCROLL_THUMB_BY_SCHEME: Record<ColorScheme, ScrollThumbTokens> = {
  */
 export type IndicatorRole = 'neutral' | keyof FluoPalette;
 
-/** `TaskStatus` → {@link IndicatorRole}. See `theme.ts`'s `STATUS_INDICATOR_COLOR`. */
+/** `TaskStatus` → {@link IndicatorRole}. See {@link statusIndicatorColor}/{@link STATUS_INDICATOR_VAR}. */
 const STATUS_ROLE: Record<TaskStatus, IndicatorRole> = {
   pending: 'neutral',
   stopped: 'neutral',
@@ -339,7 +437,7 @@ const STATUS_ROLE: Record<TaskStatus, IndicatorRole> = {
   failed: 'red',
 };
 
-/** `PipelineStatus` → {@link IndicatorRole}. See `theme.ts`'s `PIPELINE_COLOR`. */
+/** `PipelineStatus` → {@link IndicatorRole}. See {@link pipelineColor}/{@link PIPELINE_VAR}. */
 const PIPELINE_ROLE: Record<PipelineStatus, IndicatorRole> = {
   unknown: 'neutral',
   none: 'neutral',
@@ -371,9 +469,10 @@ function roleToFluoColor(role: IndicatorRole, fluo: FluoPalette): string {
 }
 
 /**
- * A task status as an indicator colour, for the given scheme. See `theme.ts`'s
- * `STATUS_INDICATOR_COLOR` (the dark entries, kept under their current name for existing
- * callers).
+ * A task status as an indicator colour, for the given scheme — the card's step dots and
+ * the step rows' badges. Shared rather than owned by the card, because the two surfaces
+ * show the same steps: a step that is amber on the card and orange in the detail pane
+ * reads as two states.
  */
 export function statusIndicatorColor(scheme: ColorScheme): Record<TaskStatus, string> {
   const fluo = FLUO_BY_SCHEME[scheme];
@@ -381,8 +480,9 @@ export function statusIndicatorColor(scheme: ColorScheme): Record<TaskStatus, st
 }
 
 /**
- * A pipeline status as a dot colour, for the given scheme. See `theme.ts`'s
- * `PIPELINE_COLOR`.
+ * A pipeline status as a dot colour, for the given scheme. Stated once because three
+ * surfaces draw it — the card's MR row, the detail pane's, and the per-stage row — and a
+ * pipeline that is green on the card and grey in the pane looks like two pipelines.
  */
 export function pipelineColor(scheme: ColorScheme): Record<PipelineStatus, string> {
   const fluo = FLUO_BY_SCHEME[scheme];
@@ -394,8 +494,8 @@ export function pipelineColor(scheme: ColorScheme): Record<PipelineStatus, strin
  * scheme's `tokenCssVars` is currently stamped on the provider root, rather than a literal
  * resolved once in JS for one scheme. A component that reads `FLUO_VAR.cyan` — in a
  * `backgroundColor`, or inside a raw `color-mix(...)`/`drop-shadow(...)` CSS value — tracks
- * an appearance change for free; `FLUO.*` (`theme.ts`, still the dark literals) never did,
- * which is exactly what F13.14 is replacing it with.
+ * an appearance change for free, which a `FLUO_BY_SCHEME[scheme].cyan` literal resolved at
+ * render time never would.
  */
 export const FLUO_VAR: FluoPalette = {
   cyan: 'var(--tm-fluo-cyan)',
@@ -405,6 +505,16 @@ export const FLUO_VAR: FluoPalette = {
   red: 'var(--tm-fluo-red)',
   amber: 'var(--tm-fluo-amber)',
   violet: 'var(--tm-fluo-violet)',
+};
+
+/**
+ * {@link CodeSurfaceTokens}, but every value is a `var(--tm-code-*)` reference — see
+ * {@link FLUO_VAR}.
+ */
+export const CODE_VAR: CodeSurfaceTokens = {
+  bg: 'var(--tm-code-bg)',
+  inlineBg: 'var(--tm-code-inline-bg)',
+  border: 'var(--tm-code-border)',
 };
 
 function roleToFluoVar(role: IndicatorRole): string {
@@ -435,9 +545,21 @@ export interface GraphInkTokens {
 }
 
 /**
- * The commit graph's ink, for the given scheme. Fluent neutral tokens already resolve
- * per theme; only `live` (the one coloured thing in the graph) needs a scheme lookup.
- * See `theme.ts`'s `GRAPH_INK`.
+ * The commit graph's ink, for the given scheme — and the whole of its colour budget.
+ *
+ * The graph is a picture of the PAST, and the past does not move: a repository with forty
+ * branches in it would, coloured per branch the way `gitk` colours them, put more ink on
+ * the screen than the board it sits beside — and every stroke of it would be saying
+ * something that had already finished happening. So the lanes, the dots, the refs and the
+ * base branch are all monochrome, and exactly one thing on the drawing is allowed a
+ * colour: the branch of a card whose agent is **running right now**.
+ *
+ * That is the same rule the rest of the app is kept to — colour is for things that MOVE —
+ * and it is why `live` is {@link FluoPalette.cyan} rather than the brand accent: cyan is
+ * already what this app means by "working", so a live branch in the graph and a live card
+ * on the board read as one state.
+ *
+ * Fluent neutral tokens already resolve per theme; only `live` needs a scheme lookup.
  */
 export function graphInk(scheme: ColorScheme): GraphInkTokens {
   return {
@@ -447,6 +569,18 @@ export function graphInk(scheme: ColorScheme): GraphInkTokens {
     live: FLUO_BY_SCHEME[scheme].cyan,
   };
 }
+
+/**
+ * {@link graphInk}, scheme-free — see {@link STATUS_INDICATOR_VAR}. `line`/`merge`/`dot`
+ * are already Fluent tokens (theme-aware on their own); only `live` needed the swap, from
+ * a `FLUO_BY_SCHEME` lookup to the matching {@link FLUO_VAR} entry.
+ */
+export const GRAPH_INK_VAR: GraphInkTokens = {
+  line: tokens.colorNeutralStroke2,
+  merge: tokens.colorNeutralStroke3,
+  dot: tokens.colorNeutralForeground3,
+  live: FLUO_VAR.cyan,
+};
 
 function kebabCase(segment: string): string {
   return segment.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();

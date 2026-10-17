@@ -102,8 +102,6 @@ const useStyles = makeStyles({
   // auto-toggles, Assign/Reassign) and the pane is narrow, so it wraps onto a second line
   // rather than overflowing.
   head: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', rowGap: '4px' },
-  // White, matching the board card's delegation glyph.
-  icon: { fontSize: '18px', display: 'flex', color: '#ffffff' },
   grow: { flex: 1, minWidth: 0 },
   hint: { color: tokens.colorNeutralForeground3 },
   skillsRow: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
