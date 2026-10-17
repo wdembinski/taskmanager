@@ -92,6 +92,12 @@ function resolveToken(value: string, scheme: ColorScheme): string {
  * Every surface a token pair is checked against, for one scheme. `glassCandidates` is every
  * way `paneGlass` can actually render — over bare canvas, or over either wash — because the
  * washes are positioned, not universal; a pane can sit over either one, or neither.
+ *
+ * `paneGlass` and `paneOpaque` are exactly the two surfaces `GlassPane` (`shell/GlassPane.tsx`)
+ * paints — `paneGlass` when glass is on, `paneOpaque` under `data-glass="opaque"`,
+ * `forced-colors: active`, or no `backdrop-filter` support — so the pairs checked here are what
+ * makes F13.5's acceptance ("contrast pairs from F13.2 include the pane in both modes")
+ * traceable, without needing pairs of its own.
  */
 function buildSurfaces(scheme: ColorScheme) {
   const s = SEMANTIC[scheme];

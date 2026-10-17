@@ -416,7 +416,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
 
 ### F13 · Phase 2 — Glass
 
-- [ ] F13.5 Build the glass pane primitive with the opaque fallback @needs: F13.4 Mount the resolved theme in both hosts and make the document follow it
+- [x] F13.5 Build the glass pane primitive with the opaque fallback @needs: F13.4 Mount the resolved theme in both hosts and make the document follow it
 
   - `packages/ui/src/shell/GlassPane.tsx` (and a `useGlassStyles` for existing containers):
     `paneGlass` + `backdrop-filter` inside `@supports`, the rim and top sheen, `paneShadow`;
