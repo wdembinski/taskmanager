@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { oversizedAnswerMessage } from '@tm/shared/ipcRelay';
 import type {
+  DiffContext,
+  DiffContextResult,
   DiffFile,
   DiffFileEntry,
   DiffHunk,
   DiffSummaryResult,
   ReviewComment,
   ReviewSendResult,
+  ReviewViewedMark,
 } from '@tm/shared/review';
-import { DIFF_COLLAPSE_LINES } from '@tm/shared/review';
+import { DIFF_COLLAPSE_LINES, DIFF_CONTEXT_MAX_LINES } from '@tm/shared/review';
 import {
   EMPTY_REVIEW,
   canComment,
@@ -22,14 +25,24 @@ import {
   commentsArrived,
   commentsAt,
   commentsLoadStarted,
+  contextArrived,
+  contextFailed,
+  contextLoadStarted,
+  contextRequest,
   editDraft,
   editNote,
   fileArrived,
   fileFailed,
   fileLoadStarted,
   filesToLoad,
+  gapBounds,
   isCollapsedByDefault,
+  navigationOrder,
+  nextFile,
+  nextHunk,
   openExistingDraft,
+  prevFile,
+  prevHunk,
   rangeLines,
   reviewAccepts,
   reviewSent,
@@ -37,12 +50,17 @@ import {
   saveStarted,
   selectFile,
   sendStarted,
+  setViewed,
   summaryArrived,
   summaryFailed,
   summaryLoadStarted,
   tapLine,
   toggleExpanded,
+  toggleViewedAndAdvance,
   unsentCount,
+  viewedArrived,
+  viewedLoadStarted,
+  viewedStatuses,
   type ReviewState,
 } from './reviewState';
 
@@ -926,5 +944,421 @@ describe('tap selection', () => {
 
     const lines = rangeLines(twoHunkFile, state.selection!);
     expect(lines.map((l) => l.newLine)).toEqual([2, 3, 10]);
+  });
+});
+
+describe('navigationOrder', () => {
+  it('flattens a tree into leaf path order, directories first, depth first', () => {
+    const order = navigationOrder([
+      entry('z.ts'),
+      entry('src/b.ts'),
+      entry('src/a.ts'),
+      entry('a.ts'),
+    ]);
+    expect(order).toEqual(['src/a.ts', 'src/b.ts', 'a.ts', 'z.ts']);
+  });
+
+  it('is empty for no files', () => {
+    expect(navigationOrder([])).toEqual([]);
+  });
+});
+
+describe('nextFile / prevFile', () => {
+  it('selects the first file from no selection, and wraps forward past the last', () => {
+    let state = summaryLoaded('d1', ['a.ts', 'b.ts', 'c.ts']);
+
+    state = nextFile(state);
+    expect(state.selectedPath).toBe('a.ts');
+    state = nextFile(state);
+    expect(state.selectedPath).toBe('b.ts');
+    state = nextFile(state);
+    expect(state.selectedPath).toBe('c.ts');
+    state = nextFile(state);
+    expect(state.selectedPath).toBe('a.ts');
+  });
+
+  it('selects the last file from no selection, and wraps backward past the first', () => {
+    let state = summaryLoaded('d1', ['a.ts', 'b.ts', 'c.ts']);
+
+    state = prevFile(state);
+    expect(state.selectedPath).toBe('c.ts');
+    state = prevFile(state);
+    expect(state.selectedPath).toBe('b.ts');
+    state = prevFile(state);
+    expect(state.selectedPath).toBe('a.ts');
+    state = prevFile(state);
+    expect(state.selectedPath).toBe('c.ts');
+  });
+
+  it('is a no-op while the summary is not loaded ok', () => {
+    const state = summaryLoadStarted(EMPTY_REVIEW, 'a', 1);
+    expect(nextFile(state)).toBe(state);
+    expect(prevFile(state)).toBe(state);
+  });
+
+  it('is a no-op for an empty file list', () => {
+    const state = summaryLoaded('d1', []);
+    expect(nextFile(state)).toBe(state);
+    expect(prevFile(state)).toBe(state);
+  });
+
+  it('resets hunkIndex when it moves the selection', () => {
+    let state = selectFile(twoHunkLoaded(), 'a.ts');
+    state = nextHunk(state);
+    expect(state.hunkIndex).toBe(0);
+
+    state = summaryLoaded('d1', ['a.ts', 'b.ts']);
+    state = { ...state, selectedPath: 'a.ts', hunkIndex: 0 };
+    state = nextFile(state);
+
+    expect(state.selectedPath).toBe('b.ts');
+    expect(state.hunkIndex).toBeNull();
+  });
+});
+
+describe('nextHunk / prevHunk', () => {
+  it('moves the cursor forward from null, then stops at the last hunk', () => {
+    let state = selectFile(twoHunkLoaded(), 'a.ts');
+    expect(state.hunkIndex).toBeNull();
+
+    state = nextHunk(state);
+    expect(state.hunkIndex).toBe(0);
+    state = nextHunk(state);
+    expect(state.hunkIndex).toBe(1);
+
+    const atEnd = nextHunk(state);
+    expect(atEnd).toBe(state);
+  });
+
+  it('moves the cursor backward, but null never jumps anywhere', () => {
+    let state = selectFile(twoHunkLoaded(), 'a.ts');
+
+    const noCursor = prevHunk(state);
+    expect(noCursor).toBe(state);
+
+    state = nextHunk(nextHunk(state));
+    expect(state.hunkIndex).toBe(1);
+    state = prevHunk(state);
+    expect(state.hunkIndex).toBe(0);
+
+    const atStart = prevHunk(state);
+    expect(atStart).toBe(state);
+  });
+
+  it('is a no-op with no selection, an unloaded file, or no hunks', () => {
+    const noSelection = summaryLoaded('d1', ['a.ts']);
+    expect(nextHunk(noSelection)).toBe(noSelection);
+    expect(prevHunk(noSelection)).toBe(noSelection);
+
+    const notLoaded = selectFile(noSelection, 'a.ts');
+    expect(nextHunk(notLoaded)).toBe(notLoaded);
+
+    let empty = summaryLoaded('d1', ['empty.ts']);
+    empty = selectFile(empty, 'empty.ts');
+    empty = fileLoadStarted(empty, 'a', 'd1', 'empty.ts', 2);
+    empty = fileArrived(empty, 'a', 'd1', 'empty.ts', 2, {
+      status: 'ok',
+      file: file('d1', 'empty.ts', []),
+    });
+    expect(nextHunk(empty)).toBe(empty);
+  });
+});
+
+/** A card whose summary has already arrived, listing `paths` each with their own `newBlobSha`. */
+function summaryLoadedWithBlobs(diffId: string, paths: string[]): ReviewState {
+  const state = summaryLoadStarted(EMPTY_REVIEW, 'a', 1);
+  return summaryArrived(
+    state,
+    'a',
+    1,
+    summary(
+      diffId,
+      paths.map((p) => entry(p, { newBlobSha: `sha-${p}` })),
+    ),
+  );
+}
+
+describe('setViewed', () => {
+  it('marks a file viewed with the entry own newBlobSha, and collapses it', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts']);
+    state = selectFile(state, 'a.ts');
+    expect(state.expanded).toContain('a.ts');
+
+    state = setViewed(state, 'a.ts', true, 100);
+
+    expect(state.viewedMarks).toEqual([
+      { subjectId: 'task:a', path: 'a.ts', blobSha: 'sha-a.ts', viewedAt: 100 },
+    ]);
+    expect(state.expanded).not.toContain('a.ts');
+  });
+
+  it('replaces an existing mark for the same path rather than duplicating it', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts']);
+    state = setViewed(state, 'a.ts', true, 100);
+    state = setViewed(state, 'a.ts', true, 200);
+
+    expect(state.viewedMarks).toEqual([
+      { subjectId: 'task:a', path: 'a.ts', blobSha: 'sha-a.ts', viewedAt: 200 },
+    ]);
+  });
+
+  it('unviewing removes the mark without re-expanding what viewing had collapsed', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts']);
+    state = selectFile(state, 'a.ts');
+    state = setViewed(state, 'a.ts', true, 100);
+    expect(state.expanded).not.toContain('a.ts');
+
+    state = setViewed(state, 'a.ts', false, 200);
+
+    expect(state.viewedMarks).toEqual([]);
+    expect(state.expanded).not.toContain('a.ts');
+  });
+
+  it('refuses when there is no newBlobSha to key a mark on', () => {
+    const state = summaryLoaded('d1', ['a.ts']);
+    expect(setViewed(state, 'a.ts', true, 100)).toBe(state);
+  });
+
+  it('refuses for a path not in the summary, no taskId, or a non-ok summary', () => {
+    const state = summaryLoadedWithBlobs('d1', ['a.ts']);
+    expect(setViewed(state, 'missing.ts', true, 100)).toBe(state);
+    expect(setViewed(EMPTY_REVIEW, 'a.ts', true, 100)).toBe(EMPTY_REVIEW);
+
+    const landed = summaryArrived(state, 'a', 1, { status: 'landed', forgeUrl: null });
+    expect(setViewed(landed, 'a.ts', true, 100)).toBe(landed);
+  });
+});
+
+describe('toggleViewedAndAdvance', () => {
+  it('advances to the next unviewed file after marking the current one viewed', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts', 'b.ts', 'c.ts']);
+    state = selectFile(state, 'a.ts');
+
+    state = toggleViewedAndAdvance(state, 100);
+    expect(viewedStatuses(state).byPath['a.ts']).toBe('viewed');
+    expect(state.selectedPath).toBe('b.ts');
+
+    state = toggleViewedAndAdvance(state, 100);
+    expect(state.selectedPath).toBe('c.ts');
+  });
+
+  it('wraps around, and stays put once every file is viewed', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts', 'b.ts']);
+    state = selectFile(state, 'a.ts');
+    state = toggleViewedAndAdvance(state, 100); // a viewed, advances to b
+    expect(state.selectedPath).toBe('b.ts');
+
+    state = toggleViewedAndAdvance(state, 100); // b viewed, nothing left to advance to
+
+    expect(state.selectedPath).toBe('b.ts');
+    expect(viewedStatuses(state).viewedCount).toBe(2);
+  });
+
+  it('advances to a changed file too, not only an unviewed one', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts', 'b.ts']);
+    state = setViewed(state, 'b.ts', true, 50);
+    // b's mark is now stale: the entry moved to a new blob since it was viewed. Same diffId,
+    // so this is a poll — it replaces `summary` without touching `files`/`selectedPath`.
+    state = summaryArrived(
+      state,
+      'a',
+      state.applied,
+      summary('d1', [
+        entry('a.ts', { newBlobSha: 'sha-a.ts' }),
+        entry('b.ts', { newBlobSha: 'sha-b.ts-v2' }),
+      ]),
+    );
+    state = selectFile(state, 'a.ts');
+    expect(viewedStatuses(state).byPath['b.ts']).toBe('changed');
+
+    state = toggleViewedAndAdvance(state, 100);
+
+    expect(state.selectedPath).toBe('b.ts');
+  });
+
+  it('never advances when the toggle turns a file OFF', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts', 'b.ts']);
+    state = selectFile(state, 'a.ts');
+    state = toggleViewedAndAdvance(state, 100);
+    expect(state.selectedPath).toBe('b.ts');
+
+    state = selectFile(state, 'a.ts');
+    state = toggleViewedAndAdvance(state, 200);
+
+    expect(viewedStatuses(state).byPath['a.ts']).toBe('unviewed');
+    expect(state.selectedPath).toBe('a.ts');
+  });
+
+  it('is a no-op with no selection or a refused setViewed', () => {
+    const noSelection = summaryLoadedWithBlobs('d1', ['a.ts']);
+    expect(toggleViewedAndAdvance(noSelection, 100)).toBe(noSelection);
+
+    const noBlobSha = selectFile(summaryLoaded('d1', ['a.ts']), 'a.ts');
+    expect(toggleViewedAndAdvance(noBlobSha, 100)).toBe(noBlobSha);
+  });
+});
+
+describe('viewedLoadStarted / viewedArrived / viewedStatuses', () => {
+  const mark = (path: string, blobSha: string): ReviewViewedMark => ({
+    subjectId: 'task:a',
+    path,
+    blobSha,
+    viewedAt: 1,
+  });
+
+  it('replaces viewedMarks wholesale when accepted', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts']);
+    state = viewedLoadStarted(state, 'a', 1);
+
+    state = viewedArrived(state, 'a', 1, [mark('a.ts', 'sha-a.ts')]);
+
+    expect(state.viewedMarks).toEqual([mark('a.ts', 'sha-a.ts')]);
+    expect(viewedStatuses(state).byPath['a.ts']).toBe('viewed');
+  });
+
+  it('drops a late answer once a newer load has started', () => {
+    let state = summaryLoadedWithBlobs('d1', ['a.ts']);
+    state = viewedLoadStarted(state, 'a', 1);
+    state = viewedLoadStarted(state, 'a', 2);
+
+    const stale = viewedArrived(state, 'a', 1, [mark('a.ts', 'sha-a.ts')]);
+
+    expect(stale).toBe(state);
+  });
+
+  it('viewedStatuses is empty while the summary is not loaded ok', () => {
+    expect(viewedStatuses(EMPTY_REVIEW)).toEqual({ byPath: {}, viewedCount: 0 });
+  });
+});
+
+describe('gapBounds / contextRequest', () => {
+  it('bounds the file-start, between-hunk and trailing gaps of twoHunkFile', () => {
+    expect(gapBounds(twoHunkFile, 0)).toEqual({ low: 1, high: 1 });
+    expect(gapBounds(twoHunkFile, 1)).toEqual({ low: 4, high: 10 });
+    expect(gapBounds(twoHunkFile, 2)).toEqual({ low: 13, high: Infinity });
+  });
+
+  it('"step" reads the 20 lines closest to the gap, always on the new side', () => {
+    expect(contextRequest(twoHunkFile, 1, 'step')).toEqual({ side: 'new', from: 4, to: 9 });
+    expect(contextRequest(twoHunkFile, 2, 'step')).toEqual({ side: 'new', from: 13, to: 32 });
+  });
+
+  it('"all" reads the whole gap, capped to DIFF_CONTEXT_MAX_LINES for an open-ended one', () => {
+    expect(contextRequest(twoHunkFile, 1, 'all')).toEqual({ side: 'new', from: 4, to: 9 });
+    expect(contextRequest(twoHunkFile, 2, 'all')).toEqual({
+      side: 'new',
+      from: 13,
+      to: 13 + DIFF_CONTEXT_MAX_LINES - 1,
+    });
+  });
+});
+
+describe('contextLoadStarted / contextArrived / contextFailed', () => {
+  const contextResult = (contextOverrides: Partial<DiffContext> = {}): DiffContextResult => ({
+    status: 'ok',
+    context: {
+      diffId: 'd1',
+      path: 'a.ts',
+      side: 'new',
+      start: 4,
+      text: ['four', 'five', 'six', 'seven', 'eight', 'nine'],
+      truncated: false,
+      ...contextOverrides,
+    },
+  });
+
+  it('sets loading at the gap own low bound, computed from the current hunks', () => {
+    const state = contextLoadStarted(twoHunkLoaded(), 'a', 'd1', 'a.ts', 1, 5);
+    expect(state.context['a.ts']?.[4]).toEqual({ status: 'loading', seq: 5 });
+  });
+
+  it('refuses unless the task matches, diffId matches, and the file is loaded', () => {
+    const state = twoHunkLoaded();
+    expect(contextLoadStarted(state, 'b', 'd1', 'a.ts', 1, 5)).toBe(state);
+    expect(contextLoadStarted(state, 'a', 'd0', 'a.ts', 1, 5)).toBe(state);
+
+    const notLoaded = selectFile(summaryLoaded('d1', ['a.ts']), 'a.ts');
+    expect(contextLoadStarted(notLoaded, 'a', 'd1', 'a.ts', 1, 5)).toBe(notLoaded);
+  });
+
+  it('merges a full-gap answer, closing the gap and clamping hunkIndex', () => {
+    let state = twoHunkLoaded();
+    state = { ...state, hunkIndex: 1 };
+    state = contextLoadStarted(state, 'a', 'd1', 'a.ts', 1, 5);
+
+    state = contextArrived(state, 'a', 'd1', 'a.ts', 4, 5, contextResult());
+
+    expect(state.context['a.ts']?.[4]).toBeUndefined();
+    const loaded = state.files['a.ts'] as { status: 'loaded'; file: DiffFile };
+    expect(loaded.file.hunks).toHaveLength(1);
+    expect(state.hunkIndex).toBe(0);
+  });
+
+  it('deletes the entry with no merge when the gap no longer exists', () => {
+    let state = twoHunkLoaded();
+    state = contextLoadStarted(state, 'a', 'd1', 'a.ts', 1, 5);
+    // This answer merges gap 1 away entirely — the file's two hunks become one — so no gap
+    // has `low === 4` any more afterwards.
+    state = contextArrived(state, 'a', 'd1', 'a.ts', 4, 5, contextResult());
+    expect((state.files['a.ts'] as { status: 'loaded'; file: DiffFile }).file.hunks).toHaveLength(
+      1,
+    );
+
+    // A second, slower answer for that same now-gone gap was still in flight — simulated
+    // directly, since `contextLoadStarted` can only ever produce an entry for a gap that
+    // exists *right now*, never one that is already stale by construction.
+    state = {
+      ...state,
+      context: { ...state.context, 'a.ts': { 4: { status: 'loading', seq: 6 } } },
+    };
+    state = contextArrived(state, 'a', 'd1', 'a.ts', 4, 6, contextResult());
+
+    expect(state.context['a.ts']?.[4]).toBeUndefined();
+    expect((state.files['a.ts'] as { status: 'loaded'; file: DiffFile }).file.hunks).toHaveLength(
+      1,
+    );
+  });
+
+  it('records tooLarge, and leaves a stale answer loading while setting staleDiffId', () => {
+    let state = twoHunkLoaded();
+    state = contextLoadStarted(state, 'a', 'd1', 'a.ts', 1, 5);
+
+    const tooLarge = contextArrived(
+      state,
+      'a',
+      'd1',
+      'a.ts',
+      4,
+      5,
+      contextResult({ tooLarge: { bytes: 999 } }),
+    );
+    expect(tooLarge.context['a.ts']?.[4]).toEqual({ status: 'tooLarge', bytes: 999 });
+
+    const stale = contextArrived(state, 'a', 'd1', 'a.ts', 4, 5, {
+      status: 'stale',
+      diffId: 'd1',
+      currentDiffId: 'd2',
+    });
+    expect(stale.staleDiffId).toBe('d2');
+    expect(stale.context['a.ts']?.[4]).toEqual({ status: 'loading', seq: 5 });
+  });
+
+  it('refuses a late answer for an old diffId as a no-op, same as a file answer', () => {
+    let state = twoHunkLoaded();
+    state = contextLoadStarted(state, 'a', 'd1', 'a.ts', 1, 5);
+
+    const stale = contextArrived(state, 'a', 'd0', 'a.ts', 4, 5, contextResult());
+    expect(stale).toBe(state);
+  });
+
+  it('contextFailed sets idle with the error, refused the same way as contextArrived', () => {
+    let state = twoHunkLoaded();
+    state = contextLoadStarted(state, 'a', 'd1', 'a.ts', 1, 5);
+
+    state = contextFailed(state, 'a', 'd1', 'a.ts', 4, 5, 'network error');
+    expect(state.context['a.ts']?.[4]).toEqual({ status: 'idle', error: 'network error' });
+
+    const unchanged = contextFailed(state, 'a', 'd0', 'a.ts', 4, 5, 'network error');
+    expect(unchanged).toBe(state);
   });
 });

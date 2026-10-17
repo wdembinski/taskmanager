@@ -919,12 +919,12 @@ export function splitRows(file: DiffFile): SplitRow[][] {
  * side is empty), `start` is the line *before* where the change sits, so the first — and only —
  * boundary line is `start + 1`.
  */
-function firstLine(start: number, count: number): number {
+export function firstLine(start: number, count: number): number {
   return count === 0 ? start + 1 : start;
 }
 
 /** One past a side's last real line number — see {@link firstLine} for the zero-count case. */
-function endLine(start: number, count: number): number {
+export function endLine(start: number, count: number): number {
   return count === 0 ? start + 1 : start + count;
 }
 
