@@ -261,10 +261,52 @@ from disagreeing — the same reason F12 made one panel.
     the script fails when the migration entry is removed (proven once). `pnpm typecheck`,
     `pnpm test`, `pnpm build` green.
 
-- [ ] F14.2 Write the shared archive predicate used by every surface
+- [x] F14.2 Write the shared archive predicate used by every surface
 
-  - `packages/shared/src/trackerArchive.ts`: `ArchiveIndex`, `archivedBy`, `isHidden`,
-    `visibleTickets`, `pickableMilestones`, `pickableEpics`, `pickableProjects`, as above.
+  - `packages/shared/src/trackerArchive.ts` is built on **structural input types, not**
+    `Milestone` / `Project` / `Task` themselves (`packages/shared/src/model.ts:1320`, `:201`,
+    `:692`): `ArchivableMilestone = Pick<Milestone, 'id'> & { archivedAt?: number | null }`,
+    likewise `ArchivableProject`, and `ArchivableTicket = Pick<Task, 'id' | 'projectId' |
+    'source' | 'milestoneId' | 'epicTaskId'> & { trackerArchivedAt?: number | null }`
+    (`Task.source` is `model.ts:816`, `.epicTaskId` and `.milestoneId` are `:1204` and
+    `:1206`). This ships before F14.1 adds the real `archivedAt` / `trackerArchivedAt`
+    columns, and must not touch `model.ts` itself or it collides with that task's edit; once
+    F14.1 lands, the real types satisfy these with no change here. `ArchiveIndex<TMilestone,
+    TEpic, TProject>` (each defaulting to its `Archivable*` type) is `{ milestones:
+    Map<string, TMilestone>; epics: Map<string, TEpic>; projects: Map<string, TProject> }`,
+    generic so a caller holding real `Milestone`/`Task`/`Project` maps can pass them as-is.
+  - `archivedBy(ticket, index): { by: 'project' | 'milestone' | 'epic' | 'self'; id: string }
+    | null` returns `null` outright for a non-native ticket (`isNativeTicket`,
+    `packages/shared/src/tickets.ts:44`, tests `source === 'ticket'`) — a JIRA/GitHub/Linear
+    row's lifecycle is the tracker's, not ours. Otherwise it checks, in order, the ticket's
+    project, its milestone, its epic, then itself, and returns the first that is archived. A
+    lookup miss — `ticket.milestoneId` or `.epicTaskId` naming a row that was deleted, or one
+    simply absent from `index` — counts as **not archived** at that step, the same way a
+    missing milestone already degrades to the `No milestone` bucket elsewhere
+    (`backlogView.ts`'s `groupTickets`): a dangling id must never hide a ticket silently.
+  - `isHidden(ticket, index, opts?: { includeArchived?: boolean })` is
+    `!opts?.includeArchived && archivedBy(ticket, index) !== null` — the single switch every
+    "Include archived" toggle (Backlog search, the Archived view, a direct link) flips.
+  - `visibleTickets<T extends ArchivableTicket>(tickets: readonly T[], index, opts?): T[]`
+    filters with `isHidden`, keeping the input order and the element type, so the board
+    (ticket-project scope), Backlog, Timeline and Graph each get back exactly the shape they
+    passed in.
+  - `pickableMilestones<T extends ArchivableMilestone>(list, currentId?): T[]`,
+    `pickableEpics<T extends ArchivableTicket>(list, currentId?)` (reading
+    `trackerArchivedAt`) and `pickableProjects<T extends ArchivableProject>(list, currentId?)`
+    drop archived entries except the one already matching `currentId` — the same rule
+    `offeredMilestones` already applies for `closed`
+    (`packages/ui/src/projects/ticketRegistries.ts:36-41`) — and this trio leaves `closed`
+    alone entirely; that stays `offeredMilestones`'s own, separate filter. Each keeps the
+    input order and the element type.
+  - `archiveIndexOf(milestones, epics, projects)` builds the three `Map`s in one call, so a
+    caller in F14.4 onward does not hand-roll `new Map(x.map((v) => [v.id, v]))` three times
+    over.
+  - File header and JSDoc match `tickets.ts`'s: the header spells out that this is the
+    *tracker's* archive, not `Task.archivedAt` (set by the JIRA/GitHub reconcilers and by
+    variant discard, and destroyed by `pruneArchivedBefore` — the opposite lifecycle, see
+    "What we have today" above), and that no SQL `WHERE` or per-screen filter may ever decide
+    hiding on its own.
   - Acceptance: `trackerArchive.test.ts` — hidden by project, by milestone, by epic, by self;
     precedence when several apply; `includeArchived` shows all; a picker keeps the already-set
     archived value; a ticket whose milestone id points at a deleted milestone is not hidden;
