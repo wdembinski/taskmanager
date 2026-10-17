@@ -120,7 +120,7 @@ export interface AppearanceElement {
 /**
  * Stamps a resolved appearance onto an element's `data-*` attributes — `useGlobalStyles`
  * (`theme.ts`) reads `data-scheme` to decide which scheme's custom properties apply;
- * `data-glass` is for the glass pane primitive (F13.5) to read once it exists.
+ * `data-glass` is for the glass pane primitive to read — see `shell/GlassPane.tsx`.
  *
  * Always writes `data-scheme` explicitly, even for `'dark'`: `useGlobalStyles` defaults to
  * dark with no attribute at all, so writing `'dark'` here is a no-op for the CSS but keeps
