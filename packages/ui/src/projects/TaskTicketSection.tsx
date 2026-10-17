@@ -42,6 +42,10 @@ export interface TaskTicketSectionProps {
   /** Set when the host relaying ticket writes is unreachable — every field and the add-link
    *  row below are disabled, the manager popovers hidden, but the fold still reads. */
   readOnly?: boolean;
+  /** Which per-device key remembers the fold, and what it defaults to — a host other than
+   *  `TaskDetail`'s own My Tasks pane (Projects, F12.8) wants its own key, so the two screens'
+   *  folds don't fight over the same storage row. */
+  fold?: { key: string; defaultOpen: boolean };
 }
 
 export function TaskTicketSection({
@@ -53,9 +57,10 @@ export function TaskTicketSection({
   milestones,
   addLink,
   readOnly = false,
+  fold = { key: 'tm.taskDetail.ticketOpen', defaultOpen: false },
 }: TaskTicketSectionProps): JSX.Element {
   const styles = useStyles();
-  const [open, toggle] = useDeviceFold('tm.taskDetail.ticketOpen', false);
+  const [open, toggle] = useDeviceFold(fold.key, fold.defaultOpen);
 
   return (
     <div className={styles.box}>

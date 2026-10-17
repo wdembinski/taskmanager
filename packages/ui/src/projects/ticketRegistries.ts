@@ -29,7 +29,7 @@ export function scopeTicketRegistries(
 }
 
 /**
- * The milestone picker's own rule, lifted from `TicketDrawer`: open milestones, plus
+ * The milestone picker's own rule, lifted from `TicketFieldsSection`: open milestones, plus
  * `currentId`'s even when closed — a ticket already on a closed milestone keeps showing it
  * selected rather than silently falling back to "None".
  */
