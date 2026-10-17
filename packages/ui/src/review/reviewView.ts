@@ -10,7 +10,16 @@
  * `ReviewPaneView` is a component you cannot (this workspace has no DOM test harness). Same
  * split `gitGraphView.ts` makes for the commit graph, for the same reason.
  */
-import type { DiffFileStatus, DiffSide, DiffSummary, ReviewSendRefusal } from '@tm/shared/review';
+import type {
+  DiffFileEntry,
+  DiffFileStatus,
+  DiffLine,
+  DiffSide,
+  DiffSummary,
+  ReviewComment,
+  ReviewSendRefusal,
+  SplitRow,
+} from '@tm/shared/review';
 import { formatAge } from '../countdown';
 import { REFUSAL_HINT } from '../taskChat';
 import {
@@ -69,7 +78,81 @@ export function summaryTotals(summary: DiffSummary): SummaryTotals {
   );
 }
 
-export { pairWordDiffs } from '@tm/shared/review';
+export { pairWordDiffs, splitRows } from '@tm/shared/review';
+export type { SplitRow } from '@tm/shared/review';
+
+/**
+ * The split renderer's own design (F15.12), fixed here ahead of writing it so the later steps
+ * implement against decided contracts rather than open questions. `unified`'s single-column
+ * rendering stays the default everywhere this is optional.
+ */
+export type DiffLayout = 'unified' | 'split';
+
+export const DIFF_LAYOUT_STORAGE_KEY = 'tm.review.diffLayout';
+
+/** Below this pane width, a side-by-side column would be too narrow to read — the split
+ * renderer falls back to unified regardless of the stored preference. */
+export const SPLIT_MIN_WIDTH_PX = 900;
+
+/**
+ * `'split'` only when stored exactly so; anything else — never written, or junk from an older
+ * build — reads as `'unified'`, same rule `parseFold` uses for a boolean flag.
+ *
+ * Stub for now; the real parse lands with the layout toggle in a later step.
+ */
+export function parseDiffLayout(_raw: string | null | undefined): DiffLayout {
+  throw new Error('not implemented');
+}
+
+/**
+ * The layout `DiffView` actually draws: `preferred`, unless touch mode forces unified (the
+ * gutter-as-button rendering has no split form) or the pane is narrower than
+ * {@link SPLIT_MIN_WIDTH_PX}. A `null` width — not measured yet, SSR/headless — does NOT force
+ * unified, so a first render before `ResizeObserver` reports in still honours the preference.
+ *
+ * Stub for now; the real decision lands with `DiffView`'s width fallback in a later step.
+ */
+export function effectiveDiffLayout(
+  _preferred: DiffLayout,
+  _widthPx: number | null,
+  _touch: boolean,
+): DiffLayout {
+  throw new Error('not implemented');
+}
+
+/** One split cell's own `DiffLine` and the comment anchor a gutter click on it targets. */
+export interface SplitCellTarget {
+  diffLine: DiffLine;
+  anchor: { side: DiffSide; line: number };
+}
+
+/**
+ * The comment anchor for one split cell: the LEFT cell always anchors to the OLD side
+ * (`line.oldLine`), the RIGHT cell always to the NEW side (`line.newLine`) — unlike unified's
+ * {@link DiffSide}-picking `canonicalTarget`, a context row therefore has TWO targets, one per
+ * side. `null` for a blank cell (that side's `DiffLine` is `null`) or a line missing that
+ * side's number.
+ *
+ * Stub for now; the real mapping lands with its tests in the next step.
+ */
+export function splitCellTarget(_row: SplitRow, _side: DiffSide): SplitCellTarget | null {
+  throw new Error('not implemented');
+}
+
+/**
+ * The comments to show under one side of a split row: those whose `side` matches `side` and
+ * whose `line` matches that side's target line — an old-side comment never lands under the new
+ * cell even on a context row, where both cells hold the same `DiffLine`.
+ *
+ * Stub for now; the real mapping lands with its tests in the next step.
+ */
+export function splitCellComments(
+  _comments: readonly ReviewComment[],
+  _row: SplitRow,
+  _side: DiffSide,
+): readonly ReviewComment[] {
+  throw new Error('not implemented');
+}
 
 /**
  * The paths that load without the human expanding anything: the first `limit` files that are
