@@ -189,7 +189,13 @@ export interface GitHubPullRequest {
   mergeable?: boolean | null;
   /** The source branch and, crucially, the head SHA the check runs hang off. */
   head?: { ref?: string; sha?: string; repo?: GitHubRepoRef | null } | null;
-  base?: { ref?: string; repo?: GitHubRepoRef | null } | null;
+  /**
+   * `sha` here is the base BRANCH's current tip, not a merge base GitHub computed for this
+   * pull request — there is no such field. F15.8's `forge-api` diff source uses it as an
+   * approximation of one, since the alternative is cloning the repository just to compute a
+   * real merge base, which is exactly what reading through the API avoids.
+   */
+  base?: { ref?: string; sha?: string; repo?: GitHubRepoRef | null } | null;
 }
 
 /**
@@ -461,6 +467,21 @@ function repoPath(owner: string, repo: string): string {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
 
+/**
+ * `/repos/{owner}/{repo}/contents/{path}?ref=<ref>`, with `path` encoded per segment
+ * (`path.split('/').map(encodeURIComponent).join('/')`) so a literal `/` still reaches the
+ * endpoint as a directory separator while a `#`, `?` or space inside a segment does not change
+ * which endpoint gets called. Shared by {@link GitHubClient.getRawFile} and
+ * {@link GitHubClient.getRawFileBytes}, which differ only in how they read the response body.
+ */
+function contentsPath(owner: string, repo: string, path: string, ref: string): string {
+  const encodedPath = path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+  return `${repoPath(owner, repo)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`;
+}
+
 export class GitHubClient {
   constructor(private readonly config: GitHubClientConfig) {}
 
@@ -504,12 +525,13 @@ export class GitHubClient {
   }
 
   /**
-   * One GET that answers in TEXT rather than JSON — the shape {@link getRawFile} needs and
-   * every other read on this client does not. Shares {@link rawUrl}'s failure path exactly,
-   * so a 404 here is the same `GitHubError` a caller already knows how to tell apart from
-   * every other status.
+   * One GET with a caller-chosen `Accept` — the shape {@link getRawFile} and
+   * {@link getRawFileBytes} need and every other read on this client does not. Shares
+   * {@link rawUrl}'s failure path exactly, so a 404 here is the same `GitHubError` a caller
+   * already knows how to tell apart from every other status. Returns the `Response` itself
+   * rather than an already-consumed body, so a caller can read it as text or as bytes.
    */
-  private async rawText(path: string, accept: string): Promise<string> {
+  private async rawResponse(path: string, accept: string): Promise<Response> {
     const res = await fetch(this.url(path), { headers: { ...this.headers(), Accept: accept } });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -518,7 +540,12 @@ export class GitHubClient {
         res.status,
       );
     }
-    return res.text();
+    return res;
+  }
+
+  /** {@link rawResponse}, read as text — the shape {@link getRawFile} needs. */
+  private async rawText(path: string, accept: string): Promise<string> {
+    return (await this.rawResponse(path, accept)).text();
   }
 
   private async request<T>(path: string): Promise<T> {
@@ -1144,24 +1171,27 @@ export class GitHubClient {
    * A file's raw content at a ref — `GET /repos/{owner}/{repo}/contents/{path}?ref=<ref>`
    * with `Accept: application/vnd.github.raw+json`, which hands back the file's bytes
    * directly rather than the base64-wrapped JSON envelope the default media type gives.
-   *
-   * Each path segment is encoded on its own
-   * (`path.split('/').map(encodeURIComponent).join('/')`) so a literal `/` still reaches the
-   * endpoint as a directory separator while a `#`, `?` or space inside a segment does not
-   * change which endpoint gets called.
+   * See {@link contentsPath} for how `path` is encoded.
    *
    * No size cap here — F15.8's `DIFF_FILE_MAX_BYTES` is where that is enforced. A 404 means
    * the file does not exist at that ref, and is left for the caller to decide what that means.
    */
   getRawFile(owner: string, repo: string, path: string, ref: string): Promise<string> {
-    const encodedPath = path
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/');
-    return this.rawText(
-      `${repoPath(owner, repo)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
+    return this.rawText(contentsPath(owner, repo, path, ref), 'application/vnd.github.raw+json');
+  }
+
+  /**
+   * The same file, as raw BYTES rather than text — what a context read needs for a path that
+   * may not be UTF-8 (an image blob, say). Reads the response's `arrayBuffer()` rather than
+   * `.text()`, so bytes that are not valid UTF-8 survive the round trip unchanged; `.text()`
+   * would replace them with the Unicode replacement character.
+   */
+  async getRawFileBytes(owner: string, repo: string, path: string, ref: string): Promise<Buffer> {
+    const res = await this.rawResponse(
+      contentsPath(owner, repo, path, ref),
       'application/vnd.github.raw+json',
     );
+    return Buffer.from(await res.arrayBuffer());
   }
 
   /**

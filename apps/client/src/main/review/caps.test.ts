@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RESULTS_BYTES_LIMIT } from '../cloudResults';
 import {
   DIFF_COLLAPSE_LINES,
+  DIFF_CONTEXT_MAX_LINES,
   DIFF_FILE_MAX_BYTES,
   DIFF_IMAGE_MAX_BYTES,
   DIFF_SUMMARY_MAX_FILES,
@@ -15,6 +16,7 @@ describe('F6 review caps', () => {
     ['DIFF_IMAGE_MAX_BYTES', DIFF_IMAGE_MAX_BYTES],
     ['DIFF_SUMMARY_MAX_FILES', DIFF_SUMMARY_MAX_FILES],
     ['DIFF_COLLAPSE_LINES', DIFF_COLLAPSE_LINES],
+    ['DIFF_CONTEXT_MAX_LINES', DIFF_CONTEXT_MAX_LINES],
   ])('%s stays below RESULTS_BYTES_LIMIT', (_name, cap) => {
     expect(cap).toBeLessThan(RESULTS_BYTES_LIMIT);
   });
