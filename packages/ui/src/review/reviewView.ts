@@ -11,7 +11,6 @@
  * split `gitGraphView.ts` makes for the commit graph, for the same reason.
  */
 import type {
-  DiffFileEntry,
   DiffFileStatus,
   DiffLine,
   DiffSide,

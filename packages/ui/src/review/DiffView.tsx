@@ -51,6 +51,7 @@ import type {
   DiffSide,
   DiffSummary,
   ReviewComment,
+  SplitRow,
   WordSegment,
 } from '@tm/shared/review';
 import { MONO, SYNTAX, fontPx } from '../theme';
@@ -65,7 +66,15 @@ import {
   type FileLoad,
   type LineSelection,
 } from './reviewState';
-import { fileLoadNotice, pairWordDiffs, statusLetter } from './reviewView';
+import {
+  fileLoadNotice,
+  pairWordDiffs,
+  splitCellComments,
+  splitCellTarget,
+  splitRows,
+  statusLetter,
+} from './reviewView';
+import type { DiffLayout } from './reviewView';
 
 const useStyles = makeStyles({
   root: {
@@ -198,6 +207,9 @@ const useStyles = makeStyles({
   // Harmless while `wrap` is true (there is nothing to scroll); the one thing that lets
   // `lineNoWrap`'s `white-space: pre` actually overflow sideways instead of clipping.
   fileBody: { overflowX: 'auto' },
+  splitRow: { display: 'flex', alignItems: 'stretch' },
+  splitColumn: { flex: '1 1 0', minWidth: 0 },
+  splitColumnRight: { borderLeft: `1px solid ${tokens.colorNeutralStroke2}` },
 });
 
 export interface DiffViewProps {
@@ -215,6 +227,10 @@ export interface DiffViewProps {
   canComment: boolean;
   /** Compact mode's gutter-becomes-a-button rendering (F3.8) — see the module header. */
   touch?: boolean;
+  /** `'unified'` (the default) renders exactly as before this prop existed; `'split'` draws
+   * each hunk as two columns instead (F15.12). The caller decides which — through
+   * `effectiveDiffLayout` — so touch mode never reaches here as `'split'`. */
+  layout?: DiffLayout;
   /** Whether a line wraps (`pre-wrap`, the default — wide rendering is unchanged) or scrolls
    * sideways instead (`pre`, `false`). */
   wrap?: boolean;
@@ -245,6 +261,7 @@ export function DiffView({
   editor,
   canComment,
   touch = false,
+  layout = 'unified',
   wrap = true,
   monochrome = false,
   selection = null,
@@ -290,6 +307,7 @@ export function DiffView({
             selection={selection?.path === entry.path ? selection : null}
             canComment={canComment}
             touch={touch}
+            layout={layout}
             wrap={wrap}
             monochrome={monochrome}
             onToggleExpanded={onToggleExpanded}
@@ -387,6 +405,7 @@ function FileSection({
   selection,
   canComment,
   touch,
+  layout,
   wrap,
   monochrome,
   onToggleExpanded,
@@ -402,6 +421,7 @@ function FileSection({
   selection: LineSelection | null;
   canComment: boolean;
   touch: boolean;
+  layout: DiffLayout;
   wrap: boolean;
   monochrome: boolean;
   onToggleExpanded: (path: string) => void;
@@ -464,6 +484,7 @@ function FileSection({
           selection={selection}
           canComment={canComment}
           touch={touch}
+          layout={layout}
           wrap={wrap}
           monochrome={monochrome}
           {...handlers}
@@ -483,6 +504,7 @@ function FileBody({
   selection,
   canComment,
   touch,
+  layout,
   wrap,
   monochrome,
   ...handlers
@@ -496,6 +518,7 @@ function FileBody({
   selection: LineSelection | null;
   canComment: boolean;
   touch: boolean;
+  layout: DiffLayout;
   wrap: boolean;
   monochrome: boolean;
 } & CommentHandlers): JSX.Element {
@@ -542,6 +565,30 @@ function FileBody({
   // at once (`commentOnSelection` clears `selection` the same transition it opens `editor`).
   const range = editor ?? selection;
   const highlighted = range ? new Set(rangeLines(load.file, range)) : null;
+
+  // `effectiveDiffLayout` never hands this `'split'` while `touch` is true, so `SplitHunk`
+  // needs no touch branch of its own — see the module header.
+  if (layout === 'split') {
+    const rowsByHunk = splitRows(load.file);
+    return (
+      <div className={styles.fileBody}>
+        {load.file.hunks.map((hunk, i) => (
+          <SplitHunk
+            key={i}
+            path={entry.path}
+            hunk={hunk}
+            rows={rowsByHunk[i]}
+            comments={comments}
+            editor={editor}
+            canComment={canComment}
+            wrap={wrap}
+            highlighted={highlighted}
+            {...handlers}
+          />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className={styles.fileBody}>
@@ -723,6 +770,117 @@ function Hunk({
   );
 }
 
+/** `Hunk`'s side-by-side sibling (F15.12): the same hunk header and `pairWordDiffs`, but one
+ * two-column {@link SplitRow} per row instead of one line. Each column gets its own
+ * `SplitDiffLineRow` and its own `CommentThread` — a context row's two cells share one
+ * `DiffLine` but anchor to different sides, so they never share a comment either (see
+ * `splitCellTarget`/`splitCellComments` in `reviewView.ts`). Never rendered in touch mode —
+ * `effectiveDiffLayout` keeps `layout` at `'unified'` whenever `touch` is true — so unlike
+ * `Hunk` this takes no `touch`/`onTapLine` of its own. */
+function SplitHunk({
+  path,
+  hunk,
+  rows,
+  comments,
+  editor,
+  canComment,
+  wrap,
+  highlighted,
+  onClickLine,
+  onEditDraft,
+  onSave,
+  onCancel,
+  onEdit,
+  onDelete,
+}: {
+  path: string;
+  hunk: DiffHunk;
+  rows: readonly SplitRow[];
+  comments: readonly ReviewComment[];
+  editor: CommentEditor | null;
+  canComment: boolean;
+  wrap: boolean;
+  highlighted: ReadonlySet<DiffLine> | null;
+  onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+  onEditDraft: (text: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onEdit: (comment: ReviewComment) => void;
+  onDelete: (id: string) => void;
+}): JSX.Element {
+  const styles = useStyles();
+  const words = pairWordDiffs(hunk.lines);
+  return (
+    <div>
+      <Caption1 className={styles.hunkHeader}>{hunk.header}</Caption1>
+      {rows.map((row, i) => {
+        const leftTarget = splitCellTarget(row, 'old');
+        const rightTarget = splitCellTarget(row, 'new');
+        const leftEditor =
+          editor !== null &&
+          leftTarget !== null &&
+          editor.anchor.side === leftTarget.anchor.side &&
+          editor.anchor.line === leftTarget.anchor.line
+            ? editor
+            : null;
+        const rightEditor =
+          editor !== null &&
+          rightTarget !== null &&
+          editor.anchor.side === rightTarget.anchor.side &&
+          editor.anchor.line === rightTarget.anchor.line
+            ? editor
+            : null;
+        return (
+          <div key={i} className={styles.splitRow}>
+            <div className={styles.splitColumn}>
+              <SplitDiffLineRow
+                path={path}
+                line={row.left}
+                words={row.leftIndex !== null ? words[row.leftIndex] : null}
+                target={leftTarget?.anchor ?? null}
+                canComment={canComment}
+                wrap={wrap}
+                selected={row.left !== null && (highlighted?.has(row.left) ?? false)}
+                onClickLine={onClickLine}
+              />
+              <CommentThread
+                comments={splitCellComments(comments, row, 'old')}
+                editor={leftEditor}
+                onEditDraft={onEditDraft}
+                onSave={onSave}
+                onCancel={onCancel}
+                onEdit={onEdit}
+                onDelete={onDelete}
+              />
+            </div>
+            <div className={mergeClasses(styles.splitColumn, styles.splitColumnRight)}>
+              <SplitDiffLineRow
+                path={path}
+                line={row.right}
+                words={row.rightIndex !== null ? words[row.rightIndex] : null}
+                target={rightTarget?.anchor ?? null}
+                canComment={canComment}
+                wrap={wrap}
+                selected={row.right !== null && (highlighted?.has(row.right) ?? false)}
+                onClickLine={onClickLine}
+              />
+              <CommentThread
+                comments={splitCellComments(comments, row, 'new')}
+                editor={rightEditor}
+                onEditDraft={onEditDraft}
+                onSave={onSave}
+                onCancel={onCancel}
+                onEdit={onEdit}
+                onDelete={onDelete}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function DiffLineRow({
   path,
   line,
@@ -827,6 +985,82 @@ function DiffLineRow({
                   </span>
                 ))
               : line.text || ' '}
+      </span>
+    </div>
+  );
+}
+
+/** `DiffLineRow`'s split-column sibling (F15.12) — one side of one {@link SplitRow}, never
+ * both. `line: null` is a padded gap (the other side's del/add run ran longer than this one),
+ * drawn as a blank row with no gutter, no add button and no text, so the two columns still
+ * line up. Otherwise the same gutter/add-button/word-span rendering and style tokens as
+ * `DiffLineRow`, except there is only ever one gutter number — `target.line` already picked
+ * this cell's own side (`splitCellTarget` in `reviewView.ts`). Touch mode never reaches here
+ * (see `SplitHunk`), so unlike `DiffLineRow` there is no gutter-button branch, and no syntax
+ * `segments` yet either — split doesn't wire highlighting in this step. */
+function SplitDiffLineRow({
+  path,
+  line,
+  words,
+  target,
+  canComment,
+  wrap,
+  selected,
+  onClickLine,
+}: {
+  path: string;
+  line: DiffLine | null;
+  words: readonly WordSegment[] | null;
+  target: { side: DiffSide; line: number } | null;
+  canComment: boolean;
+  wrap: boolean;
+  selected: boolean;
+  onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
+}): JSX.Element {
+  const styles = useStyles();
+  if (line === null) {
+    return <div className={mergeClasses(styles.line, !wrap && styles.lineNoWrap)} />;
+  }
+  return (
+    <div
+      className={mergeClasses(
+        styles.line,
+        !wrap && styles.lineNoWrap,
+        line.kind === 'add' && styles.lineAdd,
+        line.kind === 'del' && styles.lineDel,
+        selected && styles.lineSelected,
+      )}
+    >
+      <span className={styles.addCell}>
+        {target && (
+          <Button
+            className={styles.addButton}
+            data-add-comment=""
+            size="small"
+            appearance="subtle"
+            icon={<AddRegular />}
+            disabled={!canComment}
+            aria-label={`Comment on line ${target.line}`}
+            onClick={(e) => onClickLine(path, target.side, target.line, e.shiftKey)}
+          />
+        )}
+      </span>
+      <span className={styles.gutter}>{target?.line ?? ''}</span>
+      <span className={styles.text}>
+        {words
+          ? words.map((segment, i) => (
+              <span
+                key={i}
+                data-word={segment.kind}
+                className={mergeClasses(
+                  segment.kind === 'add' && styles.wordAdd,
+                  segment.kind === 'del' && styles.wordDel,
+                )}
+              >
+                {segment.text}
+              </span>
+            ))
+          : line.text || ' '}
       </span>
     </div>
   );
