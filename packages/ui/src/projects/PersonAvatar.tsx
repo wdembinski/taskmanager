@@ -1,6 +1,6 @@
 /**
  * A person's face, drawn the same way everywhere they appear — `PeopleSettings`' roster, and
- * the assignee/reporter pickers in `TicketDrawer`.
+ * the assignee/reporter pickers in `TicketFieldsSection`.
  *
  * `initials`/`color` are Fluent's own `Avatar` props, not a derivation this component makes:
  * `Person.initials` and `.color` are *stored*, precisely because two people can share a name

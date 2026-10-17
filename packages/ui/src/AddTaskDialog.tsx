@@ -167,7 +167,7 @@ const useStyles = makeStyles({
   /** The description textarea plus its template menu, side by side. */
   descRow: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
   descArea: { flex: 1, minWidth: 0 },
-  /** `TicketTypeFields`' two pickers, side by side — same layout as `TicketDrawer`'s. */
+  /** `TicketTypeFields`' two pickers, side by side — same layout as `TicketFieldsSection`'s. */
   fieldsRow: { display: 'flex', gap: '12px' },
   fieldsCell: { flex: 1, minWidth: 0 },
   /** The Run it panel's own pickers, stacked the same way the rest of the form is. */

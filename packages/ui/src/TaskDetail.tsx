@@ -380,6 +380,12 @@ export interface TaskDetailProps {
    * the same way `TicketLinksEditor` always has.
    */
   ticketLinks?: readonly TicketLink[];
+  /**
+   * Which per-device key remembers the Ticket section's fold, and what it defaults to — see
+   * `TaskTicketSection`'s own `fold` prop. Absent — My Tasks, which has always folded this
+   * shut by default — keeps that section's own default key and closed state.
+   */
+  ticketFold?: { key: string; defaultOpen: boolean };
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
@@ -424,6 +430,7 @@ export function TaskDetail({
   milestones = NO_MILESTONES,
   labels = NO_LABELS,
   ticketLinks,
+  ticketFold,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -802,16 +809,17 @@ export function TaskDetail({
   }, [turns, subAgents, taskId, scrollToBottom]);
 
   // This card's own project, out of the chain's whole task index — the Ticket section's
-  // epic candidates, same narrowing `TicketDrawer`'s caller already does for `tickets`.
+  // epic candidates, same narrowing `TicketFieldsSection`'s other callers already do for
+  // `tickets`.
   const projectTickets = useMemo(
     () => Array.from(chainTasksById.values()).filter((t) => t.projectId === task?.projectId),
     [chainTasksById, task?.projectId],
   );
 
   // Resolved once here — self-loaded only when the host hasn't wired `ticketLinks`
-  // through (both boards now do, via F12.6; Projects still doesn't, until F12.7) — so
-  // `TaskLinksSection` below never opens a second subscription for the same list; it
-  // just receives this array back as its own `ticketLinks` prop.
+  // through (every host does now, as of F12.8) — so `TaskLinksSection` below never opens a
+  // second subscription for the same list; it just receives this array back as its own
+  // `ticketLinks` prop.
   const resolvedTicketLinks = useTicketLinks(ticketLinks);
   // Whether the Links section will have anything to show, decided the same way it decides
   // internally — so the Ticket section below knows to offer the add row itself instead,
@@ -1235,6 +1243,7 @@ export function TaskDetail({
               milestones={milestones}
               addLink={linksSection === null ? { candidates: projectTickets } : undefined}
               readOnly={ticketReadOnly}
+              fold={ticketFold}
             />
           )}
           <TaskLinksSection
@@ -1358,7 +1367,13 @@ export function TaskDetail({
       )}
 
       <div className={styles.scrollWrap}>
-        <div className={styles.scroll} ref={scrollRef} onScroll={handleScroll}>
+        <div
+          className={styles.scroll}
+          ref={scrollRef}
+          onScroll={handleScroll}
+          role="log"
+          aria-label="Conversation"
+        >
           {showTimelineSkeleton ? (
             // This load deliberately swallows failures into an empty timeline (see
             // `loadActivity`'s `.catch`), so there is never an error to show here — the

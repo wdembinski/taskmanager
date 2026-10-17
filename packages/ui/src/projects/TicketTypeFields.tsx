@@ -1,11 +1,11 @@
 /**
  * The Issue-type + Epic pickers, shared between every place a ticket's type is chosen — the
- * drawer (`TicketDrawer.tsx`, editing an existing ticket) and the Add-task dialog (creating
- * one straight onto a ticket board). Both need the exact same rule for the two fields to
- * ever agree: an epic cannot itself hang under another epic (`assertTicketRefs` in
- * `ipc.ts`), so the Epic picker is disabled — and cleared, so a value picked before switching
- * to Epic is never silently carried into a create/update call the store would refuse — the
- * moment Type reads `epic`.
+ * shared ticket panel (`TicketFieldsSection.tsx`, editing an existing ticket) and the
+ * Add-task dialog (creating one straight onto a ticket board). Both need the exact same
+ * rule for the two fields to ever agree: an epic cannot itself hang under another epic
+ * (`assertTicketRefs` in `ipc.ts`), so the Epic picker is disabled — and cleared, so a value
+ * picked before switching to Epic is never silently carried into a create/update call the
+ * store would refuse — the moment Type reads `epic`.
  *
  * Fully controlled, like `ProjectBasicsFields`: no fetching, no local state, just the two
  * `Field`s. The caller owns `epicCandidates` because who is eligible differs by context — the

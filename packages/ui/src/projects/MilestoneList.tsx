@@ -1,8 +1,9 @@
 /**
  * A project's milestones — dated goals its tickets are planned against (Phase 24), drawn on
- * the Gantt (step 7) whether or not any ticket points at one yet. Embedded in `TicketDrawer`
- * behind a "Manage milestones" popover, for the same reason `LabelRegistry` is there: the
- * drawer's milestone field is the one place this registry needs an edit surface.
+ * the Gantt (step 7) whether or not any ticket points at one yet. Embedded in
+ * `TicketFieldsSection` behind a "Manage milestones" popover, for the same reason
+ * `LabelRegistry` is there: the milestone field is the one place this registry needs an edit
+ * surface.
  */
 import { useState } from 'react';
 import {

@@ -1,7 +1,7 @@
 /**
  * A project's label registry — what gives a ticket's chip its colour and the label picker
- * its list (Phase 24). Embedded in `TicketDrawer` behind a "Manage labels" popover rather
- * than living as its own section of the Projects screen: the drawer's label field is the one
+ * its list (Phase 24). Embedded in `TicketFieldsSection` behind a "Manage labels" popover
+ * rather than living as its own section of the Projects screen: the label field is the one
  * place this registry needs an edit surface, and a rename or recolour here is felt on every
  * ticket wearing the label — `label:save`'s `id` present edits in place, same as
  * `ticketProject:update`.

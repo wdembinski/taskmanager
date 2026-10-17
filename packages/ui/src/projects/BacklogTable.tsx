@@ -1,11 +1,11 @@
 /**
  * BacklogTable — every ticket in one native ticket project, grouped by epic.
  *
- * A row click opens `TicketDrawer` on that ticket — labels, milestones and links are all
- * managed from there, so this component's own job stays what it always was: loading the
- * project's tickets, the search box, the sort toggle, and rendering `backlogView`'s grouped
- * rows as a plain Fluent `Table` — `StatusMapViewer.tsx` is the repo's only other one, and
- * there is no `DataGrid` in this workspace to reach for instead.
+ * A row click opens the ticket in `Projects.tsx`'s own shared detail pane (F12.8) — this
+ * component's job stays what it always was: loading the project's tickets, the search box,
+ * the sort toggle, and rendering `backlogView`'s grouped rows as a plain Fluent `Table` —
+ * `StatusMapViewer.tsx` is the repo's only other one, and there is no `DataGrid` in this
+ * workspace to reach for instead.
  *
  * Keyed by `projectId` at the call site (`Projects.tsx`) rather than reacting to it changing
  * in place: switching the selected project is rare enough that a remount — a fresh seed load,
@@ -28,6 +28,7 @@ import {
   Body1,
   Tooltip,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import { AddRegular, SearchRegular } from '@fluentui/react-icons';
@@ -44,7 +45,6 @@ import { AssigneeDisplay } from './AssigneeDisplay';
 import { type BacklogSortKey, backlogRows } from './backlogView';
 import { issueTypeGlyph } from './issueTypeGlyph';
 import { NewTicketDialog } from './NewTicketDialog';
-import { TicketDrawer } from './TicketDrawer';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0 },
@@ -59,6 +59,9 @@ const useStyles = makeStyles({
   labelsCell: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
   empty: { color: tokens.colorNeutralForeground3, padding: '8px 0' },
   clickableRow: { cursor: 'pointer' },
+  /** The row backing the ticket open in the shared detail pane — a brand-tinted background
+   *  is the one colour change selection is allowed (see `board-colour-budget`'s own rule). */
+  selectedRow: { backgroundColor: tokens.colorNeutralBackground1Selected },
 });
 
 export interface BacklogTableProps {
@@ -72,6 +75,10 @@ export interface BacklogTableProps {
   labels: TicketLabel[];
   /** This project's milestones, for the milestone column — tickets carry only `milestoneId`. */
   milestones: Milestone[];
+  /** The ticket open in `Projects.tsx`'s own shared detail pane — highlights its row. */
+  selectedTicketId?: string | null;
+  /** Open a ticket in the shared detail pane. */
+  onSelectTicket: (id: string) => void;
 }
 
 function labelColor(labels: TicketLabel[], name: string): string | undefined {
@@ -131,6 +138,8 @@ export function BacklogTable({
   agentProjects,
   labels,
   milestones,
+  selectedTicketId,
+  onSelectTicket,
 }: BacklogTableProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -138,7 +147,6 @@ export function BacklogTable({
   const [links, setLinks] = useState<TicketLink[]>([]);
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
-  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   /** `NewTicketDialog`'s own open state, folded into the epic it should preset — `null`
    *  means closed, `{ epicTaskId: null }` is the toolbar's plain "New ticket", and a group
    *  header's "Add child" sets it to that epic's id. */
@@ -197,11 +205,6 @@ export function BacklogTable({
       />
     );
   }
-
-  // Derived, not stored: as `tickets` is replaced by the `task:changed` / `project:tasksChanged`
-  // subscriptions above, the open drawer picks up the fresh row on its own next render — no
-  // callback needed to tell it a save landed.
-  const selectedTicket = tickets.find((t) => t.id === selectedTicketId) ?? null;
 
   return (
     <div className={styles.root}>
@@ -285,8 +288,12 @@ export function BacklogTable({
                   {group.tickets.map((ticket) => (
                     <TableRow
                       key={ticket.id}
-                      className={styles.clickableRow}
-                      onClick={() => setSelectedTicketId(ticket.id)}
+                      className={mergeClasses(
+                        styles.clickableRow,
+                        ticket.id === selectedTicketId && styles.selectedRow,
+                      )}
+                      aria-selected={ticket.id === selectedTicketId}
+                      onClick={() => onSelectTicket(ticket.id)}
                     >
                       <TableCell className={styles.typeCell}>
                         {issueTypeGlyph(typeIconKeyFor(ticket))}
@@ -349,16 +356,6 @@ export function BacklogTable({
           </Table>
         </div>
       )}
-
-      <TicketDrawer
-        ticket={selectedTicket}
-        tickets={tickets}
-        people={people}
-        agentProjects={agentProjects}
-        labels={labels}
-        milestones={milestones}
-        onClose={() => setSelectedTicketId(null)}
-      />
 
       <NewTicketDialog
         open={newTicketDialog !== null}

@@ -400,9 +400,15 @@ function chainEdges(links: TaskLink[], nodeIds: Set<string>): Edge[] {
 
 export interface GraphPaneProps {
   projectId: string;
+  /** The ticket open in `Projects.tsx`'s own shared detail pane. React Flow's own node
+   *  `selected` is not kept in sync with it — the canvas's own click/drag selection is
+   *  a separate concern from which ticket the detail pane is showing. */
+  selectedTicketId?: string | null;
+  /** Open a ticket in the shared detail pane. */
+  onSelectTicket: (id: string) => void;
 }
 
-export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
+export function GraphPane({ projectId, onSelectTicket }: GraphPaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [tickets, setTickets] = useState<Task[] | null>(null);
@@ -651,6 +657,7 @@ export function GraphPane({ projectId }: GraphPaneProps): JSX.Element {
             nodeTypes={NODE_TYPES}
             onNodesChange={onNodesChange}
             onConnect={handleConnect}
+            onNodeClick={(_e, node) => onSelectTicket(node.id)}
             onNodeDragStop={handleNodeDragStop}
             onEdgesDelete={handleEdgesDelete}
             onEdgeClick={handleEdgeClick}

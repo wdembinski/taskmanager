@@ -93,7 +93,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
+import type { Milestone, Task, TicketLink } from '@tm/shared/model';
 import type { AppSettings } from '@tm/shared/settings';
 import { canLink, LINK_REFUSAL_MESSAGE, type LinkGate, type TaskLink } from '@tm/shared/taskChain';
 import { canLinkTickets, TICKET_LINK_REFUSAL_MESSAGE } from '@tm/shared/ticketLinks';
@@ -123,11 +123,11 @@ import {
   type RescheduleEdge,
 } from './ganttLayout';
 import { GanttHeader } from './GanttHeader';
-import { TicketDrawer } from './TicketDrawer';
 import { TicketLinkPopover } from './TicketLinkPopover';
 
 /** How far a pointer has to move, in px, before a press on a bar counts as a drag. Below
- *  this it is a click — opening the drawer — the same threshold a native DnD would apply. */
+ *  this it is a click — opening the shared detail pane — the same threshold a native DnD
+ *  would apply. */
 const DRAG_THRESHOLD_PX = 3;
 /** A resize handle's width, in px — thin strips at each end of a bar, `ew-resize` cursored. */
 const HANDLE_WIDTH_PX = 6;
@@ -142,8 +142,8 @@ const CONNECT_HANDLE_OFFSET_PX = 9;
  *  `elementFromPoint` lookup instead of a `dragover`'s own target. */
 const CONNECT_TARGET_ATTR = 'data-timeline-ticket-id';
 
-/** Marker ids, namespaced against `ChainOverlay`'s own (a ticket drawer can be open over a
- *  board, so both overlays' `<defs>` can end up in the same document at once). */
+/** Marker ids, namespaced against `ChainOverlay`'s own (the board and this pane's own chart
+ *  can both be mounted at once, so both overlays' `<defs>` can end up in the same document). */
 const MARKER = {
   /** The bare grey `blocks` dependency arrows this pane has always drawn. */
   dependency: 'gantt-head-dependency',
@@ -280,6 +280,9 @@ const useStyles = makeStyles({
   // class's favour, `linkSelected`'s own trick. `colorNeutralBackground2`, the same token
   // `GraphPane`'s `epicZone` shades its container with — the Timeline's one zone colour.
   labelBanded: { backgroundColor: tokens.colorNeutralBackground2 },
+  /** The ticket open in the shared detail pane — declared after `labelBanded` so Griffel
+   *  resolves the clash in this class's favour for a selected row inside a banded epic. */
+  labelSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
   key: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
   title: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   // `overflow: visible` — same reasoning as `ChainOverlay.layer`: the connect knob sits
@@ -316,7 +319,7 @@ const useStyles = makeStyles({
    * which is exactly the vanishing-dot bug. This strip closes that gap: transparent, but
    * `pointerEvents: 'auto'` (the `handle` resize strips' own trick) keeps it hit-testable so
    * `:hover` never lets go between the bar and the knob. No `onClick` of its own — a click
-   * here bubbles to the row `<g>` and opens the drawer, same as clicking the bar.
+   * here bubbles to the row `<g>` and opens the shared detail pane, same as clicking the bar.
    */
   connectBridge: {
     fill: 'transparent',
@@ -395,18 +398,18 @@ const useStyles = makeStyles({
     gap: '6px',
     cursor: 'pointer',
   },
+  trayRowSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
   empty: { color: tokens.colorNeutralForeground3, padding: '8px 0' },
   muted: { color: tokens.colorNeutralForeground3 },
 });
 
 export interface TimelinePaneProps {
   projectId: string;
-  people: Person[];
-  /** The repos a ticket can be delegated to — threaded through only for `TicketDrawer`'s
-   *  own agent indicator; this pane's bars and row labels don't show an assignee at all. */
-  agentProjects: Project[];
-  labels: TicketLabel[];
   milestones: Milestone[];
+  /** The ticket open in `Projects.tsx`'s own shared detail pane — selects its row/bar. */
+  selectedTicketId?: string | null;
+  /** Open a ticket in the shared detail pane. */
+  onSelectTicket: (id: string) => void;
 }
 
 function rowLabel(ticket: Pick<Task, 'ticketKey' | 'title'>): {
@@ -418,10 +421,9 @@ function rowLabel(ticket: Pick<Task, 'ticketKey' | 'title'>): {
 
 export function TimelinePane({
   projectId,
-  people,
-  agentProjects,
-  labels,
   milestones,
+  selectedTicketId,
+  onSelectTicket,
 }: TimelinePaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -429,7 +431,6 @@ export function TimelinePane({
   const [links, setLinks] = useState<TicketLink[]>([]);
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   // The arrow you clicked — `ChainOverlay.selectedLinkId`'s own state, for a Gantt bar's
   // dependency/chain arrows instead of a board card's. Dependency and chain link ids share no
   // namespace with each other, so one field is enough to tell which single arrow (of either
@@ -439,8 +440,9 @@ export function TimelinePane({
   const [dragError, setDragError] = useState<string | null>(null);
   const [connectDrag, setConnectDrag] = useState<ConnectDragState | null>(null);
   // Set the instant a drag's pointer movement clears `DRAG_THRESHOLD_PX`, and read once by
-  // the bar's `onClick` right after — a real drag must not also open the drawer the way a
-  // plain click does, and `pointerup` cannot itself suppress the `click` that follows it.
+  // the bar's `onClick` right after — a real drag must not also open the shared detail pane
+  // the way a plain click does, and `pointerup` cannot itself suppress the `click` that
+  // follows it.
   const justDraggedRef = useRef(false);
 
   /** Replace one ticket in `tickets` with the server's own copy — `moveTask`'s `patchTask`
@@ -929,7 +931,6 @@ export function TimelinePane({
     );
   }
 
-  const selectedTicket = tickets.find((t) => t.id === selectedTicketId) ?? null;
   const chartHeight = scheduledRows.length * GANTT_ROW_HEIGHT;
 
   return (
@@ -958,8 +959,9 @@ export function TimelinePane({
                     labelWidth={LABEL_WIDTH}
                     collapsed={collapsedEpicIds.has(row.ticket.id)}
                     banded={bandedRowIds.has(row.id)}
+                    selected={row.id === selectedTicketId}
                     onToggle={toggleEpic}
-                    onSelect={setSelectedTicketId}
+                    onSelect={onSelectTicket}
                   />
                 ))}
 
@@ -1055,7 +1057,7 @@ export function TimelinePane({
                             justDraggedRef.current = false;
                             return;
                           }
-                          setSelectedTicketId(row.id);
+                          onSelectTicket(row.id);
                         }}
                       >
                         <title>{label}</title>
@@ -1155,7 +1157,8 @@ export function TimelinePane({
                               onPointerUp={endConnectDrag}
                               onPointerCancel={endConnectDrag}
                               // Stops the click this pointer sequence still fires from
-                              // bubbling to the row `<g>` and opening the drawer instead.
+                              // bubbling to the row `<g>` and opening the shared detail pane
+                              // instead.
                               onClick={(e) => e.stopPropagation()}
                             >
                               <title>{`Drag to connect ${label} to another ticket`}</title>
@@ -1224,8 +1227,11 @@ export function TimelinePane({
             return (
               <div
                 key={row.id}
-                className={styles.trayRow}
-                onClick={() => setSelectedTicketId(row.id)}
+                className={mergeClasses(
+                  styles.trayRow,
+                  row.id === selectedTicketId && styles.trayRowSelected,
+                )}
+                onClick={() => onSelectTicket(row.id)}
               >
                 {label.key && <Badge appearance="tint">{label.key}</Badge>}
                 <Body1>{label.title}</Body1>
@@ -1234,16 +1240,6 @@ export function TimelinePane({
           })}
         </div>
       )}
-
-      <TicketDrawer
-        ticket={selectedTicket}
-        tickets={tickets}
-        people={people}
-        agentProjects={agentProjects}
-        labels={labels}
-        milestones={milestones}
-        onClose={() => setSelectedTicketId(null)}
-      />
     </div>
   );
 }
@@ -1300,6 +1296,7 @@ function RowLabel({
   labelWidth,
   collapsed,
   banded,
+  selected,
   onToggle,
   onSelect,
 }: {
@@ -1309,6 +1306,8 @@ function RowLabel({
   /** True when this row sits inside an epic band (`GanttEpicBand`) — tints the label to match
    *  the shaded zone `TimelinePane` draws behind it in the chart. */
   banded: boolean;
+  /** True when this is the ticket open in the shared detail pane. */
+  selected: boolean;
   onToggle: (epicId: string) => void;
   onSelect: (ticketId: string) => void;
 }): JSX.Element {
@@ -1318,7 +1317,8 @@ function RowLabel({
 
   // An epic's row reads as ONE control — the fold toggle — the same way `FoldToggle`'s own
   // header does everywhere else it is used; clicking it collapses the row rather than opening
-  // the drawer, which stays reachable from any of its (still-clickable) child rows instead.
+  // the shared detail pane, which stays reachable from any of its (still-clickable) child
+  // rows instead.
   return (
     <div
       className={mergeClasses(
@@ -1326,6 +1326,7 @@ function RowLabel({
         styles.label,
         row.depth === 1 && styles.labelChild,
         banded && styles.labelBanded,
+        selected && styles.labelSelected,
       )}
       style={{ width: `${labelWidth}px` }}
       onClick={isEpic ? undefined : () => onSelect(row.ticket.id)}
