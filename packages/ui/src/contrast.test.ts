@@ -1,3 +1,4 @@
+import { tokens } from '@fluentui/react-components';
 import { describe, expect, it } from 'vitest';
 import { AA, composite, contrastRatio, parseColor, type Rgba } from './contrast';
 import { appDarkTheme, themeFor } from './theme';
@@ -203,6 +204,34 @@ describe.each(SCHEMES)('shell token pairs (%s)', (scheme) => {
 
     it('selectedTint differs from paneOpaque', () => {
       expect(contrastRatio(s.selectedTint, s.paneOpaque)).toBeGreaterThan(1);
+    });
+  });
+
+  describe('bottom tab bar labels', () => {
+    const unselected = resolveToken(tokens.colorNeutralForeground2, scheme);
+    const selectedTintOverPane = composite(parseColor(s.selectedTint), parseColor(s.paneOpaque));
+
+    it(`unselected label on paneOpaque >= ${AA.text}`, () => {
+      expect(contrastRatio(unselected, surfaces.paneOpaque)).toBeGreaterThanOrEqual(AA.text);
+    });
+
+    it(`unselected label on worst glass >= ${AA.text}`, () => {
+      expect(worstGlassRatio(unselected, surfaces.glassCandidates)).toBeGreaterThanOrEqual(
+        AA.text,
+      );
+    });
+
+    it(`selected label (brand) on selectedTint over paneOpaque >= ${AA.text}`, () => {
+      expect(contrastRatio(s.brand, selectedTintOverPane)).toBeGreaterThanOrEqual(AA.text);
+    });
+
+    it(`selected label (brand) on selectedTint over worst glass >= ${AA.text}`, () => {
+      const ratio = Math.min(
+        ...surfaces.glassCandidates.map((glassBg) =>
+          contrastRatio(s.brand, composite(parseColor(s.selectedTint), glassBg)),
+        ),
+      );
+      expect(ratio).toBeGreaterThanOrEqual(AA.text);
     });
   });
 

@@ -183,6 +183,7 @@ export function CompactApp({
             items={tabs}
             selected={tabForRoute(route)}
             onSelect={(id) => navigate(routeForTab(id as CompactTab))}
+            attention={attentionCount > 0}
           />
         )
       }
