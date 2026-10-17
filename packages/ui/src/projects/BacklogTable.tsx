@@ -1,67 +1,58 @@
 /**
- * BacklogTable — every ticket in one native ticket project, grouped by epic.
+ * BacklogTable — every ticket in one native ticket project, grouped by STATUS and drawn with
+ * `IssueRow` (F13.15) — the same row the mockups' Issues list uses, one `textMuted` caption
+ * per group instead of a Fluent `Table`'s header/group rows.
  *
  * A row click opens the ticket in `Projects.tsx`'s own shared detail pane (F12.8) — this
  * component's job stays what it always was: loading the project's tickets, the search box,
- * the sort toggle, and rendering `backlogView`'s grouped rows as a plain Fluent `Table` —
- * `StatusMapViewer.tsx` is the repo's only other one, and there is no `DataGrid` in this
- * workspace to reach for instead.
+ * the sort toggle, and rendering `backlogStatus`'s grouped rows with `IssueRow`.
  *
  * Keyed by `projectId` at the call site (`Projects.tsx`) rather than reacting to it changing
  * in place: switching the selected project is rare enough that a remount — a fresh seed load,
  * a fresh subscription — is simpler than reconciling this component's state to a new project
  * mid-life, and `useInitialLoad` already gives a clean loading skeleton for it.
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Badge,
   Button,
-  Caption1,
   Input,
-  Table,
-  TableBody,
-  TableCell,
-  TableHeader,
-  TableHeaderCell,
-  TableRow,
   ToggleButton,
   Body1,
-  Tooltip,
+  Caption1,
   makeStyles,
-  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import { AddRegular, SearchRegular } from '@fluentui/react-icons';
-import { columnForTask } from '@tm/shared/board';
-import type { Milestone, Person, Project, Task, TicketLabel, TicketLink } from '@tm/shared/model';
-import { delegatedAgentName, typeIconKeyFor } from '@tm/shared/tickets';
-import { startReadiness, type StartReadiness } from '@tm/shared/ticketLinks';
-import { PriorityGlyph } from '../PriorityGlyph';
+import type { Person, Project, Task } from '@tm/shared/model';
+import { delegatedAgentName } from '@tm/shared/tickets';
+import { IssueRow } from '../issues/IssueRow';
+import type { IssueRowContext } from '../issues/issueRowParts';
 import { PaneLoading } from '../PaneLoading';
-import { columnBadge } from '../taskStatus';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
-import { AssigneeDisplay } from './AssigneeDisplay';
-import { type BacklogSortKey, backlogRows } from './backlogView';
-import { issueTypeGlyph } from './issueTypeGlyph';
+import { type BacklogStatusGroup, backlogStatusGroups } from './backlogStatus';
+import { type BacklogSortKey } from './backlogView';
 import { NewTicketDialog } from './NewTicketDialog';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0 },
   toolbar: { display: 'flex', alignItems: 'center', gap: '8px' },
   search: { flex: 1, maxWidth: '320px' },
-  scroll: { overflowY: 'auto', minHeight: 0 },
-  typeCell: { display: 'flex', alignItems: 'center', color: tokens.colorNeutralForeground2 },
-  groupRow: { backgroundColor: tokens.colorNeutralBackground2 },
-  groupCell: { fontWeight: tokens.fontWeightSemibold },
-  groupHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
-  muted: { color: tokens.colorNeutralForeground3 },
-  labelsCell: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
+  scroll: {
+    overflowY: 'auto',
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+  },
+  group: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  groupCaption: {
+    padding: '0 10px',
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightSemibold,
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
+  },
   empty: { color: tokens.colorNeutralForeground3, padding: '8px 0' },
-  clickableRow: { cursor: 'pointer' },
-  /** The row backing the ticket open in the shared detail pane — a brand-tinted background
-   *  is the one colour change selection is allowed (see `board-colour-budget`'s own rule). */
-  selectedRow: { backgroundColor: tokens.colorNeutralBackground1Selected },
 });
 
 export interface BacklogTableProps {
@@ -71,56 +62,10 @@ export interface BacklogTableProps {
   /** The repos a ticket can be delegated to — resolves `agentProjectId` to a name for the
    *  assignee column's `<human> / <agent>` display. */
   agentProjects: Project[];
-  /** This project's label registry, for chip colours — tickets carry label NAMES, not ids. */
-  labels: TicketLabel[];
-  /** This project's milestones, for the milestone column — tickets carry only `milestoneId`. */
-  milestones: Milestone[];
   /** The ticket open in `Projects.tsx`'s own shared detail pane — highlights its row. */
   selectedTicketId?: string | null;
   /** Open a ticket in the shared detail pane. */
   onSelectTicket: (id: string) => void;
-}
-
-function labelColor(labels: TicketLabel[], name: string): string | undefined {
-  return labels.find((l) => l.name.toLowerCase() === name.toLowerCase())?.color || undefined;
-}
-
-function milestoneName(milestones: Milestone[], id: string | null | undefined): string | null {
-  if (!id) return null;
-  return milestones.find((m) => m.id === id)?.name ?? null;
-}
-
-function ticketLabel(t: Pick<Task, 'title' | 'ticketKey'>): string {
-  return t.ticketKey ? `${t.ticketKey} ${t.title}` : t.title;
-}
-
-/**
- * The "Can start" column's cell — a ticket's {@link StartReadiness} read as a badge. `done`
- * shows nothing: there is no longer anything to be ready FOR. `waiting`'s tooltip names the
- * open blockers so the badge alone never leaves a reader guessing what it is waiting on.
- */
-function CanStartCell({ readiness }: { readiness: StartReadiness }): JSX.Element {
-  const styles = useStyles();
-  if (readiness.kind === 'done') {
-    return <Caption1 className={styles.muted}>—</Caption1>;
-  }
-  if (readiness.kind === 'ready') {
-    return (
-      <Badge appearance="tint" color="success">
-        Ready
-      </Badge>
-    );
-  }
-  const names = readiness.open.map((o) =>
-    o.task ? `${ticketLabel(o.task)} (${columnBadge(columnForTask(o.task)).label})` : o.id,
-  );
-  return (
-    <Tooltip relationship="label" content={`Waiting on ${names.join(', ')}`}>
-      <Badge appearance="tint" color="warning">
-        Waiting
-      </Badge>
-    </Tooltip>
-  );
 }
 
 /** The agent delegated to a ticket, by name — `undefined` for anything not native or
@@ -136,20 +81,18 @@ export function BacklogTable({
   projectId,
   people,
   agentProjects,
-  labels,
-  milestones,
   selectedTicketId,
   onSelectTicket,
 }: BacklogTableProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [tickets, setTickets] = useState<Task[] | null>(null);
-  const [links, setLinks] = useState<TicketLink[]>([]);
+  const [liveRunTaskIds, setLiveRunTaskIds] = useState<ReadonlySet<string>>(new Set());
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
-  /** `NewTicketDialog`'s own open state, folded into the epic it should preset — `null`
-   *  means closed, `{ epicTaskId: null }` is the toolbar's plain "New ticket", and a group
-   *  header's "Add child" sets it to that epic's id. */
+  /** `NewTicketDialog`'s own open state — `null` means closed, anything else is the toolbar's
+   *  plain "New ticket" (there is no per-group "Add child" once rows are grouped by status
+   *  rather than epic). */
   const [newTicketDialog, setNewTicketDialog] = useState<{ epicTaskId: string | null } | null>(
     null,
   );
@@ -177,23 +120,28 @@ export function BacklogTable({
     };
   }, [transport, projectId]);
 
+  // `scheduler:activeRuns`, for `IssueRow`'s "Step n of m" pill — a task's own status
+  // changing is exactly what moves it into or out of a live run, so `task:changed` reloads
+  // this too. See `TaskDetailHostView.tsx`.
   useEffect(() => {
     let live = true;
-    void transport.invoke('ticketLink:list').then((all) => {
-      if (live) setLinks(all);
-    });
-    const off = transport.on('ticketLink:changed', setLinks);
+    const reload = (): void => {
+      void transport
+        .invoke('scheduler:activeRuns')
+        .then((runs) => live && setLiveRunTaskIds(new Set(runs.map((r) => r.taskId))));
+    };
+    reload();
+    const off = transport.on('task:changed', reload);
     return () => {
       live = false;
       off();
     };
   }, [transport]);
 
-  const rows = useMemo(
-    () => (tickets ? backlogRows(tickets, query, sortKey) : []),
+  const groups = useMemo(
+    () => (tickets ? backlogStatusGroups(tickets, query, sortKey) : []),
     [tickets, query, sortKey],
   );
-  const byId = useMemo(() => new Map((tickets ?? []).map((t) => [t.id, t])), [tickets]);
 
   if (tickets === null) {
     return (
@@ -246,114 +194,32 @@ export function BacklogTable({
         <Body1 className={styles.empty}>No tickets in this project yet.</Body1>
       ) : (
         <div className={styles.scroll}>
-          <Table size="small" aria-label="Backlog">
-            <TableHeader>
-              <TableRow>
-                <TableHeaderCell style={{ width: '32px' }} />
-                <TableHeaderCell>Key</TableHeaderCell>
-                <TableHeaderCell>Title</TableHeaderCell>
-                <TableHeaderCell>Assignee</TableHeaderCell>
-                <TableHeaderCell>Priority</TableHeaderCell>
-                <TableHeaderCell>Due</TableHeaderCell>
-                <TableHeaderCell>Milestone</TableHeaderCell>
-                <TableHeaderCell>Can start</TableHeaderCell>
-                <TableHeaderCell>Labels</TableHeaderCell>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((group) => (
-                <Fragment key={`group:${group.epicId ?? 'none'}`}>
-                  <TableRow className={styles.groupRow}>
-                    <TableCell colSpan={9} className={styles.groupCell}>
-                      <div className={styles.groupHeader}>
-                        <span>
-                          {group.epicTitle} · {group.tickets.length}
-                        </span>
-                        {/* Only a real epic can be filed under — the "No epic" bucket has no
-                            id to preset, and "adding a child" to it would just be another
-                            plain "New ticket". */}
-                        {group.epicId && (
-                          <Button
-                            size="small"
-                            appearance="subtle"
-                            icon={<AddRegular />}
-                            onClick={() => setNewTicketDialog({ epicTaskId: group.epicId })}
-                          >
-                            Add child
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                  {group.tickets.map((ticket) => (
-                    <TableRow
-                      key={ticket.id}
-                      className={mergeClasses(
-                        styles.clickableRow,
-                        ticket.id === selectedTicketId && styles.selectedRow,
-                      )}
-                      aria-selected={ticket.id === selectedTicketId}
-                      onClick={() => onSelectTicket(ticket.id)}
-                    >
-                      <TableCell className={styles.typeCell}>
-                        {issueTypeGlyph(typeIconKeyFor(ticket))}
-                      </TableCell>
-                      <TableCell>{ticket.ticketKey ?? '—'}</TableCell>
-                      <TableCell>{ticket.title}</TableCell>
-                      <TableCell>
-                        {(() => {
-                          const assignee = ticket.assigneeId
-                            ? people.find((p) => p.id === ticket.assigneeId)
-                            : undefined;
-                          const agentName = agentNameOf(agentProjects, ticket);
-                          return assignee || agentName ? (
-                            <AssigneeDisplay assignee={assignee} agentName={agentName} size={20} />
-                          ) : (
-                            <Caption1 className={styles.muted}>Unassigned</Caption1>
-                          );
-                        })()}
-                      </TableCell>
-                      <TableCell>
-                        <PriorityGlyph mode="mono" priority={ticket.externalPriority} size={16} />
-                      </TableCell>
-                      <TableCell>
-                        {ticket.dueAt ? (
-                          new Date(ticket.dueAt).toLocaleDateString()
-                        ) : (
-                          <Caption1 className={styles.muted}>—</Caption1>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {milestoneName(milestones, ticket.milestoneId) ?? (
-                          <Caption1 className={styles.muted}>—</Caption1>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <CanStartCell readiness={startReadiness(ticket, links, byId)} />
-                      </TableCell>
-                      <TableCell>
-                        <div className={styles.labelsCell}>
-                          {(ticket.labels ?? []).map((name) => (
-                            <Badge
-                              key={name}
-                              appearance="tint"
-                              style={
-                                labelColor(labels, name)
-                                  ? { backgroundColor: labelColor(labels, name) }
-                                  : undefined
-                              }
-                            >
-                              {name}
-                            </Badge>
-                          ))}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </Fragment>
-              ))}
-            </TableBody>
-          </Table>
+          {groups.map((group: BacklogStatusGroup) => (
+            <div key={group.column} className={styles.group}>
+              <Caption1 className={styles.groupCaption}>{group.label}</Caption1>
+              {group.tickets.map((ticket) => {
+                const assignee = ticket.assigneeId
+                  ? people.find((p) => p.id === ticket.assigneeId)
+                  : undefined;
+                const ctx: IssueRowContext = {
+                  now: Date.now(),
+                  assignee,
+                  agentName: agentNameOf(agentProjects, ticket),
+                  liveRunTaskIds,
+                };
+                return (
+                  <IssueRow
+                    key={ticket.id}
+                    task={ticket}
+                    ctx={ctx}
+                    selected={ticket.id === selectedTicketId}
+                    onSelect={onSelectTicket}
+                    onOpen={onSelectTicket}
+                  />
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
 

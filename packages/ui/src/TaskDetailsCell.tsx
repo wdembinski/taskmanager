@@ -1,7 +1,7 @@
 /**
  * The card's **details cell** — the block above the conversation in the detail pane.
  *
- * Deliberately one shaded slab rather than a second tab: what a card *is* (status, the
+ * Deliberately one grouped band rather than a second tab: what a card *is* (status, the
  * ticket text, its steps) is context you read **while** talking to the agent, not an
  * alternative to it. The description folds away because on a JIRA card it is often
  * twenty lines of reproduction steps you have already read.
@@ -54,7 +54,7 @@ import { usePasteAttachments } from './usePasteAttachments';
 const NO_PRIORITY = 'None';
 
 const useStyles = makeStyles({
-  /** A section of the pane's details cell — the cell owns the shade and the border. */
+  /** A section of the pane's details cell, on the pane's own surface. */
   cell: { display: 'flex', flexDirection: 'column', gap: '8px' },
   row: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
@@ -63,10 +63,9 @@ const useStyles = makeStyles({
     whiteSpace: 'pre-wrap',
     maxHeight: '200px',
     overflowY: 'auto',
-    padding: '8px 10px',
-    borderRadius: tokens.borderRadiusMedium,
-    // Recessed against the pane, so the ticket's own words read as quoted material.
-    backgroundColor: tokens.colorNeutralBackground2,
+    // No box: it used to be recessed a shade darker than the cell around it, but the
+    // cell is the pane's own surface now, so a shaded box here would just float with
+    // nothing to sit recessed against. Plain text, same as the rest of the band.
     color: tokens.colorNeutralForeground2,
     fontSize: '12px',
   },

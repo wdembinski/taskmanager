@@ -7,7 +7,7 @@
  * and only a human can say which gets which — see `seedInitials` (`@tm/shared/tickets`) for
  * where the seed comes from and why it stops being read the moment the row exists.
  */
-import { Avatar } from '@fluentui/react-components';
+import { Avatar, tokens } from '@fluentui/react-components';
 import type { Person } from '@tm/shared/model';
 
 export interface PersonAvatarProps {
@@ -22,7 +22,11 @@ export function PersonAvatar({ person, size = 24 }: PersonAvatarProps): JSX.Elem
       initials={person.initials || undefined}
       size={size}
       color={person.color ? undefined : 'colorful'}
-      style={person.color ? { backgroundColor: person.color, color: '#fff' } : undefined}
+      style={
+        person.color
+          ? { backgroundColor: person.color, color: tokens.colorNeutralForegroundOnBrand }
+          : undefined
+      }
     />
   );
 }

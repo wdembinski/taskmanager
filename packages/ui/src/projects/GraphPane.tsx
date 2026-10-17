@@ -27,8 +27,9 @@
  * a patch — see `ipc.ts`'s own doc on `chain:changed`). Only the `blocks` type renders, the
  * same filter `TimelinePane`'s `dependencyPaths` applies — the other `TicketLinkType`s
  * (`relates`, `duplicates`, …) are documentary and drawn nowhere yet. Grey for a dependency,
- * cyan for a chain — `FLUO.cyan` is the app's one colour for "moving", the same one
- * `TimelinePane`'s own `chain` style and `ChainOverlay`'s `releasing` state use. A link whose
+ * cyan for a chain — `FLUO_VAR.cyan` is the app's one colour for "moving", the same one
+ * `TimelinePane`'s own `chain` style and `ChainOverlay`'s `releasing` state use (and
+ * `GRAPH_INK.live`'s own budget for the commit graph). A link whose
  * endpoint ticket is not among this project's own nodes (can't happen today, since both link
  * kinds are project-scoped the same way a ticket is, but cheap to guard) is dropped rather than
  * handed to React Flow, which would otherwise warn about a dangling edge.
@@ -98,7 +99,7 @@ import type { Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { isEpic, typeIconKeyFor } from '@tm/shared/tickets';
 import { PaneLoading } from '../PaneLoading';
-import { FLUO } from '../theme';
+import { FLUO_VAR } from '../tokens';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { GraphLinkPicker, type EditingGraphLink } from './GraphLinkPicker';
@@ -367,8 +368,9 @@ export function layoutNodes(
 
 /** Grey `blocks` dependency — `TimelinePane.dependency`'s own colour, `tokens.colorNeutralStroke1`. */
 const DEPENDENCY_STROKE = tokens.colorNeutralStroke1;
-/** Cyan execution chain — `TimelinePane.chain`'s own colour, `FLUO.cyan`. */
-const CHAIN_STROKE = FLUO.cyan;
+/** Cyan execution chain — `TimelinePane.chain`'s own colour, `FLUO_VAR.cyan` (`GRAPH_INK.live`'s
+ *  own budget: the one coloured thing on an otherwise monochrome drawing). */
+const CHAIN_STROKE = FLUO_VAR.cyan;
 
 /** One `blocks` dependency edge per link of that type — the others (`relates`, `duplicates`,
  *  …) are documentary and drawn nowhere in this app yet. Dropped, not just unstyled, if either
