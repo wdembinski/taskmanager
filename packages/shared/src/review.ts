@@ -688,6 +688,28 @@ export interface DiffContext {
 
 export type DiffContextResult = { status: 'ok'; context: DiffContext } | DiffStale;
 
+/**
+ * One side's lines read for context expansion, from the side's raw text: split on `\n` and
+ * strip one trailing `\r` per line (same rule as {@link parsePatch}), then drop a single
+ * trailing empty element left by a trailing newline — it is not a line. `from` is clamped to
+ * `[1, total]`, and the read is capped at `DIFF_CONTEXT_MAX_LINES`; `truncated` is set when
+ * `to` was clipped by either bound. Never sets `tooLarge` — the byte cap is the caller's own
+ * check, made before `text` is even read.
+ */
+export function sliceContext(
+  text: string,
+  params: { diffId: string; path: string; side: DiffSide; from: number; to: number },
+): DiffContext {
+  const { diffId, path, side, from, to } = params;
+  const rawLines = text.split('\n').map(stripTrailingCr);
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+  const total = rawLines.length;
+  const start = Math.max(1, Math.min(from, total));
+  const cappedTo = Math.min(to, total, start + DIFF_CONTEXT_MAX_LINES - 1);
+  const slicedText = start > total ? [] : rawLines.slice(start - 1, cappedTo);
+  return { diffId, path, side, start, text: slicedText, truncated: to > cappedTo };
+}
+
 /** The three fields that locate a comment's anchor, with no dependency on it having an `id`. */
 export type ReviewAnchor = Pick<ReviewComment, 'side' | 'line' | 'start'>;
 
