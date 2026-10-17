@@ -1014,6 +1014,13 @@ export interface AppSettings {
    * about the account. See {@link GLOBAL_SETTINGS_KEYS}.
    */
   trustedGateCommands: string[];
+  /**
+   * Whether the review pane's diffs show syntax colour at all (F15.11). **Local**, for the
+   * same reason `appearance` is — a browser tab and a desktop each keep their own, since
+   * whether highlighting reads as more clutter than help is a fact about the viewer, not
+   * about the account.
+   */
+  monochromeCode: boolean;
 }
 
 /** The out-of-the-box settings, also used to fill any field missing from storage. */
@@ -1082,6 +1089,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Nothing trusted out of the box: a fresh install (or a desktop that has never seen a
   // given gate command) must park it for a human to look at before it runs.
   trustedGateCommands: [],
+  // Off: a fresh install shows the same highlighted diffs the mockups were built against.
+  monochromeCode: false,
 };
 
 /**

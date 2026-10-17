@@ -1521,6 +1521,16 @@ export function Settings({
                 ))}
               </Dropdown>
             </Field>
+
+            <Field
+              label="Monochrome code"
+              hint="Shows diffs without syntax colour — plain text, the way the review pane looked before highlighting."
+            >
+              <Switch
+                checked={settings.monochromeCode}
+                onChange={(_e, d) => patch({ monochromeCode: d.checked })}
+              />
+            </Field>
           </div>
 
           <div className={styles.actions}>

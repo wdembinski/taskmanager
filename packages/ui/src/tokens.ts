@@ -250,6 +250,44 @@ export const CODE_BY_SCHEME: Record<ColorScheme, CodeSurfaceTokens> = {
   },
 };
 
+/**
+ * The five-hue vocabulary `highlight.ts`'s `SyntaxScope` collapses every `hljs` scope into
+ * (F15.11) — one role per key, not one per language, so a grammar `highlight.ts` adds later
+ * needs no new colour of its own.
+ */
+export interface SyntaxTokens {
+  keyword: string;
+  string: string;
+  comment: string;
+  number: string;
+  title: string;
+}
+
+/**
+ * Muted per scheme, picked so every hue clears 4.5:1 against the surfaces code actually
+ * renders on: {@link CODE_BY_SCHEME}'s `bg`/`inlineBg`, the pane's own neutral backgrounds
+ * (`SEMANTIC[scheme].paneOpaque`/`canvas`), and a diff line's own add/del tint
+ * (`colorPaletteGreenBackground1`/`colorPaletteRedBackground1` — `DiffView.tsx`'s `lineAdd`/
+ * `lineDel`, "a line's own tint at its subtlest step"). `contrast.test.ts` asserts the pairs
+ * that are not already covered by the shell's own suite.
+ */
+export const SYNTAX_BY_SCHEME: Record<ColorScheme, SyntaxTokens> = {
+  light: {
+    keyword: '#4B4FB0',
+    string: '#8A3B2E',
+    comment: '#5B6B5E',
+    number: '#1E6E6E',
+    title: '#7A5B00',
+  },
+  dark: {
+    keyword: '#B98AE0',
+    string: '#E0A976',
+    comment: '#8FB08C',
+    number: '#7FC4C4',
+    title: '#D9C27A',
+  },
+};
+
 export interface ScrollThumbTokens {
   /** The thumb while the scrolling element itself is hovered. */
   visible: string;

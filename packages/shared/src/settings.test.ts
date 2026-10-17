@@ -264,6 +264,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'boardLinks',
   'runInBackground',
   'trustedGateCommands',
+  'monochromeCode',
 ];
 
 // The Features group — every later phase reads its own switch out of here, and a blob
