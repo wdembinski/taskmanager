@@ -4,15 +4,16 @@
  * per group instead of a Fluent `Table`'s header/group rows.
  *
  * A row click opens the ticket in `Projects.tsx`'s own shared detail pane (F12.8) — this
- * component's job stays what it always was: loading the project's tickets, the search box,
- * the sort toggle, and rendering `backlogStatus`'s grouped rows with `IssueRow`.
+ * component's job stays what it always was: the search box, the sort toggle, and rendering
+ * `backlogStatus`'s grouped rows with `IssueRow`. Loading the project's tickets itself moved
+ * to `useProjectTickets` (F13.13), so `Projects.tsx` can feed the same list into the issue
+ * view reducer without a second fetch; this component takes the result as a `tickets` prop.
  *
  * Keyed by `projectId` at the call site (`Projects.tsx`) rather than reacting to it changing
- * in place: switching the selected project is rare enough that a remount — a fresh seed load,
- * a fresh subscription — is simpler than reconciling this component's state to a new project
- * mid-life, and `useInitialLoad` already gives a clean loading skeleton for it.
+ * in place: switching the selected project is rare enough that a remount — a fresh search and
+ * sort state — is simpler than reconciling this component's state to a new project mid-life.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Input,
@@ -29,7 +30,6 @@ import { IssueRow } from '../issues/IssueRow';
 import type { IssueRowContext } from '../issues/issueRowParts';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
-import { useInitialLoad } from '../useInitialLoad';
 import { type BacklogStatusGroup, backlogStatusGroups } from './backlogStatus';
 import { type BacklogSortKey } from './backlogView';
 import { NewTicketDialog } from './NewTicketDialog';
@@ -57,6 +57,13 @@ const useStyles = makeStyles({
 
 export interface BacklogTableProps {
   projectId: string;
+  /** This project's tickets (`useProjectTickets`), or `null` while the seed is still
+   *  loading. */
+  tickets: Task[] | null;
+  /** The seed's own failure, for the loading skeleton's retry — see `loadRetry`. */
+  loadError: string | null;
+  /** Re-run `useProjectTickets`'s seed — wired to the loading skeleton's Retry button. */
+  loadRetry: () => void;
   /** App-wide roster, for the assignee column. */
   people: Person[];
   /** The repos a ticket can be delegated to — resolves `agentProjectId` to a name for the
@@ -64,8 +71,10 @@ export interface BacklogTableProps {
   agentProjects: Project[];
   /** The ticket open in `Projects.tsx`'s own shared detail pane — highlights its row. */
   selectedTicketId?: string | null;
-  /** Open a ticket in the shared detail pane. */
+  /** A row click — opens (or keeps) the ticket as a peek. */
   onSelectTicket: (id: string) => void;
+  /** A row's Enter/double-click — opens the ticket straight to full screen. */
+  onOpenTicket: (id: string) => void;
 }
 
 /** The agent delegated to a ticket, by name — `undefined` for anything not native or
@@ -79,14 +88,17 @@ function agentNameOf(agentProjects: Project[], ticket: Task): string | undefined
 
 export function BacklogTable({
   projectId,
+  tickets,
+  loadError,
+  loadRetry,
   people,
   agentProjects,
   selectedTicketId,
   onSelectTicket,
+  onOpenTicket,
 }: BacklogTableProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
-  const [tickets, setTickets] = useState<Task[] | null>(null);
   const [liveRunTaskIds, setLiveRunTaskIds] = useState<ReadonlySet<string>>(new Set());
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
@@ -96,29 +108,6 @@ export function BacklogTable({
   const [newTicketDialog, setNewTicketDialog] = useState<{ epicTaskId: string | null } | null>(
     null,
   );
-
-  const seed = useCallback(
-    async () => setTickets(await transport.invoke('board:tasks', projectId)),
-    [transport, projectId],
-  );
-  const initial = useInitialLoad(seed);
-
-  useEffect(() => {
-    const offTask = transport.on('task:changed', ({ task }) => {
-      if (task.projectId !== projectId) return;
-      setTickets((prev) => (prev ? prev.map((t) => (t.id === task.id ? task : t)) : prev));
-    });
-    // The whole list, replaced — a ticket can also leave this way (deleted), which no
-    // per-task patch would ever say.
-    const offTasks = transport.on('project:tasksChanged', ({ projectId: changed, tasks }) => {
-      if (changed !== projectId) return;
-      setTickets(tasks);
-    });
-    return () => {
-      offTask();
-      offTasks();
-    };
-  }, [transport, projectId]);
 
   // `scheduler:activeRuns`, for `IssueRow`'s "Step n of m" pill — a task's own status
   // changing is exactly what moves it into or out of a live run, so `task:changed` reloads
@@ -145,12 +134,7 @@ export function BacklogTable({
 
   if (tickets === null) {
     return (
-      <PaneLoading
-        label="Loading backlog…"
-        error={initial.error}
-        onRetry={initial.retry}
-        shape="rows"
-      />
+      <PaneLoading label="Loading backlog…" error={loadError} onRetry={loadRetry} shape="rows" />
     );
   }
 
@@ -193,7 +177,7 @@ export function BacklogTable({
       {tickets.length === 0 ? (
         <Body1 className={styles.empty}>No tickets in this project yet.</Body1>
       ) : (
-        <div className={styles.scroll}>
+        <div className={styles.scroll} role="listbox">
           {groups.map((group: BacklogStatusGroup) => (
             <div key={group.column} className={styles.group}>
               <Caption1 className={styles.groupCaption}>{group.label}</Caption1>
@@ -214,7 +198,7 @@ export function BacklogTable({
                     ctx={ctx}
                     selected={ticket.id === selectedTicketId}
                     onSelect={onSelectTicket}
-                    onOpen={onSelectTicket}
+                    onOpen={onOpenTicket}
                   />
                 );
               })}

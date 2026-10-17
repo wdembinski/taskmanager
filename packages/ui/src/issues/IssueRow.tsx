@@ -145,6 +145,9 @@ export function IssueRow({
   return (
     <div
       className={mergeClasses(styles.row, selected && styles.selected)}
+      role="option"
+      aria-selected={selected}
+      tabIndex={selected ? 0 : -1}
       onClick={() => onSelect?.(task.id)}
       onDoubleClick={() => onOpen?.(task.id)}
       onKeyDown={(e: KeyboardEvent<HTMLDivElement>) => {
