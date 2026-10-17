@@ -36,6 +36,7 @@ import {
   hasRepo,
   PERSONAL_PROJECT_ID,
   type ManualStatus,
+  type Milestone,
   type Project,
   type Task,
 } from '@shared/model';
@@ -88,6 +89,7 @@ import {
   taskIdUnder,
   type LinkDragState,
 } from '@ui/board/chainDrag';
+import { archiveIndexOf } from '@shared/trackerArchive';
 import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
 import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
@@ -97,19 +99,16 @@ import { useAttentionIndex } from './useAttentionIndex';
 import { useActiveRuns } from './useActiveRuns';
 import { useIntegratingTasks } from './useIntegratingTasks';
 import {
+  bucketBoardCards,
   COLUMN_META,
   columnForTask,
   focusAnchorId,
-  focusCards,
-  groupSubtasks,
   hiddenColumnsSummary,
   isRunStatus,
-  partitionShelved,
-  sortCards,
   statusForColumn,
   visibleColumns,
 } from '@ui/board/boardColumns';
-import type { BoardCard, BoardColumn } from '@ui/board/boardColumns';
+import type { BoardColumn } from '@ui/board/boardColumns';
 
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
@@ -175,6 +174,12 @@ export function MyTasks({
   // The repos a card can be delegated to — fetched once and shared by the cards
   // (glyph tooltip) and the detail pane (assign dialog).
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
+  /** Every project, unfiltered — `archiveIndex` below needs the ticket projects
+   *  `agentProjects` already drops (a repo-less board has no agent project at all). */
+  const [projectList, setProjectList] = useState<Project[]>([]);
+  /** Milestones across every ticket project, for the same `archiveIndex` — see
+   *  `milestone:list`'s own no-`projectId` scope. */
+  const [milestones, setMilestones] = useState<Milestone[]>([]);
   /** The boards the toolbar's scope Dropdown offers — Personal plus every other
    *  project. Fed by `board:scopes`. */
   const [scopes, setScopes] = useState<BoardScope[]>([]);
@@ -326,27 +331,31 @@ export function MyTasks({
   const seed = useCallback(async () => {
     const appSettings = await window.api.invoke('settings:get');
     const initialScope = appSettings.boardScopeId || 'all';
-    const [board, projects, mrs, chain, files, gone, boardScopeList] = await Promise.all([
-      window.api.invoke('board:tasks', initialScope),
-      window.api.invoke('project:list'),
-      window.api.invoke('mr:mergeRequests'),
-      window.api.invoke('chain:links'),
-      window.api.invoke('attachment:list'),
-      window.api.invoke('board:archived', initialScope),
-      window.api.invoke('board:scopes'),
-    ]);
+    const [board, projects, mrs, chain, files, gone, boardScopeList, milestoneList] =
+      await Promise.all([
+        window.api.invoke('board:tasks', initialScope),
+        window.api.invoke('project:list'),
+        window.api.invoke('mr:mergeRequests'),
+        window.api.invoke('chain:links'),
+        window.api.invoke('attachment:list'),
+        window.api.invoke('board:archived', initialScope),
+        window.api.invoke('board:scopes'),
+        window.api.invoke('milestone:list'),
+      ]);
     setScope(initialScope);
     setTasks(board);
     setSettings(appSettings);
-    const projectList = projects.map((p) => p.project);
+    const allProjects = projects.map((p) => p.project);
+    setProjectList(allProjects);
     // A repo directory with no plan file — the delegation targets, same as `agentProject:list`
     // used to answer before the two channel sets merged into `project:*`.
-    setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
+    setAgentProjects(allProjects.filter((p) => hasRepo(p) && !hasPlan(p)));
     setMergeRequests(mrs);
     setLinks(chain);
     setAttachments(files);
     setArchived(gone);
     setScopes(boardScopeList);
+    setMilestones(milestoneList);
   }, []);
 
   /**
@@ -447,6 +456,10 @@ export function MyTasks({
       );
     });
     const offMrs = window.api.on('mergeRequests:changed', setMergeRequests);
+    // Pushed whenever a milestone is saved, removed, or archived/restored — the whole
+    // across-every-ticket-project list, same shape `milestone:list` answers with no
+    // `projectId` of its own.
+    const offMilestones = window.api.on('milestone:changed', setMilestones);
     // The whole list, replaced — a link can also vanish because its CARD was deleted and
     // the row cascaded away, which no per-link patch would ever hear about.
     const offLinks = window.api.on('chain:changed', setLinks);
@@ -465,6 +478,7 @@ export function MyTasks({
       offTasks();
       offSettings();
       offMrs();
+      offMilestones();
       offLinks();
       offAttachments();
       offNotice();
@@ -571,40 +585,32 @@ export function MyTasks({
    */
   const shelvedIds = useMemo(() => shelvedCardSet(settings?.shelvedCardIds), [settings]);
 
-  const { cardsByColumn, shelvedCards } = useMemo(() => {
-    const map: Record<BoardColumn, BoardCard[]> = {
-      todo: [],
-      'in-progress': [],
-      'in-review': [],
-      blocked: [],
-      done: [],
-    };
-    // A card's steps are not cards of their own — they render inside the parent and
-    // travel with it, whatever their own status. `focusCards` then narrows the board to
-    // the selected card's chain, or passes everything through when focus is off.
-    const { onBoard, shelved } = partitionShelved(
-      focusCards(groupSubtasks(tasks ?? [], mrsByTask), focusIds),
-      shelvedIds,
-    );
-    for (const card of onBoard) map[columnForTask(card.task)].push(card);
-    // Cards that want you first, then by priority — see `sortCards`. The inbox's ids go
-    // in too: the ordering and the orange ring are the same predicate on purpose, so
-    // passing it to the card and not to the sort would have the two disagree.
-    for (const col of Object.keys(map) as BoardColumn[])
-      map[col] = sortCards(map[col], attention.taskIds);
-    return { cardsByColumn: map, shelvedCards: sortCards(shelved, attention.taskIds) };
-  }, [tasks, mrsByTask, attention.taskIds, focusIds, shelvedIds]);
+  /** The lookups `bucketBoardCards`' `archive` option needs to hide a ticket whose tracker
+   *  project, milestone or epic has been archived (F14.5) — epics are looked up in `tasks`,
+   *  this scope's own rows. */
+  const archiveIndex = useMemo(
+    () => archiveIndexOf(milestones, tasks ?? [], projectList),
+    [milestones, tasks, projectList],
+  );
+
+  const { cardsByColumn, shelvedCards } = useMemo(
+    () =>
+      bucketBoardCards(tasks ?? [], mrsByTask, focusIds, shelvedIds, attention.taskIds, {
+        index: archiveIndex,
+      }),
+    [tasks, mrsByTask, attention.taskIds, focusIds, shelvedIds, archiveIndex],
+  );
 
   /**
    * What the "Show Done" switch is counting while the column is shut — put into words by
    * `doneSwitchLabel`/`doneSwitchTitle`, which the web board says the same way.
    *
-   * Counted off `cardsByColumn.done`, so it is the cards this board would show and not the
-   * cards that exist: with chain focus on, a count that included the rest would be pointing
-   * at cards opening the column still wouldn't reveal.
+   * Counted off `cardsByColumn.get('done')`, so it is the cards this board would show and
+   * not the cards that exist: with chain focus on, a count that included the rest would be
+   * pointing at cards opening the column still wouldn't reveal.
    */
   const hiddenDone = useMemo(
-    () => hiddenColumnsSummary(cardsByColumn.done, ['done']),
+    () => hiddenColumnsSummary(cardsByColumn.get('done') ?? [], ['done']),
     [cardsByColumn],
   );
 
@@ -1431,7 +1437,7 @@ export function MyTasks({
               key={col}
               column={col}
               label={COLUMN_LABEL[col]}
-              cards={cardsByColumn[col]}
+              cards={cardsByColumn.get(col) ?? []}
               // On a single-board scope: any tracker's `phase` (the JIRA project's name
               // or the GitHub repository's path), same as always. On the All scope, a
               // mixed board needs to say which BOARD a card is on before it needs to say

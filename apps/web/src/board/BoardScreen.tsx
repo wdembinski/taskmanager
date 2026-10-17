@@ -67,6 +67,7 @@ import { CompactCardScreen } from '@tm/ui/board/CompactCardScreen';
 import type { CardSection } from '@tm/ui/layout/compactRoute';
 import { chainComponent } from '@tm/shared/taskChain';
 import { isVariantRow } from '@tm/shared/board';
+import { archiveIndexOf } from '@tm/shared/trackerArchive';
 import {
   isManualStatus,
   ownsTickets,
@@ -342,6 +343,15 @@ export function BoardScreen({
   /** The desktop's own card set for this scope, un-archived. See `boardSelectors.ts`. */
   const boardTasks = useMemo(() => selectBoardTasks(state, scope), [state, scope]);
 
+  /** The lookups `bucketBoardCards`' `archive` option needs to hide a ticket whose tracker
+   *  project, milestone or epic has been archived (F14.5) — epics are looked up in
+   *  `boardTasks`, this scope's own rows. */
+  const archiveIndex = useMemo(
+    () =>
+      archiveIndexOf(Object.values(state.milestones), boardTasks, Object.values(state.projects)),
+    [state.milestones, boardTasks, state.projects],
+  );
+
   /**
    * The cards that have LEFT this board. No fetch and no `board:archived` equivalent: the
    * archived rows are already in `state.tasks` (the mirror carries them, and
@@ -401,8 +411,9 @@ export function BoardScreen({
       focusIds,
       shelvedIds,
       extras.attention.taskIds,
+      { index: archiveIndex },
     );
-  }, [boardTasks, state, mrsByTask, focusIds, extras.attention.taskIds, shelvedIds]);
+  }, [boardTasks, state, mrsByTask, focusIds, extras.attention.taskIds, shelvedIds, archiveIndex]);
 
   const hiddenDone = useMemo(
     () => hiddenColumnsSummary(cardsByColumn.get('done') ?? [], ['done']),

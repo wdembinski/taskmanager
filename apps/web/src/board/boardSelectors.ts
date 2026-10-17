@@ -27,21 +27,14 @@ import {
   isBoardProject,
   isFilingProject,
   PERSONAL_PROJECT_ID,
-  type BoardColumn,
   type Project,
   type Task,
 } from '@tm/shared/model';
-import { columnForTask } from '@tm/shared/board';
-import type { MergeRequest } from '@tm/shared/mergeRequest';
-import {
-  COLUMN_META,
-  focusCards,
-  groupSubtasks,
-  partitionShelved,
-  sortCards,
-  type BoardCard,
-} from '@tm/ui/board/boardColumns';
 import type { CloudBoardState } from './cloudBoardStore';
+
+/** Lifted into `boardColumns.ts` (F14.5) so it can take an `archive` index the same way the
+ *  desktop's own bucketing does; re-exported here so this module's callers are unchanged. */
+export { bucketBoardCards } from '@tm/ui/board/boardColumns';
 
 /** Just the slice these read — so a test can pass a bag of tasks (and, now, projects) rather
  *  than a whole board. */
@@ -149,37 +142,4 @@ export function selectFilingProjects(
   relayAnswered: boolean,
 ): Project[] {
   return resolveProjects(mirrored, relayed, relayAnswered, isFilingProject);
-}
-
-/**
- * The board's cards, grouped into their columns, plus the ones parked on the shelf —
- * `BoardScreen`'s own bucketing, lifted out verbatim so it can be tested without a render.
- * `displayTasks` is the board's rows with the optimistic status overlay already applied
- * (`displayStatus`), since that overlay is read from `CloudBoardState` and has nothing to do
- * with the bucketing itself.
- */
-export function bucketBoardCards(
-  displayTasks: readonly Task[],
-  mrsByTask: ReadonlyMap<string, MergeRequest[]>,
-  focusIds: ReadonlySet<string> | null,
-  shelvedIds: ReadonlySet<string>,
-  attentionTaskIds: ReadonlySet<string> | undefined,
-): { cardsByColumn: Map<BoardColumn, BoardCard[]>; shelvedCards: BoardCard[] } {
-  const cardsByColumn = new Map<BoardColumn, BoardCard[]>();
-  for (const meta of COLUMN_META) cardsByColumn.set(meta.column, []);
-  const { onBoard, shelved } = partitionShelved(
-    focusCards(groupSubtasks(displayTasks, mrsByTask), focusIds),
-    shelvedIds,
-  );
-  for (const card of onBoard) cardsByColumn.get(columnForTask(card.task))?.push(card);
-  for (const meta of COLUMN_META) {
-    cardsByColumn.set(
-      meta.column,
-      sortCards(cardsByColumn.get(meta.column) ?? [], attentionTaskIds),
-    );
-  }
-  return {
-    cardsByColumn,
-    shelvedCards: sortCards(shelved, attentionTaskIds),
-  };
 }

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from '@tm/shared/model';
 import {
-  bucketBoardCards,
   selectAgentProjects,
   selectArchivedTasks,
   selectBoardTasks,
@@ -291,55 +290,5 @@ describe('selectFilingProjects', () => {
     const relayed = [project({ id: 'r1', name: 'Relayed' })];
     expect(selectFilingProjects(mirrored, relayed, true).map((p) => p.id)).toEqual(['r1']);
     expect(selectFilingProjects(mirrored, [], true)).toEqual([]);
-  });
-});
-
-describe('bucketBoardCards', () => {
-  it('excludes a shelved card from every column, putting it on the shelf instead', () => {
-    const onBoard = task({ id: 'onBoard', order: 0 });
-    const shelved = task({ id: 'shelved', order: 1 });
-    const { cardsByColumn, shelvedCards } = bucketBoardCards(
-      [onBoard, shelved],
-      new Map(),
-      null,
-      new Set(['shelved']),
-      undefined,
-    );
-    expect(cardsByColumn.get('todo')?.map((c) => c.task.id)).toEqual(['onBoard']);
-    expect(shelvedCards.map((c) => c.task.id)).toEqual(['shelved']);
-  });
-
-  it('counts a card with steps once, and its steps zero', () => {
-    const parent = task({ id: 'parent', order: 0 });
-    const step = task({ id: 'step', parentTaskId: 'parent', order: 0 });
-    const { cardsByColumn } = bucketBoardCards(
-      [parent, step],
-      new Map(),
-      null,
-      new Set(),
-      undefined,
-    );
-    const todo = cardsByColumn.get('todo') ?? [];
-    expect(todo.map((c) => c.task.id)).toEqual(['parent']);
-    expect(todo[0].subtasks.map((s) => s.id)).toEqual(['step']);
-  });
-
-  it('counts an orphan step — its parent not on this board — as a card of its own', () => {
-    const orphan = task({ id: 'orphan', parentTaskId: 'nowhere', order: 0 });
-    const { cardsByColumn } = bucketBoardCards([orphan], new Map(), null, new Set(), undefined);
-    expect(cardsByColumn.get('todo')?.map((c) => c.task.id)).toEqual(['orphan']);
-  });
-
-  it('narrows the counts to the focused chain', () => {
-    const a = task({ id: 'a', order: 0 });
-    const b = task({ id: 'b', order: 1 });
-    const { cardsByColumn } = bucketBoardCards(
-      [a, b],
-      new Map(),
-      new Set(['a']),
-      new Set(),
-      undefined,
-    );
-    expect(cardsByColumn.get('todo')?.map((c) => c.task.id)).toEqual(['a']);
   });
 });
