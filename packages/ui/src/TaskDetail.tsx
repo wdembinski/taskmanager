@@ -53,6 +53,7 @@ import { isNativeTicket } from '@tm/shared/tickets';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
 import type { PriorityDisplay } from '@tm/shared/settings';
 import {
+  BoardRegular,
   ChevronLeftRegular,
   ChevronDownRegular,
   CollectionsEmptyRegular,
@@ -110,6 +111,7 @@ const useStyles = makeStyles({
   head: { display: 'flex', flexDirection: 'column', gap: '2px' },
   crumbRow: { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '-8px' },
   titleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
+  showOnBoard: { marginLeft: 'auto', flexShrink: 0 },
   icon: { fontSize: '16px', display: 'flex', flexShrink: 0 },
   title: { flex: 1, minWidth: 0 },
   /** The "app's copy only" caveat under an in-progress title edit on a synced card. */
@@ -335,6 +337,20 @@ export interface TaskDetailProps {
   onUnlinkChain?: (linkId: string) => void;
   /** Show another task in this pane (the breadcrumb, and opening a step). */
   onOpenTask?: (taskId: string) => void;
+  /**
+   * Return to whatever ticket a followed link left behind (F12.9's panel history). Drawn as
+   * a "Back" crumb at the head of the band, in the same style as the parent crumb below it —
+   * and, like that crumb, only when there is something to show: the caller is the one who
+   * decides whether there is a history to unwind, by passing this or leaving it `undefined`.
+   */
+  onBack?: () => void;
+  /**
+   * Jump to this ticket's card on the board (F12.9) — drawn as a small "Show on board"
+   * button in the head row, only when the host has somewhere to send it: the Tickets screen
+   * passes this (there is no board of its own to be on already), My Tasks — already the
+   * board — leaves it `undefined`.
+   */
+  onShowOnBoard?: (taskId: string) => void;
   /** Called after a successful manual status change so the parent list can patch. */
   onStatusChanged?: (task: Task) => void;
   /**
@@ -418,6 +434,8 @@ export function TaskDetail({
   chainTasksById = NO_TASKS,
   onUnlinkChain,
   onOpenTask,
+  onBack,
+  onShowOnBoard,
   onStatusChanged,
   onStatusSet,
   onSubtasksChanged,
@@ -1070,6 +1088,18 @@ export function TaskDetail({
           being done about it. The type glyph is the board card's, so one symbol
           means one kind of work everywhere. */}
       <div className={styles.head}>
+        {onBack && (
+          <div className={styles.crumbRow}>
+            <Button
+              size="small"
+              appearance="transparent"
+              icon={<ChevronLeftRegular />}
+              onClick={onBack}
+            >
+              Back
+            </Button>
+          </div>
+        )}
         {parentTask && (
           <div className={styles.crumbRow}>
             <Button
@@ -1154,6 +1184,17 @@ export function TaskDetail({
                   </Badge>
                 ))}
             </>
+          )}
+          {onShowOnBoard && (
+            <Button
+              className={styles.showOnBoard}
+              size="small"
+              appearance="subtle"
+              icon={<BoardRegular />}
+              onClick={() => onShowOnBoard(task.id)}
+            >
+              Show on board
+            </Button>
           )}
         </div>
         {editingTitle && tracker && (

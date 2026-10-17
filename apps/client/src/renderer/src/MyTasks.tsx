@@ -74,6 +74,7 @@ import { TaskDetailHost } from '@ui/TaskDetailHostView';
 import { useInitialLoad } from '@ui/useInitialLoad';
 import { KanbanColumn } from '@ui/board/KanbanColumn';
 import { useBoardLayoutStyles } from '@ui/board/boardLayout';
+import { currentSprintName } from '@ui/board/currentSprint';
 import { doneSwitchLabel, doneSwitchTitle } from '@ui/board/doneSwitchLabel';
 import { BoardDisplayMenu } from '@ui/board/BoardDisplayMenu';
 import { ChainOverlay } from '@ui/board/ChainOverlay';
@@ -83,6 +84,12 @@ import { linkView, nextLinkMode, type LinkMode } from '@ui/board/linkMode';
 import { linkChips } from '@ui/board/linkChips';
 import { buildChainDrawing, linkMidpoint } from '@ui/board/chainArrows';
 import { useGlobalShortcut } from '@ui/palette/shortcut';
+import {
+  hiddenBy,
+  hiddenByMessage,
+  type BoardFilter,
+  type BoardViewState,
+} from '@ui/board/hiddenBy';
 import {
   isChainLinkDrag,
   linkDropStates,
@@ -214,6 +221,24 @@ export function MyTasks({
   // protect the board — "JIRA answered short, so nothing was removed" — not a failure. Shown
   // in its own bar because a warning dressed as an error is a bar people stop reading.
   const [notice, setNotice] = useState<IpcEvents['board:notice'] | null>(null);
+  /**
+   * What `openTaskId` (F12.9 — jumping to a card from the Tickets panel, Automations, or
+   * anywhere else that calls `openTaskOnBoard`) found when the ticket it pointed at was not
+   * actually showing: `filter` names whichever rule hid it (`null` once the fix below lifts
+   * it) alongside the row itself, so the bar can word it with `hiddenByMessage` without
+   * re-finding a card that `loadedIds` or `archived` may be the only list holding. `filter`
+   * and `card` both `null` means the ticket could not be found anywhere at all — a deleted
+   * id reached this screen late.
+   *
+   * Cleared by dismissing the bar, by its own one-click fix once the card is selected, or by
+   * picking any other card by hand — a notice about a ticket you are no longer trying to
+   * reach is just noise.
+   */
+  const [hiddenNotice, setHiddenNotice] = useState<{
+    taskId: string;
+    filter: BoardFilter | null;
+    card: Task | null;
+  } | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   /**
@@ -498,16 +523,7 @@ export function MyTasks({
    */
   const registries = useTicketRegistries(selectedTask?.projectId ?? null);
 
-  // Waits for `tasks` to load (the caller may have switched tabs before the board's own
-  // first fetch lands) before selecting, then tells the caller it's done so a later visit
-  // to this tab on its own doesn't re-select a stale id.
-  useEffect(() => {
-    if (!openTaskId || !tasks) return;
-    if (tasks.some((t) => t.id === openTaskId)) setSelectedTaskId(openTaskId);
-    onOpenTaskIdHandled?.();
-  }, [openTaskId, tasks, onOpenTaskIdHandled]);
-
-  // The command palette's "Add task" — the same one-shot shape as `openTaskId` above.
+  // The command palette's "Add task" — the same one-shot shape as `openTaskId` below.
   useEffect(() => {
     if (!openAddTask) return;
     setAddOpen(true);
@@ -577,6 +593,69 @@ export function MyTasks({
     () => (chainFocus && focusAnchor ? chainComponent(links, focusAnchor) : null),
     [chainFocus, focusAnchor, links],
   );
+
+  // Waits for `tasks` to load (the caller may have switched tabs before the board's own
+  // first fetch lands) before resolving, then tells the caller it's done so a later visit
+  // to this tab on its own doesn't re-resolve a stale id.
+  //
+  // `openTaskId` (F12.9) can point at a card a filter is keeping off THIS board, or at one
+  // this board never loaded at all (another board's card, reached from the Tickets panel or
+  // Automations) — `hiddenBy` is the one place that already knows how to tell "off the
+  // board right now" from "not on the board at all" apart. The row itself is looked up the
+  // same way `TaskDetailHost` would: `tasks`, then `archived` (gone but still named),
+  // then a last `board:tasks('all')` read for a card on a board this scope never loaded.
+  useEffect(() => {
+    if (!openTaskId || !tasks) return;
+    let live = true;
+    void (async () => {
+      let card =
+        tasks.find((t) => t.id === openTaskId) ?? archived.find((t) => t.id === openTaskId) ?? null;
+      if (!card) {
+        const all = await window.api.invoke('board:tasks', 'all');
+        if (!live) return;
+        card = all.find((t) => t.id === openTaskId) ?? null;
+      }
+      if (!card) {
+        setHiddenNotice({ taskId: openTaskId, filter: null, card: null });
+        onOpenTaskIdHandled?.();
+        return;
+      }
+      const found = card;
+      const parent = found.parentTaskId
+        ? (tasks.find((t) => t.id === found.parentTaskId) ??
+          archived.find((t) => t.id === found.parentTaskId) ??
+          null)
+        : null;
+      const state: BoardViewState = {
+        loadedIds: new Set(tasks.map((t) => t.id)),
+        scopeName: scopeLabel,
+        focusIds,
+        currentSprintOnly,
+        currentSprint: currentSprintName(tasks),
+        hiddenColumns,
+      };
+      const filter = hiddenBy(found, parent, state);
+      if (filter === null) {
+        setHiddenNotice(null);
+        setSelectedTaskId(openTaskId);
+      } else {
+        setHiddenNotice({ taskId: openTaskId, filter, card: found });
+      }
+      onOpenTaskIdHandled?.();
+    })();
+    return () => {
+      live = false;
+    };
+  }, [
+    openTaskId,
+    tasks,
+    archived,
+    scopeLabel,
+    focusIds,
+    currentSprintOnly,
+    hiddenColumns,
+    onOpenTaskIdHandled,
+  ]);
 
   /**
    * The board's cards parked onto the shelf — per-surface view-state, like `foldedSteps`.
@@ -943,6 +1022,50 @@ export function MyTasks({
     [settings, sync],
   );
 
+  /**
+   * `hiddenNotice`'s one-click fix (F12.9): lifts whichever filter `hiddenBy` named, through
+   * the SAME setter the toolbar control for that filter already uses — never a duplicate
+   * settings write — then selects the card and dismisses the bar. A `card: null` notice (the
+   * ticket could not be found at all) has no filter to lift, so this is never offered one.
+   */
+  const liftHiddenFilter = useCallback(
+    (notice: { taskId: string; filter: BoardFilter | null }) => {
+      const filter = notice.filter;
+      if (!filter) return;
+      switch (filter.kind) {
+        case 'archived':
+          setArchivedOpenedAt(Date.now());
+          break;
+        case 'current-sprint':
+          void setCurrentSprintOnly(false);
+          break;
+        case 'scope':
+          void setBoardScope('all');
+          break;
+        case 'focus':
+          setChainFocus(false);
+          break;
+        case 'column':
+          setSettings((prev) => {
+            if (!prev) return prev;
+            const next = {
+              ...prev,
+              board: {
+                ...prev.board,
+                hiddenColumns: withColumnHidden(hiddenBoardColumns(prev), filter.column, false),
+              },
+            };
+            void window.api.invoke('settings:save', next);
+            return next;
+          });
+          break;
+      }
+      setSelectedTaskId(notice.taskId);
+      setHiddenNotice(null);
+    },
+    [setCurrentSprintOnly, setBoardScope],
+  );
+
   const moveTask = useCallback(
     async (taskId: string, column: BoardColumn) => {
       const task = tasks?.find((t) => t.id === taskId);
@@ -1125,6 +1248,7 @@ export function MyTasks({
         return;
       }
       setLinkDrag(null);
+      setHiddenNotice(null);
       setSelectedTaskId(id);
     },
     [linkDrag, drawLink],
@@ -1383,6 +1507,32 @@ export function MyTasks({
             <MessageBarBody>{notice.text}</MessageBarBody>
             <MessageBarActions>
               <Button size="small" appearance="transparent" onClick={() => setNotice(null)}>
+                Dismiss
+              </Button>
+            </MessageBarActions>
+          </MessageBar>
+        )}
+
+        {/* A ticket `openTaskId` pointed at (F12.9) that a filter is keeping off the board,
+            or that could not be found at all — see `hiddenNotice`'s own comment. */}
+        {hiddenNotice && (
+          <MessageBar intent="info">
+            <MessageBarBody>
+              {hiddenNotice.filter && hiddenNotice.card
+                ? hiddenByMessage(hiddenNotice.card, hiddenNotice.filter).text
+                : 'That ticket no longer exists'}
+            </MessageBarBody>
+            <MessageBarActions>
+              {hiddenNotice.filter && hiddenNotice.card && (
+                <Button
+                  size="small"
+                  appearance="transparent"
+                  onClick={() => liftHiddenFilter(hiddenNotice)}
+                >
+                  {hiddenByMessage(hiddenNotice.card, hiddenNotice.filter).action}
+                </Button>
+              )}
+              <Button size="small" appearance="transparent" onClick={() => setHiddenNotice(null)}>
                 Dismiss
               </Button>
             </MessageBarActions>
@@ -1669,7 +1819,10 @@ export function MyTasks({
             chainLinks={links}
             chainTasksById={tasksById}
             onUnlinkChain={(linkId) => void removeLink(linkId)}
-            onOpenTask={setSelectedTaskId}
+            onOpenTask={(id) => {
+              setHiddenNotice(null);
+              setSelectedTaskId(id);
+            }}
             onStatusChanged={patchTask}
             onStatusSet={foldOnAutoFoldColumn}
             onSubtasksChanged={() => void refresh()}

@@ -55,6 +55,7 @@ import {
 } from '../issues/issueView';
 import { BacklogTable } from './BacklogTable';
 import { GraphPane } from './GraphPane';
+import { EMPTY_HISTORY, backHistory, pushHistory, type PanelHistory } from './panelHistory';
 import { ProjectPicker } from './ProjectPicker';
 import { TimelinePane } from './TimelinePane';
 import { useProjectTickets } from './useProjectTickets';
@@ -71,7 +72,14 @@ const useStyles = makeStyles({
 /** The Projects screen's own views of one project's tickets. */
 type ProjectView = 'backlog' | 'timeline' | 'graph';
 
-export function Projects(): JSX.Element {
+export interface ProjectsProps {
+  /** Jump to a ticket's card on the board (F12.9) — forwarded straight through to the
+   *  shared pane's own "Show on board" button. Left `undefined` when this screen is hosted
+   *  with no board of its own to jump to (the host decides, the same way `TaskDetail` does). */
+  onShowOnBoard?: (taskId: string) => void;
+}
+
+export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -85,6 +93,10 @@ export function Projects(): JSX.Element {
    *  cleared on every project switch, the same way the board clears its own selection when
    *  the scope changes. */
   const [viewState, dispatch] = useReducer(issueViewReduce, INITIAL_ISSUE_VIEW);
+  /** The pane's own "Back" trail (F12.9) — ids a followed link left behind, cleared
+   *  wherever the selection itself starts over: a fresh list/timeline/graph pick, or a
+   *  project switch. */
+  const [history, setHistory] = useState<PanelHistory>(EMPTY_HISTORY);
 
   const seed = useCallback(async () => {
     const [allProjects, allSettings] = await Promise.all([
@@ -114,6 +126,7 @@ export function Projects(): JSX.Element {
 
   useEffect(() => {
     dispatch({ type: 'reset' });
+    setHistory(EMPTY_HISTORY);
   }, [selectedProjectId]);
 
   // Keeps the reducer's own `seen`/`label`/deletion-notice bookkeeping current — see
@@ -159,18 +172,50 @@ export function Projects(): JSX.Element {
     [ticketsLoad.tickets],
   );
 
-  /** A row click, or a sub-issue link followed from inside the panel — opens (or keeps) the
-   *  ticket as a peek. */
+  /** A row click — opens (or keeps) the ticket as a peek. Resets the Back history: a
+   *  list/timeline/graph pick starts over somewhere new, it never follows on from wherever
+   *  the pane happened to be. */
   const selectTicket = useCallback(
-    (id: string) => dispatch({ type: 'select', id, label: ticketLabel(id) }),
+    (id: string) => {
+      setHistory(EMPTY_HISTORY);
+      dispatch({ type: 'select', id, label: ticketLabel(id) });
+    },
     [ticketLabel],
   );
 
-  /** A row's Enter/double-click — opens the ticket straight to full screen. */
+  /** A row's Enter/double-click — opens the ticket straight to full screen, resetting the
+   *  Back history the same way `selectTicket` does. */
   const openTicket = useCallback(
-    (id: string) => dispatch({ type: 'open', id, label: ticketLabel(id) }),
+    (id: string) => {
+      setHistory(EMPTY_HISTORY);
+      dispatch({ type: 'open', id, label: ticketLabel(id) });
+    },
     [ticketLabel],
   );
+
+  /** Follow a link INSIDE the pane (`TaskDetailHost`'s `onOpenTask`) — leaves the ticket
+   *  being left behind on the Back history instead of resetting it, so a chain of links can
+   *  be unwound hop by hop. A `select`, so the peek/full layout stays as it is. */
+  const followLink = useCallback(
+    (id: string) => {
+      setHistory((h) => pushHistory(h, viewState.selectedId));
+      dispatch({ type: 'select', id, label: ticketLabel(id) });
+    },
+    [viewState.selectedId, ticketLabel],
+  );
+
+  /** Pop the Back history, skipping any id that no longer exists — the same `board:tasks`
+   *  read `TaskDetailHost` itself makes, so a deleted ticket is never offered twice. When
+   *  every remaining entry is gone the pane stays where it is; only the button goes away. */
+  const goBack = useCallback(async () => {
+    const tasks = await transport.invoke('board:tasks', 'all');
+    const ids = new Set(tasks.map((t) => t.id));
+    const result = backHistory(history, (id) => ids.has(id));
+    setHistory(result.history);
+    if (result.taskId) {
+      dispatch({ type: 'select', id: result.taskId, label: ticketLabel(result.taskId) });
+    }
+  }, [transport, history, ticketLabel]);
 
   const onKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (e.defaultPrevented) return;
@@ -213,7 +258,9 @@ export function Projects(): JSX.Element {
       mrRebaseButton={settings?.features.mrRebaseButton}
       mrMergeButton={settings?.features.mrMergeButton}
       quietAgentProgress={settings?.features.quietAgentProgress}
-      onOpenTask={selectTicket}
+      onOpenTask={followLink}
+      onBack={history.stack.length > 0 ? goBack : undefined}
+      onShowOnBoard={onShowOnBoard}
       ticketFold={{ key: 'tm.projects.ticketOpen', defaultOpen: true }}
     />
   );
