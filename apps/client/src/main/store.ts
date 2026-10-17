@@ -909,6 +909,25 @@ export interface Store {
   restoreMilestone(id: string): ArchiveResult;
 
   /**
+   * Every native ticket on ANY milestone, across every project — `dueForAutoArchive`'s
+   * own ticket input (F14.10's sweep), unscoped the same way `getAutomationRuns`-style
+   * whole-app sweeps are: it has no single project to ask.
+   *
+   * `source = 'ticket'` only — a mirrored JIRA/GitHub row with a `milestoneId` of its own
+   * (there isn't one today, but nothing stops it existing) is not this app's ticket to
+   * archive. `archivedAt IS NOT NULL` rows (taken off the board, `Task.archivedAt`) are
+   * excluded outright, the same guard every other board-facing list query in this file
+   * applies — a removed row is not "closed enough", it is gone.
+   */
+  listMilestoneTickets(): Array<{
+    id: string;
+    projectId: string;
+    milestoneId: string;
+    status: TaskStatus;
+    updatedAt: number | null;
+  }>;
+
+  /**
    * Archive a native epic, one transaction (F14.3). Refuses a row that is not a native
    * ticket or not an epic (`not-an-epic`), and an already-archived one
    * (`already-archived`).
@@ -1390,6 +1409,16 @@ export interface Store {
    * `lastInsertRowid`, or `null` when the unique index refused a duplicate.
    */
   appendActivity(row: Omit<ActivityRow, 'id'>): ActivityRow | null;
+  /**
+   * Every ticket's own closing time, from the activity log — `dueForAutoArchive`'s
+   * `doneTimes` map (F14.10), read straight off `status-moved` rows rather than derived:
+   * the NEWEST row moving a ticket `to` `done` or `cancelled`, keyed by `taskId`. A ticket
+   * moved to one of those and later back out and in again is timed by its most recent
+   * close, not its first — the same "closing time," re-measured, that a reopened-then-
+   * reclosed ticket should read as. A ticket with no such row (closed before F2.4 existed,
+   * or never logged) is simply absent; `dueForAutoArchive` falls back to `updatedAt` for it.
+   */
+  ticketDoneTimes(): Map<string, number>;
   /**
    * A keyset page of the log, newest first (`at DESC, id DESC`) — never a page number, so
    * rows landing at the top never shift a later page. `query.cursor` resumes after the last
@@ -3608,6 +3637,14 @@ export function createStore(dbPath: string): Store {
     `UPDATE tasks SET trackerArchivedAt = NULL
      WHERE milestoneId = @milestoneId AND trackerArchivedAt = @at`,
   );
+  // F14.10's auto-archive sweep (`Store.listMilestoneTickets`): every native ticket on
+  // any milestone, excluding one the board itself has removed (`archivedAt IS NOT NULL`
+  // — see `Task.archivedAt`, not `trackerArchivedAt`, which `dueForAutoArchive` never
+  // looks at).
+  const selectMilestoneTickets = db.prepare(
+    `SELECT id, projectId, milestoneId, status, updatedAt FROM tasks
+     WHERE source = 'ticket' AND milestoneId IS NOT NULL AND archivedAt IS NULL`,
+  );
   // One column, written by id — `archiveMilestone` binds `at`, `restoreMilestone` binds
   // `null`.
   const setMilestoneArchived = db.prepare(
@@ -5224,6 +5261,16 @@ export function createStore(dbPath: string): Store {
     `SELECT * FROM activity_log WHERE kind = 'run-finished' AND at >= @sinceMs`,
   );
   const deleteActivityOlderThan = db.prepare(`DELETE FROM activity_log WHERE at < ?`);
+  // F14.10's `ticketDoneTimes`: the newest close per ticket. `json_extract` rather than a
+  // LIKE on the raw TEXT column, for the same reason `selectActivityPage`'s filters use
+  // `json_each` — the column is JSON, and the engine's own extraction function is the
+  // correct way to read one field out of it.
+  const selectTicketDoneTimes = db.prepare(
+    `SELECT taskId, MAX(at) AS at FROM activity_log
+     WHERE kind = 'status-moved' AND taskId IS NOT NULL
+       AND json_extract(detail, '$.to') IN ('done', 'cancelled')
+     GROUP BY taskId`,
+  );
 
   return {
     addProject(input) {
@@ -6255,6 +6302,16 @@ export function createStore(dbPath: string): Store {
       return restoreMilestoneTx(id);
     },
 
+    listMilestoneTickets() {
+      return selectMilestoneTickets.all() as Array<{
+        id: string;
+        projectId: string;
+        milestoneId: string;
+        status: TaskStatus;
+        updatedAt: number | null;
+      }>;
+    },
+
     archiveEpic(id, at) {
       return archiveEpicTx(id, at);
     },
@@ -7043,6 +7100,11 @@ export function createStore(dbPath: string): Store {
       });
       if (result.changes === 0) return null;
       return { id: Number(result.lastInsertRowid), ...row };
+    },
+
+    ticketDoneTimes() {
+      const rows = selectTicketDoneTimes.all() as Array<{ taskId: string; at: number }>;
+      return new Map(rows.map((r) => [r.taskId, r.at]));
     },
 
     listActivity(query) {

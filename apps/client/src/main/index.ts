@@ -375,6 +375,7 @@ app.on('before-quit', () => {
     ...(live
       ? [
           { name: 'windowTracker', run: () => live.windowTracker.dispose() },
+          { name: 'autoArchiveSweep', run: () => live.stopAutoArchiveSweep() },
           { name: 'updater', run: () => live.updater.dispose() },
           { name: 'syncPoller', run: () => live.syncPoller.dispose() },
           { name: 'automationClock', run: () => live.automationClock.dispose() },

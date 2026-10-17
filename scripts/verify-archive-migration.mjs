@@ -44,6 +44,23 @@
  * `restoreMilestone`'s `selectCoArchivedTickets` and the "stays archived" / "is still
  * there" checks below fail; make `selectArchivedBefore` also read `trackerArchivedAt` and
  * the prune-guard section fails instead. Revert both and every check passes again.
+ *
+ * A third, fresh database then exercises F14.10's own two store reads —
+ * `listMilestoneTickets` and `ticketDoneTimes` — the sweep's only way of seeing the world.
+ * `ticketDoneTimes` is proven to pick the NEWEST `status-moved` row that lands on
+ * `done`/`cancelled` (a ticket closed, reopened, and closed again), to ignore a
+ * `status-moved` row that lands anywhere else, and to say nothing at all for a ticket
+ * with no such row. `listMilestoneTickets` is proven to carry a ticket's `updatedAt`
+ * through as `null` when the column genuinely is (raw SQL stands in for a pre-Phase-25
+ * row, same trick the migration section above uses), to exclude a ticket the BOARD has
+ * removed (`Task.archivedAt`, not `trackerArchivedAt` — the sweep's own milestone tickets
+ * read never looks at the tracker's archive column at all), and to exclude a ticket with
+ * no milestone.
+ *
+ * Prove this section can fail too: change `listMilestoneTickets`'s SQL to drop the
+ * `archivedAt IS NULL` guard and the "excludes a board-removed ticket" check below fails;
+ * change `ticketDoneTimes`'s SQL from `MAX(at)` to `MIN(at)` and the "newest close wins"
+ * check fails instead. Revert both and every check passes again.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync } from 'node:fs';
@@ -760,6 +777,94 @@ check(
 );
 
 store.close();
+
+// ═══════════════ F14.10: listMilestoneTickets / ticketDoneTimes (the sweep's reads) ═══════
+const sweepDbPath = join(work, 'sweep.db');
+const sweepStore = createStore(sweepDbPath);
+
+const sweepProject = sweepStore.addProject({ name: 'Sweep reads', ticketPrefix: 'SW' });
+const sweepMilestone = sweepStore.addMilestone(sweepProject.id, { name: 'Sweep M1' });
+
+function statusMoved(taskId, at, to) {
+  sweepStore.appendActivity({
+    at,
+    projectId: sweepProject.id,
+    taskId,
+    runId: null,
+    kind: 'status-moved',
+    outcome: null,
+    origin: 'human',
+    title: 'moved',
+    costUsd: null,
+    detail: { from: 'in-progress', to },
+  });
+}
+
+// ST1: closed, reopened, closed again — ticketDoneTimes must pick the NEWER close, not
+// the first one.
+const st1 = sweepStore.createTicket(sweepProject.id, { title: 'ST1', milestoneId: sweepMilestone.id });
+statusMoved(st1.id, 1000, 'done');
+statusMoved(st1.id, 2000, 'in-progress');
+statusMoved(st1.id, 3000, 'cancelled');
+
+// ST2: moved, but never to done/cancelled — ticketDoneTimes must ignore it entirely.
+const st2 = sweepStore.createTicket(sweepProject.id, { title: 'ST2', milestoneId: sweepMilestone.id });
+statusMoved(st2.id, 1500, 'in-review');
+
+// ST3: no activity-log row at all, AND its own `updatedAt` forced to NULL by raw SQL — the
+// "undatable" ticket `dueForAutoArchive` has to block a milestone on.
+const st3 = sweepStore.createTicket(sweepProject.id, { title: 'ST3', milestoneId: sweepMilestone.id });
+{
+  const rawNull = new Database(sweepDbPath);
+  rawNull.prepare('UPDATE tasks SET updatedAt = NULL WHERE id = ?').run(st3.id);
+  rawNull.close();
+}
+
+// ST4: a native ticket with a milestone, but taken off the BOARD — listMilestoneTickets
+// must exclude it even though `trackerArchivedAt` was never touched.
+const st4 = sweepStore.createTicket(sweepProject.id, { title: 'ST4', milestoneId: sweepMilestone.id });
+sweepStore.archiveTask(st4.id, Date.now());
+
+// ST5: a native ticket with NO milestone — never a candidate either.
+const st5 = sweepStore.createTicket(sweepProject.id, { title: 'ST5' });
+
+check(
+  'sweep seed: every ticket was created',
+  [st1, st2, st3, st4, st5].every((x) => x != null),
+);
+
+const milestoneTickets = sweepStore.listMilestoneTickets();
+const byId = new Map(milestoneTickets.map((t) => [t.id, t]));
+check(
+  'listMilestoneTickets: carries exactly ST1, ST2 and ST3',
+  milestoneTickets.length === 3 && byId.has(st1.id) && byId.has(st2.id) && byId.has(st3.id),
+);
+check('listMilestoneTickets: excludes the board-removed ST4', !byId.has(st4.id));
+check('listMilestoneTickets: excludes the milestone-less ST5', !byId.has(st5.id));
+check(
+  'listMilestoneTickets: ST1 carries its own projectId/milestoneId/status',
+  byId.get(st1.id)?.projectId === sweepProject.id &&
+    byId.get(st1.id)?.milestoneId === sweepMilestone.id &&
+    byId.get(st1.id)?.status === 'pending',
+);
+check(
+  'listMilestoneTickets: ST1 (an ordinary insert) has a non-null updatedAt',
+  typeof byId.get(st1.id)?.updatedAt === 'number',
+);
+check(
+  'listMilestoneTickets: ST3 reads back updatedAt as null, not backfilled to a number',
+  byId.get(st3.id)?.updatedAt === null,
+);
+
+const doneTimes = sweepStore.ticketDoneTimes();
+check(
+  'ticketDoneTimes: ST1 resolves to its NEWEST close (3000), not its first (1000)',
+  doneTimes.get(st1.id) === 3000,
+);
+check('ticketDoneTimes: ST2 (moved, never closed) is absent', !doneTimes.has(st2.id));
+check('ticketDoneTimes: ST3 (no activity row at all) is absent', !doneTimes.has(st3.id));
+
+sweepStore.close();
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

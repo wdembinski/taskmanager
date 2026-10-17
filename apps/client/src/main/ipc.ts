@@ -145,6 +145,7 @@ import {
   refreshRepoSkillsForProject,
   type RepoSkillsRefresherDeps,
 } from './repoSkillsRefresher';
+import { startAutoArchiveSweep } from './autoArchiveSweep';
 import {
   addAgentProfile,
   listAgentProfiles,
@@ -441,6 +442,10 @@ export interface Engine {
   updater: Updater;
   /** Flushes the window geometry — must be disposed BEFORE the store closes. */
   windowTracker: WindowStateFlusher;
+  /** Stops the F14.10 auto-archive sweep's hourly timer — see `autoArchiveSweep.ts`. The
+   *  timer is already `unref`'d, so this is only needed to stop it from firing against a
+   *  store that is about to close. */
+  stopAutoArchiveSweep: () => void;
 }
 
 /**
@@ -3702,6 +3707,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     return milestones;
   }
 
+  // F14.10's auto-archive sweep: milestones from the same ticket-project scope
+  // `milestonesAcrossTicketProjects` uses, minus one more thing that list does not skip —
+  // a project that is itself archived has nothing left for the sweep to do on its behalf.
+  // Runs once now and every hour after; `stopAutoArchiveSweep` (below, on `Engine`) is
+  // what the shutdown path stops before the store closes.
+  const stopAutoArchiveSweep = startAutoArchiveSweep({
+    getSettings: () => store.getSettings(),
+    listMilestones: () =>
+      store
+        .listProjects()
+        .filter((p) => ownsTickets(p) && p.archivedAt == null)
+        .flatMap((p) => store.listMilestones(p.id)),
+    listMilestoneTickets: () => store.listMilestoneTickets(),
+    ticketDoneTimes: () => store.ticketDoneTimes(),
+    archiveMilestone: (id, choice, at) => store.archiveMilestone(id, choice, at),
+    appendActivity: (row) => store.appendActivity(row),
+    onMilestonesChanged: () => pushMilestones(),
+    log: logMain,
+  });
+
   // Same optional `projectId` as `label:list`, and for the same reason.
   handle('milestone:list', async (projectId) =>
     projectId ? store.listMilestones(projectId) : milestonesAcrossTicketProjects(),
@@ -5937,5 +5962,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     claudeUsagePoller,
     updater,
     windowTracker,
+    stopAutoArchiveSweep,
   };
 }
