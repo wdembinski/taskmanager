@@ -12,6 +12,8 @@
  * Electron's ABI, not the Node that runs Vitest.
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
   type AddProjectInput,
@@ -87,6 +89,7 @@ import type { RunRefusal } from '@shared/scheduler';
 import type { SessionEvent } from '@shared/session';
 import type { DailyUsageInput, UsageSample } from '@shared/usage';
 import {
+  type AppearanceSetting,
   type AppSettings,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_CLOUD_SETTINGS,
@@ -1371,6 +1374,40 @@ export interface StoredCloudOutcome {
 /** A stored outcome plus the command it belongs to, on its way onto the wire. */
 export interface PendingCloudResult extends StoredCloudOutcome {
   commandId: string;
+}
+
+/**
+ * Read the saved `appearance` setting without booting the real store — `createWindow`
+ * (`main/index.ts`) must pick a window colour before `registerIpcHandlers` ever opens
+ * the real connection below, so this opens its own short-lived read-only one against
+ * the same file and closes it again.
+ *
+ * No database at all means a fresh install, which has never had a chance to save
+ * anything: that is `'system'`, same as {@link DEFAULT_SETTINGS}`.appearance`. Any
+ * OTHER failure — a locked file, a corrupt row, a blob saved before `appearance`
+ * existed — falls back to `'dark'` instead, because every one of those is an
+ * EXISTING install, and `'dark'` is the window colour it always painted before this
+ * setting existed (see `withExistingInstallAppearance`).
+ */
+export function readSavedAppearance(userData: string): AppearanceSetting {
+  const dbPath = join(userData, 'orchestrator.db');
+  if (!existsSync(dbPath)) return 'system';
+  try {
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      // 'settings' mirrors SETTINGS_KEY below — duplicated rather than shared because
+      // that constant lives inside createStore's own closure.
+      const row = db.prepare('SELECT value FROM app_state WHERE key = ?').get('settings') as
+        { value: string } | undefined;
+      if (!row) return 'dark';
+      const parsed = JSON.parse(row.value) as Partial<AppSettings>;
+      return parsed.appearance ?? 'dark';
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 'dark';
+  }
 }
 
 /**

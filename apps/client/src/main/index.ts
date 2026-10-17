@@ -10,8 +10,18 @@
  * usage-limit gate) from here too.
  */
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog, protocol, safeStorage, session, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  nativeTheme,
+  protocol,
+  safeStorage,
+  session,
+  shell,
+} from 'electron';
 import { ATTACHMENT_SCHEME } from '@shared/attachments';
+import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
 import { PRODUCT_NAME } from '@shared/product';
 import { DEFAULT_SETTINGS } from '@shared/settings';
 import { AppTray } from './appTray';
@@ -21,6 +31,7 @@ import { registerMediaPermissionGuard } from './mediaPermission';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 import { runShutdownSteps, type ShutdownStep } from './shutdown';
+import { readSavedAppearance } from './store';
 
 // Nothing in main used to report a failure anywhere the user could see it. A throw
 // during startup (v0.25.0 on Linux: a wrong-ABI better_sqlite3.node) left the window
@@ -104,8 +115,14 @@ protocol.registerSchemesAsPrivileged([
  * API. `sandbox` is left off because we ship an ES-module preload (`index.mjs`),
  * and Electron does not allow ESM preload scripts inside the OS sandbox. This is
  * the standard electron-vite configuration.
+ *
+ * `backgroundColor` comes from the caller rather than a literal here: it must match
+ * whichever scheme the renderer is about to mount (see `whenReady`/`activate` below,
+ * both of which resolve it via `readSavedAppearance` before this runs), or the window
+ * flashes the wrong colour for the moment between first paint and the renderer's own
+ * `useResolvedAppearance` taking over.
  */
-function createWindow(): BrowserWindow {
+function createWindow(backgroundColor: string): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -114,10 +131,10 @@ function createWindow(): BrowserWindow {
     show: false, // reveal only once the page is painted, to avoid a white flash
     title: PRODUCT_NAME,
     // Frameless: no OS title bar/border — the renderer draws its own title bar and
-    // window controls (see src/renderer/src/TitleBar.tsx). Resizing from the window
-    // edges still works. The dark backgroundColor avoids a white flash before paint.
+    // window controls (see src/renderer/src/TitleBar.tsx). The resolved backgroundColor
+    // avoids a flash of the WRONG scheme before paint.
     frame: false,
-    backgroundColor: '#1f1f1f',
+    backgroundColor,
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -183,6 +200,18 @@ function createWindow(): BrowserWindow {
   }
 
   return window;
+}
+
+/**
+ * The window colour to create (or re-create) the window with — read straight off disk
+ * via {@link readSavedAppearance} rather than `engine.store`, because `whenReady` needs
+ * an answer before `registerIpcHandlers` has opened the real connection at all. The
+ * `activate` path below could read the live store instead, but uses this same helper so
+ * the two creation sites can never resolve a scheme two different ways.
+ */
+function windowBackgroundColor(): string {
+  const appearance = readSavedAppearance(app.getPath('userData'));
+  return WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)];
 }
 
 // Holds the engine so we can shut its sessions and database down cleanly on quit.
@@ -263,7 +292,7 @@ void app.whenReady().then(() => {
   // any renderer) exists, and must NOT be re-registered from `activate` below.
   registerMediaPermissionGuard(session.defaultSession);
 
-  const window = createWindow();
+  const window = createWindow(windowBackgroundColor());
   try {
     // The engine needs the window so it can push live session events to the UI.
     // Everything here — opening the database, migrations, the scheduler — happens
@@ -278,7 +307,7 @@ void app.whenReady().then(() => {
   // macOS convention: re-create a window when the dock icon is clicked and no
   // windows are open. Harmless on Windows/Linux.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(windowBackgroundColor());
   });
 });
 

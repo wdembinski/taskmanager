@@ -26,6 +26,7 @@ import {
   app,
   dialog,
   ipcMain,
+  nativeTheme,
   powerMonitor,
   safeStorage,
   screen,
@@ -33,6 +34,7 @@ import {
   type BrowserWindow,
   type Rectangle,
 } from 'electron';
+import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
 import type {
   BoardScope,
   IpcApi,
@@ -475,6 +477,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   const send = <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]): void => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
     cloudEvents.publish(channel, payload);
+    // Resync the WINDOW's own background the moment `appearance` changes, so a later
+    // restore from hidden/minimized (the tray path above) repaints with the CURRENT
+    // scheme rather than whatever colour `createWindow` picked at boot — see
+    // `readSavedAppearance` (store.ts), which supplies that boot-time colour.
+    if (channel === 'settings:changed' && !mainWindow.isDestroyed()) {
+      const { appearance } = payload as AppSettings;
+      mainWindow.setBackgroundColor(
+        WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)],
+      );
+    }
   };
 
   // The engine pushes normalized session events to the UI over 'session:event'.

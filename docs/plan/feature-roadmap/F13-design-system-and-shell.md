@@ -366,7 +366,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
 
 ### F13 · Phase 1 — Tokens and appearance
 
-- [ ] F13.1 Define the semantic light and dark token sets and the two Fluent themes
+- [x] F13.1 Define the semantic light and dark token sets and the two Fluent themes
 
   - New `packages/ui/src/tokens.ts` with the table above (`canvas`, `wash`, `paneGlass`,
     `paneOpaque`, `paneRim`, `paneShadow`, text steps, `brand`, `selectedTint`, `accentBar`,
@@ -391,7 +391,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     themes; the test fails when one value is mutated (proven by mutation once, per memory
     *a-cached-gate-is-not-a-gate*, and gates run with `--force`).
 
-- [ ] F13.3 Add the appearance and transparency settings with a pure resolver
+- [x] F13.3 Add the appearance and transparency settings with a pure resolver
 
   - `AppSettings.appearance` and `AppSettings.transparency`, both LOCAL (listed in
     `settings.test.ts`'s local keys, not `GLOBAL_SETTINGS_KEYS`); the existing-install default
@@ -402,7 +402,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     the desktop reports a material; a settings test that the new keys never reach the cloud
     replay. Gates green.
 
-- [ ] F13.4 Mount the resolved theme in both hosts and make the document follow it @needs: F13.1 Define the semantic light and dark token sets and the two Fluent themes, F13.3 Add the appearance and transparency settings with a pure resolver
+- [x] F13.4 Mount the resolved theme in both hosts and make the document follow it @needs: F13.1 Define the semantic light and dark token sets and the two Fluent themes, F13.3 Add the appearance and transparency settings with a pure resolver
 
   - Both `main.tsx` files mount `scaleTheme(themeFor(scheme), fontSizePx)`; `useGlobalStyles`
     sets `colorScheme`, the page background, the static wash and the scrollbar thumbs per

@@ -26,11 +26,13 @@ import {
   ATTENTION_TINT_BY_SCHEME,
   CODE_BY_SCHEME,
   FLUO_BY_SCHEME,
+  SCROLL_THUMB_BY_SCHEME,
   SEMANTIC,
   graphInk,
   pipelineColor,
   statusIndicatorColor,
   type ColorScheme,
+  type WashTokens,
 } from './tokens';
 
 export type { ColorScheme };
@@ -302,15 +304,50 @@ export const PIPELINE_COLOR = pipelineColor('dark');
 export const GRAPH_INK = graphInk('dark');
 
 /**
- * The document's backdrop, wherever the shell is mounted: the Electron window's own
- * `backgroundColor`, the DOM background {@link useGlobalStyles} paints under it, and now
- * `apps/web`'s manifest `background_color`/`theme_color` (`manifest.test.ts` holds the two
- * in step). Matches Fluent's `colorNeutralBackground2`. Exported as a constant, not just a
- * literal below, because a PWA manifest is static JSON with no theme import of its own — the
- * only way its colour can track this one is a value both sides read, with a test standing
- * in for the import neither can have.
+ * The document's backdrop for a given scheme — what a consumer that cannot read the
+ * `--tm-page-bg` custom property {@link useGlobalStyles} stamps on `:root` should paint
+ * instead. Matches `SEMANTIC[scheme].canvas` — the same canvas `tokenCssVars` and
+ * `useGlobalStyles` paint from.
+ *
+ * Neither of the two consumers this was written for calls it any more, and both for the
+ * same reason — a package built on `@fluentui/react-components` has no business in either.
+ * The Electron window's own `backgroundColor` (`main/index.ts`) reads `WINDOW_CANVAS`
+ * (`@shared/canvas`) directly, since the main process has no Fluent and no DOM; `apps/web`'s
+ * manifest/`index.html` (`manifest.test.ts`) read `SEMANTIC` directly for the same reason a
+ * static JSON file and a static `<meta>` always could have. Kept as the named value for
+ * `SEMANTIC[scheme].canvas` on the renderer side of that line, where `@tm/ui` is already in
+ * scope.
  */
-export const PAGE_BACKGROUND = '#1f1f1f';
+export function pageBackground(scheme: ColorScheme): string {
+  return SEMANTIC[scheme].canvas;
+}
+
+/**
+ * The static two-haze backdrop behind every pane — top-left and bottom-right, same shape in
+ * both schemes, never animated. A CSS approximation of the mockups' blurred circles
+ * (`filter="url(#soft)"`, a 90px Gaussian blur): a wide, soft-edged radial fade reads the same
+ * as a blurred circle at the sizes either ever appears at, without asking every document that
+ * mounts this hook to carry an SVG filter.
+ */
+function washGradient(wash: WashTokens): string {
+  return (
+    `radial-gradient(60% 60% at 8% 10%, ${wash.a}, transparent 70%), ` +
+    `radial-gradient(60% 60% at 95% 92%, ${wash.b}, transparent 70%)`
+  );
+}
+
+/** The custom properties `useGlobalStyles` stamps on `:root` for one scheme. */
+function schemeVars(scheme: ColorScheme): Record<string, string> {
+  const semantic = SEMANTIC[scheme];
+  const thumb = SCROLL_THUMB_BY_SCHEME[scheme];
+  return {
+    '--tm-page-bg': semantic.canvas,
+    '--tm-page-wash': washGradient(semantic.wash),
+    '--tm-thumb': thumb.visible,
+    '--tm-thumb-hover': thumb.hover,
+    '--tm-thumb-active': thumb.active,
+  };
+}
 
 /**
  * Everything about the app looking like *this app*, at the document level.
@@ -322,26 +359,34 @@ export const PAGE_BACKGROUND = '#1f1f1f';
  * `apps/client/src/renderer/src/main.tsx` and `apps/web/src/main.tsx` — so the rules land
  * wherever the shell is mounted.
  *
+ * Keyed on `data-scheme` rather than a media query: the scheme here is the user's *resolved*
+ * appearance setting, not a raw OS preference, and `applyDocumentAppearance` (`appearance.ts`)
+ * is the one place that gets written. No attribute at all — a pre-hydration frame, or a host
+ * that forgot to call it — defaults to dark, so an existing install never flashes white before
+ * its own script runs.
+ *
  * The one thing that stays behind is `.app-drag`/`.app-no-drag` in the client's `index.css`:
  * `-webkit-app-region` is a frameless-Electron-window mechanism, and meaningless in a tab.
  */
 export const useGlobalStyles = makeStaticStyles({
-  /*
-   * Tell the engine (and native scrollbars/form controls) this is a dark surface,
-   * and paint the document background dark. Without a background here the DOM's
-   * default is white, which flashes for a frame when the window is restored from the
-   * taskbar before Fluent's dark UI repaints. PAGE_BACKGROUND matches both the Electron
-   * window `backgroundColor` and Fluent's colorNeutralBackground2, so restore is
-   * seamless.
-   */
   ':root': {
     colorScheme: 'dark',
+    ...schemeVars('dark'),
+  },
+  ':root[data-scheme="light"]': {
+    colorScheme: 'light',
+    ...schemeVars('light'),
   },
   'html, body, #root': {
     margin: 0,
     padding: 0,
     height: '100%',
-    backgroundColor: PAGE_BACKGROUND,
+    /* The wash is a background-IMAGE layer; if the custom property it reads is ever unset
+       this whole declaration is dropped as invalid, which is exactly why backgroundColor is
+       stated again below rather than folded into this one shorthand — the canvas still has
+       to paint even when the wash does not. */
+    background: 'var(--tm-page-wash), var(--tm-page-bg)',
+    backgroundColor: 'var(--tm-page-bg)',
   },
 
   /* The shell never scrolls; inner panes manage their own overflow. */
@@ -412,13 +457,13 @@ export const useGlobalStyles = makeStaticStyles({
     height: 0,
   },
   ':hover::-webkit-scrollbar-thumb': {
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    backgroundColor: 'var(--tm-thumb)',
   },
   ':hover::-webkit-scrollbar-thumb:hover': {
-    backgroundColor: 'rgba(255, 255, 255, 0.42)',
+    backgroundColor: 'var(--tm-thumb-hover)',
   },
   ':hover::-webkit-scrollbar-thumb:active': {
-    backgroundColor: 'rgba(255, 255, 255, 0.55)',
+    backgroundColor: 'var(--tm-thumb-active)',
   },
 });
 

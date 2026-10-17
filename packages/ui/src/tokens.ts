@@ -10,6 +10,7 @@
  */
 import { tokens } from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
+import { WINDOW_CANVAS } from '@tm/shared/canvas';
 import type { PipelineStatus } from '@tm/shared/mergeRequest';
 import type { TaskStatus } from '@tm/shared/model';
 
@@ -75,7 +76,7 @@ export interface SemanticTokens {
 
 export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
   light: {
-    canvas: '#F7F8FA',
+    canvas: WINDOW_CANVAS.light,
     wash: {
       a: 'rgba(212, 228, 245, 0.45)',
       b: 'rgba(226, 224, 244, 0.35)',
@@ -107,7 +108,7 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
   },
   dark: {
-    canvas: '#202326',
+    canvas: WINDOW_CANVAS.dark,
     wash: {
       a: 'rgba(18, 58, 99, 0.45)',
       b: 'rgba(43, 37, 89, 0.4)',

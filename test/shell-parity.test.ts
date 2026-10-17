@@ -323,7 +323,12 @@ describe("the app's global CSS rules", () => {
    */
   const GLOBAL_RULES: ReadonlyArray<{ pattern: RegExp; what: string }> = [
     { pattern: /::-webkit-scrollbar[a-z-]*\s*(?=[,'"{:])/, what: 'the scrollbar treatment' },
-    { pattern: /\bcolor-scheme\s*:|\bcolorScheme\s*:/, what: 'the dark colour-scheme' },
+    // `(?<!prefers-)` excludes the `prefers-color-scheme` MEDIA FEATURE (F13.4's two
+    // `<meta name="theme-color">` tags, `index.html`/`manifest.test.ts`) — a host reading
+    // the OS's own preference is not the same statement as a host declaring the CSS
+    // `color-scheme` property (or its JS `colorScheme` key) itself, which is the actual
+    // global rule `useGlobalStyles` owns.
+    { pattern: /(?<!prefers-)\bcolor-scheme\s*:|\bcolorScheme\s*:/, what: 'the dark colour-scheme' },
   ];
 
   /** The two entry documents, which live above those trees and can carry a <style> block. */
@@ -732,28 +737,47 @@ describe('the theme both hosts mount', () => {
     ['The browser entry point', WEB_MAIN],
     ['The renderer entry point', DESKTOP_MAIN],
   ] as const) {
-    it(`${label} mounts appDarkTheme through scaleTheme and emits the global rules`, () => {
+    it(`${label} mounts the RESOLVED theme through scaleTheme and emits the global rules`, () => {
       const source = read(path);
-      const imported = importedFrom(source, 'theme');
+      const importedFromTheme = importedFrom(source, 'theme');
 
-      for (const name of ['appDarkTheme', 'scaleTheme', 'useGlobalStyles']) {
+      for (const name of ['themeFor', 'scaleTheme', 'useGlobalStyles']) {
         expect(
-          imported,
+          importedFromTheme,
           `${path} must import ${name} from @tm/ui/theme (or its @ui alias). The palette, its ` +
             'type ramp and the global rules are one shared set; a host that supplies its own ' +
             'is a second palette, and two copies of a palette are a palette that drifts.',
         ).toContain(name);
       }
 
-      // The provider's theme is the SCALED shared palette. Passing `appDarkTheme` raw would
-      // still import both names and still be wrong: every `fontPx()` in the shared components
-      // reads the ramp this produces.
+      // F13.4: the scheme a host mounts is no longer a fixed choice — both hosts resolve
+      // `appearance`/`transparency` through this one hook, which is also what keeps
+      // document.documentElement in step with whatever `FluentProvider` ends up mounting.
+      expect(
+        importedFrom(source, 'useResolvedAppearance'),
+        `${path} must import useResolvedAppearance from @tm/ui/useResolvedAppearance (or its ` +
+          '@ui alias) — it is the one place the resolved scheme comes from, on both hosts.',
+      ).toContain('useResolvedAppearance');
+
+      // The provider's theme is the SCALED theme for the RESOLVED scheme. Passing a fixed
+      // appDarkTheme/appLightTheme would still import every name above and still be wrong:
+      // the two schemes would never actually diverge on screen.
       expect(
         source,
-        `${path} must pass the theme as scaleTheme(appDarkTheme, …) — the desktop scales by the ` +
-          'font-size setting and the browser by BASE_FONT_PX, so the two differ in the value ' +
-          'and never in the shape.',
-      ).toMatch(/scaleTheme\(\s*appDarkTheme\s*,/);
+        `${path} must pass the theme as scaleTheme(themeFor(scheme), …) — the desktop scales ` +
+          'by the font-size setting and the browser by BASE_FONT_PX, so the two differ in the ' +
+          'value and never in the shape.',
+      ).toMatch(/scaleTheme\(\s*themeFor\(\s*scheme\s*\)\s*,/);
+
+      // The document-level custom properties (`useGlobalStyles`'s own :root rules) must
+      // follow the SAME resolved scheme as the Fluent theme above, or the provider and the
+      // page background it sits on can disagree about which one is mounted.
+      expect(
+        source,
+        `${path} must spread tokenCssVars(scheme) onto the provider's style — a fixed scheme ` +
+          "there would leave the page background and scrollbars out of step with the theme's " +
+          'own.',
+      ).toMatch(/tokenCssVars\(\s*scheme\s*\)/);
 
       // `makeStaticStyles` emits on first use, so an import nobody calls emits nothing at all.
       expect(
@@ -762,6 +786,21 @@ describe('the theme both hosts mount', () => {
           'its CSS on first use, so an unused import leaves the page with no global rules and ' +
           'no error either.',
       ).toMatch(/useGlobalStyles\(\)/);
+
+      // The regression this whole block exists to catch: a host reverting to one FIXED
+      // scheme, which still imports everything above and would still typecheck.
+      for (const stale of ['appDarkTheme', 'appLightTheme']) {
+        expect(
+          source.includes(stale),
+          `${path} still mentions ${stale}. Both hosts must mount themeFor(scheme) — a fixed ` +
+            'theme constant is exactly the regression this block exists to catch.',
+        ).toBe(false);
+      }
+      expect(
+        /tokenCssVars\(\s*'(?:dark|light)'\s*\)/.test(source),
+        `${path} calls tokenCssVars with a literal scheme. It must be tokenCssVars(scheme) — a ` +
+          'literal is the same regression as a fixed theme, one level down.',
+      ).toBe(false);
     });
   }
 });

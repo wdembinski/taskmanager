@@ -9,6 +9,7 @@ import {
   STATUS_INDICATOR_COLOR,
   appDarkTheme,
   appLightTheme,
+  pageBackground,
 } from './theme';
 import {
   CODE_BY_SCHEME,
@@ -20,6 +21,7 @@ import {
   statusIndicatorColor,
   tokenCssVars,
 } from './tokens';
+import { WINDOW_CANVAS } from '@tm/shared/canvas';
 
 /**
  * Every leaf's dotted path through an object, sorted. Arrays (`statusGradientStops`) are
@@ -47,6 +49,18 @@ function countCssLeaves(value: unknown): number {
 describe('SEMANTIC', () => {
   it('has identical leaf key sets for light and dark', () => {
     expect(leafPaths(SEMANTIC.light).sort()).toEqual(leafPaths(SEMANTIC.dark).sort());
+  });
+
+  it('takes its canvas from WINDOW_CANVAS, not a literal of its own', () => {
+    expect(SEMANTIC.light.canvas).toBe(WINDOW_CANVAS.light);
+    expect(SEMANTIC.dark.canvas).toBe(WINDOW_CANVAS.dark);
+  });
+});
+
+describe('pageBackground', () => {
+  it('matches the scheme canvas, for a consumer that cannot read the CSS variable', () => {
+    expect(pageBackground('light')).toBe(SEMANTIC.light.canvas);
+    expect(pageBackground('dark')).toBe(SEMANTIC.dark.canvas);
   });
 });
 
