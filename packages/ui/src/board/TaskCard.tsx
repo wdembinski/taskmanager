@@ -758,6 +758,12 @@ export function TaskCard({
         linkState === 'linked' && styles.linkExisting,
         linkState === 'refused' && styles.linkRefused,
       )}
+      // Keyboard-reachable for the same reason it is clickable — F13.13's "Space opens the
+      // peek" applies to a board card exactly as it does to an issue row, and a plain `div`
+      // gets neither focus nor a role for free.
+      tabIndex={0}
+      role="button"
+      aria-label={task.title}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
@@ -776,6 +782,16 @@ export function TaskCard({
         if (fromTaskId) onLinkTo?.(fromTaskId);
       }}
       onClick={onSelect}
+      // Only when the CARD itself holds focus — a button inside it (Stop/Resume, the link
+      // handle) already answers Space on its own, and the keydown would otherwise bubble up
+      // here too and select the card a second time.
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
     >
       {onLinkStart && (
         <button
