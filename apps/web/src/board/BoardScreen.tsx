@@ -281,7 +281,15 @@ export function BoardScreen({
   const scopes = useMemo<BoardScope[]>(() => {
     const personal = state.projects[PERSONAL_PROJECT_ID];
     const list: BoardScope[] = personal
-      ? [{ id: personal.id, name: personal.name, color: personal.color, ownsTickets: false }]
+      ? [
+          {
+            id: personal.id,
+            name: personal.name,
+            color: personal.color,
+            ownsTickets: false,
+            archivedAt: null,
+          },
+        ]
       : [];
     for (const project of projects) {
       if (project.id === PERSONAL_PROJECT_ID) continue;
@@ -290,6 +298,7 @@ export function BoardScreen({
         name: project.name,
         color: project.color,
         ownsTickets: ownsTickets(project),
+        archivedAt: project.archivedAt,
       });
     }
     return list;

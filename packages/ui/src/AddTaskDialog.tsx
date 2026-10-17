@@ -84,6 +84,7 @@ import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
 import type { BoardScope, JiraIssueTypeOption, JiraProjectOption } from '@tm/shared/ipc';
 import { attachmentName, insertAttachmentRef } from '@tm/shared/attachments';
 import { isEpic } from '@tm/shared/tickets';
+import { pickableEpics, pickableProjects } from '@tm/shared/trackerArchive';
 import { LINK_GATE_LABEL } from '@tm/shared/taskChain';
 import type { PromptTemplate } from '@tm/shared/promptTemplates';
 import {
@@ -768,7 +769,10 @@ export function AddTaskDialog({
     () => chainCandidates.find((c) => c.id === runsAfterId) ?? null,
     [chainCandidates, runsAfterId],
   );
-  const epicCandidates = useMemo(() => boardTickets.filter(isEpic), [boardTickets]);
+  const epicCandidates = useMemo(
+    () => pickableEpics(boardTickets.filter(isEpic), epicTaskId),
+    [boardTickets, epicTaskId],
+  );
   const selectedAgentProject = useMemo(
     () => agentProjects.find((p) => p.id === agentProjectId) ?? null,
     [agentProjects, agentProjectId],
@@ -1032,7 +1036,7 @@ export function AddTaskDialog({
                     selectedOptions={[boardId]}
                     onOptionSelect={(_e, d) => setBoardId(d.optionValue ?? PERSONAL_PROJECT_ID)}
                   >
-                    {boards.map((b) => (
+                    {pickableProjects(boards, boardId).map((b) => (
                       <Option key={b.id} value={b.id} text={b.name}>
                         {b.name}
                       </Option>

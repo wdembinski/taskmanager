@@ -89,7 +89,7 @@ import {
   taskIdUnder,
   type LinkDragState,
 } from '@ui/board/chainDrag';
-import { archiveIndexOf } from '@shared/trackerArchive';
+import { archiveIndexOf, pickableProjects } from '@shared/trackerArchive';
 import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
 import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
@@ -1247,7 +1247,7 @@ export function MyTasks({
             }}
           >
             <Option value="all">All boards</Option>
-            {scopes.map((s) => (
+            {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
               <Option key={s.id} value={s.id}>
                 {s.name}
               </Option>

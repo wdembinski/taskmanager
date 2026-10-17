@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Milestone, TicketLabel } from '@tm/shared/model';
+import { pickableMilestones } from '@tm/shared/trackerArchive';
 import { offeredMilestones, scopeTicketRegistries } from './ticketRegistries';
 
 let seq = 0;
@@ -65,5 +66,17 @@ describe('offeredMilestones', () => {
     const current = milestone({ closed: true });
     const other = milestone({ closed: true });
     expect(offeredMilestones([current, other], current.id)).toEqual([current]);
+  });
+});
+
+describe('offeredMilestones composed with pickableMilestones', () => {
+  it('drops an archived milestone unless it is the current one', () => {
+    const open = milestone();
+    const archived = milestone({ archivedAt: 1 });
+    const offer = (currentId?: string | null): Milestone[] =>
+      pickableMilestones(offeredMilestones([open, archived], currentId), currentId);
+
+    expect(offer()).toEqual([open]);
+    expect(offer(archived.id)).toEqual([open, archived]);
   });
 });

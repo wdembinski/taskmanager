@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Milestone, Person, TicketLabel, TicketLink } from '@tm/shared/model';
+import { pickableMilestones } from '@tm/shared/trackerArchive';
 import { useTransport } from '../transport';
 import { useInitialLoad, type InitialLoad } from '../useInitialLoad';
 import {
@@ -22,8 +23,9 @@ export interface TicketRegistries extends Pick<InitialLoad, 'error' | 'retry'> {
   people: Person[];
   /** This project's milestones, closed ones included — for display. */
   milestones: Milestone[];
-  /** The milestone picker's own rule ({@link offeredMilestones}) over this project's
-   *  milestones, curried so a caller supplies only the ticket's own current id. */
+  /** The milestone picker's own rule over this project's milestones — closed ones dropped
+   *  ({@link offeredMilestones}) and archived ones dropped (`pickableMilestones`), both
+   *  except the ticket's own current milestone — curried so a caller supplies only that id. */
   offeredMilestones: (currentId?: string | null) => Milestone[];
   /** This project's labels. */
   labels: TicketLabel[];
@@ -74,7 +76,8 @@ export function useTicketRegistries(projectId: string | null): TicketRegistries 
     [projectId, milestones, labels],
   );
   const offeredMilestones = useCallback(
-    (currentId?: string | null) => offeredMilestonesOf(scoped.milestones, currentId),
+    (currentId?: string | null) =>
+      pickableMilestones(offeredMilestonesOf(scoped.milestones, currentId), currentId),
     [scoped.milestones],
   );
 

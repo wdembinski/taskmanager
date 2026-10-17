@@ -51,6 +51,7 @@ import {
 } from '@tm/ui/board/doneSwitchLabel';
 import type { BoardDisplaySettings } from '@tm/shared/settings';
 import type { BoardScope } from '@tm/shared/ipc';
+import { pickableProjects } from '@tm/shared/trackerArchive';
 
 export interface BoardToolbarProps {
   /** Which board is open — `'all'` unions every board's cards, or one board's own project
@@ -140,7 +141,7 @@ export function BoardToolbar({
           }}
         >
           <Option value="all">All boards</Option>
-          {scopes.map((s) => (
+          {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
             <Option key={s.id} value={s.id}>
               {s.name}
             </Option>

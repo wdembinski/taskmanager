@@ -40,6 +40,7 @@ import {
 import { SettingsRegular } from '@fluentui/react-icons';
 import type { Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
 import { delegatedAgentName, isEpic } from '@tm/shared/tickets';
+import { pickableEpics, pickableMilestones } from '@tm/shared/trackerArchive';
 import { draftKey, useDraft } from '../drafts';
 import { useTransport } from '../transport';
 import { AssigneeDisplay } from './AssigneeDisplay';
@@ -47,6 +48,7 @@ import { LabelRegistry } from './LabelRegistry';
 import { MilestoneList } from './MilestoneList';
 import { PersonAvatar } from './PersonAvatar';
 import { dateToInput, splitLabels, ticketPatchFor, type TicketDraft } from './ticketFields';
+import { offeredMilestones } from './ticketRegistries';
 import { TicketTypeFields } from './TicketTypeFields';
 
 const NONE = '';
@@ -114,7 +116,10 @@ export function TicketFieldsSection({
   );
   const dueAtDraft = useDraft(draftKey(ticket.id, 'dueAt'), dateToInput(ticket.dueAt ?? null));
 
-  const epicCandidates = tickets.filter((t) => isEpic(t) && t.id !== ticket.id);
+  const epicCandidates = pickableEpics(
+    tickets.filter((t) => isEpic(t) && t.id !== ticket.id),
+    ticket.epicTaskId,
+  );
   const previewLabels = splitLabels(labelsDraft.value);
   // Read-only — delegation happens from the assign dialog, not this dropdown, so this
   // section only ever displays `agentProjectId`, never edits it.
@@ -182,14 +187,15 @@ export function TicketFieldsSection({
                 if (d.optionValue !== undefined) void saveField('milestoneId', d.optionValue);
               }}
             >
-              {milestones
-                .filter((m) => !m.closed || m.id === ticket.milestoneId)
-                .map((m) => (
-                  <Option key={m.id} value={m.id} text={m.name}>
-                    {m.name}
-                    {m.closed ? ' (closed)' : ''}
-                  </Option>
-                ))}
+              {pickableMilestones(
+                offeredMilestones(milestones, ticket.milestoneId),
+                ticket.milestoneId,
+              ).map((m) => (
+                <Option key={m.id} value={m.id} text={m.name}>
+                  {m.name}
+                  {m.closed ? ' (closed)' : ''}
+                </Option>
+              ))}
               <Option value={NONE}>None</Option>
             </Dropdown>
             {!readOnly && (
