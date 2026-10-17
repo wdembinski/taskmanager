@@ -56,6 +56,12 @@ export interface GitLabMergeRequest {
   detailed_merge_status?: string | null;
   /** The pre-15.6 spelling, kept as a fallback for older self-hosted instances. */
   merge_status?: string | null;
+  /**
+   * The base, head and start SHAs this merge request's diff was computed against — carried
+   * by the DETAIL endpoint only, same as `detailed_merge_status`. The version a diff
+   * ({@link GitLabClient.listMergeRequestDiffs}) and a positioned comment (F18) belong to.
+   */
+  diff_refs?: { base_sha?: string; head_sha?: string; start_sha?: string } | null;
   has_conflicts?: boolean | null;
   references?: { full?: string } | null;
   head_pipeline?: { id?: number; status?: string; web_url?: string } | null;
@@ -127,6 +133,35 @@ export interface GitLabIssueQuery {
 export interface GitLabReviewer {
   user?: { id?: number; username?: string };
   state?: string;
+}
+
+/**
+ * One changed file's diff — a row of `GET /merge_requests/:iid/diffs` (15.7+) or an entry of
+ * `changes` on the legacy `/changes` endpoint, which {@link GitLabClient.listMergeRequestDiffs}
+ * folds into the same shape.
+ */
+export interface GitLabMergeRequestDiff {
+  old_path: string;
+  new_path: string;
+  diff: string;
+  new_file?: boolean;
+  renamed_file?: boolean;
+  deleted_file?: boolean;
+  a_mode?: string;
+  b_mode?: string;
+  /** `diff` is empty when this is set — the file is too big for GitLab to compute one. */
+  too_large?: boolean;
+  /** GitLab computed the diff but is not sending it inline; a caller must fetch it on demand. */
+  collapsed?: boolean;
+  generated_file?: boolean;
+}
+
+/** Every file {@link GitLabClient.listMergeRequestDiffs} read, and which endpoint answered. */
+export interface GitLabMergeRequestDiffList {
+  diffs: GitLabMergeRequestDiff[];
+  /** The page cap stopped `/diffs` early, or `/changes` admitted its own `overflow: true`. */
+  truncated: boolean;
+  endpoint: 'diffs' | 'changes';
 }
 
 /** What {@link GitLabClient.createMergeRequest} is asked to open. */
@@ -228,6 +263,55 @@ export class GitLabClient {
   }
 
   /**
+   * One GET that answers in TEXT rather than JSON — the shape {@link getRawFile} needs and
+   * every other read on this client does not. Mirrors {@link raw}'s failure path exactly, so
+   * a 404 here is the same {@link GitLabError} a caller already knows how to tell apart from
+   * every other status.
+   */
+  private async rawText(path: string): Promise<string> {
+    const res = await fetch(this.url(path), {
+      headers: { 'PRIVATE-TOKEN': sanitizeToken(this.config.token), Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new GitLabError(
+        `GitLab ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+        res.status,
+      );
+    }
+    return res.text();
+  }
+
+  /**
+   * Every page of a list endpoint, following `x-next-page` up to `maxPages` — the loop
+   * {@link listMyMergeRequests} used to run inline, extracted so {@link listReviewerMergeRequests}
+   * does not have to repeat it. An empty header means the same thing a missing one does (the
+   * last page), as {@link listIssues} already has to account for.
+   *
+   * `truncated` is true only when the cap stopped the read with a next page still on offer —
+   * exhausting the pages on our own terms (no `x-next-page`, or one GitLab sends but cannot
+   * be read as a positive page number) is an honestly complete answer, not a short one.
+   */
+  private async pageByNextPage<T>(
+    path: string,
+    maxPages: number,
+  ): Promise<{ items: T[]; truncated: boolean }> {
+    const items: T[] = [];
+    let page = 1;
+    for (let i = 0; i < maxPages; i++) {
+      const pagedPath = path.includes('?') ? `${path}&page=${page}` : `${path}?page=${page}`;
+      const { body, res } = await this.raw(pagedPath);
+      if (Array.isArray(body)) items.push(...(body as T[]));
+      const next = res.headers?.get('x-next-page');
+      if (!next || !next.trim()) return { items, truncated: false };
+      const nextPage = Number(next);
+      if (!Number.isFinite(nextPage) || nextPage <= 0) return { items, truncated: false };
+      page = nextPage;
+    }
+    return { items, truncated: true };
+  }
+
+  /**
    * One GraphQL call, at `/api/graphql` rather than `/api/v4` — the only route to the merge
    * commit message GitLab itself would propose, which the REST API has no field for.
    *
@@ -319,19 +403,32 @@ export class GitLabClient {
    * since GitLab pages at 100 and a busy month exceeds that.
    */
   async listMyMergeRequests(maxPages = 5): Promise<GitLabMergeRequest[]> {
-    const all: GitLabMergeRequest[] = [];
-    let page = 1;
-    for (let i = 0; i < maxPages; i++) {
-      const { body, res } = await this.raw(
-        `/merge_requests?scope=created_by_me&state=opened&per_page=100&order_by=updated_at&page=${page}`,
-      );
-      if (Array.isArray(body)) all.push(...(body as GitLabMergeRequest[]));
-      const next = res.headers?.get('x-next-page');
-      if (!next) break;
-      page = Number(next);
-      if (!Number.isFinite(page) || page <= 0) break;
-    }
-    return all;
+    const { items } = await this.pageByNextPage<GitLabMergeRequest>(
+      '/merge_requests?scope=created_by_me&state=opened&per_page=100&order_by=updated_at',
+      maxPages,
+    );
+    return items;
+  }
+
+  /**
+   * Open merge requests where the signed-in user is a REVIEWER rather than the author — the
+   * counterpart of {@link listMyMergeRequests}'s `created_by_me`.
+   *
+   * `scope=all` is not optional: GitLab defaults this endpoint's scope to `created_by_me`,
+   * which would silently hide every merge request this call exists to find — one the token
+   * did not open itself. `truncated` is returned alongside the list for the same reason
+   * GitHub's `listReviewRequests` does: a review queue that silently dropped rows is a worse
+   * failure than one that admits it could not finish reading them.
+   */
+  async listReviewerMergeRequests(
+    username: string,
+    maxPages = 5,
+  ): Promise<{ mergeRequests: GitLabMergeRequest[]; truncated: boolean }> {
+    const { items, truncated } = await this.pageByNextPage<GitLabMergeRequest>(
+      `/merge_requests?reviewer_username=${encodeURIComponent(username)}&state=opened&scope=all&per_page=100&order_by=updated_at`,
+      maxPages,
+    );
+    return { mergeRequests: items, truncated };
   }
 
   /**
@@ -394,6 +491,89 @@ export class GitLabClient {
   getMergeRequestByPath(projectPath: string, iid: number): Promise<GitLabMergeRequest> {
     return this.request<GitLabMergeRequest>(
       `/projects/${encodeURIComponent(projectPath)}/merge_requests/${iid}`,
+    );
+  }
+
+  /**
+   * Every changed file's diff — `GET /merge_requests/:iid/diffs` (15.7+), paged by
+   * `x-next-page` up to `maxPages`, written out rather than delegated to
+   * {@link pageByNextPage}: a 404 on the very FIRST page falls back to the legacy `/changes`
+   * endpoint (pre-15.7, or an instance that never grew `/diffs`), but a 404 on any LATER page
+   * is a real fault — the merge request vanished mid-read, a token revoked between pages —
+   * and must propagate rather than silently restart the whole read through `/changes`.
+   *
+   * Any other error from `/diffs`, or a 404 from `/changes` too, propagates; F15.8 is what
+   * turns the latter into an explicit "no diff endpoint" error for the UI.
+   */
+  async listMergeRequestDiffs(
+    projectId: number | string,
+    iid: number,
+    maxPages = 30,
+  ): Promise<GitLabMergeRequestDiffList> {
+    const project = encodeURIComponent(String(projectId));
+    const basePath = `/projects/${project}/merge_requests/${iid}/diffs?per_page=100`;
+
+    let firstPage: { body: unknown; res: Response };
+    try {
+      firstPage = await this.raw(`${basePath}&page=1`);
+    } catch (err) {
+      if (err instanceof GitLabError && err.status === 404) {
+        return this.mergeRequestChangesFallback(project, iid);
+      }
+      throw err;
+    }
+
+    const diffs: GitLabMergeRequestDiff[] = Array.isArray(firstPage.body)
+      ? (firstPage.body as GitLabMergeRequestDiff[])
+      : [];
+    let next = firstPage.res.headers?.get('x-next-page');
+    for (let i = 1; i < maxPages; i++) {
+      if (!next || !next.trim()) break;
+      const page = Number(next);
+      if (!Number.isFinite(page) || page <= 0) break;
+      const { body, res } = await this.raw(`${basePath}&page=${page}`);
+      if (Array.isArray(body)) diffs.push(...(body as GitLabMergeRequestDiff[]));
+      next = res.headers?.get('x-next-page');
+    }
+    const truncated = Boolean(
+      next && next.trim() && Number.isFinite(Number(next)) && Number(next) > 0,
+    );
+    return { diffs, truncated, endpoint: 'diffs' };
+  }
+
+  /**
+   * The legacy `/changes` endpoint {@link listMergeRequestDiffs} falls back to. GitLab moved
+   * the per-file diff list out of the detail payload and into its own `/diffs` endpoint in
+   * 15.7 — everything older only ever exposed it bundled under `changes` here. `overflow` is
+   * GitLab's own truncation flag for this endpoint, since `/changes` answers in one response
+   * and carries no `x-next-page` to page through.
+   */
+  private async mergeRequestChangesFallback(
+    project: string,
+    iid: number,
+  ): Promise<GitLabMergeRequestDiffList> {
+    const body = await this.request<{ changes?: unknown; overflow?: boolean }>(
+      `/projects/${project}/merge_requests/${iid}/changes`,
+    );
+    return {
+      diffs: Array.isArray(body?.changes) ? (body.changes as GitLabMergeRequestDiff[]) : [],
+      truncated: body?.overflow === true,
+      endpoint: 'changes',
+    };
+  }
+
+  /**
+   * A file's raw content at a ref — `GET /projects/:id/repository/files/<path>/raw?ref=<ref>`.
+   *
+   * The whole path is encoded as ONE opaque segment (`encodeURIComponent(path)`, slashes
+   * included), unlike GitHub's per-segment encoding: GitLab's repository-files API addresses
+   * a file by its full path as a single segment, so a literal `/` must arrive as `%2F` or the
+   * request resolves against a different, shorter path.
+   */
+  getRawFile(projectId: number | string, path: string, ref: string): Promise<string> {
+    const project = encodeURIComponent(String(projectId));
+    return this.rawText(
+      `/projects/${project}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(ref)}`,
     );
   }
 

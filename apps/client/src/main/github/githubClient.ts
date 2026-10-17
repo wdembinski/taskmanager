@@ -279,6 +279,38 @@ export interface GitHubBranchProtection {
   } | null;
 }
 
+/**
+ * One row of `GET /repos/{owner}/{repo}/pulls/{number}/files` — one changed file on a pull
+ * request.
+ */
+export interface GitHubPullRequestFile {
+  sha: string;
+  filename: string;
+  /**
+   * One of `added`, `removed`, `modified`, `renamed`, `copied`, `changed`, `unchanged` —
+   * typed as a plain `string` rather than that union, since GitHub documents it the same way
+   * and reserves the right to add a value we have not seen yet.
+   */
+  status: string;
+  additions?: number;
+  deletions?: number;
+  changes?: number;
+  /**
+   * Absent for binary and oversized files — F15.8 reads that absence as `tooLarge` rather
+   * than as a file with no changes.
+   */
+  patch?: string;
+  /** Present only when `status` is `renamed`. */
+  previous_filename?: string;
+}
+
+/** Every changed file `GET /pulls/{number}/files` returned, and how far that answer reached. */
+export interface GitHubPullRequestFileList {
+  files: GitHubPullRequestFile[];
+  /** Whether the page cap stopped us with a `rel="next"` still left to follow. */
+  truncated: boolean;
+}
+
 /** What {@link GitHubClient.createPullRequest} is asked to open. */
 export interface CreatePullRequestInput {
   /**
@@ -469,6 +501,24 @@ export class GitHubClient {
   /** One request against a path below the API root. */
   private raw(path: string): Promise<{ body: unknown; res: Response }> {
     return this.rawUrl(this.url(path));
+  }
+
+  /**
+   * One GET that answers in TEXT rather than JSON — the shape {@link getRawFile} needs and
+   * every other read on this client does not. Shares {@link rawUrl}'s failure path exactly,
+   * so a 404 here is the same `GitHubError` a caller already knows how to tell apart from
+   * every other status.
+   */
+  private async rawText(path: string, accept: string): Promise<string> {
+    const res = await fetch(this.url(path), { headers: { ...this.headers(), Accept: accept } });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new GitHubError(
+        `GitHub ${res.status} ${res.statusText}${text ? `: ${text.slice(0, 300)}` : ''}`,
+        res.status,
+      );
+    }
+    return res.text();
   }
 
   private async request<T>(path: string): Promise<T> {
@@ -1060,5 +1110,69 @@ export class GitHubClient {
     return this.request<GitHubBranchProtection>(
       `${repoPath(owner, repo)}/branches/${encodeURIComponent(branch)}/protection`,
     );
+  }
+
+  /**
+   * Every changed file on a pull request — `GET /repos/{owner}/{repo}/pulls/{number}/files`,
+   * following `Link: rel="next"` the same way {@link searchIssues} does (same loop shape),
+   * up to `maxPages`.
+   *
+   * 30 pages of 100 by default: GitHub documents 3,000 files as the most it will ever return
+   * for one pull request, so that is the cap read in full rather than a smaller default built
+   * for every other list endpoint here. `truncated` means the same thing it does on
+   * {@link GitHubSearchResult} — the cap stopped us with a `rel="next"` still left to follow.
+   */
+  async listPullRequestFiles(
+    owner: string,
+    repo: string,
+    number: number,
+    maxPages = 30,
+  ): Promise<GitHubPullRequestFileList> {
+    const files: GitHubPullRequestFile[] = [];
+    let url: string | null = this.url(
+      `${repoPath(owner, repo)}/pulls/${number}/files?per_page=100`,
+    );
+    for (let i = 0; i < maxPages && url; i++) {
+      const { body, res }: { body: unknown; res: Response } = await this.rawUrl(url);
+      if (Array.isArray(body)) files.push(...(body as GitHubPullRequestFile[]));
+      url = nextPageUrl(res.headers?.get('link'));
+    }
+    return { files, truncated: url !== null };
+  }
+
+  /**
+   * A file's raw content at a ref — `GET /repos/{owner}/{repo}/contents/{path}?ref=<ref>`
+   * with `Accept: application/vnd.github.raw+json`, which hands back the file's bytes
+   * directly rather than the base64-wrapped JSON envelope the default media type gives.
+   *
+   * Each path segment is encoded on its own
+   * (`path.split('/').map(encodeURIComponent).join('/')`) so a literal `/` still reaches the
+   * endpoint as a directory separator while a `#`, `?` or space inside a segment does not
+   * change which endpoint gets called.
+   *
+   * No size cap here — F15.8's `DIFF_FILE_MAX_BYTES` is where that is enforced. A 404 means
+   * the file does not exist at that ref, and is left for the caller to decide what that means.
+   */
+  getRawFile(owner: string, repo: string, path: string, ref: string): Promise<string> {
+    const encodedPath = path
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    return this.rawText(
+      `${repoPath(owner, repo)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
+      'application/vnd.github.raw+json',
+    );
+  }
+
+  /**
+   * Pull requests where you were asked to review — `is:pr is:open review-requested:@me`.
+   *
+   * Returns the whole {@link GitHubSearchResult} rather than just `.items` the way
+   * {@link listMyPullRequests} does, so `truncated` reaches the queue service: a review
+   * queue that silently dropped half its rows would be a worse failure than one that tells
+   * the human it could not finish reading them.
+   */
+  listReviewRequests(maxPages = 5): Promise<GitHubSearchResult> {
+    return this.searchIssues('is:pr is:open review-requested:@me archived:false', maxPages);
   }
 }
