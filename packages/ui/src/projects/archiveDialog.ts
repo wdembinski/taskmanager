@@ -21,7 +21,17 @@ export interface ArchiveDialogModel {
   moreCount: number;
   /** Every open ticket's key — what "Archive them too" will hide. */
   archiveTooKeys: string[];
-  /** Other milestones, in this project, open and not archived — the "move to" picks. */
+  /**
+   * Other milestones, in this project, open and not archived — the "move to" picks.
+   *
+   * Also drops **closed** milestones (`!m.closed`), beyond `pickableMilestones`'s own
+   * self/archived/other-project rule — a decision taken without asking, since the spec
+   * only named those three. A closed milestone reads as "done"; sending open tickets
+   * there would reopen a question about a milestone nobody meant to touch. Closed
+   * milestones already drop out of `offeredMilestones` everywhere else a human assigns
+   * a ticket to one (`ticketRegistries.ts`), so this keeps the dialog consistent with
+   * every other milestone picker in the app rather than carving out an exception.
+   */
   targets: Milestone[];
 }
 
@@ -40,6 +50,7 @@ export function archiveDialogModel(
   const openKeys = open.map(ticketKeyOf);
   const sampleKeys = openKeys.slice(0, ARCHIVE_SAMPLE_KEYS);
 
+  // `!m.closed`: a decision taken without asking — see the `targets` field doc above.
   const targets = pickableMilestones(milestones, undefined).filter(
     (m) => m.projectId === milestone.projectId && m.id !== milestone.id && !m.closed,
   );

@@ -8,7 +8,18 @@
  * never sent — a one-click archive (no open tickets, nothing to redirect) is exactly what
  * `archive:restore` can put back. A dialog-driven archive that moved open tickets to the
  * Backlog or another milestone cannot be undone by this call: those tickets already left,
- * and restoring the milestone does not pull them back.
+ * and restoring the milestone does not pull them back. (Decision taken without asking —
+ * the spec didn't say whether Undo should ever cover a dialog-driven move; offering it
+ * would restore the milestone while leaving its tickets wherever the choice sent them, a
+ * half-undo that looks like a bug. `archiveDialogModel`'s own `needsDialog` is exactly the
+ * `choice !== undefined` case this toast omits Undo for.)
+ *
+ * This toast — Undo included — is also a toast: when `toastsEnabled` is off, `main.tsx`
+ * mounts no `<Toaster>` at all and `dispatchToast` has nowhere to land, so Undo disappears
+ * right along with the "Archived <label>" message (decision taken without asking: no
+ * separate carve-out to keep Undo visible with toasts off). F14.8's Archived view — every
+ * archived milestone with its own Restore button — is the fallback for both cases: no
+ * toast was ever shown, or a dialog-driven move that this call can't undo anyway.
  */
 import {
   Link,

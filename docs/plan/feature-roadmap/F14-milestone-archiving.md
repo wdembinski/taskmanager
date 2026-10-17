@@ -367,6 +367,19 @@ from disagreeing — the same reason F12 made one panel.
   - Acceptance: model tests — no open tickets skips the dialog; target list excludes the
     milestone itself, archived ones and other projects; "archive too" lists the keys it will
     hide. Gates green.
+  - **Decisions taken without asking:**
+    - **Closed milestones are excluded from the move targets**, beyond the spec's own
+      self/archived/other-project rule (`archiveDialog.ts`'s `targets` filter). Matches
+      every other milestone picker's `offeredMilestones` rule — a closed milestone is not
+      somewhere open work should land.
+    - **Undo is not offered after a dialog choice.** `useArchiveAction`'s toast only shows
+      Undo when `choice` was never sent; `archive:restore` puts the milestone back but
+      cannot pull tickets back from wherever a choice sent them, so offering it there would
+      be a half-undo.
+    - **`toastsEnabled=false` hides the Undo toast too**, same as every other toast
+      (`main.tsx` mounts no `<Toaster>` at all) — no special case to keep it visible.
+      F14.8's Archived view (Restore per row) is the fallback once F14.7 ships — until
+      then, with toasts off, a one-click archive has no Undo path at all.
 
 - [ ] F14.8 Add the Archived view with one-click restore @needs: F14.6 Hide archived work in the Backlog, Timeline and Graph, F14.7 Build the archive actions and the open-tickets dialog
 
