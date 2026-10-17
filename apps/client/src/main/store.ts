@@ -100,6 +100,7 @@ import type { DailyUsageInput, UsageSample } from '@shared/usage';
 import {
   type AppearanceSetting,
   type AppSettings,
+  type TransparencySetting,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_CLOUD_SETTINGS,
   DEFAULT_FEATURE_SETTINGS,
@@ -1480,21 +1481,27 @@ export interface PendingCloudResult extends StoredCloudOutcome {
 }
 
 /**
- * Read the saved `appearance` setting without booting the real store — `createWindow`
- * (`main/index.ts`) must pick a window colour before `registerIpcHandlers` ever opens
- * the real connection below, so this opens its own short-lived read-only one against
- * the same file and closes it again.
+ * Read the saved `appearance`/`transparency` settings without booting the real store —
+ * `createWindow` (`main/index.ts`) must pick a window colour and material before
+ * `registerIpcHandlers` ever opens the real connection below, so this opens its own
+ * short-lived read-only one against the same file and closes it again.
  *
  * No database at all means a fresh install, which has never had a chance to save
- * anything: that is `'system'`, same as {@link DEFAULT_SETTINGS}`.appearance`. Any
+ * anything: `appearance` is `'system'`, same as {@link DEFAULT_SETTINGS}`.appearance`. Any
  * OTHER failure — a locked file, a corrupt row, a blob saved before `appearance`
- * existed — falls back to `'dark'` instead, because every one of those is an
+ * existed — falls back `appearance` to `'dark'` instead, because every one of those is an
  * EXISTING install, and `'dark'` is the window colour it always painted before this
  * setting existed (see `withExistingInstallAppearance`).
+ *
+ * `transparency` has no such history — the setting predates nothing, so `'system'` (its
+ * {@link DEFAULT_SETTINGS} value) is the fallback in every one of those same cases.
  */
-export function readSavedAppearance(userData: string): AppearanceSetting {
+export function readSavedWindowSettings(userData: string): {
+  appearance: AppearanceSetting;
+  transparency: TransparencySetting;
+} {
   const dbPath = join(userData, 'orchestrator.db');
-  if (!existsSync(dbPath)) return 'system';
+  if (!existsSync(dbPath)) return { appearance: 'system', transparency: 'system' };
   try {
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     try {
@@ -1502,14 +1509,17 @@ export function readSavedAppearance(userData: string): AppearanceSetting {
       // that constant lives inside createStore's own closure.
       const row = db.prepare('SELECT value FROM app_state WHERE key = ?').get('settings') as
         { value: string } | undefined;
-      if (!row) return 'dark';
+      if (!row) return { appearance: 'dark', transparency: 'system' };
       const parsed = JSON.parse(row.value) as Partial<AppSettings>;
-      return parsed.appearance ?? 'dark';
+      return {
+        appearance: parsed.appearance ?? 'dark',
+        transparency: parsed.transparency ?? 'system',
+      };
     } finally {
       db.close();
     }
   } catch {
-    return 'dark';
+    return { appearance: 'dark', transparency: 'system' };
   }
 }
 

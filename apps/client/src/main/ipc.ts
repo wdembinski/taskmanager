@@ -35,6 +35,7 @@ import {
   type Rectangle,
 } from 'electron';
 import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
+import type { WindowMaterial } from './windowMaterial';
 import type {
   BoardScope,
   IpcApi,
@@ -442,7 +443,7 @@ export interface Engine {
  * with the main window (needed so the engine can push events to the UI). Returns
  * the engine so the caller can stop sessions and close the DB on quit.
  */
-export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
+export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowMaterial): Engine {
   // The cloud's copy of everything `send` pushes. Constructed INERT here, at the top of the
   // function, because `send` is defined on the next line and everything it needs to actually
   // send — the store, the access token — is declared hundreds of lines below;
@@ -480,8 +481,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
     // Resync the WINDOW's own background the moment `appearance` changes, so a later
     // restore from hidden/minimized (the tray path above) repaints with the CURRENT
     // scheme rather than whatever colour `createWindow` picked at boot — see
-    // `readSavedAppearance` (store.ts), which supplies that boot-time colour.
-    if (channel === 'settings:changed' && !mainWindow.isDestroyed()) {
+    // `readSavedWindowSettings` (store.ts), which supplies that boot-time colour.
+    //
+    // Skipped while a native material is active: this window's `backgroundColor` is
+    // `'#00000000'` (see `windowAppearance`, main/index.ts), and painting an opaque colour
+    // over it would switch the material off (F13.6's spike finding) — a transparent window
+    // never shows the white/wrong-scheme flash on restore that this exists to fix, so there
+    // is nothing to resync anyway.
+    if (channel === 'settings:changed' && !mainWindow.isDestroyed() && material === 'none') {
       const { appearance } = payload as AppSettings;
       mainWindow.setBackgroundColor(
         WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)],
@@ -5619,6 +5626,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
   });
   handle('window:close', async () => mainWindow.close());
   handle('window:isMaximized', async () => isMaximized());
+  // What this window was actually created with — `'none'` (refused by `windowMaterialFor`)
+  // reports as null, so the renderer's own glass pane knows whether it's the one drawing
+  // the chrome or the OS already did.
+  handle('window:nativeMaterial', async () => (material === 'none' ? null : material));
 
   // Auto-update. The updater is constructed near the top (it is inert until `start()`);
   // these three are the whole surface the UI gets — the rest arrives on `update:changed`.

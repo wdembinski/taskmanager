@@ -102,6 +102,7 @@ const HOST_ONLY_REASONS = {
   'window:toggleMaximize': 'window-os',
   'window:close': 'window-os',
   'window:isMaximized': 'window-os',
+  'window:nativeMaterial': 'window-os',
   'update:install': 'window-os',
   'attachment:open': 'window-os',
   'auth:signIn': 'window-os',
@@ -409,6 +410,7 @@ export const RELAY_POLICY: {
   'window:toggleMaximize': 'host-only',
   'window:close': 'host-only',
   'window:isMaximized': 'host-only',
+  'window:nativeMaterial': 'host-only',
 
   'update:get': 'relay',
   'update:check': 'relay',

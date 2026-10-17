@@ -60,6 +60,7 @@ import type {
   TicketPatch,
 } from './model';
 import type { AddAgentProfileInput, AgentProfile, AgentProfilePatch } from './agent';
+import type { NativeMaterial } from './canvas';
 import type { PastedAttachment, TaskAttachment, UploadedAttachment } from './attachments';
 import type { IssuePage, IssueProviderId, IssueQuery } from './issues';
 import type { GitGraph } from './gitGraph';
@@ -1758,6 +1759,12 @@ export interface IpcApi {
   'window:close': () => Promise<void>;
   /** Whether the window is currently maximized (seed the restore/maximize icon). */
   'window:isMaximized': () => Promise<boolean>;
+  /**
+   * The native Mica/Acrylic material this window was created with (F13.7), or `null` when
+   * `windowMaterialFor` refused it and the renderer's own CSS glass pane is drawing the
+   * chrome instead.
+   */
+  'window:nativeMaterial': () => Promise<NativeMaterial | null>;
 
   /**
    * The auto-updater's current state, for seeding the status bar and the Settings block
