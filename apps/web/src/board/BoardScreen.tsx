@@ -35,7 +35,7 @@
  * lands without needing a desktop Client to apply it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Caption1, makeStyles, mergeClasses } from '@fluentui/react-components';
+import { Button, Caption1, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
 import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
@@ -91,7 +91,7 @@ import { mergeRequestsByTask, useBoardExtras, byTask } from './useBoardExtras';
 const useStyles = makeStyles({
   /** The empty state, in the board's own half of the screen rather than across all of it. */
   empty: { padding: '8px 4px' },
-  error: { padding: '4px', color: '#f1707b' },
+  error: { padding: '4px', color: tokens.colorPaletteRedForeground1 },
 });
 
 /**

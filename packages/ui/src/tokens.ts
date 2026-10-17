@@ -125,6 +125,9 @@ export interface StatusBarTokens {
   dotOk: string;
   /** The live/dead dot's "dead" fill. See `theme.ts`'s `ACCENT.liveRed`. */
   dotBad: string;
+  /** The dark ring around the dot, so it separates from both the gradient and the
+   *  attention orange it is ever drawn on. */
+  dotRing: string;
   /**
    * The ink for anything drawn directly on the bar's own fill — the gradient or the
    * attention orange — without a ring of its own to carry its contrast (unlike
@@ -151,6 +154,7 @@ export interface StatusBarTokens {
 const STATUS_BAR: StatusBarTokens = {
   dotOk: '#3FB950',
   dotBad: '#F85149',
+  dotRing: 'rgba(0, 0, 0, 0.45)',
   ink: '#1b1b1b',
   quotaTrack: 'rgba(255, 255, 255, 0.35)',
   quotaOk: '#FFFFFF',

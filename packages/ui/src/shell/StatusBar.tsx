@@ -52,7 +52,7 @@ const useStyles = makeStyles({
     height: '9px',
     borderRadius: '50%',
     flexShrink: 0,
-    boxShadow: '0 0 0 1.5px rgba(0, 0, 0, 0.45)',
+    boxShadow: '0 0 0 1.5px var(--tm-status-bar-dot-ring)',
   },
   // NOT `colorPaletteGreenBackground3`, which was the bug: too low contrast against both
   // the bar's gradient and its orange — invisible on both.

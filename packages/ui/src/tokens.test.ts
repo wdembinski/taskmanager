@@ -124,6 +124,7 @@ describe('tokenCssVars', () => {
       const statusBar = SEMANTIC[scheme].statusBar;
       expect(vars['--tm-status-bar-dot-ok']).toBe(statusBar.dotOk);
       expect(vars['--tm-status-bar-dot-bad']).toBe(statusBar.dotBad);
+      expect(vars['--tm-status-bar-dot-ring']).toBe(statusBar.dotRing);
       expect(vars['--tm-status-bar-ink']).toBe(statusBar.ink);
       expect(vars['--tm-status-bar-quota-track']).toBe(statusBar.quotaTrack);
       expect(vars['--tm-status-bar-quota-ok']).toBe(statusBar.quotaOk);
