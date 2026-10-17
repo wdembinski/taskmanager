@@ -189,6 +189,11 @@ export const RELAY_POLICY: {
   'milestone:save': 'relay',
   'milestone:remove': 'relay',
 
+  // F14.4: rows only, like every Phase 24 ticket channel.
+  'archive:apply': 'relay',
+  'archive:restore': 'relay',
+  'archive:list': 'relay',
+
   'ticketLink:list': 'relay',
   'ticketLink:add': 'relay',
   'ticketLink:remove': 'relay',

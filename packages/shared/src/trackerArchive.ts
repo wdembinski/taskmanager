@@ -5,7 +5,7 @@
  * each writing its own filter.
  *
  * Also the shared **archive/restore contract**: the request and result types `store.ts`
- * (F14.4), `ipc.ts` (F14.4) and the UI (F14.7/F14.8) all import, so the main-process store and
+ * (F14.3), `ipc.ts` (F14.4) and the UI (F14.7/F14.8) all import, so the main-process store and
  * the renderer agree on one shape for "archive this", "restore this" and what either can
  * refuse.
  *
@@ -38,7 +38,7 @@ export type OpenTicketsChoice =
 export type ArchiveTarget = { kind: 'milestone' | 'epic' | 'project'; id: string };
 
 /**
- * Why an archive/restore call was refused. The store (F14.4) returns one of these instead of
+ * Why an archive/restore call was refused. The store (F14.3) returns one of these instead of
  * throwing, so the renderer can show the human a reason rather than a stack trace.
  */
 export type ArchiveRefusalReason =
@@ -50,7 +50,8 @@ export type ArchiveRefusalReason =
   | 'target-not-found' // choice.milestoneId unknown
   | 'target-is-self'
   | 'target-archived'
-  | 'target-other-project';
+  | 'target-other-project'
+  | 'choice-required'; // open tickets exist and no OpenTicketsChoice was given
 
 /**
  * What an archive/restore call hands back: on success, the project touched and which tasks
