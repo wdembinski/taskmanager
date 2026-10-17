@@ -299,6 +299,16 @@ describe('the two Fluent themes', () => {
     expect(appLightTheme.colorNeutralBackground2).toBe(SEMANTIC.light.canvas);
     expect(appDarkTheme.colorNeutralBackground2).toBe(SEMANTIC.dark.canvas);
   });
+
+  // F13.16 step 4: this is what makes every Fluent `Dialog` a flat surface for free — Fluent's
+  // own `DialogSurface` paints `colorNeutralBackground1` with no override of its own, so pinning
+  // it here to `paneOpaque` (never `paneGlass`) is the whole of "every Fluent dialog (flat
+  // surface)"; `test/dialog-flat-surface.test.ts` guards the other half, that nothing routes a
+  // dialog onto `GlassPane` instead.
+  it('carries colorNeutralBackground1 as the scheme flat/opaque pane surface', () => {
+    expect(appLightTheme.colorNeutralBackground1).toBe(SEMANTIC.light.paneOpaque);
+    expect(appDarkTheme.colorNeutralBackground1).toBe(SEMANTIC.dark.paneOpaque);
+  });
 });
 
 describe('CODE_VAR', () => {
