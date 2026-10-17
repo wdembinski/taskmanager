@@ -23,15 +23,10 @@ import {
 } from '@fluentui/react-components';
 import { UNREAD_ORANGE } from '@tm/shared/accent';
 import {
-  ATTENTION_TINT_BY_SCHEME,
-  CODE_BY_SCHEME,
-  FLUO_BY_SCHEME,
+  FLUO_VAR,
   SCROLL_THUMB_BY_SCHEME,
   SEMANTIC,
   SYNTAX_BY_SCHEME,
-  graphInk,
-  pipelineColor,
-  statusIndicatorColor,
   type ColorScheme,
   type SyntaxTokens,
   type WashTokens,
@@ -72,21 +67,6 @@ export const ACCENT = {
   liveGreen: '#3FB950',
   liveRed: '#F85149',
 } as const;
-
-/**
- * Code surfaces in agent output — inline spans and fenced blocks.
- *
- * A dark BLUE rather than `colorNeutralBackground4`'s near-black: against the pane's own
- * dark grey a neutral code background is almost invisible, so inline code read as
- * ordinary prose and a fenced block had no edge of its own. A slight hue shift separates
- * "this is code" from "this is text" without adding a border to every span.
- *
- * The dark entry of `CODE_BY_SCHEME` (`tokens.ts`); the light entry is reachable there
- * until F13.16 moves callers onto the scheme.
- */
-export const CODE_BG = CODE_BY_SCHEME.dark.bg;
-export const CODE_INLINE_BG = CODE_BY_SCHEME.dark.inlineBg;
-export const CODE_BORDER = CODE_BY_SCHEME.dark.border;
 
 /**
  * The card's ring width. There is only one ring now — "this card wants you". Selection
@@ -250,69 +230,6 @@ export function scaleTheme(base: Theme, basePx: number): Theme {
 }
 
 /**
- * The high-key palette every *state indicator* is drawn in — dots, glyphs, spinners.
- *
- * Fluent's palette backgrounds (`colorPaletteGreenBackground3` is #0e700e) are meant to sit
- * *behind* text, so as 6px dots on a near-black pane they were barely there: "done" and
- * "pending" differed by a shade of dark. These are picked to read at a glance at that size
- * against `#1f1f1f`, which is the only job they have.
- *
- * Deliberately NOT the issue-type colours in {@link ACCENT} (`bugRed`, `storyGreen`): those
- * say what a card *is*, and are drawn as larger glyphs where Fluent's weights are right.
- * These say what it is *doing*.
- *
- * `pending`, `skipped` and friends stay neutral grey on purpose — "nothing is happening" is
- * information too, and a fluo dot for it would make every idle row shout.
- *
- * The dark entry of `FLUO_BY_SCHEME` (`tokens.ts`); the light entry is reachable there
- * until F13.14/F13.16 move callers onto the scheme.
- */
-export const FLUO = FLUO_BY_SCHEME.dark;
-
-/**
- * A task status as an indicator colour — the card's step dots and the step rows' badges.
- *
- * Shared rather than owned by the card, because the two surfaces show the same steps: a
- * step that is amber on the card and orange in the detail pane reads as two states.
- *
- * The dark entry of `statusIndicatorColor` (`tokens.ts`); the light entry is reachable
- * there until F13.14/F13.16 move callers onto the scheme.
- */
-export const STATUS_INDICATOR_COLOR = statusIndicatorColor('dark');
-
-/**
- * A pipeline status as a dot colour.
- *
- * Stated once because three surfaces draw it — the card's MR row, the detail pane's, and
- * now the per-stage row — and a pipeline that is green on the card and grey in the pane
- * looks like two pipelines.
- *
- * The dark entry of `pipelineColor` (`tokens.ts`); the light entry is reachable there
- * until F13.14/F13.16 move callers onto the scheme.
- */
-export const PIPELINE_COLOR = pipelineColor('dark');
-
-/**
- * The commit graph's ink (`GitGraphPane`), and the whole of its colour budget.
- *
- * The graph is a picture of the PAST, and the past does not move: a repository with forty
- * branches in it would, coloured per branch the way `gitk` colours them, put more ink on the
- * screen than the board it sits beside — and every stroke of it would be saying something
- * that had already finished happening. So the lanes, the dots, the refs and the base branch
- * are all monochrome, and exactly one thing on the drawing is allowed a colour: the branch of
- * a card whose agent is **running right now**.
- *
- * That is the same rule the rest of the app is kept to — colour is for things that MOVE (the
- * card's running band, the chain's travelling dash, every spinner) — and it is why this is
- * {@link FLUO.cyan} rather than the brand accent: cyan is already what this app means by
- * "working", so a live branch in the graph and a live card on the board read as one state.
- *
- * The dark entry of `graphInk` (`tokens.ts`); the light entry is reachable there until
- * F13.15 moves `GitGraphPane` onto the scheme.
- */
-export const GRAPH_INK = graphInk('dark');
-
-/**
  * The document's backdrop for a given scheme — what a consumer that cannot read the
  * `--tm-page-bg` custom property {@link useGlobalStyles} stamps on `:root` should paint
  * instead. Matches `SEMANTIC[scheme].canvas` — the same canvas `tokenCssVars` and
@@ -432,7 +349,7 @@ export const useGlobalStyles = makeStaticStyles({
   },
 
   /**
-   * Every spinner in the app, recoloured to {@link FLUO.cyan}.
+   * Every spinner in the app, recoloured to {@link FLUO_VAR.cyan}.
    *
    * Global rather than per-component because a spinner means one thing wherever it appears —
    * "this is moving right now" — and there are a dozen of them; a per-component version would
@@ -449,8 +366,8 @@ export const useGlobalStyles = makeStaticStyles({
    * and `background-color` is the track behind it.
    */
   '.fui-Spinner__spinnerTail': {
-    color: FLUO.cyan,
-    backgroundColor: FLUO.cyanDim,
+    color: FLUO_VAR.cyan,
+    backgroundColor: FLUO_VAR.cyanDim,
   },
 
   /*
@@ -506,17 +423,6 @@ export const useGlobalStyles = makeStaticStyles({
 
 /** The single `<Toaster>`'s id. Shared so any screen can dispatch into the same surface. */
 export const TOASTER_ID = 'app-toaster';
-
-/**
- * The tint an "attention" row takes instead of a border.
- *
- * Used by both the card's merge-request rows and the detail pane's — the two must match
- * or the same MR looks like two different states.
- *
- * The dark entry of `ATTENTION_TINT_BY_SCHEME` (`tokens.ts`); the light entry is
- * reachable there until F13.16 moves callers onto the scheme.
- */
-export const ATTENTION_TINT = ATTENTION_TINT_BY_SCHEME.dark;
 
 /** A subtle hairline between a card's sections. Re-exported so the value is stated once. */
 export const sectionRule = (): string => `1px solid ${tokens.colorNeutralStroke2}`;

@@ -26,8 +26,8 @@
  * seconds would spend that for a picture that changes when a run finishes and at no other
  * time. A run finishing is precisely what `task:changed` announces.
  *
- * The colour budget is stated once, in `GRAPH_INK`: everything here is monochrome except the
- * branch of a card whose agent is running right now.
+ * The colour budget is stated once, in `GRAPH_INK_VAR`: everything here is monochrome except
+ * the branch of a card whose agent is running right now.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -45,7 +45,8 @@ import {
 import { ArrowClockwiseRegular } from '@fluentui/react-icons';
 import type { GitGraph } from '@tm/shared/gitGraph';
 import type { Project, Task } from '@tm/shared/model';
-import { GRAPH_INK, MONO, fontPx } from './theme';
+import { MONO, fontPx } from './theme';
+import { GRAPH_INK_VAR } from './tokens';
 import { useTransport } from './transport';
 import {
   DOT_RADIUS,
@@ -108,15 +109,15 @@ const useStyles = makeStyles({
    * takes no pointer events, so it is invisible to every hover and click that matters.
    */
   lanes: { position: 'absolute', top: 0, left: 0, pointerEvents: 'none', overflow: 'visible' },
-  line: { fill: 'none', strokeWidth: '1.5px', stroke: GRAPH_INK.line },
+  line: { fill: 'none', strokeWidth: '1.5px', stroke: GRAPH_INK_VAR.line },
   /** A merge's incoming lines — the ones you read past while following a branch down. */
-  lineMerge: { stroke: GRAPH_INK.merge },
-  /** The one moving thing on the drawing. See `GRAPH_INK`. */
-  lineLive: { stroke: GRAPH_INK.live, strokeWidth: '2px' },
-  dot: { fill: tokens.colorNeutralBackground1, stroke: GRAPH_INK.dot, strokeWidth: '2px' },
-  dotLive: { stroke: GRAPH_INK.live },
+  lineMerge: { stroke: GRAPH_INK_VAR.merge },
+  /** The one moving thing on the drawing. See `GRAPH_INK_VAR`. */
+  lineLive: { stroke: GRAPH_INK_VAR.live, strokeWidth: '2px' },
+  dot: { fill: tokens.colorNeutralBackground1, stroke: GRAPH_INK_VAR.dot, strokeWidth: '2px' },
+  dotLive: { stroke: GRAPH_INK_VAR.live },
   /** A merge commit reads as a filled dot: two lines arrive at it and one leaves. */
-  dotMerge: { fill: GRAPH_INK.dot },
+  dotMerge: { fill: GRAPH_INK_VAR.dot },
   subject: {
     flex: 1,
     minWidth: 0,
@@ -159,7 +160,7 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground1,
     border: `1px solid ${tokens.colorNeutralStroke1}`,
   },
-  chipLive: { color: GRAPH_INK.live, border: `1px solid ${GRAPH_INK.live}` },
+  chipLive: { color: GRAPH_INK_VAR.live, border: `1px solid ${GRAPH_INK_VAR.live}` },
   /** The reason there is no graph, and the "older history" footer. */
   notice: { padding: '12px', color: tokens.colorNeutralForeground3 },
   footer: {

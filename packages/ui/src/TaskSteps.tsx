@@ -43,7 +43,7 @@ import { draftKey, useDraft } from './drafts';
 import { SkillPicker } from './SkillPicker';
 import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
-import { FLUO, STATUS_INDICATOR_COLOR } from './theme';
+import { FLUO_VAR, STATUS_INDICATOR_VAR } from './tokens';
 import { FoldToggle } from './FoldToggle';
 import { useSkillOptions } from './useSkillOptions';
 import { useTransport } from './transport';
@@ -92,7 +92,7 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '6px',
     flexShrink: 0,
-    color: FLUO.cyan,
+    color: FLUO_VAR.cyan,
   },
   /** A gate's own lines — monochrome: the status badge is the row's only colour. */
   gateIcon: { color: tokens.colorNeutralForeground3, flexShrink: 0, fontSize: '16px' },
@@ -125,8 +125,8 @@ const useStyles = makeStyles({
    */
   dotRunning: {
     animationName: {
-      '0%, 100%': { backgroundColor: FLUO.cyanDeep },
-      '50%': { backgroundColor: FLUO.cyan },
+      '0%, 100%': { backgroundColor: FLUO_VAR.cyanDeep },
+      '50%': { backgroundColor: FLUO_VAR.cyan },
     },
     animationDuration: '1s',
     animationIterationCount: 'infinite',
@@ -134,7 +134,7 @@ const useStyles = makeStyles({
     // Without motion the dot must still read as the live one, so hold it at the bright end.
     '@media (prefers-reduced-motion: reduce)': {
       animationName: 'none',
-      backgroundColor: FLUO.cyan,
+      backgroundColor: FLUO_VAR.cyan,
     },
   },
 });
@@ -541,8 +541,8 @@ export function TaskSteps({
                           <Badge
                             appearance="outline"
                             style={{
-                              color: STATUS_INDICATOR_COLOR[step.status],
-                              borderColor: STATUS_INDICATOR_COLOR[step.status],
+                              color: STATUS_INDICATOR_VAR[step.status],
+                              borderColor: STATUS_INDICATOR_VAR[step.status],
                             }}
                           >
                             {STATUS_LABEL[step.status]}
@@ -683,8 +683,8 @@ function GateRow({ step, index, attention, onOpen }: GateRowProps): JSX.Element 
           <Badge
             appearance="outline"
             style={{
-              color: STATUS_INDICATOR_COLOR[view.tone],
-              borderColor: STATUS_INDICATOR_COLOR[view.tone],
+              color: STATUS_INDICATOR_VAR[view.tone],
+              borderColor: STATUS_INDICATOR_VAR[view.tone],
             }}
           >
             {view.label}

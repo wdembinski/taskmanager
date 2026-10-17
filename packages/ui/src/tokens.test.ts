@@ -1,20 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { AA, contrastRatio } from './contrast';
-import {
-  ATTENTION_TINT,
-  CODE_BG,
-  EDITOR_FOREGROUND,
-  FLUO,
-  GRAPH_INK,
-  PIPELINE_COLOR,
-  STATUS_INDICATOR_COLOR,
-  appDarkTheme,
-  appLightTheme,
-  pageBackground,
-} from './theme';
+import { EDITOR_FOREGROUND, appDarkTheme, appLightTheme, pageBackground } from './theme';
 import {
   ATTENTION_TINT_BY_SCHEME,
   CODE_BY_SCHEME,
+  CODE_VAR,
   FLUO_BY_SCHEME,
   FLUO_VAR,
   GRAPH_INK_VAR,
@@ -179,12 +169,12 @@ describe('labelChip', () => {
 });
 
 describe('statusIndicatorColor / pipelineColor', () => {
-  // The keys come from the exported dark records, so the lists cannot drift from
-  // `theme.ts`'s own `TaskStatus`/`PipelineStatus` coverage.
-  const taskStatuses = Object.keys(STATUS_INDICATOR_COLOR) as Array<
-    keyof typeof STATUS_INDICATOR_COLOR
+  // The keys come from the scheme-free var exports, so the lists cannot drift from their
+  // own `TaskStatus`/`PipelineStatus` coverage.
+  const taskStatuses = Object.keys(STATUS_INDICATOR_VAR) as Array<
+    keyof typeof STATUS_INDICATOR_VAR
   >;
-  const pipelineStatuses = Object.keys(PIPELINE_COLOR) as Array<keyof typeof PIPELINE_COLOR>;
+  const pipelineStatuses = Object.keys(PIPELINE_VAR) as Array<keyof typeof PIPELINE_VAR>;
   const schemes = ['light', 'dark'] as const;
 
   it('resolves every TaskStatus to a non-empty string in both schemes', () => {
@@ -311,11 +301,12 @@ describe('the two Fluent themes', () => {
   });
 });
 
-describe('nothing visible moves for the dark-only app today', () => {
-  it('keeps the dark exports equal to the current literals', () => {
-    expect(FLUO.cyan).toBe('#22E4FF');
-    expect(CODE_BG).toBe('#16202e');
-    expect(ATTENTION_TINT).toBe('rgba(242, 169, 0, 0.13)');
-    expect(GRAPH_INK.live).toBe(FLUO.cyan);
+describe('CODE_VAR', () => {
+  it('points at the --tm-code-* custom property for every CodeSurfaceTokens key', () => {
+    expect(CODE_VAR).toEqual({
+      bg: 'var(--tm-code-bg)',
+      inlineBg: 'var(--tm-code-inline-bg)',
+      border: 'var(--tm-code-border)',
+    });
   });
 });
