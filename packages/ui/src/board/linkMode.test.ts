@@ -25,11 +25,7 @@ describe('LINK_MODES / nextLinkMode', () => {
 
 describe('linkView', () => {
   // A -> B -> C, plus a D -> E chain the selection never touches.
-  const links: TaskLink[] = [
-    link('ab', 'a', 'b'),
-    link('bc', 'b', 'c'),
-    link('de', 'd', 'e'),
-  ];
+  const links: TaskLink[] = [link('ab', 'a', 'b'), link('bc', 'b', 'c'), link('de', 'd', 'e')];
 
   it('draws nothing at all in Off, whatever the selection', () => {
     expect(linkView(links, 'off', 'b')).toEqual({

@@ -350,11 +350,7 @@ export function ChainOverlay(props: ChainOverlayProps): JSX.Element | null {
           const stroke = strokeOf(a, selected);
           const faded = props.fadedLinkIds?.has(a.linkId) ?? false;
           return (
-            <g
-              key={a.linkId}
-              data-link-id={a.linkId}
-              className={faded ? styles.faded : undefined}
-            >
+            <g key={a.linkId} data-link-id={a.linkId} className={faded ? styles.faded : undefined}>
               <title>{a.title}</title>
               {/* First, so it sits UNDER the visible stroke and cannot be what a click lands
                 on when the pointer is dead on the line — and so the hairline stays crisp.
