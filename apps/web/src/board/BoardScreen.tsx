@@ -55,7 +55,7 @@ import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/boa
 import { chainStates } from '@tm/ui/board/chainStates';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
 import { GitGraphPane } from '@tm/ui/GitGraphPane';
-import { TaskDetail } from '@tm/ui/TaskDetail';
+import { TaskDetailHost } from '@tm/ui/TaskDetailHostView';
 import { useTicketRegistries } from '@tm/ui/projects/useTicketRegistries';
 import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
@@ -1033,7 +1033,11 @@ export function BoardScreen({
           (`compact.onOpenCard` leaves the board for the card screen instead). */}
       {!compact && showDetail && (
         <div className={layout.right}>
-          <TaskDetail task={selectedTask} {...taskDetailProps} />
+          <TaskDetailHost
+            taskId={selectedTask?.id ?? null}
+            task={selectedTask}
+            {...taskDetailProps}
+          />
         </div>
       )}
 

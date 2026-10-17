@@ -13,6 +13,13 @@
  * loaded here — both boards already pass them from `useTicketRegistries` (F12.6), and
  * `TaskDetail` itself falls back to empty pickers and its own `useTicketLinks` when they are
  * absent, so a future caller with none of its own degrades exactly as it does today.
+ *
+ * Filed as `TaskDetailHostView.tsx`, not `TaskDetailHost.tsx`: the exported component is
+ * still `TaskDetailHost`, but that filename would differ from `./taskDetailHost.ts`'s only
+ * in the first letter's case, and an extension-less `./TaskDetailHost` import resolves to
+ * whichever of the two a case-insensitive filesystem (Windows' default) or `tsc`'s
+ * `forceConsistentCasingInFileNames` happens to match first — silently handing a caller the
+ * pure module instead of this component.
  */
 import { useEffect, useState } from 'react';
 import type { Task } from '@tm/shared/model';

@@ -1,5 +1,5 @@
 /**
- * The pure half of `TaskDetailHost` (`./TaskDetailHost.tsx`) — what it loads and how it
+ * The pure half of `TaskDetailHost` (`./TaskDetailHostView.tsx`) — what it loads and how it
  * builds `TaskDetail`'s props from whatever the caller already holds plus whatever it had
  * to fetch. No React here, same split `chainStates.ts` and `attentionIndex.ts` already use,
  * so the caller-wins contract below is unit-tested on its own.
