@@ -3804,6 +3804,12 @@ export function createStore(dbPath: string): Store {
   // `ON CONFLICT DO NOTHING` makes that a no-op, but a draft genuinely deleted from
   // `review_drafts` since the first pass must stay gone, not get resurrected from the now-
   // stale source table.
+  //
+  // `ORDER BY id` is load-bearing, not cosmetic: SQLite's FROM-clause grammar reads a bare
+  // `ON` right after a table name as the start of a join constraint, so an INSERT...SELECT
+  // with no clause between `FROM review_comments` and `ON CONFLICT` fails to parse at all
+  // ("near \"DO\": syntax error") — any clause disambiguates it, and an ORDER BY also makes
+  // the copy's own insertion order deterministic.
   if (!selectState.get(REVIEW_DRAFTS_COPY_KEY)) {
     db.transaction(() => {
       const result = db
@@ -3814,6 +3820,7 @@ export function createStore(dbPath: string): Store {
            SELECT id, 'task:' || taskId, diffId, path, oldPath, side, line, startSide,
                   startLine, body, excerpt, createdAt, updatedAt, sentAt
            FROM review_comments
+           ORDER BY id
            ON CONFLICT DO NOTHING`,
         )
         .run();
