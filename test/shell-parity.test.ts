@@ -58,28 +58,16 @@ const WEB_MAIN = 'apps/web/src/main.tsx';
 const DESKTOP_MAIN = 'apps/client/src/renderer/src/main.tsx';
 
 /**
- * Since F9.4 (`e876e6f2`) the desktop rail is mapped from `DESKTOP_SCREENS`, shared with
- * the command palette, rather than listing its own `{ id: … }` literals in `DESKTOP_APP`.
+ * Since F13.8, both hosts' nav rails are mapped from `SHELL_NAV` — the one list of
+ * destinations, replacing the desktop's own `DESKTOP_SCREENS` (itself sourced from
+ * `paletteSource.ts` since F9.4, `e876e6f2`) and the web's hand-kept `NAV` literal. Every
+ * assertion below that used to read a host's own `{ id: … }` literals now reads this file
+ * instead.
  */
-const DESKTOP_SCREENS_SRC = 'apps/client/src/renderer/src/paletteSource.ts';
+const SHELL_NAV_SRC = 'packages/ui/src/shell/shellNav.ts';
 
 function read(path: string): string {
   return readFileSync(join(repoRoot, ...path.split('/')), 'utf8');
-}
-
-/**
- * Where a host's NAV rail is actually listed, for the ids F9.4 moved off `DESKTOP_APP`
- * itself. `WEB_APP` still lists its own `{ id: … }` literals, so the web side reads `path`
- * directly; the desktop side reads `DESKTOP_SCREENS_SRC` instead, but only after confirming
- * `DESKTOP_APP` still builds its rail from `DESKTOP_SCREENS.map(...)` — if that derivation
- * stops, reading the list alone would prove nothing about what ids the rail actually carries.
- */
-function navListing(path: string): string {
-  if (path === DESKTOP_APP) {
-    expect(read(DESKTOP_APP)).toMatch(/DESKTOP_SCREENS\.map\(/);
-    return read(DESKTOP_SCREENS_SRC);
-  }
-  return read(path);
 }
 
 /**
@@ -271,6 +259,74 @@ describe('the shell both hosts render through', () => {
   }
 });
 
+describe('one shell navigation both hosts render (F13.8)', () => {
+  /**
+   * `SHELL_NAV` (`packages/ui/src/shell/shellNav.ts`) replaced two hand-kept lists — the
+   * desktop's `DESKTOP_SCREENS`/`NAV` and the web's own `NAV` literal — with one both hosts,
+   * and the one palette source each host builds from, import rather than re-declare.
+   */
+  const DESKTOP_PALETTE_SRC = 'apps/client/src/renderer/src/paletteSource.ts';
+  const WEB_PALETTE_SRC = 'apps/web/src/palette/webPaletteSource.ts';
+
+  for (const [label, path] of [
+    ['the browser client', WEB_APP],
+    ['the desktop renderer', DESKTOP_APP],
+    ["the desktop's palette source", DESKTOP_PALETTE_SRC],
+    ["the web's palette source", WEB_PALETTE_SRC],
+  ] as const) {
+    it(`${label} imports SHELL_NAV from shell/shellNav`, () => {
+      expect(
+        importedFrom(read(path), 'shell/shellNav'),
+        `${path} must import SHELL_NAV from @tm/ui/shell/shellNav (or its @ui alias). F13.8 ` +
+          'replaced two hand-kept nav lists with this one; declaring entries locally instead ' +
+          'is exactly how the two would drift apart again.',
+      ).toContain('SHELL_NAV');
+    });
+  }
+
+  it('declares no nav entry literal of its own in a host tree', () => {
+    // Every id `SHELL_NAV` carries except `settings` — fixed here rather than imported, so a
+    // mutant that adds an id to `shellNav.ts` without also hiding it in a host literal still
+    // has something to match against (and so this list does not silently track whatever
+    // `shellNav.ts` says). `settings` is left out on purpose: `CompactApp.tsx`'s own, unrelated
+    // `BottomTabBarItem` list (`id`/`label`/`icon`, the same shape) legitimately carries a
+    // `{ id: 'settings', … }` tile of its own — the phone tab bar has a Settings tab too — so
+    // including it would flag that file for a coincidence of naming, not a re-declared
+    // `SHELL_NAV`. The other ten ids are distinctive enough on their own: a real mutant (a NAV
+    // array reintroduced in a host) always carries several of them together.
+    const SHELL_NAV_IDS = [
+      'tickets',
+      'mytasks',
+      'activity',
+      'performance',
+      'automations',
+      'attention',
+      'projects',
+      'issues',
+      'fleet',
+      'scratch',
+    ];
+    const pattern = new RegExp(
+      `id:\\s*'(?:${SHELL_NAV_IDS.join('|')})'[^}]*?(?:label|icon):`,
+    );
+    const sources = HOST_TREES.flatMap((tree) => filesUnder(tree, /\.tsx?$/)).filter(
+      (path) => !/\.test\.tsx?$/.test(path),
+    );
+    expect(
+      sources.length,
+      'found no non-test host sources to scan — has a tree moved?',
+    ).toBeGreaterThan(10);
+
+    const offenders = sources.filter((path) => pattern.test(read(path)));
+    expect(
+      offenders,
+      `${offenders.join(', ')} declares a nav entry object ({ id: …, label:/icon: … }) of its ` +
+        'own. That is SHELL_NAV re-invented one host at a time — import the entry from ' +
+        'packages/ui/src/shell/shellNav.ts instead.',
+    ).toEqual([]);
+  });
+});
+
 describe('the board frame both hosts render through', () => {
   /**
    * The four rules that ARE the board's frame — the flex row, the board half, the scrolling
@@ -440,15 +496,9 @@ describe('the automations tab both hosts render from the shared view (F1.17)', (
 
   it("both hosts' nav rails carry an automations tab", () => {
     expect(
-      read(WEB_APP),
-      `${WEB_APP} must list { id: 'automations', … } in its NAV — a view nothing links to is ` +
-        'a file, not a tab.',
-    ).toMatch(/id:\s*'automations'/);
-
-    expect(
-      navListing(DESKTOP_APP),
-      `${DESKTOP_SCREENS_SRC} must list { id: 'automations', … } in DESKTOP_SCREENS — a view ` +
-        'nothing links to is a file, not a tab.',
+      read(SHELL_NAV_SRC),
+      `${SHELL_NAV_SRC} must list { id: 'automations', … } in SHELL_NAV — a view nothing ` +
+        'links to is a file, not a tab.',
     ).toMatch(/id:\s*'automations'/);
   });
 });
@@ -655,15 +705,9 @@ describe('the activity tab both hosts render from the shared screen (F2.13/F2.14
 
   it("lists an activity tab in both hosts' NAV", () => {
     expect(
-      read(WEB_APP),
-      `${WEB_APP} must list { id: 'activity', … } in its NAV — a screen nothing links to is a ` +
-        'file, not a tab.',
-    ).toMatch(/id:\s*'activity'/);
-
-    expect(
-      navListing(DESKTOP_APP),
-      `${DESKTOP_SCREENS_SRC} must list { id: 'activity', … } in DESKTOP_SCREENS — a screen ` +
-        'nothing links to is a file, not a tab.',
+      read(SHELL_NAV_SRC),
+      `${SHELL_NAV_SRC} must list { id: 'activity', … } in SHELL_NAV — a screen nothing links ` +
+        'to is a file, not a tab.',
     ).toMatch(/id:\s*'activity'/);
   });
 
@@ -709,15 +753,9 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
 
   it("lists an issues tab in both hosts' NAV", () => {
     expect(
-      read(WEB_APP),
-      `${WEB_APP} must list { id: 'issues', … } in its NAV — a screen nothing links to is a ` +
-        'file, not a tab.',
-    ).toMatch(/id:\s*'issues'/);
-
-    expect(
-      navListing(DESKTOP_APP),
-      `${DESKTOP_SCREENS_SRC} must list { id: 'issues', … } in DESKTOP_SCREENS — a screen ` +
-        'nothing links to is a file, not a tab.',
+      read(SHELL_NAV_SRC),
+      `${SHELL_NAV_SRC} must list { id: 'issues', … } in SHELL_NAV — a screen nothing links ` +
+        'to is a file, not a tab.',
     ).toMatch(/id:\s*'issues'/);
   });
 

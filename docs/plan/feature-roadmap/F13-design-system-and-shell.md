@@ -302,6 +302,21 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
    sidebar's Inbox. Projects (repo admin) moves into Settings → Projects. The external Issues
    browser (F5) becomes a sidebar entry under "This machine", Scratch run a palette command, and
    the web's Fleet a sidebar entry. Confirm before F13.8.
+
+   **Confirmed 2026-10-17.** The recommended default stands, with one addition F13.8 needed
+   that this question did not spell out: the sidebar those moves land in does not exist yet
+   (F13.11 builds it), so `SHELL_NAV` (`packages/ui/src/shell/shellNav.ts`) carries a third,
+   temporary `interim` group between the permanent `bar` group (Issues/`tickets`, Board/
+   `mytasks`, Activity, Automations — Reviews joins once F15 ships) and the `foot` group
+   (Settings) — Attention, Projects, the external Issues browser (`issues`), Fleet and Scratch
+   run, every one of them reachable from the rail exactly as it is today, just grouped apart
+   with a hairline divider, until F13.11 has somewhere else to put them. Performance is the one
+   exception: this question folds it into Activity as a second tab, but that is a screen-level
+   merge with no card of its own yet (not F13.11's sidebar, which has no second-tab concept),
+   so it keeps a permanent `bar` slot next to Activity rather than riding along with
+   `interim`'s sidebar-bound entries — revisit when that merge gets a card. **F13.11 deletes
+   the `interim` group** as each of its entries moves into the sidebar it renders (Scratch run
+   becomes a palette command instead, with no rail tile at all).
 3. **Can the OS "Transparency effects" switch be read?** Electron exposes
    `nativeTheme.prefersReducedTransparency` on macOS; on Windows it is not documented.
    *Recommended default:* read it where Electron offers it, otherwise rely on the app setting and
@@ -450,7 +465,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
 
 ### F13 · Phase 3 — Shell
 
-- [ ] F13.8 Replace the two NAV lists with one shared shell navigation and the slim activity bar @needs: F13.4 Mount the resolved theme in both hosts and make the document follow it
+- [x] F13.8 Replace the two NAV lists with one shared shell navigation and the slim activity bar @needs: F13.4 Mount the resolved theme in both hosts and make the document follow it
 
   - `packages/ui/src/shell/shellNav.ts` exports `SHELL_NAV` per open question 2; both
     `App.tsx` files pass only their `unavailable` reasons and badges. `NavRail` is restyled onto
@@ -537,6 +552,10 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     slot; Fluent `Tree` (or `role="tree"`) with arrow keys, Home/End and type-ahead; folds saved
     per device; "New issue (C)" opens `NewTicketDialog`; the workspace switcher shows only
     "This machine" until F19.
+  - **Deletes `SHELL_NAV`'s `interim` group** (`packages/ui/src/shell/shellNav.ts`, F13.8):
+    Attention, Projects, the external Issues browser (`issues`) and Fleet move into the
+    sidebar this card renders; Scratch run becomes a palette command instead, with no rail
+    tile left at all.
   - Acceptance: `shell-parity.test.ts` asserts both hosts pass the shared `Sidebar`; the
     tree's key handling is a pure reducer with tests (expand, collapse, move into children,
     skip folded). Gates green.
