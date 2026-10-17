@@ -216,6 +216,8 @@ export interface DiffSummary {
   subjectId?: string;
   source?: ReviewSource;
   capabilities?: ReviewCapabilities;
+  /** Set only on a `forge-api` answer reached by falling back off a failed `local-ref` attempt. */
+  fallbackReason?: string;
 }
 
 export type DiffLineKind = 'context' | 'add' | 'del';
