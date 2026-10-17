@@ -53,8 +53,14 @@ const useStyles = makeStyles({
     ':active': { backgroundColor: tokens.colorNeutralBackground5 },
   },
   close: {
-    ':hover': { backgroundColor: '#c42b1c', color: '#ffffff' },
-    ':active': { backgroundColor: '#b3271a', color: '#ffffff' },
+    ':hover': {
+      backgroundColor: 'var(--tm-window-close-hover)',
+      color: 'var(--tm-window-close-ink)',
+    },
+    ':active': {
+      backgroundColor: 'var(--tm-window-close-active)',
+      color: 'var(--tm-window-close-ink)',
+    },
   },
 });
 

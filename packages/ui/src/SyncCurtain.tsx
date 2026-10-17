@@ -12,7 +12,6 @@
  */
 import type { JSX } from 'react';
 import { Body1, Caption1, Spinner, makeStyles } from '@fluentui/react-components';
-import { ACCENT } from './theme';
 
 const useStyles = makeStyles({
   curtain: {
@@ -23,8 +22,8 @@ const useStyles = makeStyles({
     alignItems: 'center',
     justifyContent: 'center',
     gap: '12px',
-    backgroundColor: ACCENT.statusBlue,
-    color: '#ffffff',
+    backgroundImage: 'var(--tm-status-gradient)',
+    color: 'var(--tm-status-gradient-ink)',
   },
   text: {
     display: 'flex',

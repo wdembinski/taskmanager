@@ -27,7 +27,6 @@ import { makeStyles, ProgressBar, Tooltip, tokens } from '@fluentui/react-compon
 import type { UsageQuota, UsageQuotas } from '@tm/shared/usage';
 import { formatCountdown } from './countdown';
 import { useTransport } from './transport';
-import { ACCENT } from './theme';
 import { formatPct, formatTokens } from './usageFormat';
 
 /** How often the pair re-reads its two sums when nothing is being spent. */
@@ -77,7 +76,7 @@ const useStyles = makeStyles({
     width: '56px',
     height: '4px',
     borderRadius: '2px',
-    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+    backgroundColor: 'var(--tm-status-bar-quota-track)',
     overflow: 'hidden',
   },
   statusFill: { height: '100%', borderRadius: '2px' },
@@ -95,9 +94,9 @@ function quotaColor(pct: number): 'brand' | 'warning' | 'error' {
  * on the orange alike; the two alarm colours are the dot's, picked for both fills.
  */
 function statusInk(pct: number): string {
-  if (pct >= CRITICAL_PCT) return ACCENT.liveRed;
-  if (pct >= WARNING_PCT) return '#FFC107';
-  return '#FFFFFF';
+  if (pct >= CRITICAL_PCT) return 'var(--tm-status-bar-quota-critical)';
+  if (pct >= WARNING_PCT) return 'var(--tm-status-bar-quota-warning)';
+  return 'var(--tm-status-bar-quota-ok)';
 }
 
 /** A bar's value in Fluent's 0–1 terms, full (never past it) once the budget is gone. */

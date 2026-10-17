@@ -10,7 +10,7 @@
  */
 import { makeStyles } from '@fluentui/react-components';
 import type { ReactNode } from 'react';
-import { ACCENT, fontPx } from '../theme';
+import { fontPx } from '../theme';
 
 const useStyles = makeStyles({
   /**
@@ -56,8 +56,8 @@ const useStyles = makeStyles({
   },
   // NOT `colorPaletteGreenBackground3`, which was the bug: too low contrast against both
   // the bar's gradient and its orange — invisible on both.
-  ok: { backgroundColor: ACCENT.liveGreen },
-  bad: { backgroundColor: ACCENT.liveRed },
+  ok: { backgroundColor: 'var(--tm-status-bar-dot-ok)' },
+  bad: { backgroundColor: 'var(--tm-status-bar-dot-bad)' },
   grow: { flex: 1 },
   busy: { display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 },
   /** Inherits the bar's own colour rather than naming one, for the same reason `SyncRing`
