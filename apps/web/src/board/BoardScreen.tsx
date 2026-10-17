@@ -34,7 +34,7 @@
  * /v1/tasks` now, so every field — type, description, filing, parent, chain link, ticket —
  * lands without needing a desktop Client to apply it.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Caption1, makeStyles } from '@fluentui/react-components';
 import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
 import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
@@ -56,6 +56,7 @@ import { chainStates } from '@tm/ui/board/chainStates';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
 import { GitGraphPane } from '@tm/ui/GitGraphPane';
 import { TaskDetail } from '@tm/ui/TaskDetail';
+import { useTicketRegistries } from '@tm/ui/projects/useTicketRegistries';
 import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
@@ -351,13 +352,9 @@ export function BoardScreen({
   );
   const attachmentsByTask = useMemo(() => byTask(extras.attachments), [extras.attachments]);
   const tasksById = useMemo(() => new Map(boardTasks.map((t) => [t.id, t])), [boardTasks]);
-  const peopleById = useMemo(() => new Map(extras.people.map((p) => [p.id, p])), [extras.people]);
   /** A native ticket's parent epic, by name (Phase 24) — `TaskCard`'s own `epicName` prop. */
   const epicNameOf = (task: Task): string | undefined =>
     task.epicTaskId ? tasksById.get(task.epicTaskId)?.title : undefined;
-  /** A native ticket's assignee (Phase 24) — `TaskCard`'s own `assignee` prop. */
-  const assigneeOf = (task: Task): Person | undefined =>
-    task.assigneeId ? peopleById.get(task.assigneeId) : undefined;
 
   /**
    * Cards the add-task dialog may hang a hand-written step under, and — asked the other way
@@ -448,6 +445,33 @@ export function BoardScreen({
     const task = effectiveSelectedId ? (state.tasks[effectiveSelectedId] ?? null) : null;
     return task ? { ...task, status: displayStatus(state, task) } : null;
   }, [state, effectiveSelectedId]);
+
+  /**
+   * The four app-wide registries a ticket can point at, scoped to the selected card's
+   * project — see `useTicketRegistries`. The board's own `peopleById` reads `registries.people`
+   * too, the same bargain `MyTasks.tsx` makes: an assignee can be anyone, not just someone on
+   * the selected card's own project, so it must not depend on which card is selected.
+   */
+  const registries = useTicketRegistries(selectedTask?.projectId ?? null);
+  const peopleById = useMemo(
+    () => new Map(registries.people.map((p) => [p.id, p])),
+    [registries.people],
+  );
+  /** A native ticket's assignee (Phase 24) — `TaskCard`'s own `assignee` prop. */
+  const assigneeOf = (task: Task): Person | undefined =>
+    task.assigneeId ? peopleById.get(task.assigneeId) : undefined;
+
+  /**
+   * A desktop that was asleep when this screen mounted leaves `registries`'s seed rejected
+   * for good — `useInitialLoad` does not retry on its own. Once `hostUnreachable` clears,
+   * somebody is home again, so ask it once more. Fails soft the same way `useBoardExtras`
+   * does: no banner, since the status bar's dot already said nobody was home.
+   */
+  const wasHostUnreachable = useRef(hostUnreachable);
+  useEffect(() => {
+    if (wasHostUnreachable.current && !hostUnreachable) registries.retry();
+    wasHostUnreachable.current = hostUnreachable;
+  }, [hostUnreachable, registries.retry]);
 
   /**
    * The card the "Move to" sheet is open for — the same `displayStatus` overlay
@@ -678,6 +702,10 @@ export function BoardScreen({
     chainMergeHeld: selectedTask ? chainState.get(selectedTask.id)?.mergeHeld : undefined,
     chainLinks: extras.chainLinks,
     chainTasksById: tasksById,
+    people: registries.people,
+    milestones: registries.milestones,
+    labels: registries.labels,
+    ticketLinks: registries.links,
     onUnlinkChain: (linkId: string) => void extras.removeLink(linkId).catch(reportError),
     onOpenTask: compact?.card ? compact.onOpenCard : setSelectedTaskId,
     readOnlyNotice: RELAY_NOTICE,
