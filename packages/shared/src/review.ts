@@ -29,6 +29,7 @@ export const DIFF_IMAGE_MAX_BYTES = 512_000; // one image side, base64
 export const DIFF_SUMMARY_MAX_FILES = 1000; // summary lists at most this many
 export const DIFF_COLLAPSE_LINES = 2000; // generated/lock files above this collapse
 export const DIFF_CONTEXT_MAX_LINES = 2000; // one context read returns at most this many lines
+export const REVIEW_QUEUE_MAX_ROWS = 300; // one `review:queues` answer lists at most this many rows per queue
 
 export type DiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
 
@@ -134,6 +135,12 @@ export interface ReviewQueuesSnapshot {
   asOf: Record<ReviewQueue, number | null>;
   /** Queues whose most recent refresh left at least one segment incomplete or failed. */
   partial: ReviewQueue[];
+  /**
+   * Queues cut down to {@link REVIEW_QUEUE_MAX_ROWS} for this answer (F15.10's
+   * `review:queues`/`review:refreshQueues`) — distinct from `partial`, which is about the
+   * refresh itself coming back incomplete rather than this answer being capped.
+   */
+  truncated?: ReviewQueue[];
 }
 
 /** Where a subject's diff came from: a local worktree, a ref fetched for the review, or the forge's own API. */

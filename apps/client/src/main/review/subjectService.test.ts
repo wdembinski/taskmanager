@@ -28,7 +28,10 @@ function prSubject(over: Partial<PrSubject> = {}): PrSubject {
   return { kind: 'pr', provider: 'github', repoId: 1, repoPath: 'acme/web', number: 7, ...over };
 }
 
-function queueRow(subject: ReviewSubject, subjectId: string): { item: ReviewQueueItem; syncedAt: number } {
+function queueRow(
+  subject: ReviewSubject,
+  subjectId: string,
+): { item: ReviewQueueItem; syncedAt: number } {
   return {
     syncedAt: 1,
     item: {
@@ -129,7 +132,10 @@ function deps(
 ): ReviewSubjectServiceDeps {
   return {
     diffs: {
-      summary: vi.fn(async (): Promise<DiffSummaryResult> => ({ status: 'ok', summary: summary() })),
+      summary: vi.fn(async (): Promise<DiffSummaryResult> => ({
+        status: 'ok',
+        summary: summary(),
+      })),
       file: vi.fn(
         async (_taskId: string, diffId: string, path: string): Promise<DiffFileResult> => ({
           status: 'ok',
@@ -154,7 +160,9 @@ function deps(
         }),
       ),
       resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'no-project' })),
-      summaryFor: vi.fn(async (resolved: ResolvedDiff): Promise<DiffSummary> => summary({ diffId: resolved.diffId })),
+      summaryFor: vi.fn(async (resolved: ResolvedDiff): Promise<DiffSummary> =>
+        summary({ diffId: resolved.diffId }),
+      ),
       fileIn: vi.fn(
         async (_resolved: ResolvedDiff, diffId: string, path: string): Promise<DiffFile> => ({
           diffId,
@@ -183,8 +191,15 @@ function deps(
       ...over.diffs,
     },
     forge: {
-      detail: vi.fn(async () => ({ diffId: 'forge-d1', baseSha: 'base', headSha: 'head', baseRef: 'main' })),
-      summary: vi.fn(async (): Promise<DiffSummary> => summary({ diffId: 'forge-d1', source: 'forge-api' })),
+      detail: vi.fn(async () => ({
+        diffId: 'forge-d1',
+        baseSha: 'base',
+        headSha: 'head',
+        baseRef: 'main',
+      })),
+      summary: vi.fn(async (): Promise<DiffSummary> =>
+        summary({ diffId: 'forge-d1', source: 'forge-api' }),
+      ),
       file: vi.fn(
         async (_subject: PrSubject, diffId: string, path: string): Promise<DiffFileResult> => ({
           status: 'ok',
@@ -255,7 +270,9 @@ describe('a PR found only in merge_requests', () => {
     const resolved = fakeResolved('d1');
     const d = deps({
       store: { listMergeRequests: vi.fn(() => [mergeRequest()]) },
-      diffs: { resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'ok', resolved })) },
+      diffs: {
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'ok', resolved })),
+      },
     });
     const service = new ReviewSubjectService(d);
 
@@ -306,7 +323,9 @@ describe('fallback reasons', () => {
   it('says so when no project has a local clone of the repository', async () => {
     const d = deps({
       store: { listReviewQueue: vi.fn(() => [queueRow(prSubject(), 'gh-1-7')]) },
-      diffs: { resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'no-project' })) },
+      diffs: {
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'no-project' })),
+      },
     });
     const service = new ReviewSubjectService(d);
     const result = await service.summary('gh-1-7');
@@ -323,9 +342,10 @@ describe('fallback reasons', () => {
     const d = deps({
       store: { listReviewQueue: vi.fn(() => [queueRow(prSubject(), 'gh-1-7')]) },
       diffs: {
-        resolvePrLocal: vi.fn(
-          async (): Promise<PrLocalResult> => ({ status: 'fetch-failed', reason: 'git fetch failed' }),
-        ),
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({
+          status: 'fetch-failed',
+          reason: 'git fetch failed',
+        })),
       },
     });
     const service = new ReviewSubjectService(d);
@@ -338,9 +358,11 @@ describe('fallback reasons', () => {
     const d = deps({
       store: { listReviewQueue: vi.fn(() => [queueRow(prSubject(), 'gh-1-7')]) },
       diffs: {
-        resolvePrLocal: vi.fn(
-          async (): Promise<PrLocalResult> => ({ status: 'stale', headSha: 'aaa', forgeHeadSha: 'bbb' }),
-        ),
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({
+          status: 'stale',
+          headSha: 'aaa',
+          forgeHeadSha: 'bbb',
+        })),
       },
     });
     const service = new ReviewSubjectService(d);
@@ -357,7 +379,9 @@ describe('a stale local-ref read', () => {
     const resolved = fakeResolved('d1');
     const d = deps({
       store: { listReviewQueue: vi.fn(() => [queueRow(prSubject(), 'gh-1-7')]) },
-      diffs: { resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'ok', resolved })) },
+      diffs: {
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'ok', resolved })),
+      },
     });
     const service = new ReviewSubjectService(d);
 
@@ -374,7 +398,9 @@ describe('forge-api reads', () => {
     const staleAnswer: DiffFileResult = { status: 'stale', diffId: 'old', currentDiffId: 'new' };
     const d = deps({
       store: { listReviewQueue: vi.fn(() => [queueRow(prSubject(), 'gh-1-7')]) },
-      diffs: { resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'no-project' })) },
+      diffs: {
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'no-project' })),
+      },
       forge: { file: vi.fn(async (): Promise<DiffFileResult> => staleAnswer) },
     });
     const service = new ReviewSubjectService(d);

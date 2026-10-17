@@ -295,8 +295,12 @@ export function dedupe(rows: readonly QueuedRow[]): QueuedRow[] {
   return rows.filter((row) => !(row.item.queue === 'requested' && mineIds.has(row.item.subjectId)));
 }
 
-/** The git-remote-style host for a forge's configured API base URL, for `matchProject`. */
-function hostOf(baseUrl: string): string {
+/**
+ * The git-remote-style host for a forge's configured API base URL, for `matchProject` — and,
+ * via `ipc.ts`'s own `hostFor`, what `ReviewSubjectService` resolves a PR's provider to
+ * (F15.10).
+ */
+export function hostOf(baseUrl: string): string {
   try {
     const hostname = new URL(baseUrl).hostname.toLowerCase();
     // `api.github.com` is the API root; the remote every project clone actually carries

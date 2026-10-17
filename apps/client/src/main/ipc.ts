@@ -290,8 +290,11 @@ import { Updater } from './updater';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 import { createDiffGit, createReviewRefGit, DiffService } from './review/diffService';
-import { ReviewQueueService } from './review/queueService';
+import { ForgeDiffSource } from './review/forgeDiffSource';
+import { hostOf, ReviewQueueService } from './review/queueService';
+import { createReviewHandlers } from './review/reviewHandlers';
 import { ReviewService } from './review/reviewService';
+import { ReviewSubjectService } from './review/subjectService';
 import { bucketUsageDaily, DAY_MS, normalizeDailyOptions } from '@shared/usage';
 import {
   ACTIVITY_PERIOD_MS,
@@ -1194,9 +1197,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       return { url: tokenizedUrl(remote.host, remote.path, provider, clean), secrets: [clean] };
     },
   });
-  handle('task:diffSummary', async (taskId) => diffs.summary(taskId));
-  handle('task:diffFile', async (taskId, diffId, path) => diffs.file(taskId, diffId, path));
-  handle('task:diffImage', async (taskId, diffId, path) => diffs.image(taskId, diffId, path));
+  // `task:diffSummary`/`task:diffFile`/`task:diffImage` are wired further down (F15.10),
+  // once `ForgeDiffSource` and `ReviewSubjectService` exist — see `reviewHandlers` there.
 
   // --- Review comments (F6) ---------------------------------------------------
   const reviews = new ReviewService({
@@ -2279,6 +2281,40 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     gitlab: buildGitLabClient,
     emit: (snapshot) => send('review:queues:changed', snapshot),
   });
+
+  // --- A review subject's diff, over any of the three sources (F15.10) -------
+  // `ForgeDiffSource`'s clients are the same lazy factories `buildGitHubClient`/
+  // `buildGitLabClient` already are — built AFTER `reviewQueueService` above, so a token
+  // saved mid-session is picked up the same way. Left un-wrapped on purpose: a missing
+  // token's "No GitHub token saved — add one in Settings." must reach the human as-is,
+  // not get flattened into ForgeDiffSource's own generic "no client is configured" message.
+  const forgeDiffSource = new ForgeDiffSource({
+    githubClient: () => buildGitHubClient(),
+    gitlabClient: () => buildGitLabClient(),
+  });
+  const reviewSubjects = new ReviewSubjectService({
+    diffs,
+    forge: forgeDiffSource,
+    store,
+    hostFor: (provider) => hostOf(forgeBaseUrl(provider, store.getSettings())),
+  });
+  const reviewHandlers = createReviewHandlers({
+    subjects: reviewSubjects,
+    queues: reviewQueueService,
+    store,
+    now: () => Date.now(),
+  });
+  handle('task:diffSummary', reviewHandlers['task:diffSummary']);
+  handle('task:diffFile', reviewHandlers['task:diffFile']);
+  handle('task:diffImage', reviewHandlers['task:diffImage']);
+  handle('review:queues', reviewHandlers['review:queues']);
+  handle('review:refreshQueues', reviewHandlers['review:refreshQueues']);
+  handle('review:subjectSummary', reviewHandlers['review:subjectSummary']);
+  handle('review:subjectFile', reviewHandlers['review:subjectFile']);
+  handle('review:subjectImage', reviewHandlers['review:subjectImage']);
+  handle('review:context', reviewHandlers['review:context']);
+  handle('review:viewed', reviewHandlers['review:viewed']);
+  handle('review:setViewed', reviewHandlers['review:setViewed']);
 
   /**
    * The GitHub builder above, one source over — same guard, same reason — but a raw API

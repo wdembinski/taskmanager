@@ -112,6 +112,14 @@ describe('the channels that DO relay', () => {
     'review:update',
     'review:delete',
     'review:send',
+    'review:queues',
+    'review:refreshQueues',
+    'review:subjectSummary',
+    'review:subjectFile',
+    'review:subjectImage',
+    'review:context',
+    'review:viewed',
+    'review:setViewed',
   ];
 
   for (const channel of MUST_RELAY) {

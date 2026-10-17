@@ -40,7 +40,15 @@ import { ForgeDiffSource, type PrSubject } from './forgeDiffSource';
 export interface ReviewSubjectServiceDeps {
   diffs: Pick<
     DiffService,
-    'summary' | 'file' | 'image' | 'context' | 'resolvePrLocal' | 'summaryFor' | 'fileIn' | 'imageIn' | 'contextIn'
+    | 'summary'
+    | 'file'
+    | 'image'
+    | 'context'
+    | 'resolvePrLocal'
+    | 'summaryFor'
+    | 'fileIn'
+    | 'imageIn'
+    | 'contextIn'
   >;
   forge: Pick<ForgeDiffSource, 'detail' | 'summary' | 'file' | 'image' | 'context'>;
   store: Pick<Store, 'listReviewQueue' | 'listMergeRequests'>;
@@ -83,7 +91,10 @@ export class ReviewSubjectService {
     return this.forPr(
       id,
       diffId,
-      async (resolved) => ({ status: 'ok', file: await this.deps.diffs.fileIn(resolved, diffId, path) }),
+      async (resolved) => ({
+        status: 'ok',
+        file: await this.deps.diffs.fileIn(resolved, diffId, path),
+      }),
       (subject) => this.deps.forge.file(subject, diffId, path),
     );
   }
@@ -94,7 +105,10 @@ export class ReviewSubjectService {
     return this.forPr(
       id,
       diffId,
-      async (resolved) => ({ status: 'ok', image: await this.deps.diffs.imageIn(resolved, diffId, path) }),
+      async (resolved) => ({
+        status: 'ok',
+        image: await this.deps.diffs.imageIn(resolved, diffId, path),
+      }),
       (subject) => this.deps.forge.image(subject, diffId, path),
     );
   }
@@ -108,7 +122,8 @@ export class ReviewSubjectService {
     to: number,
   ): Promise<DiffContextResult> {
     const key = this.parseKey(id);
-    if (key.kind === 'task') return this.deps.diffs.context(key.taskId, diffId, path, side, from, to);
+    if (key.kind === 'task')
+      return this.deps.diffs.context(key.taskId, diffId, path, side, from, to);
     return this.forPr(
       id,
       diffId,
@@ -185,7 +200,13 @@ export class ReviewSubjectService {
     if (queued?.kind === 'pr') return queued;
     const mr = this.deps.store.listMergeRequests().find((m) => m.id === id);
     if (mr) {
-      return { kind: 'pr', provider: mr.provider, repoId: mr.repoId, repoPath: mr.projectPath, number: mr.number };
+      return {
+        kind: 'pr',
+        provider: mr.provider,
+        repoId: mr.repoId,
+        repoPath: mr.projectPath,
+        number: mr.number,
+      };
     }
     throw new Error(`${id} is not in any review queue.`);
   }

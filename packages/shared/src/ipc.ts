@@ -72,8 +72,10 @@ import type { AuthState } from './auth';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
 import type {
+  DiffContextResult,
   DiffFileResult,
   DiffImageResult,
+  DiffSide,
   DiffSummaryResult,
   ReviewAddResult,
   ReviewComment,
@@ -83,6 +85,7 @@ import type {
   ReviewQueuesSnapshot,
   ReviewSendResult,
   ReviewUpdateResult,
+  ReviewViewedMark,
 } from './review';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { TicketLinkResult } from './ticketLinks';
@@ -839,6 +842,62 @@ export interface IpcApi {
    * whatever `task:chat` itself can refuse with.
    */
   'review:send': (taskId: string, note?: string) => Promise<ReviewSendResult>;
+
+  /**
+   * Every review queue's cached rows (F15.9), answered synchronously, with a background
+   * refresh fired beside it — `ReviewQueueService.open()`'s own contract: this never waits
+   * on a forge. The fresh answer lands over `review:queues:changed` once the refresh does.
+   * Each queue is capped at `REVIEW_QUEUE_MAX_ROWS`, named in `truncated` when it was.
+   */
+  'review:queues': () => Promise<ReviewQueuesSnapshot>;
+  /**
+   * The Reviews pane's own "Refresh" button: awaits a full refresh of every queue, THEN
+   * answers with the snapshot — unlike `review:queues`, which never waits on one. Same cap
+   * and `truncated` rule.
+   */
+  'review:refreshQueues': () => Promise<ReviewQueuesSnapshot>;
+  /**
+   * A review subject's file list (F15.10) — any of the three `ReviewSource`s the diff might
+   * live in, decided by `ReviewSubjectService`. `task:diffSummary` is now this channel's
+   * `task`-only special case, routed through the very same service.
+   */
+  'review:subjectSummary': (subjectId: string) => Promise<DiffSummaryResult>;
+  /** One file's hunks out of a review subject's diff — `task:diffFile`, widened to any subject. */
+  'review:subjectFile': (
+    subjectId: string,
+    diffId: string,
+    path: string,
+  ) => Promise<DiffFileResult>;
+  /** Both sides of one image file in a review subject's diff — `task:diffImage`, widened. */
+  'review:subjectImage': (
+    subjectId: string,
+    diffId: string,
+    path: string,
+  ) => Promise<DiffImageResult>;
+  /**
+   * Lines read for context expansion, from one side of a review subject's diff at `path`,
+   * between `from` and `to` (both 1-based and inclusive). `stale` as for `review:subjectFile`.
+   */
+  'review:context': (
+    subjectId: string,
+    diffId: string,
+    path: string,
+    side: DiffSide,
+    from: number,
+    to: number,
+  ) => Promise<DiffContextResult>;
+  /** Every file a review subject has marked read, in no particular order. */
+  'review:viewed': (subjectId: string) => Promise<ReviewViewedMark[]>;
+  /**
+   * Mark one file read on a review subject's diff — or, with `blobSha: null`, clear that
+   * mark. Answers with the subject's marks after the write, like `review:viewed`, so a
+   * caller never has to re-read to see its own change.
+   */
+  'review:setViewed': (
+    subjectId: string,
+    path: string,
+    blobSha: string | null,
+  ) => Promise<ReviewViewedMark[]>;
 
   /**
    * Delegate a My Tasks card to an agent: persist the assignment (agent project +
