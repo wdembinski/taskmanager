@@ -150,7 +150,10 @@ export function BottomTabBar({
             <Tab
               key={item.id}
               value={item.id}
-              icon={{ children: item.icon, className: isSelected ? styles.iconSelected : undefined }}
+              icon={{
+                children: item.icon,
+                className: isSelected ? styles.iconSelected : undefined,
+              }}
               className={styles.tab}
             >
               <span className={isSelected ? styles.labelSelected : undefined}>{item.label}</span>

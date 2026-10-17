@@ -216,9 +216,7 @@ describe.each(SCHEMES)('shell token pairs (%s)', (scheme) => {
     });
 
     it(`unselected label on worst glass >= ${AA.text}`, () => {
-      expect(worstGlassRatio(unselected, surfaces.glassCandidates)).toBeGreaterThanOrEqual(
-        AA.text,
-      );
+      expect(worstGlassRatio(unselected, surfaces.glassCandidates)).toBeGreaterThanOrEqual(AA.text);
     });
 
     it(`selected label (brand) on selectedTint over paneOpaque >= ${AA.text}`, () => {
