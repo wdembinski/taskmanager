@@ -198,8 +198,6 @@ export function Projects(): JSX.Element {
                 projectId={selectedProject.id}
                 people={registries.people}
                 agentProjects={agentProjects}
-                labels={registries.labels}
-                milestones={registries.milestones}
                 selectedTicketId={selectedTaskId}
                 onSelectTicket={selectTicket}
               />
