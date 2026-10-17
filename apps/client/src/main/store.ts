@@ -110,6 +110,7 @@ import {
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_LINEAR_SETTINGS,
   DEFAULT_SETTINGS,
+  coerceBoardLinksMode,
   resolveSyncInterval,
   withExistingInstallAppearance,
 } from '@shared/settings';
@@ -4164,6 +4165,10 @@ export function createStore(dbPath: string): Store {
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
         features: { ...DEFAULT_FEATURE_SETTINGS, ...(parsed.features ?? {}) },
         gantt: { ...DEFAULT_GANTT_SETTINGS, ...(parsed.gantt ?? {}) },
+        // A plain enum, not a nested block — but one a stored blob can hold any string in
+        // (an older build, a hand-edited row), so it is coerced the same way the model
+        // fields below are validated on the way IN at `settings:save`.
+        boardLinks: coerceBoardLinksMode(parsed.boardLinks),
       };
     } catch {
       return { ...DEFAULT_SETTINGS };

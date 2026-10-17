@@ -62,6 +62,13 @@ export const useBoardLayoutStyles = makeStyles({
     paddingTop: '4px',
   },
   /**
+   * The same grid, while a chain's links are actually drawn over it (`mode !== 'off'` and
+   * `links.length > 0`) — a wider gutter so `chainRoute`'s lanes have somewhere to run that
+   * is not a card's own padding. One shared rule rather than a host re-declaring the gap,
+   * for the same reason `columns` itself is shared (`shell-parity.test.ts`).
+   */
+  columnsLinked: { gap: '30px' },
+  /**
    * The parked shelf (Phase 25's `settings.features.shelf`): a full-width band below the
    * columns rather than a column of its own, because a shelved card has deliberately left
    * every column — giving it one more would put it right back in the thing it left.

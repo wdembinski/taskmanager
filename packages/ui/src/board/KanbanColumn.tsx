@@ -20,6 +20,7 @@ import type { BoardCard, BoardColumn } from './boardColumns';
 import type { ChainPosition } from './chainPosition';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 import type { ChainState } from './chainStates';
+import type { LinkChips } from './linkChips';
 
 const useStyles = makeStyles({
   // A grid item of the board's scroll container (`boardLayout`'s `columns`): it stretches to
@@ -76,6 +77,13 @@ const useStyles = makeStyles({
     minHeight: '40px',
     flex: 1,
   },
+  /**
+   * While a chain's links are being drawn over the board, the space between the sticky
+   * header and the first card IS the bus band `chainRoute` routes distant links through —
+   * `useCardAnchors`' `busTop`/`busBottom`. ~18px holds two lanes (`LANE_GAP`, `chainRoute.ts`)
+   * clear of both the header above and the first card's own top edge below.
+   */
+  listLinked: { paddingTop: '18px' },
   empty: { color: tokens.colorNeutralForeground4, padding: '8px 4px' },
   /**
    * The compact board's one visible column (F3.5) — no sticky header (there is only one
@@ -171,6 +179,20 @@ export interface KanbanColumnProps {
    * Passed through like `anchorRef`: the column neither starts one nor acts on one.
    */
   linkDrag?: LinkDragState | null;
+  /**
+   * At least one chain link is actually being drawn over the board (`links.length > 0` and
+   * the Off/Focus/All switch is not Off — `linkMode.linkView(...).drawn`). Widens the gap
+   * above the first card (`listLinked`) so the bus band `chainRoute` routes distant links
+   * through has somewhere to be; absent or false leaves the column exactly as it was before
+   * this ticket.
+   */
+  linksDrawn?: boolean;
+  /**
+   * Links Focus mode dims — neither the selection nor one of its direct links
+   * (`linkMode.linkView`'s `dimmedTaskIds`). Asked per card like `foldedStepTaskIds`: the
+   * answer lives in one place (the board) and every card here asks the same copy of it.
+   */
+  dimmedTaskIds?: ReadonlySet<string>;
   onLinkStart?: (taskId: string) => void;
   onLinkEnd?: () => void;
   onLinkTo?: (fromTaskId: string, toTaskId: string) => void;
@@ -182,6 +204,13 @@ export interface KanbanColumnProps {
    * already has one (see `MyTasks`). Undefined for a card nobody chained.
    */
   chainStateOf?: (task: Task) => ChainState | undefined;
+  /**
+   * Needs/unblocks (`linkChips.ts`), asked per card like `chainStateOf` — the board holds no
+   * index of its own, and the column asks it fresh per card. Absent everywhere the Off/Focus/
+   * All switch is not Off, which is also what leaves each card's `chainChip` drawing exactly
+   * as it always did.
+   */
+  linkChipsOf?: (task: Task) => LinkChips | undefined;
   /**
    * A chained card's "step n of m" (F3.5) — the compact board's stand-in for the wide
    * board's arrows, which there is no room to draw over a single column. Asked per card like
@@ -237,6 +266,10 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
 
   return (
     <div
+      // The router's own anchor (`useCardAnchors`/`chainRoute`): its content-space left/right
+      // is one column's gutter wall, and a card's nearest ancestor with this attribute is how
+      // its column index is read back, without threading a second index through every card.
+      data-board-column={props.column}
       className={mergeClasses(
         styles.column,
         over && styles.columnOver,
@@ -267,14 +300,20 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
       }}
     >
       {!compact && (
-        <div className={styles.header}>
+        <div className={styles.header} data-board-column-header="">
           <Text weight="semibold" size={200} className={styles.headerLabel}>
             {props.label}
           </Text>
           <Caption1 className={styles.count}>({props.cards.length})</Caption1>
         </div>
       )}
-      <div className={mergeClasses(styles.list, compact && styles.listCompact)}>
+      <div
+        className={mergeClasses(
+          styles.list,
+          compact && styles.listCompact,
+          props.linksDrawn && styles.listLinked,
+        )}
+      >
         {props.cards.length === 0 ? (
           <Caption1 className={styles.empty}>—</Caption1>
         ) : (
@@ -310,6 +349,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               display={props.display}
               selected={task.id === props.selectedTaskId}
               selectedTaskId={props.selectedTaskId}
+              dimmed={props.dimmedTaskIds?.has(task.id)}
               anchorRef={props.anchorRef?.(task.id)}
               linkState={props.linkDrag?.states.get(task.id)}
               // Absent when the board is not wired for chains, which is also what decides
@@ -330,6 +370,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               chainReady={props.chainStateOf?.(task)?.ready}
               chainBlocked={props.chainStateOf?.(task)?.blocked}
               chainPosition={props.chainPositionOf?.(task)}
+              linkChips={props.linkChipsOf?.(task)}
               // A chain says what runs after what, never where a card belongs; and a run
               // only BORROWS the card's status (`cardStatusGuard`), so not even a live agent
               // or a live step takes a card out of the human's hands — there is no state in

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardColumn } from './model';
 import {
   clampSyncInterval,
+  coerceBoardLinksMode,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_FEATURE_SETTINGS,
   DEFAULT_GITHUB_SETTINGS,
@@ -260,6 +261,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'gantt',
   'shelvedCardIds',
   'shelfFolded',
+  'boardLinks',
   'runInBackground',
   'trustedGateCommands',
 ];
@@ -283,6 +285,29 @@ describe('DEFAULT_SETTINGS.features', () => {
   it('keeps the shelf empty and unfolded out of the box', () => {
     expect(DEFAULT_SETTINGS.shelvedCardIds).toEqual([]);
     expect(DEFAULT_SETTINGS.shelfFolded).toBe(false);
+  });
+
+  // 'all' is what the board drew before this switch existed — a fresh install, and every
+  // blob saved before the field was added, must see the board exactly as it always looked.
+  it('draws every chain link out of the box', () => {
+    expect(DEFAULT_SETTINGS.boardLinks).toBe('all');
+  });
+});
+
+describe('coerceBoardLinksMode', () => {
+  it('passes through every real mode unchanged', () => {
+    expect(coerceBoardLinksMode('off')).toBe('off');
+    expect(coerceBoardLinksMode('focus')).toBe('focus');
+    expect(coerceBoardLinksMode('all')).toBe('all');
+  });
+
+  // 'all', not 'off': a blob from before this setting existed (or a corrupted one) must read
+  // back as the board always looked, not as links that silently vanished.
+  it('falls back to all for anything else', () => {
+    expect(coerceBoardLinksMode(undefined)).toBe('all');
+    expect(coerceBoardLinksMode(null)).toBe('all');
+    expect(coerceBoardLinksMode('on')).toBe('all');
+    expect(coerceBoardLinksMode(1)).toBe('all');
   });
 });
 

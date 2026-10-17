@@ -35,7 +35,7 @@
  * lands without needing a desktop Client to apply it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Caption1, makeStyles } from '@fluentui/react-components';
+import { Button, Caption1, makeStyles, mergeClasses } from '@fluentui/react-components';
 import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
 import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
 import { hiddenBoardColumns, shouldAutoFoldOnMove, withColumnHidden } from '@tm/shared/settings';
@@ -48,8 +48,11 @@ import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
 import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
-import { arrowRoute } from '@tm/ui/board/chainArrows';
+import { buildChainDrawing, linkMidpoint } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
+import { linkView, nextLinkMode, type LinkMode } from '@tm/ui/board/linkMode';
+import { linkChips } from '@tm/ui/board/linkChips';
+import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
 import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/board/shelvedCards';
 import { chainStates } from '@tm/ui/board/chainStates';
@@ -109,6 +112,9 @@ const RELAY_NOTICE =
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, c.label]),
 ) as Record<BoardColumn, string>;
+
+/** A stable empty set — `buildChainDrawing`'s `litTaskIds` when only the geometry matters. */
+const EMPTY_TASK_IDS: ReadonlySet<string> = new Set();
 
 export interface BoardScreenProps {
   state: CloudBoardState;
@@ -241,6 +247,7 @@ export function BoardScreen({
    */
   const showGraph = settings.showGitGraph;
   const display = settings.board;
+  const boardLinks: LinkMode = settings.boardLinks;
 
   const projects = useMemo(() => Object.values(state.projects), [state.projects]);
 
@@ -504,13 +511,59 @@ export function BoardScreen({
     () => extras.chainLinks.find((l) => l.id === selectedLinkId) ?? null,
     [extras.chainLinks, selectedLinkId],
   );
-  const selectedLinkAt = useMemo(() => {
-    if (!selectedLink) return null;
-    const from = anchors.rects.get(selectedLink.fromTaskId);
-    const to = anchors.rects.get(selectedLink.toTaskId);
-    if (!from || !to) return null;
-    return arrowRoute(from, to, anchors.bounds.width).mid;
-  }, [selectedLink, anchors.rects, anchors.bounds.width]);
+  // The same routed geometry `ChainOverlay` draws, memoised once here rather than recomputed
+  // by hand — an endpoint the board is not showing has a stub rather than an arrow, and
+  // `linkMidpoint` already returns null for exactly that case.
+  const chainDrawing = useMemo(
+    () =>
+      buildChainDrawing({
+        links: extras.chainLinks,
+        anchors: anchors.rects,
+        cardColumns: anchors.cardColumns,
+        tasksById,
+        litTaskIds: EMPTY_TASK_IDS,
+        boardWidth: anchors.bounds.width,
+        layout: anchors.layout,
+      }),
+    [
+      extras.chainLinks,
+      anchors.rects,
+      anchors.cardColumns,
+      tasksById,
+      anchors.bounds.width,
+      anchors.layout,
+    ],
+  );
+  const selectedLinkAt = useMemo(
+    () => (selectedLink ? linkMidpoint(chainDrawing, selectedLink.id) : null),
+    [selectedLink, chainDrawing],
+  );
+
+  // The Off/Focus/All switch (F13.20) — the desktop's own `settings.boardLinks`, so the
+  // two hosts agree on how the links look the same way they already agree on every other
+  // toolbar switch.
+  const linkState = useMemo(
+    () => linkView(extras.chainLinks, boardLinks, selectedTaskId),
+    [extras.chainLinks, boardLinks, selectedTaskId],
+  );
+  useGlobalShortcut(
+    'l',
+    () =>
+      void saveSettings({ ...settings, boardLinks: nextLinkMode(boardLinks) }).catch(reportError),
+    { ignoreInFields: true },
+  );
+
+  // Widens the gutters (`columnsLinked`/`listLinked`) only while there is something to route
+  // through them — a board with no links yet keeps its ordinary, narrower gap — and the
+  // switch is not Off, where nothing is drawn over the board at all.
+  const linksDrawn = extras.chainLinks.length > 0 && linkState.drawn;
+
+  // Off draws no arrow at all, so each card says what it would have said in words instead
+  // (`linkChips.ts`) — absent every other mode, which is what leaves `chainChip` alone there.
+  const linkChipsOf =
+    boardLinks === 'off'
+      ? (t: Task) => linkChips(t.id, extras.chainLinks, tasksById, extras.liveRunTaskIds)
+      : undefined;
 
   // Delete or Backspace erases the selected arrow, Escape lets it go — the desktop's own
   // keyboard contract, on the window rather than the path because an SVG `<path>` cannot
@@ -770,6 +823,10 @@ export function BoardScreen({
           chainFocus={chainFocus}
           onChainFocusChange={setChainFocus}
           canFocusChain={selectedTaskId !== null}
+          boardLinks={boardLinks}
+          onBoardLinksChange={(next) =>
+            void saveSettings({ ...settings, boardLinks: next }).catch(reportError)
+          }
           currentSprintOnly={settings.jira.currentSprintOnly}
           onCurrentSprintOnlyChange={(next) =>
             void saveSettings({
@@ -869,7 +926,10 @@ export function BoardScreen({
             />
           )
         ) : (
-          <div className={layout.columns} onClick={() => setSelectedLinkId(null)}>
+          <div
+            className={mergeClasses(layout.columns, linksDrawn && layout.columnsLinked)}
+            onClick={() => setSelectedLinkId(null)}
+          >
             {allowedDropColumns({ hiddenColumns, pending: false }).map((column) => (
               <KanbanColumn
                 key={column}
@@ -897,6 +957,8 @@ export function BoardScreen({
                 shownLaterStepTaskIds={shownLaterSteps}
                 onToggleLaterSteps={toggleLaterSteps}
                 anchorRef={anchors.anchorRef}
+                linksDrawn={linksDrawn}
+                dimmedTaskIds={linkState.dimmedTaskIds}
                 linkDrag={linkDrag}
                 onLinkStart={(taskId) => {
                   setSelectedLinkId(null);
@@ -929,6 +991,7 @@ export function BoardScreen({
                   );
                 }}
                 chainStateOf={(t) => chainState.get(t.id)}
+                linkChipsOf={linkChipsOf}
                 selectedTaskId={selectedTaskId}
                 draggingId={draggingId}
                 onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
@@ -947,22 +1010,29 @@ export function BoardScreen({
               />
             ))}
             {/* Last, so the arrows paint over the cards — and inside the scroll container,
-                so they travel with them. It takes no pointer events; only the strokes do. */}
-            <ChainOverlay
-              links={extras.chainLinks}
-              anchors={anchors.rects}
-              tasksById={tasksById}
-              runningTaskIds={extras.liveRunTaskIds}
-              selectedTaskId={selectedTaskId}
-              hoveredTaskId={anchors.hoveredTaskId}
-              focusTaskIds={focusIds}
-              selectedLinkId={selectedLinkId}
-              onSelectLink={setSelectedLinkId}
-              linkDrag={linkDrag}
-              width={anchors.bounds.width}
-              height={anchors.bounds.height}
-            />
-            {selectedLink && selectedLinkAt && (
+                so they travel with them. It takes no pointer events; only the strokes do.
+                Absent entirely in Off: nothing to draw, and nothing for the popover below
+                to hang off either. */}
+            {linkState.drawn && (
+              <ChainOverlay
+                links={extras.chainLinks}
+                anchors={anchors.rects}
+                cardColumns={anchors.cardColumns}
+                layout={anchors.layout}
+                tasksById={tasksById}
+                runningTaskIds={extras.liveRunTaskIds}
+                selectedTaskId={selectedTaskId}
+                hoveredTaskId={anchors.hoveredTaskId}
+                focusTaskIds={focusIds}
+                selectedLinkId={selectedLinkId}
+                onSelectLink={setSelectedLinkId}
+                fadedLinkIds={linkState.fadedLinkIds}
+                linkDrag={linkDrag}
+                width={anchors.bounds.width}
+                height={anchors.bounds.height}
+              />
+            )}
+            {linkState.drawn && selectedLink && selectedLinkAt && (
               <ChainLinkPopover
                 link={selectedLink}
                 fromTitle={tasksById.get(selectedLink.fromTaskId)?.title ?? 'another card'}
