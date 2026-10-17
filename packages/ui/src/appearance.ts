@@ -92,20 +92,24 @@ export interface AppearanceWindow {
  * Reads this machine's environment into an {@link AppearanceEnv} — the two media queries
  * `resolveAppearance` needs, plus whether this window can even paint `backdrop-filter`.
  *
- * `nativeMaterial` is always `null` here: knowing whether Mica or Acrylic actually took
- * effect means asking the Electron main process, which is desktop-only and a different
- * mechanism than anything a `window` exposes — until F13.7 wires that up, every caller of
- * this function is in the same position a browser tab permanently is.
+ * `nativeMaterial` is passed through as given rather than read here: knowing whether Mica
+ * or Acrylic actually took effect means asking the Electron main process, which is
+ * desktop-only and a different mechanism than anything a `window` exposes. The desktop's
+ * `main.tsx` asks it over IPC and hands the answer in; every other caller (the web, a test)
+ * leaves it at the default `null`, the same position a browser tab permanently is.
  *
  * `win.CSS` is optional because `Window` does not guarantee `CSS.supports` in every
  * environment this runs in (older WebViews); treated as unsupported rather than throwing.
  */
-export function readAppearanceEnv(win: AppearanceWindow): AppearanceEnv {
+export function readAppearanceEnv(
+  win: AppearanceWindow,
+  nativeMaterial: NativeMaterial | null = null,
+): AppearanceEnv {
   return {
     prefersDark: win.matchMedia('(prefers-color-scheme: dark)').matches,
     prefersReducedTransparency: win.matchMedia('(prefers-reduced-transparency: reduce)').matches,
     backdropFilterSupported: win.CSS?.supports?.('backdrop-filter', 'blur(1px)') ?? false,
-    nativeMaterial: null,
+    nativeMaterial,
   };
 }
 

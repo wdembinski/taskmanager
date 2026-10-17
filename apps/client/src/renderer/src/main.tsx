@@ -16,6 +16,7 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
+import type { NativeMaterial } from '@shared/canvas';
 import type { AppSettings } from '@shared/settings';
 import { App } from './App';
 import { isFileDrag } from '@ui/AttachmentStrip';
@@ -67,12 +68,20 @@ for (const type of ['dragover', 'drop'] as const) {
  * in flight. Re-read on `settings:changed` so a change takes effect as you pick it rather
  * than on next launch; `useResolvedAppearance` re-resolves the two settings into a scheme
  * on top of that, and keeps `document.documentElement` in step with it.
+ *
+ * `nativeMaterial` starts `null` and is asked for exactly once, over `window:nativeMaterial`
+ * — the main process decided it (if at all) before this window was even created, so there is
+ * nothing to re-read later. The first frame therefore always resolves `glass: 'css'`, with
+ * the opaque canvas still painted behind it (F13.7's anti-flash colour), so nothing flashes
+ * while the answer is in flight; it switches to `'native'` once it arrives, if Windows
+ * granted a material.
  */
 function ThemedApp(): JSX.Element {
   const [fontSizePx, setFontSizePx] = useState(BASE_FONT_PX);
   const [toasts, setToasts] = useState(true);
   const [appearance, setAppearance] = useState<AppSettings['appearance']>('dark');
   const [transparency, setTransparency] = useState<AppSettings['transparency']>('system');
+  const [nativeMaterial, setNativeMaterial] = useState<NativeMaterial | null>(null);
 
   useEffect(() => {
     const read = (): void => {
@@ -90,7 +99,14 @@ function ThemedApp(): JSX.Element {
     return window.api.on('settings:changed', read);
   }, []);
 
-  const { scheme } = useResolvedAppearance({ appearance, transparency });
+  useEffect(() => {
+    void window.api
+      .invoke('window:nativeMaterial')
+      .then(setNativeMaterial)
+      .catch(() => null);
+  }, []);
+
+  const { scheme } = useResolvedAppearance({ appearance, transparency }, nativeMaterial);
   // The app's global rules — the resolved scheme's colour-scheme, page background,
   // scrollbars, spinner colour. Called here because this component always renders, and
   // `makeStaticStyles` emits its CSS on first use. `index.css` beside this file keeps only

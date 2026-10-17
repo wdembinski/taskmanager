@@ -396,6 +396,28 @@ export const useGlobalStyles = makeStaticStyles({
     backgroundColor: 'var(--tm-page-bg)',
   },
 
+  /**
+   * `glass: 'native'` (F13.7): the OS material — Mica or Acrylic — is already painting
+   * behind the window (`main/index.ts`'s transparent `backgroundColor` is what lets it
+   * through), so the wash and the canvas colour would just cover it back up. Dropping both
+   * here, rather than teaching `html, body, #root` above to read `data-glass`, keeps that
+   * rule's own job — paint the one thing every OTHER mode needs — undisturbed; this is the
+   * one mode that wants nothing painted at all.
+   *
+   * `.fui-FluentProvider` needs the same treatment: Fluent's own `useFluentProviderStyles`
+   * paints `colorNeutralBackground1` as an opaque fill on the provider root, which sits
+   * right on top of `#root` and would hide the material just as completely. Panes keep
+   * painting `paneGlass`/`paneOpaque` over this unchanged (`GlassPane.tsx`) — only the
+   * canvas beneath them goes see-through.
+   */
+  ':root[data-glass="native"], :root[data-glass="native"] body, :root[data-glass="native"] #root': {
+    background: 'transparent',
+    backgroundColor: 'transparent',
+  },
+  ':root[data-glass="native"] .fui-FluentProvider': {
+    backgroundColor: 'transparent',
+  },
+
   /* The shell never scrolls; inner panes manage their own overflow. */
   body: {
     overflow: 'hidden',

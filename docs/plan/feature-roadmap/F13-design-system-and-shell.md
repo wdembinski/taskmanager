@@ -453,7 +453,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     ship `native` (with its detection rule) or keep CSS glass only on Windows. No product code
     merged.
 
-- [ ] F13.7 Use the native material on Windows when the spike says it is safe @needs: F13.5 Build the glass pane primitive with the opaque fallback, F13.6 Spike Electron's native background material on Windows with a frameless window
+- [x] F13.7 Use the native material on Windows when the spike says it is safe @needs: F13.5 Build the glass pane primitive with the opaque fallback, F13.6 Spike Electron's native background material on Windows with a frameless window
 
   - In `apps/client/src/main/index.ts`, set `backgroundMaterial` from the saved settings and the
     spike's detection rule; report `nativeMaterial` to the renderer through the existing
@@ -462,6 +462,18 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
   - Acceptance: a pure `windowMaterialFor(platform, osBuild, settings)` with tests (Windows 11
     22H2+ only, reduced transparency gives `none`, Linux/WSL gives `none`); gates green; the
     human confirms the look on their machine.
+  - **Decisions taken, carried over from the spike's findings:** only `'mica'` ships, not a
+    user choice between the two materials — the spike sampled both but found no reason to
+    expose `'acrylic'` as an option the settings UI would need to explain, so
+    `windowMaterialFor` returns `'mica'` unconditionally wherever it would otherwise grant a
+    material; `'acrylic'` stays a valid `NativeMaterial`/`WindowMaterial` value (the resolver
+    and `readAppearanceEnv`/`useResolvedAppearance` already treat it exactly like `'mica'`) in
+    case that changes later, but nothing in this app currently produces it. Second,
+    `transparency: 'full'` overrides the OS "Transparency effects" switch for the *native*
+    material exactly as it already does for CSS glass (`resolveAppearance`) — the spike proved
+    DWM does not withhold Mica on the OS switch's say alone, so without this override `'full'`
+    would mean nothing different from `'system'` on Windows, the same reasoning that already
+    justified the override for `backdropFilterSupported`.
 
 ### F13 · Phase 3 — Shell
 
