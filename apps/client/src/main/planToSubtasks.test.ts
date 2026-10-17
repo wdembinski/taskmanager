@@ -155,6 +155,72 @@ describe('splitPlanIntoSteps', () => {
     expect(steps.map((s) => s.title)).toEqual(['Build the parser', 'Add tests']);
   });
 
+  describe('framing headings the exact list missed', () => {
+    // Every one of these became a step on a real card (TM-207, TM-227, TM-177, TM-149,
+    // TM-173, TM-140) and ran a whole session that had nothing to build. TM-207's "Critical
+    // files" step then found the card's mockups and asked whether to build two other
+    // tickets' screens; TM-227's "Out of scope" step sat pending, waiting to do the very
+    // work it said was out of scope.
+    it.each([
+      'Critical files',
+      'Key files',
+      'Facts checked',
+      'Facts already checked',
+      'Decisions taken without asking (flag if wrong)',
+      'Decisions taken without the human',
+      'Decisions taken',
+      'Research findings the new steps rely on',
+      'Out of scope (other F15 steps)',
+      'Step 8 (renumbered from the original step 5) — Out of scope (other F15 steps)',
+      '**Open questions**',
+    ])('does not make a step of "%s"', (heading) => {
+      const steps = splitPlanIntoSteps(
+        [`## ${heading}`, '- some context', '## Build the parser', 'x', '## Add tests', 'y'].join(
+          '\n',
+        ),
+      );
+      expect(steps.map((s) => s.title)).toEqual(['Build the parser', 'Add tests']);
+    });
+
+    it.each([
+      'Design',
+      'Verification (end to end)',
+      'Background sync worker',
+      'Contextual menu for cards',
+      'Decide the layout toggle',
+      'Fact-check the glossary',
+    ])('keeps "%s", which names work', (heading) => {
+      const steps = splitPlanIntoSteps([`## ${heading}`, 'x', '## Add tests', 'y'].join('\n'));
+      expect(steps.map((s) => s.title)).toContain(heading);
+    });
+
+    it("splits TM-227's plan into only the steps that build something", () => {
+      // The shape of the real F15.12 plan: four of its six sections were framing.
+      const steps = splitPlanIntoSteps(
+        [
+          '# F15.12 — Add the side-by-side layout to DiffView',
+          '## Context',
+          'Why.',
+          '## Facts checked',
+          '- splitRows exists',
+          '## Design',
+          'The contract.',
+          '## Add the split-row comment mapping helpers to reviewView',
+          'TDD.',
+          '## Verification (end to end)',
+          'Run the gates.',
+          '## Out of scope (other F15 steps)',
+          'F15.11, F15.13, F15.14.',
+        ].join('\n'),
+      );
+      expect(steps.map((s) => s.title)).toEqual([
+        'Design',
+        'Add the split-row comment mapping helpers to reviewView',
+        'Verification (end to end)',
+      ]);
+    });
+  });
+
   it('strips ordinal prefixes and emphasis from titles', () => {
     const steps = splitPlanIntoSteps('## Phase 3: Ship it\nx\n\n## **Step 4 — Clean up**\ny');
     expect(steps.map((s) => s.title)).toEqual(['Ship it', 'Clean up']);
