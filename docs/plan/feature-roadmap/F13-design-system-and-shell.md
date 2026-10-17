@@ -736,6 +736,70 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
   - Acceptance: reducer tests (Space toggles peek, Enter from peek goes full, Esc steps back
     one level, a deleted ticket closes with a message); gates green.
 
+  - **Design decisions, taken here so the remaining steps do not re-derive them:**
+    - **Reducer state.** `IssueViewState = { selectedId: string | null; layout: 'closed' |
+      'peek' | 'full'; label: string | null; seen: boolean; notice: string | null }`. `label`
+      is the selected ticket's `ticketKey ?? title`, used in the deletion message. `seen`
+      records that the selected id has appeared in the project's list at least once.
+    - **Actions and transitions.** `select {id, label}` (a row click, or a link inside the
+      panel) sets the selection and clears the notice; `closed` becomes `peek` so a click still
+      opens the panel as it does today, while `peek` and `full` stay as they are, so following
+      a sub-issue link in full keeps you in full. `open {id, label}` (Enter or double-click on
+      a row) selects the ticket and goes straight to `full`. `space`, with no selection, does
+      nothing; otherwise `closed` and `peek` toggle into each other and `full` is unaffected.
+      `enter`, with no selection, does nothing; `closed` or `peek` goes to `full`. `escape`
+      steps back one level per press: `full` → `peek` → `closed` → selection cleared. `expand`
+      and `close` are the peek's two icon buttons — `expand` goes to `full`, `close` goes to
+      `closed`. `tickets {tickets}` is the project's current list: if the selected id is still
+      in it, `seen` becomes `true` and `label` refreshes; if it is missing and `seen` is
+      `true`, the ticket was deleted — clear the selection, set `layout: 'closed'`, and set
+      `notice` to `` `${label} was deleted, so its panel closed.` ``; if it is missing and
+      `seen` is `false`, nothing changes, because that is a cross-project link opened from the
+      panel, not a deletion. `dismissNotice` clears `notice`; `reset` (a project switch)
+      returns to the initial state, `{ selectedId: null, layout: 'closed', label: null, seen:
+      false, notice: null }`.
+    - **`showTaskDetail` retires from the Tickets screen.** The layout is the screen's own
+      reducer state now; the board (`MyTasks`) keeps the setting for itself. The existing
+      pane-toggle button in the view switch becomes the peek toggle: it dispatches `space`,
+      `aria-pressed` is `layout === 'peek'`, and it is disabled with no selection.
+    - **Breadcrumb** is a pure `issueBreadcrumb(task, project, milestones, ticketsById)`
+      returning `string[]`: the project name, then the milestone name when `task.milestoneId`
+      resolves, then the epic title when `task.epicTaskId` resolves. A link that does not
+      resolve is dropped from the array, never rendered as a placeholder like "None" — matches
+      the full-screen mockup's `Task Manager › M4 Reach › F4 Linear integration` row.
+    - **The ticket list is lifted out of `BacklogTable`.** Its load and its three subscriptions
+      (`board:tasks`, `task:changed`, `project:tasksChanged`) move into a hook,
+      `packages/ui/src/projects/useProjectTickets.ts`. `Projects` calls the hook once, feeds
+      its `tickets` into the `tickets` reducer action and into `issueBreadcrumb`, and passes
+      `tickets` (plus `initial` for the loading skeleton) down to `BacklogTable`, which stays
+      keyed by project. `TimelinePane` and `GraphPane` keep their own independent loads and are
+      untouched by this step.
+    - **Keys.** `IssueRow` gains `tabIndex={selected ? 0 : -1}` — the first row gets `0` when
+      nothing is selected — so the list is focusable; its existing Enter / double-click
+      `onOpen` dispatches `open`. Space and Esc are handled by an `onKeyDown` on the `Projects`
+      root, and are ignored when `e.defaultPrevented`, when the event target is editable
+      (`input`, `textarea`, `select`, `[contenteditable]` — so a space typed into the search
+      box or the panel's reply composer still works), or when the target sits inside
+      `[role="dialog"], [role="menu"], [role="listbox"]` — needed because React's events bubble
+      out of Fluent's portals rather than following the DOM tree the root listens on. A handled
+      Space calls `preventDefault`, so it never scrolls the list. After a step back out of
+      `full`, focus returns to the selected row.
+    - **Surfaces.** Both the peek and the full page sit on a `GlassPane`
+      (`shell/GlassPane.tsx`), matching F13's restraint rule that glass means panes — list,
+      detail, peek — while the `TaskDetail` sections inside stay flat. The peek keeps the 40%
+      flex basis and `minWidth: 0` rules already on `boardLayout.right`. Its slide-in is a
+      short `transform`/`opacity` keyframe, switched off under `@media (prefers-reduced-motion:
+      reduce)`. In `full`, the picker and list columns are not rendered at all: the page is the
+      breadcrumb row (muted text, `›` separators, a "Back to list" subtle button dispatching
+      `escape`) above a `TaskDetailHost` given the same props as the peek — matching the
+      attached full-screen mockup, which replaces the sidebar's list pane with the breadcrumb
+      and detail only.
+    - **Deleted notice** is a Fluent `MessageBar` (`intent="info"`, dismissable via
+      `dismissNotice`) shown above the list.
+    - **Peek header** is a slim row at the top of the peek holding two subtle icon buttons —
+      `ArrowMaximizeRegular` ("Open full screen (Enter)") and `DismissRegular` ("Close (Esc)")
+      — matching the two icons in the attached peek mockup's top-right corner.
+
 ### F13 · Phase 4 — Migrate the screens
 
 - [ ] F13.14 Move the board onto tokens and glass without changing its anatomy @needs: F13.5 Build the glass pane primitive with the opaque fallback
