@@ -2,7 +2,14 @@ import { tokens } from '@fluentui/react-components';
 import { describe, expect, it } from 'vitest';
 import { AA, composite, contrastRatio, parseColor, type Rgba } from './contrast';
 import { appDarkTheme, themeFor } from './theme';
-import { SEMANTIC, pipelineColor, statusIndicatorColor, type ColorScheme } from './tokens';
+import {
+  CODE_BY_SCHEME,
+  SEMANTIC,
+  SYNTAX_BY_SCHEME,
+  pipelineColor,
+  statusIndicatorColor,
+  type ColorScheme,
+} from './tokens';
 
 const SCHEMES: readonly ColorScheme[] = ['light', 'dark'];
 
@@ -267,6 +274,35 @@ describe.each(SCHEMES)('shell token pairs (%s)', (scheme) => {
       });
     }
   });
+});
+
+/**
+ * {@link SYNTAX_BY_SCHEME} against every surface a highlighted span can actually sit on: the
+ * code block/inline surfaces (`CODE_BY_SCHEME`), the pane's own neutral backgrounds, and a
+ * diff line's own add/del tint (`DiffView.tsx`'s `lineAdd`/`lineDel` — "a line's own tint at
+ * its subtlest step"), which is exactly `tokens.colorPaletteGreenBackground1`/
+ * `colorPaletteRedBackground1` resolved for this scheme.
+ */
+describe.each(SCHEMES)('syntax highlight colours (%s)', (scheme) => {
+  const syntax = SYNTAX_BY_SCHEME[scheme];
+  const code = CODE_BY_SCHEME[scheme];
+  const s = SEMANTIC[scheme];
+  const surfaces: ReadonlyArray<[name: string, bg: string]> = [
+    ['code.bg', code.bg],
+    ['code.inlineBg', code.inlineBg],
+    ['paneOpaque', s.paneOpaque],
+    ['canvas', s.canvas],
+    ['diff line add tint', resolveToken(tokens.colorPaletteGreenBackground1, scheme)],
+    ['diff line del tint', resolveToken(tokens.colorPaletteRedBackground1, scheme)],
+  ];
+
+  for (const [scopeName, fg] of Object.entries(syntax)) {
+    for (const [bgName, bg] of surfaces) {
+      it(`${scopeName} on ${bgName} >= ${AA.text}`, () => {
+        expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(AA.text);
+      });
+    }
+  }
 });
 
 describe('dark body text', () => {

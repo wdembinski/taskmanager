@@ -88,6 +88,23 @@ export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JS
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
 
+  // Whether the diff shows syntax colour at all (F15.11) — read once and kept live, the
+  // same shape `TaskAgentPanel`'s own `appAutoIntegrate` uses for a global switch an open
+  // pane must not show yesterday's answer to.
+  const [monochrome, setMonochrome] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void transport
+      .invoke('settings:get')
+      .then((s) => alive && setMonochrome(s.monochromeCode))
+      .catch(() => undefined);
+    const off = transport.on('settings:changed', (next) => setMonochrome(next.monochromeCode));
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [transport]);
+
   const loadSummary = useCallback(async () => {
     const mySeq = ++seq.current;
     setError(null);
@@ -285,6 +302,7 @@ export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JS
       error={error}
       unreachable={unreachable}
       layout={layout}
+      monochrome={monochrome}
       onReload={() => void loadSummary()}
       onSelectFile={(path) => setState((s) => selectFile(s, path))}
       onToggleExpanded={(path) => setState((s) => toggleExpanded(s, path))}

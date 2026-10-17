@@ -28,10 +28,12 @@ import {
   FLUO_BY_SCHEME,
   SCROLL_THUMB_BY_SCHEME,
   SEMANTIC,
+  SYNTAX_BY_SCHEME,
   graphInk,
   pipelineColor,
   statusIndicatorColor,
   type ColorScheme,
+  type SyntaxTokens,
   type WashTokens,
 } from './tokens';
 
@@ -347,12 +349,18 @@ function washGradient(wash: WashTokens): string {
 function schemeVars(scheme: ColorScheme): Record<string, string> {
   const semantic = SEMANTIC[scheme];
   const thumb = SCROLL_THUMB_BY_SCHEME[scheme];
+  const syntax = SYNTAX_BY_SCHEME[scheme];
   return {
     '--tm-page-bg': semantic.canvas,
     '--tm-page-wash': washGradient(semantic.wash),
     '--tm-thumb': thumb.visible,
     '--tm-thumb-hover': thumb.hover,
     '--tm-thumb-active': thumb.active,
+    '--tm-syntax-keyword': syntax.keyword,
+    '--tm-syntax-string': syntax.string,
+    '--tm-syntax-comment': syntax.comment,
+    '--tm-syntax-number': syntax.number,
+    '--tm-syntax-title': syntax.title,
   };
 }
 
@@ -512,3 +520,18 @@ export const ATTENTION_TINT = ATTENTION_TINT_BY_SCHEME.dark;
 
 /** A subtle hairline between a card's sections. Re-exported so the value is stated once. */
 export const sectionRule = (): string => `1px solid ${tokens.colorNeutralStroke2}`;
+
+/**
+ * {@link SyntaxTokens}, but every value is a `var(--tm-syntax-*)` reference into whichever
+ * scheme's `schemeVars` is currently stamped on `:root`, rather than a literal resolved once
+ * in JS for one scheme — the same `FLUO_VAR` (`tokens.ts`) already does for the status dots.
+ * `DiffView` reads `SYNTAX.keyword` etc. so a highlighted span tracks an appearance change
+ * for free, and the component itself never imports a hex.
+ */
+export const SYNTAX: SyntaxTokens = {
+  keyword: 'var(--tm-syntax-keyword)',
+  string: 'var(--tm-syntax-string)',
+  comment: 'var(--tm-syntax-comment)',
+  number: 'var(--tm-syntax-number)',
+  title: 'var(--tm-syntax-title)',
+};

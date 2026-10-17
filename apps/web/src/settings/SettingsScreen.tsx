@@ -569,6 +569,16 @@ export function SettingsScreen({
                 onChange={(_e, d) => patch({ showTaskDetail: d.checked })}
               />
             </div>
+
+            <Field
+              label="Monochrome code"
+              hint="Shows diffs without syntax colour — plain text, the way the review pane looked before highlighting."
+            >
+              <Switch
+                checked={settings.monochromeCode}
+                onChange={(_e, d) => patch({ monochromeCode: d.checked })}
+              />
+            </Field>
           </div>
 
           {actions}
