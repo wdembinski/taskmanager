@@ -389,7 +389,7 @@ plus a "monochrome code" setting. Chrome around the diff gets no new colour (mem
     (memory *the-store-has-no-tests*), including a DB that already holds sent and unsent F6
     comments; the existing `reviewService.test.ts` passes against the new table.
 
-- [ ] F15.5 Add fetchRefspecs and the refs/tm/review namespace to git.ts
+- [x] F15.5 Add fetchRefspecs and the refs/tm/review namespace to git.ts
 
   - Add `fetchRefspecs(cwd, remoteOrUrl, specs, opts)` with `NO_PROMPT_ENV`,
     `credential.interactive=never` and redaction, and turn `fetchRef` into a one-spec caller.
