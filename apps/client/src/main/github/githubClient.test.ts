@@ -31,6 +31,22 @@ function textResponse(body: string, status = 200, headers: Record<string, string
   } as unknown as Response;
 }
 
+function bytesResponse(
+  bytes: Uint8Array,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 404 ? 'Not Found' : 'OK',
+    json: async () => JSON.parse(Buffer.from(bytes).toString('utf8')),
+    text: async () => Buffer.from(bytes).toString('utf8'),
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+    headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+  } as unknown as Response;
+}
+
 const client = (baseUrl = 'https://api.github.com'): GitHubClient =>
   new GitHubClient({ baseUrl, token: 'ghp_x' });
 
@@ -1014,6 +1030,41 @@ describe('GitHubClient.getRawFile', () => {
     await expect(client().getRawFile('acme', 'web', 'gone.ts', 'main')).rejects.toBeInstanceOf(
       GitHubError,
     );
+  });
+});
+
+describe('GitHubClient.getRawFileBytes', () => {
+  it('round-trips non-UTF-8 bytes (a PNG header) unchanged', async () => {
+    const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fetchMock = vi.fn().mockResolvedValue(bytesResponse(pngHeader));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const bytes = await client().getRawFileBytes('acme', 'web', 'assets/logo.png', 'main');
+
+    expect(Buffer.isBuffer(bytes)).toBe(true);
+    expect(Uint8Array.from(bytes)).toEqual(pngHeader);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      'https://api.github.com/repos/acme/web/contents/assets/logo.png?ref=main',
+    );
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Accept).toBe('application/vnd.github.raw+json');
+  });
+
+  it('rejects a missing file at that ref with a GitHubError carrying status 404', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(bytesResponse(new TextEncoder().encode('{"message":"Not Found"}'), 404)),
+    );
+
+    await expect(client().getRawFileBytes('acme', 'web', 'gone.png', 'main')).rejects.toMatchObject(
+      { status: 404 },
+    );
+    await expect(
+      client().getRawFileBytes('acme', 'web', 'gone.png', 'main'),
+    ).rejects.toBeInstanceOf(GitHubError);
   });
 });
 

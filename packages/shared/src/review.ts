@@ -28,6 +28,7 @@ export const DIFF_FILE_MAX_BYTES = 256_000; // one file's patch text
 export const DIFF_IMAGE_MAX_BYTES = 512_000; // one image side, base64
 export const DIFF_SUMMARY_MAX_FILES = 1000; // summary lists at most this many
 export const DIFF_COLLAPSE_LINES = 2000; // generated/lock files above this collapse
+export const DIFF_CONTEXT_MAX_LINES = 2000; // one context read returns at most this many lines
 
 export type DiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
 
@@ -151,6 +152,19 @@ export const WORKTREE_CAPABILITIES: ReviewCapabilities = {
  * to send a review to. Publishing is possible because a PR/MR already exists on the forge.
  */
 export const LOCAL_REF_CAPABILITIES: ReviewCapabilities = {
+  expandContext: true,
+  aiReview: false,
+  sendToAgent: false,
+  publish: true,
+};
+
+/**
+ * `forge-api`'s capabilities: context can still be expanded (a raw file read at a SHA from the
+ * forge itself), and publishing is possible because a PR/MR already exists on the forge (F18).
+ * There is no worktree (F16 needs one) to run an AI reviewer in and no agent to send a review
+ * to.
+ */
+export const FORGE_API_CAPABILITIES: ReviewCapabilities = {
   expandContext: true,
   aiReview: false,
   sendToAgent: false,
@@ -641,6 +655,25 @@ export type DiffSummaryResult =
 export type DiffFileResult = { status: 'ok'; file: DiffFile } | DiffStale;
 
 export type DiffImageResult = { status: 'ok'; image: DiffImage } | DiffStale;
+
+/**
+ * One side's lines read for context expansion — `review:context`'s answer, and what
+ * {@link expandContext}'s `lines` parameter is built from. `start` is `text[0]`'s line number
+ * on `side`, matching the gap's own numbering.
+ */
+export interface DiffContext {
+  diffId: string;
+  path: string;
+  side: DiffSide;
+  start: number;
+  text: string[];
+  /** The requested range was clipped — to `DIFF_CONTEXT_MAX_LINES`, or to the file's own length. */
+  truncated: boolean;
+  /** The blob exceeds `DIFF_FILE_MAX_BYTES`; `text` is empty and `start` is 0. */
+  tooLarge?: { bytes: number };
+}
+
+export type DiffContextResult = { status: 'ok'; context: DiffContext } | DiffStale;
 
 /** The three fields that locate a comment's anchor, with no dependency on it having an `id`. */
 export type ReviewAnchor = Pick<ReviewComment, 'side' | 'line' | 'start'>;

@@ -233,6 +233,17 @@ export function toPipelineStatus(raw: string | null | undefined): PipelineStatus
   }
 }
 
+/**
+ * `/projects/:id/repository/files/<path>/raw?ref=<ref>`, with the whole path encoded as ONE
+ * opaque segment — slashes included — since GitLab's repository-files API addresses a file by
+ * its full path as a single segment. Shared by {@link GitLabClient.getRawFile} and
+ * {@link GitLabClient.getRawFileBytes}, which differ only in how they read the response body.
+ */
+function rawFilePath(projectId: number | string, path: string, ref: string): string {
+  const project = encodeURIComponent(String(projectId));
+  return `/projects/${project}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(ref)}`;
+}
+
 export class GitLabClient {
   constructor(private readonly config: GitLabClientConfig) {}
 
@@ -263,12 +274,12 @@ export class GitLabClient {
   }
 
   /**
-   * One GET that answers in TEXT rather than JSON — the shape {@link getRawFile} needs and
-   * every other read on this client does not. Mirrors {@link raw}'s failure path exactly, so
-   * a 404 here is the same {@link GitLabError} a caller already knows how to tell apart from
-   * every other status.
+   * One GET whose `Response` the caller reads for itself — the shape {@link getRawFile} and
+   * {@link getRawFileBytes} need and every other read on this client does not. Mirrors
+   * {@link raw}'s failure path exactly, so a 404 here is the same {@link GitLabError} a caller
+   * already knows how to tell apart from every other status.
    */
-  private async rawText(path: string): Promise<string> {
+  private async rawResponse(path: string): Promise<Response> {
     const res = await fetch(this.url(path), {
       headers: { 'PRIVATE-TOKEN': sanitizeToken(this.config.token), Accept: 'application/json' },
     });
@@ -279,7 +290,12 @@ export class GitLabClient {
         res.status,
       );
     }
-    return res.text();
+    return res;
+  }
+
+  /** {@link rawResponse}, read as text — the shape {@link getRawFile} needs. */
+  private async rawText(path: string): Promise<string> {
+    return (await this.rawResponse(path)).text();
   }
 
   /**
@@ -571,10 +587,18 @@ export class GitLabClient {
    * request resolves against a different, shorter path.
    */
   getRawFile(projectId: number | string, path: string, ref: string): Promise<string> {
-    const project = encodeURIComponent(String(projectId));
-    return this.rawText(
-      `/projects/${project}/repository/files/${encodeURIComponent(path)}/raw?ref=${encodeURIComponent(ref)}`,
-    );
+    return this.rawText(rawFilePath(projectId, path, ref));
+  }
+
+  /**
+   * The same file, as raw BYTES rather than text — what a context read needs for a path that
+   * may not be UTF-8 (an image blob, say). Reads the response's `arrayBuffer()` rather than
+   * `.text()`, so bytes that are not valid UTF-8 survive the round trip unchanged; `.text()`
+   * would replace them with the Unicode replacement character.
+   */
+  async getRawFileBytes(projectId: number | string, path: string, ref: string): Promise<Buffer> {
+    const res = await this.rawResponse(rawFilePath(projectId, path, ref));
+    return Buffer.from(await res.arrayBuffer());
   }
 
   /** Approval state. Tier-gated — a 403 here is normal and the caller degrades. */
