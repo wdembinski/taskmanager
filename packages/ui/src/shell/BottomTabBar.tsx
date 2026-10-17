@@ -19,8 +19,11 @@
  *   `minWidth`.
  * - **`role`/accessible selection state come from `TabList` itself** — no bespoke
  *   `aria-current` or `role="tab"` written by hand, the same reason `NavRail` doesn't either.
- * - **No `unavailable` concept here**, unlike `NavRailItem` — every compact tab is always
- *   reachable; `CompactApp`'s four tabs never need a disabled fifth.
+ * - **No `unavailable` concept here**, unlike `NavRail`'s own `unavailable` map (F13.8) —
+ *   every compact tab is always reachable; `CompactApp`'s four tabs never need a disabled
+ *   fifth. This component also keeps its own `BottomTabBarItem` rather than `NavRail`'s
+ *   `ShellNavEntry`: its `icon` is an element, not a `FluentIcon` component, and it has no
+ *   `group` — a four-tab bar has nothing to group.
  */
 import { Tab, TabList, makeStyles, tokens } from '@fluentui/react-components';
 import type { ReactNode } from 'react';

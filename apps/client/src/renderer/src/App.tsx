@@ -2,11 +2,10 @@
  * App shell.
  *
  * A frameless window: a custom <TitleBar> (window drag handle + min/max/close)
- * sits flush at the very top, and under it a **vertical nav rail** on the left —
- * My Tasks, Projects, Automations, Performance, Activity, the Attention inbox, Settings, a
- * hands-on Scratch run — beside the content region. The rail replaced
- * a horizontal tab strip, which cost every screen a band of height at the top,
- * where a board and a chat pane both want it most. A global usage-limit banner
+ * sits flush at the very top, and under it a **vertical nav rail** on the left — every
+ * destination `SHELL_NAV` lists except Fleet (the web's own), in `shellNav.ts`'s own order.
+ * The rail replaced a horizontal tab strip, which cost every screen a band of height at the
+ * top, where a board and a chat pane both want it most. A global usage-limit banner
  * (Phase 5) sits above the content; a Claude message bar appears only when
  * something is wrong; and a **status bar** runs the full width of the window at
  * the bottom — blue at rest, orange while anything is waiting on a human.
@@ -33,18 +32,6 @@ import {
   ToastTitle,
   useToastController,
 } from '@fluentui/react-components';
-import {
-  AlertRegular,
-  AppsListDetailRegular,
-  DataTrendingRegular,
-  FlashRegular,
-  FolderRegular,
-  PlayRegular,
-  PulseRegular,
-  SettingsRegular,
-  TaskListSquareLtrRegular,
-  TicketDiagonalRegular,
-} from '@fluentui/react-icons';
 import type { AuthState } from '@shared/auth';
 import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
@@ -63,7 +50,6 @@ import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
 import {
   buildDesktopCommands,
-  DESKTOP_SCREENS,
   type DesktopPaletteSnapshot,
   type DesktopPaletteTab,
 } from './paletteSource';
@@ -81,7 +67,8 @@ import { TitleBar } from './TitleBar';
 import { useActiveRuns } from './useActiveRuns';
 import { UsageQuotaStatus, useUsageQuotas } from '@ui/UsageQuotaBars';
 import { AppShell } from '@ui/shell/AppShell';
-import { NavRail, type NavRailItem } from '@ui/shell/NavRail';
+import { NavRail } from '@ui/shell/NavRail';
+import { SHELL_NAV } from '@ui/shell/shellNav';
 import { StatusBar, StatusDot, StatusSpacer } from '@ui/shell/StatusBar';
 import { TOASTER_ID } from '@ui/theme';
 import type { AttentionItem } from '@shared/attention';
@@ -129,28 +116,6 @@ const useStyles = makeStyles({
 // `DesktopPaletteTab` in `paletteSource.ts` so a screen added there is a screen the rail
 // already knows about, and the two can never drift apart.
 type TabId = DesktopPaletteTab;
-
-/** Icons have no place in the palette's own data, so the rail layers them onto
- *  `DESKTOP_SCREENS` — the one list of screens, shared with the palette (F9.4). */
-const NAV_ICON: Record<TabId, JSX.Element> = {
-  mytasks: <TaskListSquareLtrRegular />,
-  projects: <FolderRegular />,
-  tickets: <AppsListDetailRegular />,
-  issues: <TicketDiagonalRegular />,
-  automations: <FlashRegular />,
-  performance: <DataTrendingRegular />,
-  activity: <PulseRegular />,
-  attention: <AlertRegular />,
-  settings: <SettingsRegular />,
-  scratch: <PlayRegular />,
-};
-
-/** The rail, in order. The label is the tooltip and the accessible name. */
-const NAV: ReadonlyArray<NavRailItem & { id: TabId }> = DESKTOP_SCREENS.map((screen) => ({
-  id: screen.id,
-  label: screen.title,
-  icon: NAV_ICON[screen.id],
-}));
 
 /** What each kind of ask is called in a toast — short, because a toast is one glance. */
 const TOAST_TITLE: Record<AttentionItem['kind'], string> = {
@@ -430,39 +395,33 @@ export function App(): JSX.Element {
         titleBar={<TitleBar />}
         nav={
           <NavRail
-            items={NAV.map((item) => {
-              // The only labels the rail ever shows: counts built per render rather than in
-              // `NAV` because they move. Attention's is "someone is waiting on you"; Activity's
-              // is unread rows, and hides while that tab is the one already open — see
-              // `unreadActivityCount`'s own docstring on why a human move is excluded from it.
-              if (item.id === 'attention' && attentionCount > 0) {
-                return {
-                  ...item,
-                  badge: (
-                    <CounterBadge
-                      count={attentionCount}
-                      color="danger"
-                      size="small"
-                      appearance="filled"
-                    />
-                  ),
-                };
-              }
-              if (item.id === 'activity' && unreadCount > 0 && tab !== 'activity') {
-                return {
-                  ...item,
-                  badge: (
-                    <CounterBadge
-                      count={unreadCount}
-                      color="informative"
-                      size="small"
-                      appearance="filled"
-                    />
-                  ),
-                };
-              }
-              return item;
-            })}
+            items={SHELL_NAV}
+            // Fleet (the web's cross-project read of agent profiles and the assignment
+            // queue) is the one destination the desktop does not have at all (F13.8's own
+            // header on `shellNav.ts`).
+            unavailable={{ fleet: 'web only' }}
+            // The only labels the rail ever shows: built fresh per render because they move.
+            // Attention's is "someone is waiting on you"; Activity's is unread rows, hidden
+            // while that tab is the one already open — see `unreadActivityCount`'s own
+            // docstring on why a human move is excluded from it.
+            badges={{
+              attention: attentionCount > 0 && (
+                <CounterBadge
+                  count={attentionCount}
+                  color="danger"
+                  size="small"
+                  appearance="filled"
+                />
+              ),
+              activity: unreadCount > 0 && tab !== 'activity' && (
+                <CounterBadge
+                  count={unreadCount}
+                  color="informative"
+                  size="small"
+                  appearance="filled"
+                />
+              ),
+            }}
             selected={tab}
             onSelect={(id) => setTab(id as TabId)}
             paletteHint={{

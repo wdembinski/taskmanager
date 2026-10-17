@@ -6,28 +6,15 @@
  * `titleBar` — the desktop runs in a frameless window and has to paint its own drag region
  * and min/max/close; a browser tab already has all three above the page.
  *
- * The rail carries all eight desktop destinations even though one of them — Scratch run —
- * stays off here. A tile that is present-but-off with "desktop only" in its tooltip is honest
- * where a missing one is merely silent. Fleet is the one tile the desktop does not have at
- * all yet (cloud as central control for projects, step 6) — a cross-project view of agent
- * profiles and the assignment queue, which only makes sense once an account has more than
- * one desktop serving it.
+ * The rail is `SHELL_NAV` (F13.8), the one list both hosts render, even though one of its
+ * entries — Scratch run — stays off here. A tile that is present-but-off with "desktop only"
+ * in its tooltip is honest where a missing one is merely silent. Fleet is the one tile the
+ * desktop does not have at all (cloud as central control for projects, step 6) — a
+ * cross-project view of agent profiles and the assignment queue, which only makes sense once
+ * an account has more than one desktop serving it.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, CounterBadge, makeStyles } from '@fluentui/react-components';
-import {
-  AlertRegular,
-  AppsListDetailRegular,
-  BotRegular,
-  DataTrendingRegular,
-  FlashRegular,
-  FolderRegular,
-  PlayRegular,
-  PulseRegular,
-  SettingsRegular,
-  TaskListSquareLtrRegular,
-  TicketDiagonalRegular,
-} from '@fluentui/react-icons';
 import { BOARD_COLUMNS } from '@tm/shared/model';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
@@ -40,7 +27,8 @@ import { GateTrustHostProvider } from '@tm/ui/gateTrustHost';
 import { Performance } from '@tm/ui/Performance';
 import { ProjectAdmin } from '@tm/ui/projects/ProjectAdmin';
 import { Projects } from '@tm/ui/projects/Projects';
-import { NavRail, type NavRailItem } from '@tm/ui/shell/NavRail';
+import { NavRail } from '@tm/ui/shell/NavRail';
+import { SHELL_NAV, type ShellNavId } from '@tm/ui/shell/shellNav';
 import { StatusBar, StatusBusy, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
@@ -103,66 +91,42 @@ const useStyles = makeStyles({
   },
 });
 
-/** Why a tile that isn't here is off. Appended to its tooltip. */
+/** Why Scratch run is off here. Appended to its tooltip. */
 const DESKTOP_ONLY = 'desktop only';
 
 /**
- * The desktop's rail, in the desktop's order — see `apps/client/src/renderer/src/App.tsx` —
- * plus Fleet, which the desktop does not have yet (this same plan's own step 6, ahead of the
- * desktop side of it).
+ * The rail's destinations that this app actually renders — `SHELL_NAV` minus Scratch run,
+ * which drives a live `session:start`, host-only by policy (`@tm/shared/ipcRelay`). Also
+ * `webPaletteSource.ts`'s `goTo` target, which is how it offers every one of them as a
+ * navigate command without a way to construct a dead one for Scratch run (not a member of
+ * this union).
  *
- * Nine of the ten are live now. Attention and Performance moved into `@tm/ui` whole (they
- * had no host in them at all, only `window.api` calls that are `useTransport()` now), and
- * Settings is a fork: nine of its twenty-one channels are host-bound, so the shell is this
- * app's and the host-free sections are shared. Projects renders `ProjectAdmin` — a project's
- * identity (name, colour, the tickets-or-personal choice) is nothing but a row in the store,
- * so a browser manages it exactly as the desktop does; only a project's REPO half (folder,
- * execution target, models, permission mode) stays desktop-only, because that is a fact about
- * a machine only the desktop client sees (`shell-parity.test.ts`, "the web configures a
- * project's identity, never its repo"). Tickets renders the same ticket-project workspace the
- * desktop does — a picker plus its backlog/Gantt, no folder or native picker either.
- * Automations renders the same `AutomationsView` the desktop does, fronted by a web-only
- * owner-desktop banner (`AutomationsScreen`) — an automation fires on the one desktop that
- * created it, never on the cloud service, and this tab is the only host that needs telling
- * so. Fleet is a cross-project read of agent profiles and the assignment queue, over plain
- * REST (`agentsApi.ts`) rather than `useTransport()` — see its own docstring for why. Activity
- * renders the same `ActivityScreen` the desktop does (F2.13), fronted by `WebActivityScreen`
- * (F2.14) — a web-only gate over `pollError`/`presence`/`targetClientId`, since this tab's one
- * source is a live desktop and there is nothing stale to fall back to; its `lastSeen`/`onSeen`
- * are backed by a per-desktop localStorage cursor (`useWebLastSeen`) rather than the desktop's
- * own `app_state` key. Issues (F5.10) renders the shared `IssuesScreen` behind
- * `WebIssuesScreen`, which reuses `activityGate` for the same reason: there is a live desktop
- * behind it or there is nothing to show. Scratch run stays off — it drives a live
- * `session:start`, which is host-only by policy (`@tm/shared/ipcRelay`).
+ * Nine of the ten are live. Attention and Performance moved into `@tm/ui` whole (they had no
+ * host in them at all, only `window.api` calls that are `useTransport()` now), and Settings is
+ * a fork: nine of its twenty-one channels are host-bound, so the shell is this app's and the
+ * host-free sections are shared. Projects renders `ProjectAdmin` — a project's identity (name,
+ * colour, the tickets-or-personal choice) is nothing but a row in the store, so a browser
+ * manages it exactly as the desktop does; only a project's REPO half (folder, execution
+ * target, models, permission mode) stays desktop-only, because that is a fact about a machine
+ * only the desktop client sees (`shell-parity.test.ts`, "the web configures a project's
+ * identity, never its repo"). Tickets renders the same ticket-project workspace the desktop
+ * does — a picker plus its backlog/Gantt, no folder or native picker either. Automations
+ * renders the same `AutomationsView` the desktop does, fronted by a web-only owner-desktop
+ * banner (`AutomationsScreen`) — an automation fires on the one desktop that created it, never
+ * on the cloud service, and this tab is the only host that needs telling so. Fleet is a
+ * cross-project read of agent profiles and the assignment queue, over plain REST
+ * (`agentsApi.ts`) rather than `useTransport()` — it is the one destination the desktop does
+ * not have at all (cloud as central control for projects, step 6), which is why `shellNav.ts`
+ * groups it with the sidebar-bound `interim` entries rather than `bar`. Activity renders the
+ * same `ActivityScreen` the desktop does (F2.13), fronted by `WebActivityScreen` (F2.14) — a
+ * web-only gate over `pollError`/`presence`/`targetClientId`, since this tab's one source is a
+ * live desktop and there is nothing stale to fall back to; its `lastSeen`/`onSeen` are backed
+ * by a per-desktop localStorage cursor (`useWebLastSeen`) rather than the desktop's own
+ * `app_state` key. Issues (F5.10) renders the shared `IssuesScreen` behind `WebIssuesScreen`,
+ * which reuses `activityGate` for the same reason: there is a live desktop behind it or there
+ * is nothing to show.
  */
-const NAV: readonly NavRailItem[] = [
-  { id: 'mytasks', label: 'My Tasks', icon: <TaskListSquareLtrRegular /> },
-  { id: 'projects', label: 'Projects', icon: <FolderRegular /> },
-  { id: 'tickets', label: 'Tickets', icon: <AppsListDetailRegular /> },
-  { id: 'issues', label: 'Issues', icon: <TicketDiagonalRegular /> },
-  { id: 'automations', label: 'Automations', icon: <FlashRegular /> },
-  { id: 'fleet', label: 'Fleet', icon: <BotRegular /> },
-  { id: 'performance', label: 'Performance', icon: <DataTrendingRegular /> },
-  { id: 'activity', label: 'Activity', icon: <PulseRegular /> },
-  { id: 'attention', label: 'Attention', icon: <AlertRegular /> },
-  { id: 'settings', label: 'Settings', icon: <SettingsRegular /> },
-  { id: 'scratch', label: 'Scratch run', icon: <PlayRegular />, unavailable: DESKTOP_ONLY },
-];
-
-/** The rail's destinations that this app actually renders — also `webPaletteSource.ts`'s
- *  `goTo` target, which is how it offers every one of them as a navigate command without a
- *  way to construct a dead one for Scratch run (not a member of this union). */
-export type Screen =
-  | 'mytasks'
-  | 'projects'
-  | 'tickets'
-  | 'issues'
-  | 'automations'
-  | 'fleet'
-  | 'performance'
-  | 'activity'
-  | 'attention'
-  | 'settings';
+export type Screen = Exclude<ShellNavId, 'scratch'>;
 
 /** How often the status bar's "synced Ns ago" recomputes between polls. */
 const AGE_TICK_MS = 5_000;
@@ -402,21 +366,18 @@ function SignedInBoard({
             // in the rail's own Account dropdown rather than the status bar — this is the only
             // host with an account to sign back out of, so it is also the only one passing it.
             <NavRail
-              items={NAV.map((item) =>
-                item.id === 'attention' && attentionCount > 0
-                  ? {
-                      ...item,
-                      badge: (
-                        <CounterBadge
-                          count={attentionCount}
-                          color="danger"
-                          size="small"
-                          appearance="filled"
-                        />
-                      ),
-                    }
-                  : item,
-              )}
+              items={SHELL_NAV}
+              unavailable={{ scratch: DESKTOP_ONLY }}
+              badges={{
+                attention: attentionCount > 0 && (
+                  <CounterBadge
+                    count={attentionCount}
+                    color="danger"
+                    size="small"
+                    appearance="filled"
+                  />
+                ),
+              }}
               selected={screen}
               onSelect={(id) => setScreen(id as Screen)}
               accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}

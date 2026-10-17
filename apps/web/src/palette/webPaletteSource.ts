@@ -19,6 +19,7 @@ import type { IpcApi } from '@tm/shared/ipc';
 import { RELAY_POLICY, type RelayPolicy } from '@tm/shared/ipcRelay';
 import type { Project, Task } from '@tm/shared/model';
 import type { PaletteCommand, PaletteSource } from '@tm/ui/palette/paletteModel';
+import { SHELL_NAV } from '@tm/ui/shell/shellNav';
 import type { Screen } from '../App';
 
 /** A `PaletteCommand` that also names the IPC channels its `run` calls — the web-only extra
@@ -40,20 +41,11 @@ export interface WebPaletteActions {
   signOut: () => void;
 }
 
-/** Every rail destination `goTo` can reach — the same ten `App.tsx`'s own `NAV` renders,
- *  Scratch run excepted (it is not a `Screen` at all, see this module's header). */
-const NAV_SCREENS: readonly { id: Screen; title: string }[] = [
-  { id: 'mytasks', title: 'My Tasks' },
-  { id: 'projects', title: 'Projects' },
-  { id: 'tickets', title: 'Tickets' },
-  { id: 'issues', title: 'Issues' },
-  { id: 'automations', title: 'Automations' },
-  { id: 'fleet', title: 'Fleet' },
-  { id: 'performance', title: 'Performance' },
-  { id: 'activity', title: 'Activity' },
-  { id: 'attention', title: 'Attention' },
-  { id: 'settings', title: 'Settings' },
-];
+/** Every rail destination `goTo` can reach — `SHELL_NAV` (F13.8) minus Scratch run, which is
+ *  not a `Screen` at all (see this module's header). */
+const NAV_SCREENS: readonly { id: Screen; title: string }[] = SHELL_NAV.filter(
+  (entry) => entry.id !== 'scratch',
+).map((entry) => ({ id: entry.id as Screen, title: entry.label }));
 
 /** `keywords` a card command is searchable by, beyond its title — its tracker key under
  *  whichever name it carries, and its id for the uuid-paste case `paletteModel.ts` already

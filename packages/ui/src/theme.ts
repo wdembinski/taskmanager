@@ -143,6 +143,10 @@ export const appLightTheme: Theme = {
   colorNeutralForeground1Selected: SEMANTIC.light.text,
   colorNeutralForeground2: SEMANTIC.light.textMuted,
   colorNeutralForeground4: SEMANTIC.light.textFaint,
+  // Fluent's generated value already lands on ramp step 80 (= SEMANTIC.light.brand), so this
+  // is a no-op in light — pinned explicitly anyway so a selected `Tab`'s indicator (NavRail,
+  // F13.8) never drifts from `--tm-brand` if the ramp changes.
+  colorCompoundBrandStroke: SEMANTIC.light.brand,
 };
 
 /**
@@ -165,6 +169,9 @@ export const appDarkTheme: Theme = {
   colorNeutralForeground1Selected: EDITOR_FOREGROUND,
   colorNeutralForeground2: SEMANTIC.dark.textMuted,
   colorNeutralForeground4: SEMANTIC.dark.textFaint,
+  // Unlike light, Fluent's generated dark value does NOT land on SEMANTIC.dark.brand — pinned
+  // so a selected `Tab`'s indicator (NavRail, F13.8) reads the one documented brand blue.
+  colorCompoundBrandStroke: SEMANTIC.dark.brand,
 };
 
 /** The theme for a resolved scheme — the one seam F13.4 mounts through. */

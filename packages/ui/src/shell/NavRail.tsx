@@ -19,10 +19,12 @@ import {
   TabList,
   Tooltip,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import { PersonRegular } from '@fluentui/react-icons';
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
+import type { ShellNavEntry, ShellNavId } from './shellNav';
 
 const useStyles = makeStyles({
   /**
@@ -39,9 +41,10 @@ const useStyles = makeStyles({
     width: '44px',
     paddingTop: '8px',
     flexShrink: 0,
-    // The same surface as the detail pane, so the window reads as content between two
-    // lighter edges rather than as three unrelated panels.
-    backgroundColor: tokens.colorNeutralBackground1,
+    // Transparent, per F13's design doc: the canvas shows through the rail, with no pane of
+    // its own (the mockup draws the activity bar sitting directly on the canvas, same as the
+    // sidebar it stands beside).
+    backgroundColor: 'transparent',
     // Square TILES, not wide short buttons: a rail of letterboxes reads as a toolbar rather
     // than as the app's primary navigation. Square is also what makes the glyph the whole
     // target. Scaled down with the rail itself so a tile still fills its share of it.
@@ -51,10 +54,34 @@ const useStyles = makeStyles({
       minWidth: '44px',
       borderRadius: tokens.borderRadiusMedium,
     },
-    '& svg': { fontSize: '22px' },
+    // 20px Regular glyphs in the muted text tone — F13's token for an icon that is not the
+    // selected one; `selectedTab` below recolours the selected tile's own glyph to `brand`.
+    '& svg': { fontSize: '20px', color: 'var(--tm-text-muted)' },
   },
   /** The destination tabs, growing to fill the rail so the Account tile sits at its foot. */
-  tabs: { flex: 1 },
+  tabs: { flex: 1, display: 'flex', flexDirection: 'column' },
+  /** `role="separator"` between the bar group and the interim group — a hairline, not a pane
+   *  edge, so it reads as a soft break in one rail rather than two rails stacked. */
+  divider: {
+    height: '1px',
+    margin: '8px 10px',
+    backgroundColor: 'var(--tm-text-faint)',
+    flexShrink: 0,
+  },
+  /** The spacer between the interim group and the foot group (Settings), pushing Settings to
+   *  the rail's bottom the same way `tabs` pushes the whole list above the Account tile. */
+  spacer: { flex: 1 },
+  /**
+   * The selected tile: `selectedTint` fill and a `brand` glyph — the glyph recolour has to
+   * win over the plain `svg` rule above, so it is declared after it in the same object. The
+   * third piece, Fluent's own selected-tab indicator, needs no rule here: `Tab` paints it from
+   * `colorCompoundBrandStroke`, which `theme.ts` pins to `SEMANTIC[scheme].brand` on both
+   * themes precisely so it never has to be chased down and overridden from outside.
+   */
+  selectedTab: {
+    backgroundColor: 'var(--tm-selected-tint)',
+    '& svg': { color: 'var(--tm-brand)' },
+  },
   /**
    * A destination this host cannot reach. Dimmed rather than removed: a rail with one tile
    * on it looks like a different application, and a tile that is present-but-off tells you
@@ -72,24 +99,6 @@ const useStyles = makeStyles({
   },
 });
 
-export interface NavRailItem {
-  id: string;
-  /** The tooltip and the accessible name — the rail has no visible labels. */
-  label: string;
-  icon: JSX.Element;
-  /**
-   * Anything to draw inside the tile beside the glyph. The desktop puts its "waiting on
-   * you" count here; it is the only label the rail ever shows.
-   */
-  badge?: ReactNode;
-  /**
-   * Why this destination is off, when it is — e.g. `'desktop only'`. Set means the tile is
-   * drawn dimmed, refuses selection, and appends this to its tooltip, because a dead tile
-   * with a reason is honest where a missing one is silent.
-   */
-  unavailable?: string;
-}
-
 /** One position in the Account dropdown pinned to the rail's foot — sign out today. */
 export interface NavRailAccountItem {
   id: string;
@@ -98,9 +107,20 @@ export interface NavRailAccountItem {
 }
 
 export interface NavRailProps {
-  items: readonly NavRailItem[];
+  /** The shell's one navigation list (F13.8) — every host passes `SHELL_NAV`. */
+  items: readonly ShellNavEntry[];
   selected: string;
   onSelect: (id: string) => void;
+  /**
+   * Why a destination is off on this host, keyed by id — e.g. `{ scratch: 'web only' }`. An
+   * entry here means its tile is drawn dimmed, refuses selection, and appends the reason to
+   * its tooltip, because a dead tile with a reason is honest where a missing one is silent.
+   */
+  unavailable?: Partial<Record<ShellNavId, string>>;
+  /** Anything to draw inside a tile beside its glyph, keyed by id — the only label the rail
+   *  ever shows (a host's "waiting on you" or unread count), built fresh per render since it
+   *  moves. */
+  badges?: Partial<Record<ShellNavId, ReactNode>>;
   /**
    * The account-level actions no destination owns. Rendered as an Account tile pinned to
    * the bottom of the rail, opening a dropdown on click. Omitted (the desktop's case today)
@@ -127,6 +147,8 @@ export function NavRail({
   items,
   selected,
   onSelect,
+  unavailable,
+  badges,
   accountItems,
   paletteHint,
 }: NavRailProps): JSX.Element {
@@ -144,27 +166,45 @@ export function NavRail({
           // `<button disabled>` — and a disabled button fires no pointer events, so the
           // tooltip saying WHY it is off would never open. `aria-disabled` keeps the tile
           // focusable and hoverable and still announces the state.
-          if (items.find((item) => item.id === id)?.unavailable) return;
+          if (unavailable?.[id as ShellNavId]) return;
           onSelect(id);
         }}
       >
-        {items.map((item) => (
-          <Tooltip
-            key={item.id}
-            content={item.unavailable ? `${item.label} — ${item.unavailable}` : item.label}
-            relationship="label"
-            positioning="after"
-          >
-            <Tab
-              value={item.id}
-              icon={item.icon}
-              aria-disabled={item.unavailable ? true : undefined}
-              className={item.unavailable ? styles.unavailable : undefined}
-            >
-              {item.badge}
-            </Tab>
-          </Tooltip>
-        ))}
+        {items.map((item, index) => {
+          const reason = unavailable?.[item.id];
+          const Icon = item.icon;
+          // A hairline between the bar group and the interim group, and the flexible gap
+          // that pushes the foot group (Settings) to the rail's bottom — both drawn right
+          // before the first item of the group that follows them, so an empty group (the
+          // `interim` group once F13.11 deletes it) leaves neither behind.
+          const precededByDivider =
+            index > 0 && item.group !== items[index - 1].group && item.group === 'interim';
+          const precededBySpacer =
+            index > 0 && item.group !== items[index - 1].group && item.group === 'foot';
+          return (
+            <Fragment key={item.id}>
+              {precededByDivider && <div role="separator" className={styles.divider} />}
+              {precededBySpacer && <div className={styles.spacer} />}
+              <Tooltip
+                content={reason ? `${item.label} — ${reason}` : item.label}
+                relationship="label"
+                positioning="after"
+              >
+                <Tab
+                  value={item.id}
+                  icon={<Icon />}
+                  aria-disabled={reason ? true : undefined}
+                  className={mergeClasses(
+                    selected === item.id && styles.selectedTab,
+                    reason && styles.unavailable,
+                  )}
+                >
+                  {badges?.[item.id]}
+                </Tab>
+              </Tooltip>
+            </Fragment>
+          );
+        })}
       </TabList>
 
       {paletteHint && (

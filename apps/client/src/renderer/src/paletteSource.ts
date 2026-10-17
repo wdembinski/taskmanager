@@ -18,37 +18,23 @@ import { canStartWork, canStopWork, isBoardCard } from '@shared/board';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import type { Project, Task } from '@shared/model';
 import type { PaletteCommand } from '@ui/palette/paletteModel';
+import { SHELL_NAV, type ShellNavId } from '@ui/shell/shellNav';
 import type { SettingsSection } from './Settings';
 
-/** The nav rail's own tab ids (`App.tsx`'s `TabId`), named here so this file — not the rail —
- *  is the one place that has to agree with itself about which screens exist. `App.tsx` defines
- *  its `TabId` as this type, so the two can never drift apart. */
-export type DesktopPaletteTab =
-  | 'mytasks'
-  | 'projects'
-  | 'tickets'
-  | 'issues'
-  | 'automations'
-  | 'performance'
-  | 'activity'
-  | 'attention'
-  | 'settings'
-  | 'scratch';
+/** The nav rail's own tab ids (`App.tsx`'s `TabId`) — every `SHELL_NAV` id except `fleet`,
+ *  the one destination the desktop does not have (F13.8: it moved from each host hand-keeping
+ *  its own list to `SHELL_NAV`, the one list both read). `App.tsx` defines its `TabId` as this
+ *  type, so the two can never drift apart. */
+export type DesktopPaletteTab = Exclude<ShellNavId, 'fleet'>;
 
-/** The nav rail, in palette order — the single source `App.tsx`'s own `NAV` reads its
- *  labels from, so the rail and the palette can never list a different set of screens. */
-export const DESKTOP_SCREENS: ReadonlyArray<{ id: DesktopPaletteTab; title: string }> = [
-  { id: 'mytasks', title: 'My Tasks' },
-  { id: 'projects', title: 'Projects' },
-  { id: 'tickets', title: 'Tickets' },
-  { id: 'issues', title: 'Issues' },
-  { id: 'automations', title: 'Automations' },
-  { id: 'performance', title: 'Performance' },
-  { id: 'activity', title: 'Activity' },
-  { id: 'attention', title: 'Attention' },
-  { id: 'settings', title: 'Settings' },
-  { id: 'scratch', title: 'Scratch run' },
-];
+/** The nav rail, in palette order — `SHELL_NAV` filtered to what the desktop actually renders,
+ *  the single source `App.tsx`'s own rail reads its labels from, so the rail and the palette
+ *  can never list a different set of screens. */
+export const DESKTOP_SCREENS: ReadonlyArray<{ id: DesktopPaletteTab; title: string }> =
+  SHELL_NAV.filter((entry) => entry.id !== 'fleet').map((entry) => ({
+    id: entry.id as DesktopPaletteTab,
+    title: entry.label,
+  }));
 
 /** `Settings.tsx`'s own tabs, in the order its `TabList` renders them — the single source
  *  it reads its `<Tab>` list from, so a section added here is a section Settings already
