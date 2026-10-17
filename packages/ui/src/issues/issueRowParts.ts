@@ -52,8 +52,11 @@ export interface IssueRowParts {
  * string is prose for a different reader ("Running step 2 of 5", "Paused — usage limit
  * (step 3 of 5)"), not the row's "Step 2 of 4". Pulls `n`/`m` out of it instead of
  * re-walking `subtasks` with a second copy of `runPhase`'s own (private) TERMINAL predicate.
+ *
+ * Exported for `cardParts.ts` (the board card's own pure parts) to reuse rather than copy —
+ * the board's run row wants exactly this short form, not `runPhase`'s own prose.
  */
-function runLabel(phase: RunState): string {
+export function runLabel(phase: RunState): string {
   if (phase.phase === 'merging') return 'Merging';
   const stepMatch = /step (\d+) of (\d+)/i.exec(phase.label);
   if (stepMatch) return `Step ${stepMatch[1]} of ${stepMatch[2]}`;
@@ -61,8 +64,12 @@ function runLabel(phase: RunState): string {
 }
 
 /** The row's one MR/PR, trusting `mergeRequests` as already scoped to this task: the
- *  first `opened` one, else the first `merged` one. `closed`/`locked` are never chosen. */
-function pickMergeRequest(mergeRequests: MergeRequest[] | undefined): MergeRequest | undefined {
+ *  first `opened` one, else the first `merged` one. `closed`/`locked` are never chosen.
+ *
+ *  Exported for `cardParts.ts` to reuse — the board card picks its one MR/PR the same way. */
+export function pickMergeRequest(
+  mergeRequests: MergeRequest[] | undefined,
+): MergeRequest | undefined {
   if (!mergeRequests?.length) return undefined;
   return (
     mergeRequests.find((mr) => mr.state === 'opened') ??
@@ -81,8 +88,10 @@ function floorToLocalMidnight(epochMs: number): number {
  * `done` ticket — finished work is never overdue, however old its `dueAt`. Labelled
  * `'Today'` exactly when the two floors are equal, otherwise a short calendar date —
  * including on a flagged, past day (an overdue ticket reads e.g. "Oct 10", not "Today").
+ *
+ * Exported for `cardParts.ts` to reuse — the board card's footer due date is the same rule.
  */
-function dueParts(
+export function dueParts(
   task: Pick<Task, 'dueAt' | 'status' | 'preRunStatus'>,
   now: number,
 ): { label: string; flagged: boolean } | undefined {
