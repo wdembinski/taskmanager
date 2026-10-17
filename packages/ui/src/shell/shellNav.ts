@@ -11,31 +11,29 @@
  * - `'bar'` — the activity bar's permanent destinations, per F13's design doc open question 2:
  *   Issues (`tickets`, the Tickets screen reborn as the list), Board (`mytasks`), Activity,
  *   Performance (its own tile for now — open question 2 folds it into Activity as a second tab,
- *   but that screen-level merge has no card of its own yet, so it keeps a bar slot rather than
- *   riding along with `interim`'s sidebar-bound entries) and Automations.
- * - `'interim'` — destinations open question 2 moves elsewhere (`attention` → the sidebar's
- *   Inbox, `projects` → Settings → Projects, `issues` → a sidebar entry under "This machine",
- *   `fleet` → a sidebar entry, `scratch` → a palette command) but that only happens once F13.11
- *   ships the sidebar those moves depend on. Until then they stay reachable here. **F13.11
- *   deletes the `interim` group** — every entry in it either moves into the sidebar it renders
- *   or, for `scratch`, becomes a palette-only command with no rail tile at all.
+ *   but that screen-level merge has no card of its own yet, so it keeps a bar slot) and
+ *   Automations.
  * - `'foot'` — pinned to the rail's bottom, below the spacer: Settings today; **F15 adds a
  *   `reviews` entry** to `'bar'`, once the review workspace ships (F13's design doc lists
  *   Reviews among the bar's permanent destinations, ahead of its own card).
+ *
+ * **F13.11 deleted the `'interim'` group** that used to sit between the two above (`attention`,
+ * `projects`, `issues`, `fleet`, `scratch`) — every one of those five now reaches its screen
+ * through the sidebar `Sidebar.tsx` renders instead of a rail tile: `attention` → the sidebar's
+ * Inbox row, `issues`/`fleet`/`projects` → the small icon row under the team header, `scratch`
+ * → a palette-only command (`paletteSource.ts`) with no rail tile at all. `ShellNavId` keeps
+ * all five as valid destinations — both hosts' `TabId`/`Screen` still route to them, exactly as
+ * before — only `SHELL_NAV` itself, the RAIL's own list, no longer carries a tile for any of
+ * them.
  */
 import type { FluentIcon } from '@fluentui/react-icons';
 import {
-  AlertRegular,
   AppsListDetailRegular,
-  BotRegular,
   DataTrendingRegular,
   FlashRegular,
-  FolderRegular,
-  PlayRegular,
   PulseRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
-  TicketDiagonalRegular,
 } from '@fluentui/react-icons';
 
 export type ShellNavId =
@@ -57,11 +55,11 @@ export interface ShellNavEntry {
   label: string;
   /** A thin `*Regular` Fluent icon component, not an element — `NavRail` instantiates it. */
   icon: FluentIcon;
-  group: 'bar' | 'interim' | 'foot';
+  group: 'bar' | 'foot';
 }
 
-/** The shell's one navigation list, in rail order — grouped `bar` → `interim` → `foot`, per
- *  this module's own header. Each host maps it onto `NavRail`'s `items`, supplying only its own
+/** The shell's one navigation list, in rail order — grouped `bar` → `foot`, per this module's
+ *  own header. Each host maps it onto `NavRail`'s `items`, supplying only its own
  *  `unavailable` reasons and `badges`. */
 export const SHELL_NAV: readonly ShellNavEntry[] = [
   { id: 'tickets', label: 'Tickets', icon: AppsListDetailRegular, group: 'bar' },
@@ -69,10 +67,5 @@ export const SHELL_NAV: readonly ShellNavEntry[] = [
   { id: 'activity', label: 'Activity', icon: PulseRegular, group: 'bar' },
   { id: 'performance', label: 'Performance', icon: DataTrendingRegular, group: 'bar' },
   { id: 'automations', label: 'Automations', icon: FlashRegular, group: 'bar' },
-  { id: 'attention', label: 'Attention', icon: AlertRegular, group: 'interim' },
-  { id: 'projects', label: 'Projects', icon: FolderRegular, group: 'interim' },
-  { id: 'issues', label: 'Issues', icon: TicketDiagonalRegular, group: 'interim' },
-  { id: 'fleet', label: 'Fleet', icon: BotRegular, group: 'interim' },
-  { id: 'scratch', label: 'Scratch run', icon: PlayRegular, group: 'interim' },
   { id: 'settings', label: 'Settings', icon: SettingsRegular, group: 'foot' },
 ];

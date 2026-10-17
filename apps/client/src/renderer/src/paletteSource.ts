@@ -21,20 +21,22 @@ import type { PaletteCommand } from '@ui/palette/paletteModel';
 import { SHELL_NAV, type ShellNavId } from '@ui/shell/shellNav';
 import type { SettingsSection } from './Settings';
 
-/** The nav rail's own tab ids (`App.tsx`'s `TabId`) — every `SHELL_NAV` id except `fleet`,
- *  the one destination the desktop does not have (F13.8: it moved from each host hand-keeping
- *  its own list to `SHELL_NAV`, the one list both read). `App.tsx` defines its `TabId` as this
- *  type, so the two can never drift apart. */
+/** Every destination the desktop can route `tab` to (`App.tsx`'s `TabId`) — every `ShellNavId`
+ *  except `fleet`, the one destination the desktop does not have (F13.8: it moved from each
+ *  host hand-keeping its own list to `SHELL_NAV`/`ShellNavId`, the one list both read).
+ *  `App.tsx` defines its `TabId` as this type, so the two can never drift apart. Wider than
+ *  `SHELL_NAV` itself since F13.11: `SHELL_NAV` is only the RAIL's tiles, and `attention`/
+ *  `projects`/`issues`/`scratch` are still real tabs here, reached from the sidebar or (for
+ *  `scratch` alone) the palette command below rather than a rail tile. */
 export type DesktopPaletteTab = Exclude<ShellNavId, 'fleet'>;
 
-/** The nav rail, in palette order — `SHELL_NAV` filtered to what the desktop actually renders,
- *  the single source `App.tsx`'s own rail reads its labels from, so the rail and the palette
- *  can never list a different set of screens. */
+/** The nav rail, in palette order — the single source `App.tsx`'s own rail reads its labels
+ *  from, so the rail and the palette can never list a different set of screens. Every
+ *  `SHELL_NAV` entry is a desktop tab (fleet is the only `ShellNavId` the rail could ever carry
+ *  that this host does not have, and F13.11 already dropped it from `SHELL_NAV` itself), so no
+ *  filter is needed here any more. */
 export const DESKTOP_SCREENS: ReadonlyArray<{ id: DesktopPaletteTab; title: string }> =
-  SHELL_NAV.filter((entry) => entry.id !== 'fleet').map((entry) => ({
-    id: entry.id as DesktopPaletteTab,
-    title: entry.label,
-  }));
+  SHELL_NAV.map((entry) => ({ id: entry.id as DesktopPaletteTab, title: entry.label }));
 
 /** `Settings.tsx`'s own tabs, in the order its `TabList` renders them — the single source
  *  it reads its `<Tab>` list from, so a section added here is a section Settings already
@@ -100,7 +102,9 @@ function cardKeywords(task: Task): string[] {
   );
 }
 
-/** The `navigate` group: one row per screen, plus one per Settings section. */
+/** The `navigate` group: one row per rail screen, Scratch run (F13.11 — the one destination
+ *  the sidebar does not carry a row for, see this module's header), plus one per Settings
+ *  section. */
 function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
   const screens = DESKTOP_SCREENS.map((tab): PaletteCommand => ({
     id: `nav:${tab.id}`,
@@ -108,6 +112,12 @@ function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
     title: tab.title,
     run: () => snapshot.onNavigate(tab.id),
   }));
+  const scratchRun: PaletteCommand = {
+    id: 'nav:scratch',
+    group: 'navigate',
+    title: 'Scratch run',
+    run: () => snapshot.onNavigate('scratch'),
+  };
   const settingsSections = SETTINGS_SECTIONS.map((section): PaletteCommand => ({
     id: `settings:${section.id}`,
     group: 'navigate',
@@ -115,7 +125,7 @@ function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
     keywords: ['Settings'],
     run: () => snapshot.onOpenSettingsSection(section.id),
   }));
-  return [...screens, ...settingsSections];
+  return [...screens, scratchRun, ...settingsSections];
 }
 
 /** The `cards` group: every board card (steps and variant rows excluded — see

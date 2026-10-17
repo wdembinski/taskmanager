@@ -84,8 +84,20 @@ describe('buildDesktopCommands', () => {
   it('a nav command calls onNavigate with its tab', () => {
     const onNavigate = vi.fn();
     const commands = buildDesktopCommands(snapshot({ onNavigate }));
-    void commands.find((c) => c.id === 'nav:projects')?.run();
-    expect(onNavigate).toHaveBeenCalledWith('projects');
+    // `tickets` rather than F13.11's own `projects` — SHELL_NAV (and so DESKTOP_SCREENS) no
+    // longer carries a `projects` tile; see the dedicated Scratch run test below for the one
+    // navigate command this module still adds on top of DESKTOP_SCREENS.
+    void commands.find((c) => c.id === 'nav:tickets')?.run();
+    expect(onNavigate).toHaveBeenCalledWith('tickets');
+  });
+
+  it('offers Scratch run even though F13.11 dropped its rail tile', () => {
+    const onNavigate = vi.fn();
+    const commands = buildDesktopCommands(snapshot({ onNavigate }));
+    const scratch = commands.find((c) => c.id === 'nav:scratch');
+    expect(scratch?.title).toBe('Scratch run');
+    void scratch?.run();
+    expect(onNavigate).toHaveBeenCalledWith('scratch');
   });
 
   it('a Settings section command calls onOpenSettingsSection', () => {

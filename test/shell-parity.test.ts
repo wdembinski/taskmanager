@@ -292,20 +292,14 @@ describe('one shell navigation both hosts render (F13.8)', () => {
     // `BottomTabBarItem` list (`id`/`label`/`icon`, the same shape) legitimately carries a
     // `{ id: 'settings', … }` tile of its own — the phone tab bar has a Settings tab too — so
     // including it would flag that file for a coincidence of naming, not a re-declared
-    // `SHELL_NAV`. The other ten ids are distinctive enough on their own: a real mutant (a NAV
+    // `SHELL_NAV`. The other five ids are distinctive enough on their own: a real mutant (a NAV
     // array reintroduced in a host) always carries several of them together.
-    const SHELL_NAV_IDS = [
-      'tickets',
-      'mytasks',
-      'activity',
-      'performance',
-      'automations',
-      'attention',
-      'projects',
-      'issues',
-      'fleet',
-      'scratch',
-    ];
+    //
+    // F13.11 dropped `attention`/`projects`/`issues`/`fleet`/`scratch` from `SHELL_NAV` itself
+    // (they reach their screen through the sidebar now, not a rail tile — `shellNav.ts`'s own
+    // header) — this list shrinks with it, the same "fixed here rather than imported" reason
+    // the comment above already gives.
+    const SHELL_NAV_IDS = ['tickets', 'mytasks', 'activity', 'performance', 'automations'];
     const pattern = new RegExp(
       `id:\\s*'(?:${SHELL_NAV_IDS.join('|')})'[^}]*?(?:label|icon):`,
     );
@@ -323,6 +317,45 @@ describe('one shell navigation both hosts render (F13.8)', () => {
       `${offenders.join(', ')} declares a nav entry object ({ id: …, label:/icon: … }) of its ` +
         'own. That is SHELL_NAV re-invented one host at a time — import the entry from ' +
         'packages/ui/src/shell/shellNav.ts instead.',
+    ).toEqual([]);
+  });
+});
+
+describe('the sidebar both hosts render from the shared tree (F13.11)', () => {
+  /**
+   * `shellNav.ts`'s `interim` group moved into a sidebar both hosts render from one module —
+   * same shape as `AppShell`/`NavRail`/`StatusBar` above: a host that drew its own tree in
+   * place of importing `Sidebar` would still compile and still show *something*, and nothing
+   * else in this repo would notice the fork.
+   */
+  for (const [label, path] of [
+    ['the browser client', WEB_APP],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`mounts ${label}'s sidebar from @tm/ui/shell/Sidebar`, () => {
+      const source = read(path);
+      expect(
+        importedFrom(source, 'shell/Sidebar'),
+        `${path} must import Sidebar from @tm/ui/shell/Sidebar (or its @ui alias). Both hosts ` +
+          'render the same milestone/epic/ticket tree; an import from anywhere else is a ' +
+          'second implementation.',
+      ).toContain('Sidebar');
+
+      expect(
+        source,
+        `${path} must mount <AppShell>'s \`sidebar=\` prop with it — a Sidebar imported but ` +
+          'never passed to the shell is a file, not a feature.',
+      ).toMatch(/sidebar=\{/);
+    });
+  }
+
+  it('leaves no local Sidebar.tsx copy behind in a host tree', () => {
+    const copies = HOST_TREES.flatMap((tree) => filesUnder(tree, /^Sidebar\.tsx?$/));
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements the sidebar that lives in packages/ui. Delete it and ` +
+        'import from @tm/ui — a host-local copy is a second implementation that only diverges, ' +
+        'and nothing else in this repo can see it happen.',
     ).toEqual([]);
   });
 });
@@ -751,12 +784,23 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
     });
   }
 
-  it("lists an issues tab in both hosts' NAV", () => {
+  it('is still a reachable ShellNavId, and the shared sidebar links to it (F13.11)', () => {
+    // F13.11 dropped `issues` from SHELL_NAV itself — the rail's tiles — but `ShellNavId`
+    // (both hosts' `TabId`/`Screen`) still routes to it, reached from the sidebar's own team
+    // header instead of a rail tile. "a screen nothing links to is a file, not a tab" still
+    // holds; the link just moved.
     expect(
       read(SHELL_NAV_SRC),
-      `${SHELL_NAV_SRC} must list { id: 'issues', … } in SHELL_NAV — a screen nothing links ` +
-        'to is a file, not a tab.',
-    ).toMatch(/id:\s*'issues'/);
+      `${SHELL_NAV_SRC} must keep 'issues' in its ShellNavId union, even with no SHELL_NAV ` +
+        "tile for it — both hosts' TabId/Screen still have to route a tab there.",
+    ).toMatch(/'issues'/);
+
+    const SIDEBAR_SRC = 'packages/ui/src/shell/Sidebar.tsx';
+    expect(
+      read(SIDEBAR_SRC),
+      `${SIDEBAR_SRC} must call onNavigate({ kind: 'issues' }) somewhere — a screen the ` +
+        'sidebar never links to is a file, not a tab.',
+    ).toMatch(/onNavigate\(\{\s*kind:\s*'issues'\s*\}\)/);
   });
 
   it('leaves no local IssuesScreen behind in a host tree', () => {

@@ -7,8 +7,8 @@ describe('SHELL_NAV', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('groups its entries bar → interim → foot, with no group out of order', () => {
-    const order: Record<ShellNavEntry['group'], number> = { bar: 0, interim: 1, foot: 2 };
+  it('groups its entries bar → foot, with no group out of order', () => {
+    const order: Record<ShellNavEntry['group'], number> = { bar: 0, foot: 1 };
     const groups = SHELL_NAV.map((entry) => order[entry.group]);
     const sorted = [...groups].sort((a, b) => a - b);
     expect(groups).toEqual(sorted);
@@ -19,9 +19,13 @@ describe('SHELL_NAV', () => {
     expect(bar).toEqual(['tickets', 'mytasks', 'activity', 'performance', 'automations']);
   });
 
-  it('puts exactly the interim destinations in the interim group', () => {
-    const interim = SHELL_NAV.filter((entry) => entry.group === 'interim').map((entry) => entry.id);
-    expect(interim).toEqual(['attention', 'projects', 'issues', 'fleet', 'scratch']);
+  it('F13.11 carries no interim-group tile — those five destinations reach their screen through the sidebar now', () => {
+    const ids = SHELL_NAV.map((entry) => entry.id);
+    for (const moved of ['attention', 'projects', 'issues', 'fleet', 'scratch']) {
+      expect(ids.includes(moved as ShellNavEntry['id']), `${moved} still has a rail tile`).toBe(
+        false,
+      );
+    }
   });
 
   it('puts exactly settings in the foot group', () => {
