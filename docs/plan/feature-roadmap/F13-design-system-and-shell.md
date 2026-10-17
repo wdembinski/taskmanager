@@ -217,10 +217,30 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
   same `TaskDetailHost` laid out as a page with a breadcrumb `Project › Milestone › Epic`);
   Esc steps back one level. F13 provides the two layouts; F12 provides the panel; F25 adds the
   wider keyboard model.
-- **Board.** The kanban board keeps its card anatomy exactly (`TaskCard`, `AgentGlyph`, step
-  dots, MR rows, verdict glyphs — memory *mock-the-real-components*); columns stay faint lanes
-  on the canvas, and the card re-reads its colours from tokens. The sidebar folds away (its
-  header button, or `[`) so the columns get the full width.
+- **Board.** **Supersedes "the kanban board keeps its card anatomy exactly" above:** the board
+  adopts the v9 mockup's own card anatomy instead of re-theming today's `TaskCard`
+  (`mockups/v9-7-board-light.svg` / `v9-7b-board-dark.svg`). Columns stay faint lanes on the
+  canvas, each with its icon + name + a count badge + an add button; the sidebar folds away (its
+  header button, or `[`) so the columns get the full width. The card itself becomes four stacked
+  rows:
+  - **Header** — the faint mono ticket key at the left; at the right, an assignee glyph: a
+    dashed-ring placeholder with no assignee, a two-letter initials pill for a human, or a
+    filled circle glyph for an agent.
+  - **Title**, one or two lines.
+  - **Run row**, only while an agent is actively on the card: a small cyan dot + "Step n of m",
+    a thin cyan progress bar underneath, and the elapsed time at the trailing edge — in place of
+    today's full-card running band and always-rendered Steps section.
+  - **Verdict row**, only when the card's MR carries a review verdict worth a line: an "AI"
+    badge for an automated review, plus the verdict's own wording and colour (e.g. orange
+    "Changes requested · round 2").
+  - **Footer** — the epic/feature key with a small flag glyph at the left; at the right, either
+    the MR reference or the due date (today/overdue in the attention colour) — whichever the
+    card actually has, never both.
+
+  Today's Steps and Merge requests sections, the chain/link chips and the sprint/points chips
+  move into the F12 peek instead (F13.24 below) — the card itself shows at most the one live run
+  and the one live verdict, matching the mockup's quieter column. The card still re-reads its
+  colours from tokens (F13.14's own job, unchanged). Broken into F13.21 – F13.25 below.
 - **Chain links on the board** (`ChainOverlay`, `chainArrows.ts`). Today's arrows are curves
   between facing card edges, drawn over the board, so a long link crosses cards. They become
   **routed connectors that never cross a card**:
@@ -815,11 +835,52 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
 
   - `KanbanColumn` columns stay faint lanes on the canvas; `TaskCard`, `AgentGlyph`,
     `TaskChain`, `ChainOverlay` and the MR rows read colours from tokens (the six literals in
-    `TaskCard.tsx` go). Dot sizes, glyphs, sections and verdicts stay exactly as they are
-    (memory *mock-the-real-components*); compare with the v9 kanban mockup.
+    `TaskCard.tsx` go). **Its "dot sizes, glyphs, sections and verdicts stay exactly as they
+    are" is superseded** — the Board bullet above now adopts the v9 card anatomy instead
+    (F13.21 – F13.25 below); this task still carries the token/glass migration underneath it.
   - Acceptance: no colour literal left in `packages/ui/src/board/`; the cyan run state and the
     amber/red/green dots pass F13.2 in light; gates green; the human reviews the board in both
     themes against the mockup (there is no screenshot path for the Electron window).
+
+- [ ] F13.21 Add the run start time to active runs @needs: F13.14 Move the board onto tokens and glass without changing its anatomy
+
+  - The v9 card's run row needs an elapsed time (`4m 12s`) next to "Step n of m"; nothing the
+    engine currently persists carries when a run started, only that one is in flight
+    (`ActiveRun`). Add the field wherever `ActiveRun` is read and written, and a pure helper to
+    format the elapsed time, in the shape `cardRunLabel` already uses for the step label.
+  - Acceptance: a run's start time survives an app restart and a resumed park; gates green.
+
+- [ ] F13.22 Build the v9 card's pure parts @needs: F13.14 Move the board onto tokens and glass without changing its anatomy
+
+  - Pure, testable pieces for the new anatomy — the assignee glyph (unassigned ring / human
+    initials / agent glyph), the run row's label and progress fraction, and the verdict row's
+    text and colour — ahead of wiring them into `TaskCard` itself.
+  - Acceptance: unit tests for each pure part across every card state the board-shots fixture
+    (step 1 of this plan) covers; gates green.
+
+- [ ] F13.23 Rewrite TaskCard to the v9 anatomy @needs: F13.21 Add the run start time to active runs, F13.22 Build the v9 card's pure parts
+
+  - `TaskCard` renders the four-row anatomy from the Board bullet above — header, title, run
+    row, verdict row, footer — in place of today's stripe/sections/footer layout, using F13.22's
+    pure parts and F13.21's elapsed time. The Steps and Merge requests sections, the chain/link
+    chips and the sprint/points chips come off the card; F13.24 gives them a new home.
+  - Acceptance: `shots-board.mjs` (step 1 of this plan) run against the rewritten card matches
+    the v9 mockup closely enough for a human sign-off in both themes; gates green.
+
+- [ ] F13.24 Move step and MR affordances into the peek @needs: F13.23 Rewrite TaskCard to the v9 anatomy, F13.13 Open the F12 panel as a peek on Space and as a full-screen issue on Enter
+
+  - Everything F13.23 removed from the card — the step list, the Merge requests section, the
+    chain/link chips, the sprint and points chips — reappears in F12's peek/full-screen panel,
+    so none of it is lost, only moved off the column view.
+  - Acceptance: every action the card used to offer inline (stop/resume a run, open an MR, fold
+    steps) is reachable from the peek; gates green.
+
+- [ ] F13.25 Verify the v9 card and capture after shots @needs: F13.23 Rewrite TaskCard to the v9 anatomy, F13.24 Move step and MR affordances into the peek
+
+  - Run `shots-board.mjs` (step 1 of this plan) again against the finished card and capture
+    `board-after-{light,dark}.png` into `docs/plan/feature-roadmap/shots/`, beside the
+    `board-before-{light,dark}.png` pair step 1 captured on the old card, for a direct diff.
+  - Acceptance: the human compares before/after against the v9 mockup and signs off; gates green.
 
 - [x] F13.15 Move Projects, the Tickets list and the detail panel onto the new rows and panes @needs: F13.12 Build the shared issue row with the selected state, F13.14 Move the board onto tokens and glass without changing its anatomy
 
