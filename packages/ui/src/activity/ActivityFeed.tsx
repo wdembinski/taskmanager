@@ -25,6 +25,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  ArchiveRegular,
   ArrowClockwiseRegular,
   ArrowRightRegular,
   CheckmarkCircleRegular,
@@ -120,6 +121,7 @@ const KIND_ICON: Record<ActivityKind, IconComponent> = {
   'plan-presented': ClipboardTaskRegular,
   'question-raised': QuestionCircleRegular,
   'status-moved': ArrowRightRegular,
+  'milestone-archived': ArchiveRegular,
 };
 
 interface ProjectOption {
