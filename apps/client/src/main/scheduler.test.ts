@@ -2202,6 +2202,9 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       /** Hashes of gate commands already trusted on this desktop (F8.8) — defaults to none,
        *  so a gate step's `stepSpec.command` must be seeded here before it can really run. */
       trustedGateCommands?: string[];
+      /** `addSubtask` behaves like the real store: it refuses a step as a parent and
+       *  creates a findable `pending` row. Off by default — most cases only read `added`. */
+      realSubtasks?: boolean;
     },
   ) {
     const agentProject = {
@@ -2275,11 +2278,32 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       getSubtasks: (parentId: string) => children.filter((c) => c.parentTaskId === parentId),
       getTaskActivity: () => [],
       addSubtask: (
-        _p: string,
+        parentId: string,
         input: { title: string; description?: string | null; round?: number },
       ) => {
+        if (!opts?.realSubtasks) {
+          added.push(input);
+          return undefined;
+        }
+        // The real store's two rules: steps are one level deep, and a step it creates is a
+        // `pending` row that the chain can then find.
+        if (byId.get(parentId)?.parentTaskId) return undefined;
         added.push(input);
-        return undefined;
+        const step = {
+          ...children[0],
+          id: `new-${added.length}`,
+          title: input.title,
+          description: input.description ?? null,
+          status: 'pending',
+          sessionId: null,
+          agentPlan: null,
+          order: children.length,
+          planRound: input.round ?? 1,
+          parentTaskId: parentId,
+        } as unknown as Task;
+        children.push(step);
+        byId.set(step.id, step);
+        return step;
       },
       replaceSubtaskRound: (
         _p: string,
@@ -3265,6 +3289,73 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(added).toEqual([]);
     expect(stop).not.toHaveBeenCalled();
     expect(parent.status).toBe('running');
+  });
+
+  /**
+   * TM-444, from TM-227: a STEP's session found a hole in the plan, wrote a plan of its own
+   * and the human approved it. Approval appended every step to the STEP, the store refused
+   * each one (steps are one level deep), the step sat `in-progress` with no run, and the
+   * chain start was queued under the card but drained under the step — so nothing moved
+   * and nothing said why.
+   */
+  describe('a plan approved from inside a STEP', () => {
+    const replanFromStep = [
+      { id: 's1', title: 'Add the helpers', status: 'done' as const },
+      { id: 's2', title: 'Verification', status: 'running' as const },
+    ];
+    const plan = '## Build the renderer\nfirst\n\n## Verify end to end\nsecond';
+
+    async function approveFromStep(h: ReturnType<typeof setup>, text: string) {
+      h.seedRun('r0', 's2');
+      void h.scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: text },
+      } as never);
+      await Promise.resolve();
+      const item = h.emitAttention.mock.calls.at(-1)?.[0] as {
+        id: string;
+        steps: string[];
+        prompt: string;
+      };
+      h.scheduler.answerAttention(item.id, { decision: 'approve' });
+      await Promise.resolve();
+      return item;
+    }
+
+    it("puts the step's plan on the CARD and closes the step that asked", async () => {
+      const h = setup(replanFromStep, { realSubtasks: true });
+      const item = await approveFromStep(h, plan);
+      // The inbox previews what approval will really create, and says who asked.
+      expect(item.steps).toEqual(['Build the renderer', 'Verify end to end']);
+      expect(item.prompt).toContain('"Verification" re-planned the card');
+      const created = h.children.filter((c) => c.id.startsWith('new-'));
+      expect(created.map((c) => [c.title, c.parentTaskId, c.planRound])).toEqual([
+        ['Build the renderer', 't1', 2],
+        ['Verify end to end', 't1', 2],
+      ]);
+      expect(h.children.find((c) => c.id === 's2')?.status).toBe('done');
+      expect(h.comments.join('\n')).toContain('"Verification" re-planned the card');
+      expect(h.stop).toHaveBeenCalledWith('r0');
+      expect(h.parent.status).toBe('in-progress');
+    });
+
+    it('starts the first new step once the step that planned it has exited', async () => {
+      const h = setup(replanFromStep, { realSubtasks: true });
+      await approveFromStep(h, plan);
+      expect(h.prepared).toEqual([]); // still waiting for the planner to free the worktree
+      await h.fire('r0', { kind: 'exited', code: 1 });
+      await flush();
+      expect(h.prepared).toEqual([{ taskId: 'new-1', owner: 't1' }]);
+    });
+
+    it('a plan that adds nothing leaves the asking step stopped, so Resume is offered', async () => {
+      const h = setup(replanFromStep, { realSubtasks: true });
+      await approveFromStep(h, '## Add the helpers\nx\n\n## Verification\ny');
+      expect(h.children.filter((c) => c.id.startsWith('new-'))).toEqual([]);
+      expect(h.children.find((c) => c.id === 's2')?.status).toBe('stopped');
+      expect(h.comments.join('\n')).toContain('Resume runs it again');
+    });
   });
 
   /**

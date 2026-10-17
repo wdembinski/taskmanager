@@ -4737,8 +4737,13 @@ export class Scheduler {
         this.updateTask(run.taskId, {}, null);
         const retrying = this.retryQueue.delete(run.taskId);
         // An approved plan's chain waits for the planning process to release the shared
-        // worktree before its first step starts in the same directory (Phase 11).
-        if (this.chainStarts.delete(run.taskId)) this.advanceSubtasks(run.taskId);
+        // worktree before its first step starts in the same directory (Phase 11). Keyed on
+        // the CARD: `approvePlan` queues the card, and the planner that just exited may have
+        // been one of its steps (a re-plan from inside a step, TM-444) — keyed on the run's
+        // own task, the chain would wait here for a card that is not the one exiting.
+        const exitedTask = this.store.getTask(run.taskId);
+        const chainOwner = exitedTask?.parentTaskId ?? run.taskId;
+        if (this.chainStarts.delete(chainOwner)) this.advanceSubtasks(chainOwner);
         // A re-plan queued behind this run (Phase 18) — the worktree is free now.
         this.startPendingReplan(run.taskId);
         // A CARD's own run just ended — its chat turn, or the planner itself settling out
@@ -4746,7 +4751,6 @@ export class Scheduler {
         // for the first time since a chain held its landing on this card, so give it the
         // chance to replay. (A step's own run never holds anything under its own id —
         // `heldLandings` is keyed by the PARENT — so this is a no-op for one.)
-        const exitedTask = this.store.getTask(run.taskId);
         if (exitedTask && !exitedTask.parentTaskId) this.landHeld(run.taskId);
         this.pumpAllActive(); // a slot freed up — advance every queue, not just this one
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
@@ -6944,10 +6948,15 @@ export class Scheduler {
    */
   private raisePlanApproval(run: Run): AttentionItem {
     run.planPresented = true; // this run did its job, whatever the human decides next
-    const plan = this.store.getTask(run.taskId)?.agentPlan ?? '';
-    const existing = this.store.getSubtasks(run.taskId);
+    const asker = this.store.getTask(run.taskId);
+    const plan = asker?.agentPlan ?? '';
+    // Previewed against the same card `approvePlan` will grow, so the inbox never promises
+    // steps the approval cannot create (see `planOwnerOf`).
+    const ownerId = asker ? this.planOwnerOf(asker).id : run.taskId;
+    const askingStep = asker && ownerId !== asker.id ? asker : null;
+    const existing = this.store.getSubtasks(ownerId);
     const replaceRound = run.replaceRound;
-    const steps = this.planStepsToAppend(run.taskId, plan, replaceRound);
+    const steps = this.planStepsToAppend(ownerId, plan, replaceRound);
     const targetSteps =
       replaceRound != null ? existing.filter((s) => (s.planRound ?? 1) === replaceRound) : [];
     const item = this.raiseAttention(run, {
@@ -6956,18 +6965,24 @@ export class Scheduler {
         steps.length === 0
           ? 'The agent finished planning, but the plan proposes nothing this card does not ' +
             'already have. Review it below — approving will not add any steps.'
-          : replaceRound != null
-            ? `The agent proposes ${steps.length} step(s) that replace the ` +
-              `${targetSteps.length} step(s) of phase ${replaceRound}. Approving swaps them ` +
-              `in — unless that phase has started in the meantime, in which case its steps ` +
-              `are kept and these run after it instead — each in its own session, on this ` +
-              `card's branch.`
-            : existing.length > 0
-              ? `The agent proposes ${steps.length} more step(s), on top of the ` +
-                `${existing.length} already on this card. Approving runs them one at a time, ` +
-                `each in its own session, on this card's branch.`
-              : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
-                `them one at a time, each in its own session, on this card's branch.`,
+          : askingStep
+            ? `The step "${askingStep.title}" re-planned the card and proposes ` +
+              `${steps.length} more step(s), added after the ${existing.length} it already ` +
+              `has. Approving closes "${askingStep.title}" — the new steps carry its ` +
+              `remaining work — and runs them one at a time, each in its own session, on ` +
+              `this card's branch.`
+            : replaceRound != null
+              ? `The agent proposes ${steps.length} step(s) that replace the ` +
+                `${targetSteps.length} step(s) of phase ${replaceRound}. Approving swaps them ` +
+                `in — unless that phase has started in the meantime, in which case its steps ` +
+                `are kept and these run after it instead — each in its own session, on this ` +
+                `card's branch.`
+              : existing.length > 0
+                ? `The agent proposes ${steps.length} more step(s), on top of the ` +
+                  `${existing.length} already on this card. Approving runs them one at a time, ` +
+                  `each in its own session, on this card's branch.`
+                : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
+                  `them one at a time, each in its own session, on this card's branch.`,
       toolName: null,
       reason: null,
       plan,
@@ -6990,6 +7005,21 @@ export class Scheduler {
    * and the {@link MAX_PLAN_STEPS} count — the round a replacing plan is about to throw away
    * is not "already on the card" for either purpose, it is what the new steps replace.
    */
+  /**
+   * The card a plan's steps belong to: the task itself, or — when a STEP's session wrote
+   * the plan — that step's card.
+   *
+   * Steps are one level deep (`store.addSubtask` refuses a step as a parent), so before
+   * this the approval of a plan a step wrote appended every step to the STEP, the store
+   * refused each one silently, and the human saw "the orchestrator is now executing it" over
+   * a card that had gained nothing and could not move: the asking step sat `in-progress`
+   * with no run, and `advanceSubtasks` on a step has nothing to find. TM-227 (TM-444).
+   */
+  private planOwnerOf(task: Task): Task {
+    if (!task.parentTaskId) return task;
+    return this.store.getTask(task.parentTaskId) ?? task;
+  }
+
   private planStepsToAppend(parentId: string, plan: string, excludeRound?: number): PlanStep[] {
     const existing = this.store.getSubtasks(parentId);
     const existingTitles = existing
@@ -7026,11 +7056,16 @@ export class Scheduler {
     release?: (result: PermissionDecisionResult) => void,
     note?: string,
   ): void {
-    const parent = this.store.getTask(item.taskId);
-    if (!parent) return;
+    // The plan is the ASKER's (it is where `capturePlan` wrote it); the steps are the
+    // CARD's. They differ when a step re-planned from inside its own session — see
+    // {@link planOwnerOf} for what that used to do.
+    const asker = this.store.getTask(item.taskId);
+    if (!asker) return;
+    const parent = this.planOwnerOf(asker);
+    const askingStep = parent.id === asker.id ? null : asker;
     const replacement = this.pendingReplacements.get(item.id);
     this.pendingReplacements.delete(item.id);
-    const plan = parent.agentPlan ?? item.plan ?? '';
+    const plan = asker.agentPlan ?? item.plan ?? '';
     const fresh = this.planStepsToAppend(parent.id, plan, replacement?.round);
 
     const roundSteps = replacement
@@ -7110,8 +7145,15 @@ export class Scheduler {
         parent.projectId,
         parent.id,
         'The approved plan proposed no steps this card does not already have, so nothing ' +
-          'was added. Re-plan with more specific guidance if there is work left to do.',
+          'was added. Re-plan with more specific guidance if there is work left to do.' +
+          (askingStep
+            ? ` "${askingStep.title}" asked for the plan and is stopped — Resume runs it again.`
+            : ''),
       );
+      // The asking step's session is gone and nothing replaced its work, so it rests
+      // `stopped`: that is what offers Resume, rather than a step left `in-progress` with
+      // no run behind it and no button that could ever restart it.
+      if (askingStep) this.updateTask(askingStep.id, { status: 'stopped' }, null);
       this.updateTask(parent.id, { status: 'in-progress' }, null);
       this.tasksChanged?.(parent.projectId);
       // Nothing was added, so any landing this card's chain was holding for this very plan
@@ -7124,6 +7166,20 @@ export class Scheduler {
     // applies; the branch it names keeps growing under the new steps rather than landing as
     // it stood. `chainStarts`/`advanceSubtasks` below continue the chain into them directly.
     this.heldLandings.delete(parent.id);
+    // A step that re-planned is closed by its own plan: the planner was told what it had
+    // been asked to do, and the steps it proposed carry whatever of that is left (TM-227's
+    // re-plan ended with its own fresh Verification). Left as it was, the step would sit
+    // `in-progress` with no run behind it for ever.
+    if (askingStep) {
+      this.updateTask(askingStep.id, { status: 'done' }, null);
+      this.store.addComment(
+        parent.projectId,
+        parent.id,
+        `"${askingStep.title}" re-planned the card: ${fresh.length} step(s) were added as ` +
+          `phase ${round}, and "${askingStep.title}" is closed — the new steps carry its ` +
+          `remaining work. They run after any step already queued on the card.`,
+      );
+    }
     this.updateTask(parent.id, { status: 'in-progress' }, null);
     this.tasksChanged?.(parent.projectId);
     // Step 1 shares the planner's worktree, so it waits for that process to be gone
