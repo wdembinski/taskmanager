@@ -728,7 +728,7 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
       simplest composition (both backgrounds painted, selected's tint winning by being the
       more opaque of the two) rather than a special-cased third style.
 
-- [ ] F13.13 Open the F12 panel as a peek on Space and as a full-screen issue on Enter @needs: F13.11 Render the sidebar in both hosts with tree keyboard navigation, F13.12 Build the shared issue row with the selected state
+- [x] F13.13 Open the F12 panel as a peek on Space and as a full-screen issue on Enter @needs: F13.11 Render the sidebar in both hosts with tree keyboard navigation, F13.12 Build the shared issue row with the selected state
 
   - A `peek` layout (flat surface on the right, list still focusable) and a `full` layout (the
     same `TaskDetailHost` as a page with a breadcrumb) over F12's panel; Space / Enter / Esc
@@ -799,6 +799,15 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     - **Peek header** is a slim row at the top of the peek holding two subtle icon buttons —
       `ArrowMaximizeRegular` ("Open full screen (Enter)") and `DismissRegular` ("Close (Esc)")
       — matching the two icons in the attached peek mockup's top-right corner.
+
+  - **Design decisions, condensed:** `showTaskDetail` retires from the Tickets screen — layout
+    lives in the `issueView` reducer's own state now, and the pane-toggle button just dispatches
+    `space`. A ticket missing from a `tickets` update only triggers the deletion notice once it
+    has been `seen` in the list at least once, so a cross-project link opened from the panel
+    never fires it. Space/Esc on the `Projects` root ignore editable targets and anything inside
+    a `[role="dialog"], [role="menu"], [role="listbox"]` portal, since Fluent's portals bubble
+    their events out past the DOM tree the root listens on. `BacklogTable`'s load and its
+    subscriptions are lifted into `useProjectTickets`, shared by the table and the reducer.
 
 ### F13 · Phase 4 — Migrate the screens
 
