@@ -1,5 +1,6 @@
 import { In, type EntityManager } from 'typeorm';
 import type { MirrorDelta } from '@tm/protocol/wire';
+import { MilestoneMirror } from '../entities/milestoneMirror.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
 import { Tombstone, tombstoneId } from '../entities/tombstone.entity';
@@ -44,6 +45,19 @@ export async function applyMirrorDelta(
       ['id'],
     );
   }
+  const milestones = delta.milestones ?? [];
+  if (milestones.length > 0) {
+    await manager.upsert(
+      MilestoneMirror,
+      milestones.map((milestone) => ({
+        id: milestone.id,
+        accountId,
+        projectId: milestone.projectId,
+        data: milestone,
+      })),
+      ['id'],
+    );
+  }
   // Clear any tombstone for something that just came back — before the deletions below, so a
   // delta that both restores one id and deletes another cannot cancel its own deletion.
   await clearTombstones(
@@ -58,6 +72,12 @@ export async function applyMirrorDelta(
     'project',
     delta.projects.map((p) => p.id),
   );
+  await clearTombstones(
+    manager,
+    accountId,
+    'milestone',
+    milestones.map((m) => m.id),
+  );
 
   if (delta.deletedTaskIds.length > 0) {
     await manager.delete(TaskMirror, { id: In(delta.deletedTaskIds), accountId });
@@ -66,6 +86,11 @@ export async function applyMirrorDelta(
   if (delta.deletedProjectIds.length > 0) {
     await manager.delete(ProjectMirror, { id: In(delta.deletedProjectIds), accountId });
     await writeTombstones(manager, accountId, 'project', delta.deletedProjectIds);
+  }
+  const deletedMilestoneIds = delta.deletedMilestoneIds ?? [];
+  if (deletedMilestoneIds.length > 0) {
+    await manager.delete(MilestoneMirror, { id: In(deletedMilestoneIds), accountId });
+    await writeTombstones(manager, accountId, 'milestone', deletedMilestoneIds);
   }
 }
 
@@ -78,7 +103,7 @@ export async function applyMirrorDelta(
 async function writeTombstones(
   manager: EntityManager,
   accountId: string,
-  entity: 'task' | 'project',
+  entity: 'task' | 'project' | 'milestone',
   ids: readonly string[],
 ): Promise<void> {
   const rows = ids.map((entityId) => ({
@@ -94,7 +119,7 @@ async function writeTombstones(
 async function clearTombstones(
   manager: EntityManager,
   accountId: string,
-  entity: 'task' | 'project',
+  entity: 'task' | 'project' | 'milestone',
   ids: readonly string[],
 ): Promise<void> {
   if (ids.length === 0) return;

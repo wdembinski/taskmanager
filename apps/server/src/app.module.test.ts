@@ -70,10 +70,10 @@ describe('AppModule', () => {
 
     expect(options.synchronize).toBe(false);
     // Account, AgentProfile, Assignment, AttachmentBlob, AttachmentUpload, AutomationMirror,
-    // AutomationRunMirror, Client, Command, CommandResultRow, PersonalAccessToken,
-    // ProjectMirror, SettingsMirror, SkillMirror, TaskMirror, Tombstone, WorkflowMirror. A
-    // count rather than the names: this is a "did somebody drop one" guard, and every
-    // entity's own shape is asserted where it is used.
-    expect((options.entities as unknown[]).length).toBe(17);
+    // AutomationRunMirror, Client, Command, CommandResultRow, MilestoneMirror,
+    // PersonalAccessToken, ProjectMirror, SettingsMirror, SkillMirror, TaskMirror, Tombstone,
+    // WorkflowMirror. A count rather than the names: this is a "did somebody drop one" guard,
+    // and every entity's own shape is asserted where it is used.
+    expect((options.entities as unknown[]).length).toBe(18);
   });
 });

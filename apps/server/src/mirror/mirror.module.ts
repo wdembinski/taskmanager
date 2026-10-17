@@ -5,6 +5,7 @@ import { AutomationRunMirror } from '../entities/automationRunMirror.entity';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
+import { MilestoneMirror } from '../entities/milestoneMirror.entity';
 import { SettingsMirror } from '../entities/settingsMirror.entity';
 import { Tombstone } from '../entities/tombstone.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
@@ -23,6 +24,7 @@ import { MirrorService } from './mirror.service';
       Client,
       Command,
       CommandResultRow,
+      MilestoneMirror,
       ProjectMirror,
       SettingsMirror,
       TaskMirror,

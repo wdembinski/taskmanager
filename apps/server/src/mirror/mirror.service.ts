@@ -32,6 +32,7 @@ import { AutomationRunMirror } from '../entities/automationRunMirror.entity';
 import { Client } from '../entities/client.entity';
 import { Command } from '../entities/command.entity';
 import { CommandResultRow } from '../entities/commandResult.entity';
+import { MilestoneMirror } from '../entities/milestoneMirror.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { SettingsMirror } from '../entities/settingsMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
@@ -102,6 +103,8 @@ export class MirrorService {
     @InjectRepository(Client) private readonly clients: Repository<Client>,
     @InjectRepository(TaskMirror) private readonly taskMirrors: Repository<TaskMirror>,
     @InjectRepository(ProjectMirror) private readonly projectMirrors: Repository<ProjectMirror>,
+    @InjectRepository(MilestoneMirror)
+    private readonly milestoneMirrors: Repository<MilestoneMirror>,
     @InjectRepository(SettingsMirror) private readonly settingsMirrors: Repository<SettingsMirror>,
     @InjectRepository(AutomationMirror)
     private readonly automationMirrors: Repository<AutomationMirror>,
@@ -580,11 +583,12 @@ export class MirrorService {
   }
 
   /**
-   * `DELETE /v1/projects/:id` — drop a mirrored project, and every task mirrored under it
-   * (steps included), straight from `project_mirrors`/`task_mirrors`. The server's own
-   * stand-in for the desktop's `ON DELETE CASCADE` foreign key (`store.ts`'s
-   * `tasks.projectId REFERENCES projects(id)`) — the two mirror tables carry no such
-   * constraint, so the cascade is done here in JS instead, the same way `deleteTask`
+   * `DELETE /v1/projects/:id` — drop a mirrored project, and every task and milestone
+   * mirrored under it (steps included), straight from
+   * `project_mirrors`/`task_mirrors`/`milestone_mirrors`. The server's own stand-in for the
+   * desktop's `ON DELETE CASCADE` foreign keys (`store.ts`'s `tasks.projectId REFERENCES
+   * projects(id)`, `milestones.projectId REFERENCES projects(id)`) — the mirror tables carry
+   * no such constraint, so the cascade is done here in JS instead, the same way `deleteTask`
    * cascades to a card's steps.
    *
    * Idempotent, like `deleteTask`: an id that names nothing is a silent no-op. Unlike
@@ -599,6 +603,10 @@ export class MirrorService {
       where: { accountId, projectId },
       select: { id: true },
     });
+    const milestones = await this.milestoneMirrors.find({
+      where: { accountId, projectId },
+      select: { id: true },
+    });
 
     await this.dataSource.transaction((manager) =>
       applyMirrorDelta(manager, accountId, {
@@ -606,6 +614,7 @@ export class MirrorService {
         projects: [],
         deletedTaskIds: tasks.map((t) => t.id),
         deletedProjectIds: [projectId],
+        deletedMilestoneIds: milestones.map((m) => m.id),
       }),
     );
 
@@ -737,17 +746,18 @@ export class MirrorService {
     const sinceBuffer = since ? cursorToRowVersion(since) : null;
     const now = Date.now();
 
-    const [tasks, projects, deletions] = await Promise.all([
+    const [tasks, projects, milestones, deletions] = await Promise.all([
       this.rowsSince(this.taskMirrors, accountId, sinceBuffer),
       this.rowsSince(this.projectMirrors, accountId, sinceBuffer),
+      this.rowsSince(this.milestoneMirrors, accountId, sinceBuffer),
       this.rowsSince(this.tombstones, accountId, sinceBuffer),
     ]);
 
-    // NOT the maximum across the three streams. Each is paged on its own, so the highest
+    // NOT the maximum across the streams. Each is paged on its own, so the highest
     // rowversion any of them reached is a promise the others cannot keep — see
     // `boardCursor.ts` for the hundred cards that used to fall through that gap.
     const cursor = boardCursor(
-      [tasks, projects, deletions].map((page) => ({
+      [tasks, projects, milestones, deletions].map((page) => ({
         last: lastRowVersion(page.rows),
         hasMore: page.hasMore,
       })),
@@ -764,13 +774,17 @@ export class MirrorService {
       cursor: rowVersionToCursor(cursor),
       cadence,
       protocolVersion: PROTOCOL_VERSION,
-      hasMore: tasks.hasMore || projects.hasMore || deletions.hasMore,
+      hasMore: tasks.hasMore || projects.hasMore || milestones.hasMore || deletions.hasMore,
       deltas: {
         tasks: tasks.rows.map((row) => row.data),
         projects: projects.rows.map((row) => row.data),
+        milestones: milestones.rows.map((row) => row.data),
         deletedTaskIds: deletions.rows.filter((r) => r.entity === 'task').map((r) => r.entityId),
         deletedProjectIds: deletions.rows
           .filter((r) => r.entity === 'project')
+          .map((r) => r.entityId),
+        deletedMilestoneIds: deletions.rows
+          .filter((r) => r.entity === 'milestone')
           .map((r) => r.entityId),
       },
       clients,

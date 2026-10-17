@@ -42,9 +42,10 @@ cloud ticket only shows who is running it. Claiming and locking runs across desk
   (`packages/shared/src/iamPkce.ts`, `DEFAULT_SCOPE`).
 - PATs resolve locally and never reach IAM (`iam/patService.ts`, the "route once, commit" rule
   in `iamAuth.guard.ts`).
-- Mirror tables: `task_mirrors`, `project_mirrors` (`entities/taskMirror.entity.ts`,
-  `projectMirror.entity.ts`) hold the whole `Task`/`Project` as one `simple-json` `data` column
-  plus a SQL Server `ROWVERSION`. **The primary key is `id` alone**, not `(accountId, id)`.
+- Mirror tables: `task_mirrors`, `project_mirrors`, `milestone_mirrors`
+  (`entities/taskMirror.entity.ts`, `projectMirror.entity.ts`, `milestoneMirror.entity.ts`) hold
+  the whole `Task`/`Project`/`Milestone` as one `simple-json` `data` column plus a SQL Server
+  `ROWVERSION`. **The primary key is `id` alone**, not `(accountId, id)`.
   `tombstones` (`entities/tombstone.entity.ts`) records deletions so a browser can see them.
   `settings_mirrors` holds one global-settings blob per account, gated by
   `pickGlobalSettings` (memory *settings-mirror-global-vs-local*).
@@ -53,7 +54,7 @@ cloud ticket only shows who is running it. Claiming and locking runs across desk
 - `MirrorService.sync` (`mirror/mirror.service.ts:110-212`) is one transaction per tick: upsert
   the `clients` row, apply the delta, store results, ack and lease commands
   (`mirror/commandQueue.ts`: at-least-once with a lease, `ackedAt` retires a row).
-- The board read pages three streams and computes its cursor with `boardCursor`
+- The board read pages four streams and computes its cursor with `boardCursor`
   (`mirror/boardCursor.ts`): the lowest ceiling of any truncated stream wins, or rows are lost.
   `rowsSince` (`mirror.service.ts:876-890`) filters `rowVersion > :since` with **no
   `MIN_ACTIVE_ROWVERSION()` ceiling**. On Azure SQL, where `READ_COMMITTED_SNAPSHOT` is on by
