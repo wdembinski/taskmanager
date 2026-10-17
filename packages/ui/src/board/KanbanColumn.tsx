@@ -20,6 +20,7 @@ import type { BoardCard, BoardColumn } from './boardColumns';
 import type { ChainPosition } from './chainPosition';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 import type { ChainState } from './chainStates';
+import type { LinkChips } from './linkChips';
 
 const useStyles = makeStyles({
   // A grid item of the board's scroll container (`boardLayout`'s `columns`): it stretches to
@@ -204,6 +205,13 @@ export interface KanbanColumnProps {
    */
   chainStateOf?: (task: Task) => ChainState | undefined;
   /**
+   * Needs/unblocks (`linkChips.ts`), asked per card like `chainStateOf` — the board holds no
+   * index of its own, and the column asks it fresh per card. Absent everywhere the Off/Focus/
+   * All switch is not Off, which is also what leaves each card's `chainChip` drawing exactly
+   * as it always did.
+   */
+  linkChipsOf?: (task: Task) => LinkChips | undefined;
+  /**
    * A chained card's "step n of m" (F3.5) — the compact board's stand-in for the wide
    * board's arrows, which there is no room to draw over a single column. Asked per card like
    * `chainStateOf`, over `@tm/ui/board/chainPosition`'s pure walk of the chain graph. Absent
@@ -362,6 +370,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               chainReady={props.chainStateOf?.(task)?.ready}
               chainBlocked={props.chainStateOf?.(task)?.blocked}
               chainPosition={props.chainPositionOf?.(task)}
+              linkChips={props.linkChipsOf?.(task)}
               // A chain says what runs after what, never where a card belongs; and a run
               // only BORROWS the card's status (`cardStatusGuard`), so not even a live agent
               // or a live step takes a card out of the human's hands — there is no state in

@@ -50,6 +50,7 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  ArrowRightRegular,
   ArrowSyncRegular,
   BeakerRegular,
   BookmarkRegular,
@@ -90,6 +91,7 @@ import {
   runPhase,
 } from '@tm/shared/board';
 import type { ChainDecline } from '@tm/shared/taskChain';
+import type { LinkChips } from './linkChips';
 import { RUN_PURPOSE_LABEL, runPurposeOf, type RunPurpose } from '@tm/shared/scheduler';
 import { priorityIndicatorShown } from '@tm/shared/priority';
 import { delegatedAgentName } from '@tm/shared/tickets';
@@ -775,6 +777,26 @@ const useStyles = makeStyles({
   },
   chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
   /**
+   * The needs/unblocks row (F13.20) — what `chainChip` says with an arrow and a chip, said
+   * instead in plain words once Off has turned that arrow off. Same neutral treatment as
+   * every other standing-fact caption on the card (`chainPositionCaption`, the sprint chip):
+   * no border, no background, because this is text, not a control.
+   */
+  linkChipsRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+    color: tokens.colorNeutralForeground3,
+  },
+  linkChipsIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
+  /**
+   * The one predecessor whose finishing releases this card right now — cyan, the overlay's
+   * own "starting next" (`ChainOverlay`'s `releasing` state), and the only colour this row
+   * spends: everything else here is a standing fact, not something moving.
+   */
+  linkChipReleasing: { color: FLUO_VAR.cyan },
+  /**
    * "Step n of m" (F3.5) — the compact board's stand-in for the wide board's arrows, which
    * there is no column beside this one to draw them into. Same neutral treatment as the
    * chain chip beside it: a standing fact about the card, not something in motion.
@@ -1195,6 +1217,15 @@ export interface TaskCardProps {
    * caller before this field existed.
    */
   dimmed?: boolean;
+  /**
+   * Needs/unblocks, pre-computed (`linkChips.ts`) — the card's own stand-in for the gutter
+   * arrow while Off has turned the arrow off. Present (even with both lists empty) SUPPRESSES
+   * the ordinary `chainChip` ("waiting on…"/"ready"/…): the two say the same thing about the
+   * same predecessor, and showing both would either repeat it or, worse, disagree about it if
+   * a caller ever let the two drift. Absent on every caller not in Off mode, which is also
+   * what keeps `chainChip` exactly as it always was there.
+   */
+  linkChips?: LinkChips;
 }
 
 export function TaskCard({
@@ -1249,6 +1280,7 @@ export function TaskCard({
   onDragEnd,
   dragging,
   dimmed = false,
+  linkChips,
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -1303,7 +1335,8 @@ export function TaskCard({
   // Only about the card the chip actually NAMES, so its noun and its verb agree; the
   // tooltip is what covers the rest of a diamond.
   const namedIsMergeHeld = waitingOn.length > 0 && mergeHeld.some((t) => t.id === waitingOn[0].id);
-  const chainChip = waitingOn.length ? (
+  // Suppressed whenever `linkChips` is present — see that prop's doc.
+  const chainChip = linkChips ? null : waitingOn.length ? (
     <span
       className={styles.chainChip}
       title={
@@ -1355,6 +1388,34 @@ export function TaskCard({
       <span className={styles.chainChipText}>its turn — held</span>
     </span>
   ) : null;
+  /**
+   * The needs/unblocks row `linkChips` draws in place of `chainChip` — see that prop's doc.
+   * The arrow sits once, before "needs", the way the mockup draws it; "unblocks" names what
+   * this card itself releases and gets no arrow of its own, since nothing is pointing AT it.
+   */
+  const needsUnblocksRow =
+    linkChips && (linkChips.needs.length > 0 || linkChips.unblocks.length > 0) ? (
+      <Caption1 className={styles.linkChipsRow}>
+        {linkChips.needs.length > 0 && (
+          <span title={`Needs ${linkChips.needs.map((n) => n.key).join(', ')} to run first`}>
+            <ArrowRightRegular className={styles.linkChipsIcon} /> needs{' '}
+            {linkChips.needs.map((n, i) => (
+              <span key={n.key}>
+                {i > 0 && ', '}
+                <span className={n.tone === 'releasing' ? styles.linkChipReleasing : undefined}>
+                  {n.key}
+                </span>
+              </span>
+            ))}
+          </span>
+        )}
+        {linkChips.unblocks.length > 0 && (
+          <span title={`Unblocks ${linkChips.unblocks.map((u) => u.key).join(', ')} once done`}>
+            unblocks {linkChips.unblocks.map((u) => u.key).join(', ')}
+          </span>
+        )}
+      </Caption1>
+    ) : null;
   // Null when the note matched no keyword — the line then keeps the card's ordinary
   // secondary text colour, so an uncoloured note reads as text rather than as a state.
   const noteColor = statusNoteColor(task.statusNote, statusKeywords);
@@ -1792,6 +1853,8 @@ export function TaskCard({
             Epic: {epicName ?? task.externalEpicName ?? task.externalParentKey}
           </Caption1>
         )}
+
+        {needsUnblocksRow}
 
         {(isExternal ||
           showsTicketKey ||

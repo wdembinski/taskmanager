@@ -51,6 +51,7 @@ import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
 import { buildChainDrawing, linkMidpoint } from '@tm/ui/board/chainArrows';
 import { linkDropStates, type LinkDragState } from '@tm/ui/board/chainDrag';
 import { linkView, nextLinkMode, type LinkMode } from '@tm/ui/board/linkMode';
+import { linkChips } from '@tm/ui/board/linkChips';
 import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
 import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@tm/ui/board/foldedSteps';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/board/shelvedCards';
@@ -547,7 +548,8 @@ export function BoardScreen({
   );
   useGlobalShortcut(
     'l',
-    () => void saveSettings({ ...settings, boardLinks: nextLinkMode(boardLinks) }).catch(reportError),
+    () =>
+      void saveSettings({ ...settings, boardLinks: nextLinkMode(boardLinks) }).catch(reportError),
     { ignoreInFields: true },
   );
 
@@ -555,6 +557,13 @@ export function BoardScreen({
   // through them — a board with no links yet keeps its ordinary, narrower gap — and the
   // switch is not Off, where nothing is drawn over the board at all.
   const linksDrawn = extras.chainLinks.length > 0 && linkState.drawn;
+
+  // Off draws no arrow at all, so each card says what it would have said in words instead
+  // (`linkChips.ts`) — absent every other mode, which is what leaves `chainChip` alone there.
+  const linkChipsOf =
+    boardLinks === 'off'
+      ? (t: Task) => linkChips(t.id, extras.chainLinks, tasksById, extras.liveRunTaskIds)
+      : undefined;
 
   // Delete or Backspace erases the selected arrow, Escape lets it go — the desktop's own
   // keyboard contract, on the window rather than the path because an SVG `<path>` cannot
@@ -982,6 +991,7 @@ export function BoardScreen({
                   );
                 }}
                 chainStateOf={(t) => chainState.get(t.id)}
+                linkChipsOf={linkChipsOf}
                 selectedTaskId={selectedTaskId}
                 draggingId={draggingId}
                 onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}

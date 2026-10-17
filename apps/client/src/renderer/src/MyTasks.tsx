@@ -79,6 +79,7 @@ import { ChainOverlay } from '@ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@ui/board/ChainLinkPopover';
 import { LinkModeSwitch } from '@ui/board/LinkModeSwitch';
 import { linkView, nextLinkMode, type LinkMode } from '@ui/board/linkMode';
+import { linkChips } from '@ui/board/linkChips';
 import { buildChainDrawing, linkMidpoint } from '@ui/board/chainArrows';
 import { useGlobalShortcut } from '@ui/palette/shortcut';
 import {
@@ -1165,6 +1166,11 @@ export function MyTasks({
   // switch is not Off, where nothing is drawn over the board at all.
   const linksDrawn = links.length > 0 && linkState.drawn;
 
+  // Off draws no arrow at all, so each card says what it would have said in words instead
+  // (`linkChips.ts`) — absent every other mode, which is what leaves `chainChip` alone there.
+  const linkChipsOf =
+    boardLinks === 'off' ? (t: Task) => linkChips(t.id, links, tasksById, liveRuns) : undefined;
+
   // Delete or Backspace erases the selected arrow, Escape lets it go. On the window rather
   // than on the path, because an SVG `<path>` cannot hold focus — and never while the caret
   // is in a field, where Backspace means "delete a character" and always will.
@@ -1496,6 +1502,7 @@ export function MyTasks({
               onLinkTo={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
               onLinkArm={armLink}
               chainStateOf={(t) => chainState.get(t.id)}
+              linkChipsOf={linkChipsOf}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
               onStopTask={(taskId) => void stopTask(taskId)}
