@@ -405,6 +405,7 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
                 projectId={selectedProject.id}
                 selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
+                milestones={registries.milestones}
                 projects={projects}
                 includeArchived={includeArchived}
                 onIncludeArchivedChange={setIncludeArchived}
