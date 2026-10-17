@@ -20,9 +20,18 @@
  *   screen draws no section content of its own; it is the tab strip in front of the one pane
  *   that already knows how to draw each section (`TaskDetail`'s own `section` prop, F3.7).
  */
-import { Button, Caption1, Tab, TabList, makeStyles, tokens } from '@fluentui/react-components';
+import {
+  Button,
+  Caption1,
+  Tab,
+  TabList,
+  makeStyles,
+  mergeClasses,
+  tokens,
+} from '@fluentui/react-components';
 import { ChevronLeftRegular } from '@fluentui/react-icons';
 import { CARD_SECTIONS, type CardSection } from '../layout/compactRoute';
+import { useGlassStyles } from '../shell/GlassPane';
 import { TaskDetail, type TaskDetailProps } from '../TaskDetail';
 
 const SECTION_LABEL: Record<CardSection, string> = {
@@ -39,7 +48,9 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '4px',
     flexShrink: 0,
-    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+    // Edge-to-edge, not a floating pane — overrides `glass.pane`'s rounded corners, the
+    // same override `BottomTabBar` makes for the same reason.
+    borderRadius: 0,
   },
   title: {
     flex: 1,
@@ -79,9 +90,10 @@ export function CompactCardScreen({
   ...detailProps
 }: CompactCardScreenProps): JSX.Element {
   const styles = useStyles();
+  const glass = useGlassStyles();
   return (
     <div className={styles.root}>
-      <div className={styles.titleBar}>
+      <div className={mergeClasses(glass.pane, styles.titleBar)}>
         <Button
           appearance="transparent"
           icon={<ChevronLeftRegular />}

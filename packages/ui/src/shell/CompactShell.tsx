@@ -22,6 +22,9 @@
  * - **`tabBar` is optional (F3.7).** A full-screen card route (`CompactCardScreen`) has its
  *   own Back + title bar in its place, which is its own screen's business, not something
  *   this shell has to know the shape of — absent, the shell simply draws no third slot.
+ * - **`tabBar` (`BottomTabBar`) is a glass pane with the gradient hairline (F13.17)** — this
+ *   shell just renders the slot; the glass fill and the hairline standing in for the old
+ *   border are `BottomTabBar`'s own concern, not a layout change here.
  * - **Bottom padding from `useKeyboardInset()`.** The one slot an on-screen keyboard can
  *   cover that nothing else already protects: `tabBar`, when present, already sits above a
  *   resized viewport; `strip` is pinned at the top where a keyboard never reaches. Applied
