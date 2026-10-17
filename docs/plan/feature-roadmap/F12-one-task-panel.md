@@ -4,7 +4,7 @@
 > Only the `- [ ]` checkboxes under **Tasks** become cards when this file is imported as a plan; everything else is context.
 >
 > **Layout rule for this file:** every task's description bullets sit after a **blank line**. The plan
-> parser folds any indented line that directly follows a checkbox into that task's *title*
+> parser folds any indented line that directly follows a checkbox into that task's _title_
 > (`apps/client/src/main/planParser.ts:173-177`); the blank line is what keeps descriptions out of it.
 
 ## Why
@@ -49,10 +49,10 @@ there.
 - **`TicketLinksEditor`** (`projects/TicketLinksEditor.tsx`) loads `ticketLink:list` itself
   (`:65`) and phrases each row from the ticket's end through `linksFor()`
   (`@tm/shared/ticketLinks`). A refusal comes back as data and is shown as a message.
-- **Two kinds of link, kept apart on purpose.** *Chain links* (`TaskLink`, `chain:links`) are
-  execution order: the arrows on the board, which the release engine acts on. *Ticket links*
+- **Two kinds of link, kept apart on purpose.** _Chain links_ (`TaskLink`, `chain:links`) are
+  execution order: the arrows on the board, which the release engine acts on. _Ticket links_
   (`TicketLink`, `ticketLink:*`) are documentation: "blocks", "relates to", and so on. They are
-  not chain arrows (memory *roadmap-imported-as-tickets*). `TaskDetail` already shows the first
+  not chain arrows (memory _roadmap-imported-as-tickets_). `TaskDetail` already shows the first
   kind in `TaskChain` and has never shown the second.
 - **The registries.** `Projects.tsx:64-66` seeds `person:list`, `milestone:list` and
   `label:list`. The desktop board loads only `person:list` (`MyTasks.tsx:304`), and so does the
@@ -60,7 +60,7 @@ there.
   `milestone:changed` and `ticketLink:changed` are all already polled on the web
   (`apps/web/src/board/polledEvents.ts:95-101`), so the web needs no new relay work.
 - **Saving.** `TaskDetailsCell` saves the description per field, through a `useDraft` (memory
-  *web-mirrors-the-desktop*). `TicketDrawer` drafts text fields the same way, but holds the
+  _web-mirrors-the-desktop_). `TicketDrawer` drafts text fields the same way, but holds the
   pickers in plain state until **Save**.
 
 ## Design
@@ -132,7 +132,7 @@ header asks.
 - **A linked ticket the viewer cannot open** (its project was deleted): the row stays, greyed,
   with its key, so the link can still be removed.
 - **Colour:** the new sections are monochrome. Only the moving things keep colour, such as a
-  linked ticket's live status (memory *board-colour-budget*).
+  linked ticket's live status (memory _board-colour-budget_).
 
 ## Out of scope (v1)
 
@@ -143,12 +143,12 @@ header asks.
 
 ## Open questions
 
-1. **Save per field, or keep a Save button for the ticket fields?** *Recommended default:* per
+1. **Save per field, or keep a Save button for the ticket fields?** _Recommended default:_ per
    field, as the description already saves. One pane should not have two save models.
-2. **Does the Projects pane include the conversation?** *Recommended default:* yes. It is the
+2. **Does the Projects pane include the conversation?** _Recommended default:_ yes. It is the
    same panel, so the conversation is there; it starts scrolled to the end and the bands keep
    their 50% cap, so the ticket fields stay in view.
-3. **Is the Ticket section open or folded by default?** *Recommended default:* folded on the
+3. **Is the Ticket section open or folded by default?** _Recommended default:_ folded on the
    board (the summary line is enough while you work) and open in Projects (you came to edit the
    ticket). The fold is remembered per device, like the other folds.
 
@@ -164,7 +164,7 @@ header asks.
     `ticketFields.ts`. `TicketDrawer` renders the section until F12.8 retires it.
   - Acceptance: `ticketFields.test.ts` cases that each single-field patch carries only that field,
     that clearing a picker sends `null`, and that an unchanged field sends nothing. `pnpm
-    typecheck` and `pnpm test` green.
+typecheck` and `pnpm test` green.
 
 - [ ] F12.2 Add the useTicketRegistries hook shared by every screen
 
@@ -178,7 +178,7 @@ header asks.
 - [ ] F12.3 Write the pure linked-tickets view model
 
   - `packages/ui/src/projects/linkedTickets.ts`: `linkedTicketRows(ticket, ticketLinks,
-    tasksById)` groups a ticket's links by how they read from its end (through `linksFor()`),
+tasksById)` groups a ticket's links by how they read from its end (through `linksFor()`),
     with each row's key, title, type and status. A missing ticket becomes a greyed row that can
     still be removed. A chain link becomes one pointer row that defers to `TaskChain`.
   - Acceptance: `linkedTickets.test.ts` covers both directions of "blocks", a duplicate pair, a
@@ -194,7 +194,7 @@ header asks.
     Native tickets only (`isNativeTicket`).
   - Acceptance: a pure `ticketSummaryLine` with tests (empty fields drop out, dates in the local
     format, points singular and plural); JIRA and ad-hoc cards render no section; `pnpm build`
-    green; a headless smoke check (memory *verify-electron-app*, never launch the user's app)
+    green; a headless smoke check (memory _verify-electron-app_, never launch the user's app)
     shows the section on a seeded native ticket.
 
 - [ ] F12.5 Add the Links section to TaskDetail @needs: F12.3 Write the pure linked-tickets view model, F12.4 Add the Ticket section to TaskDetail for native tickets
@@ -213,16 +213,92 @@ header asks.
     `person:list` loads fold into the hook.
   - Acceptance: the web board edits a milestone and a link through the relay with a desktop
     connected, and shows the sections read-only with `readOnlyNotice` without one; `pnpm
-    typecheck`, `pnpm test` and `pnpm build` green for both apps.
+typecheck`, `pnpm test` and `pnpm build` green for both apps.
 
 ### F12 · Phase 3 — One panel in Projects
 
 - [ ] F12.7 Extract a TaskDetailHost that loads the panel for any task id @needs: F12.6 Load the ticket registries on both boards
 
-  - `packages/ui/src/TaskDetailHost.tsx` takes a task id plus whatever the caller already holds,
-    and loads the rest: subtasks and parent, merge requests, attachments, chain links and the
-    chain index, attention, live runs and merges. `MyTasks.tsx:1488` and the web board render
-    through it, passing their own state so nothing is fetched twice.
+  - `TaskDetailHostProps = Omit<TaskDetailProps, 'task'> & { taskId: string | null; task?: Task
+| null }` (`TaskDetailProps` at `packages/ui/src/TaskDetail.tsx:232`). Every caller keeps
+    passing exactly the props it passes today, plus `taskId`; `task` stays optional so a caller
+    that already holds the row (both boards do) skips a lookup the host would otherwise redo.
+  - A pure module, `packages/ui/src/taskDetailHost.ts` (no React, unit-tested on its own — the
+    same split `chainStates.ts` and `attentionIndex.ts` already use):
+    - `LoadedTaskDetailData` holds the raw lists the host MAY load, each optional: `tasks`,
+      `mergeRequests`, `attachments`, `chainLinks`, `attentionItems` (the flat list
+      `buildAttentionIndex` takes, not the index itself), `liveRunTaskIds`, `mergingTaskIds`.
+    - `neededLoads(provided): ReadonlySet<HostLoad>` decides which reads are missing from
+      whether the props each one feeds are `undefined` — never from whether they are empty,
+      since an empty array is a legitimate caller answer ("no merge requests") the host must
+      not refetch:
+      - `'tasks'` (`board:tasks`, scope `'all'`) — any of `task`, `subtasks`, `parentTask` or
+        `chainTasksById` is missing.
+      - `'mergeRequests'` (`mr:mergeRequests`) — `mergeRequests` is missing.
+      - `'attachments'` (`attachment:list`) — `attachments` or `parentAttachments` is missing.
+      - `'chainLinks'` (`chain:links`) — `chainLinks` is missing.
+      - `'attention'` (`attention:list`) — `attention` is missing.
+      - `'liveRuns'` (`scheduler:activeRuns`) — `liveRunTaskIds` is missing.
+      - `'merging'` (`scheduler:integrating`) — `mergingTaskIds` is missing.
+    - `assembleTaskDetailProps(taskId, provided, loaded): TaskDetailProps` builds the final
+      props: for each field, the caller's own value wins whenever it is not `undefined`, and
+      only then does the helper derive it from `loaded`. Derived fields are computed from the
+      MERGED inputs — the caller's own `chainLinks` when given, the loaded ones otherwise — so
+      a derived value can never disagree with one the caller already supplied:
+      - `task`: looked up by `taskId` in the merged tasks.
+      - `subtasks` / `parentTask`: the same rule `MyTasks.tsx:639-651` already applies (a
+        step's siblings, by shared `parentTaskId` and sorted by `order`; the parent, by a
+        `parentTaskId` lookup).
+      - `mergeRequests` and `attachments`: this task's slice of the merged lists.
+        `parentAttachments`: the parent's slice. Sliced with `byTask` / `mergeRequestsByTask`
+        (`apps/web/src/board/useBoardExtras.ts:305`, `:316`), moved into `taskDetailHost.ts`
+        and re-exported from `useBoardExtras`, so the slicing is not written a third time.
+      - `chainTasksById`: built from the merged tasks.
+      - `chainWaitingOn` / `chainMergeHeld`: `chainStates(links, tasksById, liveRuns)`
+        (`packages/ui/src/board/chainStates.ts:68`) over the merged chain links, task index and
+        live-run set, read for this task's id.
+      - `attention`: `buildAttentionIndex(items)` (`packages/ui/src/attentionIndex.ts:35`) over
+        the merged attention items.
+      - Every other prop (callbacks, feature flags, `readOnlyNotice`, `hostUnreachable`,
+        `section`, `dictation`, `people`/`milestones`/`labels`/`ticketLinks`, …) passes through
+        from `provided` untouched; the host never has an opinion on them.
+  - `packages/ui/src/TaskDetailHostView.tsx` (named for the component it exports,
+    `TaskDetailHost` — filed under a different name than that export because
+    `packages/ui/src/taskDetailHost.ts` already occupies the name one letter-case away, which
+    a case-insensitive filesystem or `tsc`'s `forceConsistentCasingInFileNames` cannot tell
+    apart from an extension-less import): computes `neededLoads` once per render, then runs one
+    small gated hook per read — `useHostRead(channel, enabled, changedEvent?)`, the same
+    fail-soft-to-`undefined` shape `useBoardExtras`'s own `load` uses — invoked only when
+    `enabled`, each subscribing to its read's own whole-list event only while enabled:
+    `mergeRequests:changed`, `attachment:changed`, `chain:changed`, `task:integrating`.
+    `attention:new` / `attention:resolved` patch the flat item list the way `useBoardExtras`
+    already does (`useBoardExtras.ts:209-214`), rather than replacing it outright. `task:changed`
+    re-triggers both `board:tasks` and `scheduler:activeRuns` — a task's own status changing is
+    exactly what moves it into or out of a live run. Renders `<TaskDetail
+{...assembleTaskDetailProps(taskId, props, loaded)} />`.
+  - Registries (`people`, `milestones`, `labels`, `ticketLinks`) are deliberately NOT loaded
+    here: the ticket's own load list leaves them out, both boards already pass them down from
+    F12.6's `useTicketRegistries`, and calling that hook again inside the host would double
+    fetch the same four reads. `TaskDetail` already falls back to empty pickers and its own
+    `useTicketLinks` when they are absent (`TaskDetail.tsx:367-382`), so a future caller with no
+    registries of its own degrades exactly as it does today.
+  - Callers:
+    - `apps/client/src/renderer/src/MyTasks.tsx:1553`'s `<TaskDetail task={selectedTask} …>`
+      becomes `<TaskDetailHost taskId={selectedTaskId} task={selectedTask} …>`, every existing
+      prop kept as-is. `mergeRequests`/`attachments`/`parentAttachments` stay `[]` rather than
+      `undefined` when nothing is selected, as today (`:1559`, `:1573`, `:1577-1579`), so
+      `neededLoads` never fires for a host with nothing selected.
+    - `apps/web/src/board/BoardScreen.tsx:1036`'s wide pane becomes `<TaskDetailHost
+taskId={selectedTask?.id ?? null} task={selectedTask} {...taskDetailProps} />`.
+      `CompactCardScreen` (`:727-733`) keeps rendering `TaskDetail` directly with the same
+      `taskDetailProps` — it already gets everything from the board, and the ticket names only
+      the board's wide pane.
+    - `chainWaitingOn`/`chainMergeHeld` may arrive `undefined` for a card that is not blocked
+      (both boards already pass `undefined` in that case — `MyTasks.tsx:1590`/`:1593`,
+      `BoardScreen.tsx:701-702`). The host then derives them from the caller's own `chainLinks`
+      - `chainTasksById` + `liveRunTaskIds`, landing on the same empty answer without
+        `neededLoads` triggering a read it does not need, since neither prop is what
+        `'chainLinks'`/`'liveRuns'` checks for.
   - Acceptance: the board's pane is unchanged: `TaskDetail` has no tests of its own, so a
     headless smoke check renders the same seeded card before and after and compares the
     sections shown; a test of the host's pure prop-assembly helper that a caller-supplied value
@@ -261,4 +337,4 @@ header asks.
     read the same values back. Update the ticket-model and UI docs (`docs/12-the-ticket-model.md`,
     `docs/05-glossary.md`) to name one panel, and drop `TicketDrawer` from them.
   - Acceptance: the script fails when the per-field patch or the link refresh is mutated, and
-    passes as written (memory *headless-scenario-harness-traps*).
+    passes as written (memory _headless-scenario-harness-traps_).

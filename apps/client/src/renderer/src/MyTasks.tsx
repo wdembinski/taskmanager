@@ -68,7 +68,7 @@ import { dictationAvailable } from '@ui/dictation/dictationModel';
 import { GitGraphPane } from '@ui/GitGraphPane';
 import { PaneLoading } from '@ui/PaneLoading';
 import { useTicketRegistries } from '@ui/projects/useTicketRegistries';
-import { TaskDetail } from '@ui/TaskDetail';
+import { TaskDetailHost } from '@ui/TaskDetailHostView';
 import { useInitialLoad } from '@ui/useInitialLoad';
 import { KanbanColumn } from '@ui/board/KanbanColumn';
 import { useBoardLayoutStyles } from '@ui/board/boardLayout';
@@ -1550,7 +1550,8 @@ export function MyTasks({
           the moment the pane comes back anyway. */}
       {showDetail && (
         <div className={layout.right}>
-          <TaskDetail
+          <TaskDetailHost
+            taskId={selectedTaskId}
             task={selectedTask}
             agentProjects={agentProjects}
             boards={scopes}

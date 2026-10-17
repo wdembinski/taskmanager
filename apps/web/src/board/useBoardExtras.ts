@@ -27,7 +27,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTransport, type Transport } from '@tm/ui/transport';
-import { hasPlan, hasRepo, isFilingProject, type Project, type Task } from '@tm/shared/model';
+import { hasPlan, hasRepo, isFilingProject, type Project } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { LinkGate, TaskLink } from '@tm/shared/taskChain';
@@ -35,6 +35,7 @@ import type { AttentionItem } from '@tm/shared/attention';
 import { runPurposesOf, type RunPurpose } from '@tm/shared/scheduler';
 import { DEFAULT_SETTINGS, type AppSettings } from '@tm/shared/settings';
 import { buildAttentionIndex, type AttentionIndex } from '@tm/ui/attentionIndex';
+export { byTask, mergeRequestsByTask } from '@tm/ui/taskDetailHost';
 
 export interface BoardExtras {
   agentProjects: Project[];
@@ -300,29 +301,3 @@ export function useBoardExtras(): BoardExtras {
     refresh,
   };
 }
-
-/** Index the attachments by the task they hang off — the shape both panes want. */
-export function byTask<T extends { taskId: string }>(rows: readonly T[]): Map<string, T[]> {
-  const map = new Map<string, T[]>();
-  for (const row of rows) {
-    const list = map.get(row.taskId);
-    if (list) list.push(row);
-    else map.set(row.taskId, [row]);
-  }
-  return map;
-}
-
-/** The merge requests a card owns, keyed the way `MyTasks` keys them. */
-export function mergeRequestsByTask(rows: readonly MergeRequest[]): Map<string, MergeRequest[]> {
-  const map = new Map<string, MergeRequest[]>();
-  for (const mr of rows) {
-    if (!mr.taskId) continue;
-    const list = map.get(mr.taskId);
-    if (list) list.push(mr);
-    else map.set(mr.taskId, [mr]);
-  }
-  return map;
-}
-
-/** Only used to keep `Task` in scope for the exported helpers' inference. */
-export type BoardTask = Task;
