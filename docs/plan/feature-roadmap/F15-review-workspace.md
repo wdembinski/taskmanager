@@ -374,6 +374,38 @@ plus a "monochrome code" setting. Chrome around the diff gets no new colour (mem
   - Acceptance: tests for uneven del/add runs, a pure-add file, context expansion at file
     start/end and between hunks (line numbers on both sides), an `excerptFor` anchor on an
     expanded line, and a viewed mark invalidated by a new blob SHA.
+  - **Facts checked** (ahead of design): `pairWordDiffs` (`packages/ui/src/review/reviewView.ts:159`;
+    its own doc comment starts a few lines above at `:151`, which is what this plan's `:152`
+    actually points into) runs each `del` run immediately followed by its `add` run, pairs
+    them index-for-index through `wordDiff` (shortest run first), and leaves the unmatched
+    tail — and every `context` line — `null`. `wordDiff`/`WordSegment` live in
+    `@tm/shared/review` (`review.ts:812`/`:787`). It is used by `DiffView.tsx:589` and tested
+    from `reviewView.test.ts:121`. All exactly as described.
+  - `excerptFor` (`review.ts:664`, with `rowIndex` just above it at `:652`) flattens
+    `file.hunks[].lines` once and matches a side only through that side's own field —
+    `oldLine` for `'old'`, `newLine` for `'new'`, never the other one. A `context` line
+    carries both, so a row that becomes `context` after expansion resolves from either side
+    with no change to `excerptFor` itself, confirming the plan's premise.
+  - The git hunk convention holds in this codebase's own fixtures: `review.test.ts:99` parses
+    a pure-add file's header as `@@ -0,0 +1,3 @@`, and `parseHunkCounts` (`review.ts:363`)
+    already defaults an omitted count to `1` and treats `0` as "that side is empty" — so
+    `expandContext`'s "a 0-count side's first line is `c+1`" needs no new parsing, only
+    arithmetic on the hunk's own `oldStart`/`newStart`/`oldLines`/`newLines`.
+  - The three shared vitest files are exactly as named — `review.test.ts`,
+    `review.subject.test.ts` and `review.message.test.ts` — all colocated with `review.ts` in
+    `packages/shared/src/`. `review.split.test.ts` does not exist yet; step 3 creates it from
+    nothing.
+  - None of `splitRows`, `expandContext` or `viewedState` exist yet (a grep of `review.ts` for
+    each name finds nothing), so there is no existing behaviour to preserve here, only the
+    design doc's contract above to satisfy.
+  - Two things the design doc leaves for the Implementation step to decide, not re-derive:
+    "reuses the del/add pairing" can only mean the run-detection loop inside `pairWordDiffs`
+    (`reviewView.ts:162-172`, the two inner `while`s that find each `delStart..delEnd`/
+    `addStart..addEnd` pair) — the word-level output itself (`WordSegment[] | null`) isn't
+    what a side-by-side row needs, and that loop has no name of its own yet to reuse by. And
+    `expandContext`'s `gap` parameter has no existing shape to match: `review.ts` defines no
+    gap/context-window type today, so its shape (file-start / between-hunks / file-end, and
+    which line numbers bound it) is Implementation's to design.
 
 ### F15 · Phase 2 — Sources, queues and storage on the desktop
 
