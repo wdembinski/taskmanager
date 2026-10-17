@@ -12,30 +12,52 @@
  * header and `shell-parity.test.ts`'s "agent projects" block, which is about *repo* projects
  * and does not apply here.
  *
- * The seed here loads the ticket projects themselves plus settings (for `showTaskDetail` and
- * the pane's own display/feature flags); the app-wide people/milestone/label/link registries a
- * ticket can point at come from `useTicketRegistries`, scoped to whichever project is selected,
- * and are handed straight to `TaskDetailHost` the same way both boards already do (F12.6).
- * `board:tasks` for the selected project's own tickets is each view's own to fetch — a project
- * switch should not re-fetch the roster, and a roster edit should not re-fetch every project's
- * tickets.
+ * The seed here loads the ticket projects themselves plus settings (for the pane's own
+ * display/feature flags); the app-wide people/milestone/label/link registries a ticket can
+ * point at come from `useTicketRegistries`, scoped to whichever project is selected, and are
+ * handed straight to `TaskDetailHost` the same way both boards already do (F12.6).
+ * `useProjectTickets` loads the selected project's own tickets — a project switch should not
+ * re-fetch the roster, and a roster edit should not re-fetch every project's tickets.
+ *
+ * Whether the opened ticket is a `peek` beside the list or a `full`-screen page (F13.13) is
+ * this screen's own `issueViewReduce` state — see `issues/issueView.ts` for the reducer and
+ * `issues/IssueViewPanes.tsx` for the two surfaces it drives.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, ToggleButton, makeStyles } from '@fluentui/react-components';
-import { PanelRightContractRegular, PanelRightExpandRegular } from '@fluentui/react-icons';
+import { useCallback, useEffect, useMemo, useReducer, useState, type KeyboardEvent } from 'react';
+import {
+  Button,
+  MessageBar,
+  MessageBarActions,
+  MessageBarBody,
+  ToggleButton,
+  makeStyles,
+} from '@fluentui/react-components';
+import {
+  DismissRegular,
+  PanelRightContractRegular,
+  PanelRightExpandRegular,
+} from '@fluentui/react-icons';
 import { agentProjectsOf } from '@tm/shared/agentProjects';
 import '@xyflow/react/dist/style.css';
 import { ownsTickets, type Project } from '@tm/shared/model';
 import { DEFAULT_BOARD_DISPLAY, type AppSettings } from '@tm/shared/settings';
 import { PaneLoading } from '../PaneLoading';
-import { useBoardLayoutStyles } from '../board/boardLayout';
 import { TaskDetailHost } from '../TaskDetailHostView';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
+import { IssueFullPage, IssuePeek } from '../issues/IssueViewPanes';
+import {
+  INITIAL_ISSUE_VIEW,
+  isKeyTargetEditable,
+  issueBreadcrumb,
+  issueViewReduce,
+  type KeyTargetLike,
+} from '../issues/issueView';
 import { BacklogTable } from './BacklogTable';
 import { GraphPane } from './GraphPane';
 import { ProjectPicker } from './ProjectPicker';
 import { TimelinePane } from './TimelinePane';
+import { useProjectTickets } from './useProjectTickets';
 import { useTicketRegistries } from './useTicketRegistries';
 
 const useStyles = makeStyles({
@@ -51,7 +73,6 @@ type ProjectView = 'backlog' | 'timeline' | 'graph';
 
 export function Projects(): JSX.Element {
   const styles = useStyles();
-  const layout = useBoardLayoutStyles();
   const transport = useTransport();
   const [projects, setProjects] = useState<Project[] | null>(null);
   /** The repos a ticket can be delegated to — for resolving `agentProjectId` to a name
@@ -60,9 +81,10 @@ export function Projects(): JSX.Element {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [view, setView] = useState<ProjectView>('backlog');
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  /** The ticket open in the shared detail pane — cleared on every project switch, the same
-   *  way the board clears its own selection when the scope changes. */
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  /** Whether the selected ticket is closed, a peek beside the list, or a full-screen page —
+   *  cleared on every project switch, the same way the board clears its own selection when
+   *  the scope changes. */
+  const [viewState, dispatch] = useReducer(issueViewReduce, INITIAL_ISSUE_VIEW);
 
   const seed = useCallback(async () => {
     const [allProjects, allSettings] = await Promise.all([
@@ -76,6 +98,7 @@ export function Projects(): JSX.Element {
   }, [transport]);
   const initial = useInitialLoad(seed);
   const registries = useTicketRegistries(selectedProjectId);
+  const ticketsLoad = useProjectTickets(selectedProjectId);
 
   useEffect(() => {
     return transport.on('settings:changed', setSettings);
@@ -90,36 +113,75 @@ export function Projects(): JSX.Element {
   }, [projects, selectedProjectId]);
 
   useEffect(() => {
-    setSelectedTaskId(null);
+    dispatch({ type: 'reset' });
   }, [selectedProjectId]);
+
+  // Keeps the reducer's own `seen`/`label`/deletion-notice bookkeeping current — see
+  // `issueView.ts`'s `tickets` action. Skipped while the seed is still loading (`null`), so
+  // a project switch never reads as "every ticket just got deleted".
+  useEffect(() => {
+    if (ticketsLoad.tickets === null) return;
+    dispatch({ type: 'tickets', tickets: ticketsLoad.tickets });
+  }, [ticketsLoad.tickets]);
 
   const selectedProject = useMemo(
     () => projects?.find((p) => p.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
 
-  const showDetail = settings?.showTaskDetail ?? true;
-  const setShowDetail = useCallback(
-    (value: boolean) => {
-      setSettings((prev) => {
-        if (!prev) return prev;
-        const next = { ...prev, showTaskDetail: value };
-        void transport.invoke('settings:save', next);
-        return next;
-      });
-    },
-    [transport],
+  const selectedTask = useMemo(
+    () =>
+      viewState.selectedId
+        ? (ticketsLoad.tickets?.find((t) => t.id === viewState.selectedId) ?? null)
+        : null,
+    [viewState.selectedId, ticketsLoad.tickets],
   );
 
-  /** Open a ticket in the shared detail pane — and reveal the pane itself if it was folded
-   *  away, the same way clicking a card would be pointless with no pane to show it in. */
-  const selectTicket = useCallback(
-    (id: string) => {
-      setSelectedTaskId(id);
-      if (!showDetail) setShowDetail(true);
-    },
-    [showDetail, setShowDetail],
+  const ticketsById = useMemo(
+    () => new Map((ticketsLoad.tickets ?? []).map((t) => [t.id, t] as const)),
+    [ticketsLoad.tickets],
   );
+
+  const breadcrumb = useMemo(() => {
+    if (selectedTask) {
+      return issueBreadcrumb(selectedTask, selectedProject, registries.milestones, ticketsById);
+    }
+    return selectedProject ? [selectedProject.name] : [];
+  }, [selectedTask, selectedProject, registries.milestones, ticketsById]);
+
+  /** The ticket's `ticketKey ?? title`, for the reducer's `label` — falls back to the id
+   *  itself for a cross-project link this project's own list has never carried. */
+  const ticketLabel = useCallback(
+    (id: string): string => {
+      const ticket = ticketsLoad.tickets?.find((t) => t.id === id);
+      return ticket ? (ticket.ticketKey ?? ticket.title) : id;
+    },
+    [ticketsLoad.tickets],
+  );
+
+  /** A row click, or a sub-issue link followed from inside the panel — opens (or keeps) the
+   *  ticket as a peek. */
+  const selectTicket = useCallback(
+    (id: string) => dispatch({ type: 'select', id, label: ticketLabel(id) }),
+    [ticketLabel],
+  );
+
+  /** A row's Enter/double-click — opens the ticket straight to full screen. */
+  const openTicket = useCallback(
+    (id: string) => dispatch({ type: 'open', id, label: ticketLabel(id) }),
+    [ticketLabel],
+  );
+
+  const onKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.defaultPrevented) return;
+    if (isKeyTargetEditable(e.target as KeyTargetLike)) return;
+    if (e.key === ' ') {
+      e.preventDefault();
+      dispatch({ type: 'space' });
+    } else if (e.key === 'Escape') {
+      dispatch({ type: 'escape' });
+    }
+  }, []);
 
   if (projects === null || !registries.loaded) {
     return (
@@ -137,8 +199,37 @@ export function Projects(): JSX.Element {
 
   const display = settings?.board ?? DEFAULT_BOARD_DISPLAY;
 
+  const detailPane = (
+    <TaskDetailHost
+      taskId={viewState.selectedId}
+      agentProjects={agentProjects}
+      people={registries.people}
+      milestones={registries.milestones}
+      labels={registries.labels}
+      ticketLinks={registries.links}
+      statusKeywords={settings?.statusKeywords}
+      priorityDisplay={display.priorityDisplay}
+      afterMergePipeline={settings?.features.afterMergePipeline}
+      mrRebaseButton={settings?.features.mrRebaseButton}
+      mrMergeButton={settings?.features.mrMergeButton}
+      quietAgentProgress={settings?.features.quietAgentProgress}
+      onOpenTask={selectTicket}
+      ticketFold={{ key: 'tm.projects.ticketOpen', defaultOpen: true }}
+    />
+  );
+
+  if (viewState.layout === 'full') {
+    return (
+      <div className={styles.root} onKeyDown={onKeyDown}>
+        <IssueFullPage breadcrumb={breadcrumb} onBack={() => dispatch({ type: 'escape' })}>
+          {detailPane}
+        </IssueFullPage>
+      </div>
+    );
+  }
+
   return (
-    <div className={styles.root}>
+    <div className={styles.root} onKeyDown={onKeyDown}>
       <div className={styles.admin}>
         <ProjectPicker
           projects={projects}
@@ -147,6 +238,21 @@ export function Projects(): JSX.Element {
         />
       </div>
       <div className={styles.backlog}>
+        {viewState.notice && (
+          <MessageBar intent="info">
+            <MessageBarBody>{viewState.notice}</MessageBarBody>
+            <MessageBarActions
+              containerAction={
+                <Button
+                  appearance="transparent"
+                  icon={<DismissRegular />}
+                  aria-label="Dismiss"
+                  onClick={() => dispatch({ type: 'dismissNotice' })}
+                />
+              }
+            />
+          </MessageBar>
+        )}
         {selectedProject && (
           <>
             <div className={styles.viewSwitch}>
@@ -175,31 +281,46 @@ export function Projects(): JSX.Element {
                 Graph
               </ToggleButton>
               <div className={styles.viewSwitchSpacer} />
-              {/* Fold the detail pane away — the board's own toggle (`MyTasks.tsx`), redrawn
-                  here so the two screens offer the same control for the same thing. */}
+              {/* The peek toggle — dispatches `space`, the same key this button's title
+                  names. Disabled with no selection: there is nothing yet for a peek to show. */}
               <Button
                 size="small"
                 appearance="subtle"
-                icon={showDetail ? <PanelRightContractRegular /> : <PanelRightExpandRegular />}
-                title={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
-                aria-label={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
-                aria-pressed={showDetail}
-                onClick={() => setShowDetail(!showDetail)}
+                icon={
+                  viewState.layout === 'peek' ? (
+                    <PanelRightContractRegular />
+                  ) : (
+                    <PanelRightExpandRegular />
+                  )
+                }
+                title={
+                  viewState.layout === 'peek' ? 'Close the ticket panel' : 'Open the ticket panel'
+                }
+                aria-label={
+                  viewState.layout === 'peek' ? 'Close the ticket panel' : 'Open the ticket panel'
+                }
+                aria-pressed={viewState.layout === 'peek'}
+                disabled={!viewState.selectedId}
+                onClick={() => dispatch({ type: 'space' })}
               />
             </div>
             {/* Keyed on the project: switching the selection is rare enough that a clean
-                remount — a fresh seed load, a fresh subscription — beats reconciling any
-                pane's state onto a different project mid-life. The three views are a SWITCH,
-                never mounted together, so there is nothing for their independent ticket
-                loads to disagree about. */}
+                remount — a fresh search/sort state — beats reconciling any pane's state onto
+                a different project mid-life. The three views are a SWITCH, never mounted
+                together, so there is nothing for their independent ticket loads to disagree
+                about. */}
             {view === 'backlog' && (
               <BacklogTable
                 key={selectedProject.id}
                 projectId={selectedProject.id}
+                tickets={ticketsLoad.tickets}
+                loadError={ticketsLoad.error}
+                loadRetry={ticketsLoad.retry}
                 people={registries.people}
                 agentProjects={agentProjects}
-                selectedTicketId={selectedTaskId}
+                selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
+                onOpenTicket={openTicket}
               />
             )}
             {view === 'timeline' && (
@@ -207,7 +328,7 @@ export function Projects(): JSX.Element {
                 key={selectedProject.id}
                 projectId={selectedProject.id}
                 milestones={registries.milestones}
-                selectedTicketId={selectedTaskId}
+                selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
               />
             )}
@@ -215,7 +336,7 @@ export function Projects(): JSX.Element {
               <GraphPane
                 key={selectedProject.id}
                 projectId={selectedProject.id}
-                selectedTicketId={selectedTaskId}
+                selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
               />
             )}
@@ -223,28 +344,13 @@ export function Projects(): JSX.Element {
         )}
       </div>
 
-      {/* Unmounted rather than hidden when folded away — `TaskDetail`'s own reasoning
-          (`MyTasks.tsx`): remounting re-runs its activity load and re-marks the ticket read,
-          which is what you want the moment the pane comes back anyway. */}
-      {showDetail && (
-        <div className={layout.right}>
-          <TaskDetailHost
-            taskId={selectedTaskId}
-            agentProjects={agentProjects}
-            people={registries.people}
-            milestones={registries.milestones}
-            labels={registries.labels}
-            ticketLinks={registries.links}
-            statusKeywords={settings?.statusKeywords}
-            priorityDisplay={display.priorityDisplay}
-            afterMergePipeline={settings?.features.afterMergePipeline}
-            mrRebaseButton={settings?.features.mrRebaseButton}
-            mrMergeButton={settings?.features.mrMergeButton}
-            quietAgentProgress={settings?.features.quietAgentProgress}
-            onOpenTask={selectTicket}
-            ticketFold={{ key: 'tm.projects.ticketOpen', defaultOpen: true }}
-          />
-        </div>
+      {viewState.layout === 'peek' && viewState.selectedId && (
+        <IssuePeek
+          onExpand={() => dispatch({ type: 'expand' })}
+          onClose={() => dispatch({ type: 'close' })}
+        >
+          {detailPane}
+        </IssuePeek>
       )}
     </div>
   );
