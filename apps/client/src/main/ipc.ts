@@ -246,7 +246,12 @@ import { sanitizeWindowState } from './windowState';
 import { createWindowStateFlusher, type WindowStateFlusher } from './windowFlush';
 import { appPlanPath, appProjectFile } from './projectPaths';
 import { RELEASE_DOC } from '@shared/release';
-import { openPullRequest, resolveForgeGitTarget, type CreatePrDeps } from './forge/createPr';
+import {
+  openPullRequest,
+  resolveForgeGitTarget,
+  tokenizedUrl,
+  type CreatePrDeps,
+} from './forge/createPr';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
@@ -281,7 +286,7 @@ import { createStore, type Store } from './store';
 import { Updater } from './updater';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
-import { createDiffGit, DiffService } from './review/diffService';
+import { createDiffGit, createReviewRefGit, DiffService } from './review/diffService';
 import { ReviewService } from './review/reviewService';
 import { bucketUsageDaily, DAY_MS, normalizeDailyOptions } from '@shared/usage';
 import {
@@ -1133,6 +1138,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): Engine {
       worktrees.inspect(project, ownerTaskId, branchName),
     gitFor: (project) => createDiffGit(hostFor(project.target)),
     listMergeRequests: () => store.listMergeRequests(),
+    listProjects: () => store.listProjects(),
+    refGitFor: (project) => createReviewRefGit(hostFor(project.target)),
+    // `forgeToken` is declared further down in this function, but this callback is only
+    // ever invoked once a review fetch actually runs — by then the whole function has
+    // finished setting up, so the closure sees it initialized.
+    fetchAuthFor: (provider, remote, fetchUrl) => {
+      const token = forgeToken(provider);
+      if (!token) return null;
+      const clean = sanitizeToken(token);
+      if (!/^https?:\/\//i.test(fetchUrl)) return { secrets: [] };
+      return { url: tokenizedUrl(remote.host, remote.path, provider, clean), secrets: [clean] };
+    },
   });
   handle('task:diffSummary', async (taskId) => diffs.summary(taskId));
   handle('task:diffFile', async (taskId, diffId, path) => diffs.file(taskId, diffId, path));

@@ -513,7 +513,12 @@ export function openMergeRequestFor(
  * authenticate as nobody. The token is percent-encoded because it lands in the userinfo
  * component of a URL, where a `/` or an `@` in it would move the host.
  */
-function tokenizedUrl(host: string, path: string, provider: ForgeProvider, token: string): string {
+export function tokenizedUrl(
+  host: string,
+  path: string,
+  provider: ForgeProvider,
+  token: string,
+): string {
   const user = provider === 'github' ? 'x-access-token' : 'oauth2';
   return `https://${user}:${encodeURIComponent(token)}@${host}/${path}.git`;
 }

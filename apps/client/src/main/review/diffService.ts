@@ -27,12 +27,14 @@ import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { hasRepo, type Project, type Task } from '@shared/model';
-import type { MergeRequest } from '@shared/mergeRequest';
+import type { ForgeProvider, MergeRequest } from '@shared/mergeRequest';
 import {
   DIFF_FILE_MAX_BYTES,
   DIFF_IMAGE_MAX_BYTES,
   DIFF_SUMMARY_MAX_FILES,
+  LOCAL_REF_CAPABILITIES,
   parsePatch,
+  subjectId,
   taskSubjectId,
   WORKTREE_CAPABILITIES,
   type DiffFile,
@@ -40,7 +42,11 @@ import {
   type DiffFileResult,
   type DiffImageResult,
   type DiffImageSide,
+  type DiffSummary,
   type DiffSummaryResult,
+  type ReviewCapabilities,
+  type ReviewSource,
+  type ReviewSubject,
 } from '@shared/review';
 import { diffStatOf, type VariantDiffStat } from '@shared/variants';
 import type { ExecHost } from '../exec';
@@ -49,17 +55,24 @@ import {
   branchExists,
   conflictedFiles,
   currentBranch,
+  deleteRefs,
   diffFilePatch,
   diffNameStatus,
   diffWorkingTree,
+  fetchRefspecs,
   git,
+  listRemotes,
   listUntracked,
   mergeBase,
   readWorkingFile,
   rebaseInProgress,
+  reviewRef,
+  REVIEW_REF_PREFIX,
   showBlob,
+  type GitResult,
   type NameStatusEntry,
 } from '../git';
+import { parseRemoteUrl, type RemoteRef } from '../forge/remoteUrl';
 import { taskBranch } from '../worktreeManager';
 
 /** The git reads the service needs, already bound to one project's host. */
@@ -89,6 +102,23 @@ export interface DiffGit {
   readFile(dir: string, ref: string | null, path: string): Promise<Buffer | null>;
 }
 
+/**
+ * The git reads/writes `resolvePrLocal` and `pruneReviewRefs` need, kept separate from
+ * {@link DiffGit} so the existing fake in `diffService.test.ts` still compiles unchanged.
+ */
+export interface ReviewRefGit {
+  listRemotes(dir: string): Promise<{ name: string; fetchUrl: string; pushUrl: string }[]>;
+  fetchRefspecs(
+    dir: string,
+    remoteOrUrl: string,
+    specs: readonly string[],
+    opts?: { url?: string; secrets?: readonly string[] },
+  ): Promise<GitResult>;
+  /** Every ref under `prefix`, full name (`refs/tm/review/<id>/<side>`). */
+  listRefs(dir: string, prefix: string): Promise<string[]>;
+  deleteRefs(dir: string, prefix: string): Promise<GitResult>;
+}
+
 export interface DiffServiceDeps {
   getTask(id: string): Task | undefined;
   getProject(id: string): Project | undefined;
@@ -100,6 +130,21 @@ export interface DiffServiceDeps {
   ): Promise<{ cwd: string; branch: string; base: string } | null>;
   gitFor(project: Project): DiffGit;
   listMergeRequests(): MergeRequest[];
+  /** Every project the app knows about — `resolvePrLocal`'s and `pruneReviewRefs`' search space. */
+  listProjects?(): Project[];
+  refGitFor?(project: Project): ReviewRefGit;
+  /**
+   * Auth for a fetch against `remote` (already parsed from `fetchUrl`) on behalf of
+   * `provider` — the tokenized URL for an https remote, built the way
+   * `resolveForgeGitTarget` does it (`forge/createPr.ts`). `null` means "fetch the named
+   * remote as is": no token saved, or nothing to inject (an ssh remote authenticates with
+   * a key).
+   */
+  fetchAuthFor?(
+    provider: ForgeProvider,
+    remote: RemoteRef,
+    fetchUrl: string,
+  ): { url?: string; secrets: string[] } | null;
 }
 
 const IMAGE_MIME: Record<string, string> = {
@@ -133,30 +178,59 @@ export function computeDiffId(baseSha: string, headSha: string, fingerprint: str
     .slice(0, 12);
 }
 
+/** Where a subject's diff lives right now, with the revision it was taken at. */
+export interface ResolvedDiff {
+  git: DiffGit;
+  /** The worktree, or the project repo when only the branch is left. */
+  dir: string;
+  baseRef: string;
+  /** The merge base — what the diff is taken FROM. */
+  baseSha: string;
+  headSha: string;
+  /** Null when the work tree is included (no worktree = the branch tip). */
+  to: string | null;
+  includesWorkingTree: boolean;
+  diffId: string;
+  source: ReviewSource;
+  subjectId: string;
+  capabilities: ReviewCapabilities;
+}
+
 /** Where a card's diff lives right now, with the revision it was taken at. */
-type Resolved =
-  | Exclude<DiffSummaryResult, { status: 'ok' }>
-  | {
-      status: 'ok';
-      git: DiffGit;
-      /** The worktree, or the project repo when only the branch is left. */
-      dir: string;
-      baseRef: string;
-      /** The merge base — what the diff is taken FROM. */
-      baseSha: string;
-      headSha: string;
-      /** Null when the work tree is included (no worktree = the branch tip). */
-      to: string | null;
-      includesWorkingTree: boolean;
-      diffId: string;
-    };
+type Resolved = Exclude<DiffSummaryResult, { status: 'ok' }> | ({ status: 'ok' } & ResolvedDiff);
+
+/** What `resolvePrLocal` needs: the forge's own view of the PR, independent of any card. */
+export interface PrLocalRequest {
+  subject: Extract<ReviewSubject, { kind: 'pr' }>;
+  host: string;
+  headSha: string;
+  baseBranch: string;
+}
+
+export type PrLocalResult =
+  | { status: 'ok'; resolved: ResolvedDiff }
+  | { status: 'no-project' }
+  | { status: 'fetch-failed'; reason: string }
+  | { status: 'stale'; headSha: string; forgeHeadSha: string };
 
 export class DiffService {
   constructor(private readonly deps: DiffServiceDeps) {}
 
+  /** Why the last `resolvePrLocal` fetch for a subject failed — the source badge's tooltip. */
+  private readonly fetchFailures = new Map<string, string>();
+
+  fetchFailureFor(id: string): string | null {
+    return this.fetchFailures.get(id) ?? null;
+  }
+
   async summary(taskId: string): Promise<DiffSummaryResult> {
-    const resolved = await this.resolve(taskId);
+    const resolved = await this.resolveTask(taskId);
     if (resolved.status !== 'ok') return resolved;
+    return { status: 'ok', summary: await this.summaryOf(resolved) };
+  }
+
+  /** The file-list build `summary` and (eventually, F15.8/F15.10) other subject sources share. */
+  private async summaryOf(resolved: ResolvedDiff): Promise<DiffSummary> {
     const entries = await this.entries(resolved);
     const truncated = entries.length > DIFF_SUMMARY_MAX_FILES;
     const listed = entries.slice(0, DIFF_SUMMARY_MAX_FILES);
@@ -172,19 +246,16 @@ export class DiffService {
       bytes: sizes.get(e.path) ?? 0,
     }));
     return {
-      status: 'ok',
-      summary: {
-        diffId: resolved.diffId,
-        baseRef: resolved.baseRef,
-        baseSha: resolved.baseSha,
-        headSha: resolved.headSha,
-        includesWorkingTree: resolved.includesWorkingTree,
-        files,
-        truncated,
-        subjectId: taskSubjectId(taskId),
-        source: 'worktree',
-        capabilities: WORKTREE_CAPABILITIES,
-      },
+      diffId: resolved.diffId,
+      baseRef: resolved.baseRef,
+      baseSha: resolved.baseSha,
+      headSha: resolved.headSha,
+      includesWorkingTree: resolved.includesWorkingTree,
+      files,
+      truncated,
+      subjectId: resolved.subjectId,
+      source: resolved.source,
+      capabilities: resolved.capabilities,
     };
   }
 
@@ -212,7 +283,7 @@ export class DiffService {
     diffId: string;
     files: Map<string, { file: DiffFile; oldPath?: string } | null>;
   } | null> {
-    const resolved = await this.resolve(taskId);
+    const resolved = await this.resolveTask(taskId);
     if (resolved.status !== 'ok') return null;
     const entries = await this.entries(resolved);
     const files = new Map<string, { file: DiffFile; oldPath?: string } | null>();
@@ -230,7 +301,7 @@ export class DiffService {
 
   /** The patch→`DiffFile` conversion (the `tooLarge` cap, then `parsePatch`) `file` and `filesFor` share. */
   private async fileFrom(
-    resolved: Extract<Resolved, { status: 'ok' }>,
+    resolved: ResolvedDiff,
     entry: NameStatusEntry,
     diffId: string,
   ): Promise<DiffFile> {
@@ -258,7 +329,7 @@ export class DiffService {
    * worth distinguishing from zero.
    */
   async stat(taskId: string): Promise<VariantDiffStat> {
-    const resolved = await this.resolve(taskId);
+    const resolved = await this.resolveTask(taskId);
     if (resolved.status !== 'ok') return { files: 0, added: 0, removed: 0 };
     const entries = await this.entries(resolved);
     return diffStatOf(entries);
@@ -287,7 +358,7 @@ export class DiffService {
    * through the host just to be thrown away.
    */
   private async imageSide(
-    resolved: Extract<Resolved, { status: 'ok' }>,
+    resolved: ResolvedDiff,
     ref: string | null,
     path: string,
     mime: string,
@@ -313,9 +384,9 @@ export class DiffService {
     diffId: string,
   ): Promise<
     | { status: 'stale'; diffId: string; currentDiffId: string }
-    | { status: 'ok'; resolved: Extract<Resolved, { status: 'ok' }> }
+    | { status: 'ok'; resolved: ResolvedDiff }
   > {
-    const resolved = await this.resolve(taskId);
+    const resolved = await this.resolveTask(taskId);
     if (resolved.status !== 'ok') return { status: 'stale', diffId, currentDiffId: '' };
     if (resolved.diffId !== diffId) {
       return { status: 'stale', diffId, currentDiffId: resolved.diffId };
@@ -323,16 +394,13 @@ export class DiffService {
     return { status: 'ok', resolved };
   }
 
-  private entries(resolved: Extract<Resolved, { status: 'ok' }>): Promise<NameStatusEntry[]> {
+  private entries(resolved: ResolvedDiff): Promise<NameStatusEntry[]> {
     return resolved.to === null
       ? resolved.git.workingTree(resolved.dir, resolved.baseSha)
       : resolved.git.nameStatus(resolved.dir, resolved.baseSha, resolved.to);
   }
 
-  private async entryFor(
-    resolved: Extract<Resolved, { status: 'ok' }>,
-    path: string,
-  ): Promise<NameStatusEntry> {
+  private async entryFor(resolved: ResolvedDiff, path: string): Promise<NameStatusEntry> {
     const entry = (await this.entries(resolved)).find((e) => e.path === path);
     if (!entry) throw new Error(`${path} is not part of this card's changes.`);
     return entry;
@@ -340,7 +408,7 @@ export class DiffService {
 
   /** Each file's size on the side that exists — the new side, or the old one for a deletion. */
   private async sizesOf(
-    resolved: Extract<Resolved, { status: 'ok' }>,
+    resolved: ResolvedDiff,
     entries: NameStatusEntry[],
   ): Promise<Map<string, number>> {
     const deleted = entries.filter((e) => e.status === 'deleted').map((e) => e.path);
@@ -353,7 +421,7 @@ export class DiffService {
   }
 
   /** task → project → worktree or branch → base → revision. */
-  private async resolve(taskId: string): Promise<Resolved> {
+  private async resolveTask(taskId: string): Promise<Resolved> {
     const task = this.deps.getTask(taskId);
     if (!task) throw new Error('That card is no longer in the app.');
     // Steps of a plan run in their parent's worktree on the parent's branch.
@@ -382,6 +450,9 @@ export class DiffService {
         to: null,
         includesWorkingTree: true,
         diffId: computeDiffId(baseSha, headSha, fingerprint),
+        source: 'worktree',
+        subjectId: taskSubjectId(taskId),
+        capabilities: WORKTREE_CAPABILITIES,
       };
     }
 
@@ -407,6 +478,9 @@ export class DiffService {
       to: headSha,
       includesWorkingTree: false,
       diffId: computeDiffId(baseSha, headSha, ''),
+      source: 'worktree',
+      subjectId: taskSubjectId(taskId),
+      capabilities: WORKTREE_CAPABILITIES,
     };
   }
 
@@ -423,6 +497,162 @@ export class DiffService {
     const mrs = this.deps.listMergeRequests().filter((mr) => mr.taskId === taskId);
     return (mrs.find((mr) => mr.state === 'merged') ?? mrs[0])?.webUrl ?? null;
   }
+
+  /**
+   * Resolve a pull request's diff against a project already cloned on this machine — a
+   * fetched ref rather than the forge's own API, so it is subject to no rate limit and
+   * reads the exact bytes the forge has, not a synthesized patch.
+   *
+   * The ONE `fetchRefspecs` call below fetches both the PR's head and its target branch's
+   * current tip into scratch refs under `REVIEW_REF_PREFIX`; a verify step re-fetches once
+   * more if the head moved between the forge telling us its SHA and this fetch landing, and
+   * gives up with `stale` if it still doesn't match.
+   */
+  async resolvePrLocal(req: PrLocalRequest): Promise<PrLocalResult> {
+    const id = subjectId(req.subject);
+    const match = await this.matchPrProject(req);
+    if (!match) return { status: 'no-project' };
+    const { project, remote, parsedRemote, refGit } = match;
+    const g = this.deps.gitFor(project);
+
+    const headRef = reviewRef(id, 'head');
+    const baseRef = reviewRef(id, 'base');
+    const headSpec =
+      req.subject.provider === 'github'
+        ? `+refs/pull/${req.subject.number}/head:${headRef}`
+        : `+refs/merge-requests/${req.subject.number}/head:${headRef}`;
+    const baseSpec = `+refs/heads/${req.baseBranch}:${baseRef}`;
+
+    const auth =
+      this.deps.fetchAuthFor?.(req.subject.provider, parsedRemote, remote.fetchUrl) ?? null;
+    const fetchOpts = { url: auth?.url, secrets: auth?.secrets };
+
+    const fetchOnce = async (): Promise<PrLocalResult | null> => {
+      const res = await refGit.fetchRefspecs(
+        project.path,
+        remote.name,
+        [headSpec, baseSpec],
+        fetchOpts,
+      );
+      if (res.code === 0) return null;
+      const reason = firstNonEmptyLine(res.stderr) || 'git fetch failed';
+      this.fetchFailures.set(id, reason);
+      return { status: 'fetch-failed', reason };
+    };
+
+    const firstFailure = await fetchOnce();
+    if (firstFailure) return firstFailure;
+
+    let headRefSha = await g.revParse(project.path, headRef);
+    if (headRefSha !== req.headSha) {
+      const secondFailure = await fetchOnce();
+      if (secondFailure) return secondFailure;
+      headRefSha = await g.revParse(project.path, headRef);
+      if (headRefSha !== req.headSha) {
+        return { status: 'stale', headSha: headRefSha, forgeHeadSha: req.headSha };
+      }
+    }
+
+    const baseSha = await g.mergeBase(project.path, baseRef, headRef);
+    if (!baseSha) {
+      const reason = 'no common history with base';
+      this.fetchFailures.set(id, reason);
+      return { status: 'fetch-failed', reason };
+    }
+
+    this.fetchFailures.delete(id);
+    return {
+      status: 'ok',
+      resolved: {
+        git: g,
+        dir: project.path,
+        baseRef: req.baseBranch,
+        baseSha,
+        headSha: req.headSha,
+        to: req.headSha,
+        includesWorkingTree: false,
+        diffId: computeDiffId(baseSha, req.headSha, 'local-ref'),
+        source: 'local-ref',
+        subjectId: id,
+        capabilities: LOCAL_REF_CAPABILITIES,
+      },
+    };
+  }
+
+  /**
+   * The project (and the remote on it) whose `origin`/`upstream`/… points at `req`'s forge
+   * repo — every remote of every repo-backed project counts, so a fork checkout matches
+   * through `upstream` even when its `origin` is the user's own fork. `null` when nothing
+   * matches, or when the deps this needs (`listProjects`, `refGitFor`) are absent.
+   */
+  private async matchPrProject(req: PrLocalRequest): Promise<{
+    project: Project;
+    remote: { name: string; fetchUrl: string; pushUrl: string };
+    parsedRemote: RemoteRef;
+    refGit: ReviewRefGit;
+  } | null> {
+    const refGitFor = this.deps.refGitFor;
+    if (!refGitFor) return null;
+    const projects = this.deps.listProjects?.() ?? [];
+    for (const project of projects) {
+      if (!project.path || !hasRepo(project)) continue;
+      const refGit = refGitFor(project);
+      const remotes = await refGit.listRemotes(project.path);
+      for (const remote of remotes) {
+        const parsed = parseRemoteUrl(remote.fetchUrl);
+        if (!parsed) continue;
+        if (
+          parsed.host.toLowerCase() === req.host.toLowerCase() &&
+          parsed.path.toLowerCase() === req.subject.repoPath.toLowerCase()
+        ) {
+          return { project, remote, parsedRemote: parsed, refGit };
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Drop every review ref whose subject id is not in `keep` — F15.9's queue service calls
+   * this with the union of every queue's subject ids once it has loaded them. Failures are
+   * swallowed per project, so one bad repo cannot stop the rest from being pruned.
+   */
+  async pruneReviewRefs(keep: ReadonlySet<string>): Promise<void> {
+    const refGitFor = this.deps.refGitFor;
+    if (!refGitFor) return;
+    const projects = this.deps.listProjects?.() ?? [];
+    for (const project of projects) {
+      if (!project.path || !hasRepo(project)) continue;
+      try {
+        const refGit = refGitFor(project);
+        const refs = await refGit.listRefs(project.path, REVIEW_REF_PREFIX);
+        const ids = new Set<string>();
+        for (const ref of refs) {
+          const rest = ref.slice(REVIEW_REF_PREFIX.length);
+          const slash = rest.lastIndexOf('/');
+          if (slash === -1) continue;
+          ids.add(rest.slice(0, slash));
+        }
+        for (const id of ids) {
+          if (keep.has(id)) continue;
+          await refGit.deleteRefs(project.path, `${REVIEW_REF_PREFIX}${id}`);
+          this.fetchFailures.delete(id);
+        }
+      } catch {
+        // One bad repo must not stop the rest from being pruned.
+      }
+    }
+  }
+}
+
+/** The first non-empty, trimmed line of `text` — what a redacted git error is reported by. */
+function firstNonEmptyLine(text: string): string {
+  return (
+    text
+      .split('\n')
+      .map((line) => line.trim())
+      .find(Boolean) ?? ''
+  );
 }
 
 /** `ls-tree -r -l -z` records: `<mode> <type> <sha> <size>\t<path>`. */
@@ -502,5 +732,23 @@ export function createDiffGit(host: ExecHost): DiffGit {
     async readFile(dir, ref, path) {
       return ref === null ? readWorkingFile(dir, path, host) : showBlob(dir, ref, path, host);
     },
+  };
+}
+
+/** The real {@link ReviewRefGit}: `git.ts`, bound to one project's host. */
+export function createReviewRefGit(host: ExecHost): ReviewRefGit {
+  return {
+    listRemotes: (dir) => listRemotes(dir, host),
+    fetchRefspecs: (dir, remoteOrUrl, specs, opts) =>
+      fetchRefspecs(dir, remoteOrUrl, specs, { ...opts, host }),
+    async listRefs(dir, prefix) {
+      const res = await git(dir, ['for-each-ref', '--format=%(refname)', prefix], host);
+      if (res.code !== 0) return [];
+      return res.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+    },
+    deleteRefs: (dir, prefix) => deleteRefs(dir, prefix, host),
   };
 }
