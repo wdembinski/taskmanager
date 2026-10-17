@@ -6,7 +6,7 @@
  * validates what it reads out of a column with the same predicates the renderer draws with.
  * Key formatting lives next door in `@shared/ticketKey`.
  */
-import type { IssueType, Task, TicketLinkType } from './model';
+import type { IssueType, Task, TaskStatus, TicketLinkType } from './model';
 
 /**
  * Every issue type, in the order a picker should offer them: the container first, then the
@@ -48,6 +48,23 @@ export function isNativeTicket(task: Pick<Task, 'source'>): boolean {
 /** Whether this ticket is an epic — the one issue type that has children (`epicTaskId`). */
 export function isEpic(task: Pick<Task, 'issueType'>): boolean {
   return task.issueType === 'epic';
+}
+
+/**
+ * The statuses that close a ticket for good (F14.3's archive sweep). Deliberately
+ * narrower than `board.ts`'s own closed/terminal sets (`CLOSED_BY_HUMAN`, `TERMINAL`),
+ * which also count `stopped`/`failed` — those describe an AI run giving up, not a ticket
+ * being finished, and a stopped ticket is still open work waiting to be picked back up.
+ */
+const CLOSED_TICKET_STATUSES: ReadonlySet<TaskStatus> = new Set(['done', 'cancelled']);
+
+/**
+ * Whether a ticket's status counts as still open — the one test `store.archiveMilestone`
+ * (and anything else deciding which tickets a milestone/epic/project archive sweep should
+ * touch) runs before moving, archiving, or otherwise disturbing a row.
+ */
+export function isOpenTicketStatus(status: TaskStatus): boolean {
+  return !CLOSED_TICKET_STATUSES.has(status);
 }
 
 /**

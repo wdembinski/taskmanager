@@ -22,6 +22,7 @@ import {
   type Milestone,
   type MilestoneInput,
   type MilestonePatch,
+  ownsTickets,
   PERSONAL_PROJECT_ID,
   type Person,
   type PersonInput,
@@ -41,7 +42,15 @@ import {
   type TicketLink,
   type TicketLinkType,
 } from '@shared/model';
-import { isIssueType, isTicketLinkType, normalizeLabels, seedInitials } from '@shared/tickets';
+import {
+  isEpic,
+  isIssueType,
+  isNativeTicket,
+  isTicketLinkType,
+  normalizeLabels,
+  seedInitials,
+} from '@shared/tickets';
+import type { ArchivedListing, ArchiveResult, OpenTicketsChoice } from '@shared/trackerArchive';
 import {
   formatTicketKey,
   normalizeTicketPrefix,
@@ -849,6 +858,87 @@ export interface Store {
   /** Delete it and null the `milestoneId` of every ticket that pointed at it, in one
    *  transaction — see `deletePerson` for why this is not a cascade. */
   deleteMilestone(id: string): void;
+
+  /**
+   * Archive a milestone and decide what happens to its still-open tickets, in one
+   * transaction (F14.3) — validation runs inside it too, so a refusal never leaves a
+   * half-applied write.
+   *
+   * Refuses `not-found`, an already-archived milestone (`already-archived`), and one
+   * whose project can no longer own tickets (`not-a-ticket-project`) — the same defensive
+   * check `createTicket` makes, for a project that lost its prefix after the milestone was
+   * created.
+   *
+   * Only **open** tickets — `milestoneId = id` and a status outside `done`/`cancelled`
+   * (`isOpenTicketStatus`) — are ever touched; a closed one stays exactly where it is.
+   * When there are none, `choice` is never even validated: a `{ kind: 'milestone' }`
+   * choice naming a target that does not exist, is itself archived, or belongs to another
+   * project is accepted as-is, since nothing would move either way. Otherwise the choice
+   * decides what the open tickets do:
+   *  - `backlog` nulls their `milestoneId`.
+   *  - `milestone` moves them onto another live milestone of the SAME project — refusing
+   *    `target-not-found`, `target-is-self`, `target-archived`, or `target-other-project`
+   *    first.
+   *  - `archive` sets their `trackerArchivedAt` to `at` alongside the milestone's own,
+   *    but only where it was not already set.
+   *
+   * Done/cancelled tickets are never moved or archived by any choice.
+   *
+   * `changedTaskIds` is the open tickets touched (empty for a no-op/ignored choice).
+   * `milestonesChanged` is always `true` on success — the milestone itself is always
+   * archived.
+   */
+  archiveMilestone(id: string, choice: OpenTicketsChoice, at: number): ArchiveResult;
+
+  /**
+   * Undo `archiveMilestone`. Refuses `not-found` or an already-active milestone
+   * (`not-archived`).
+   *
+   * Clears `trackerArchivedAt` only on tickets where `milestoneId = id` AND
+   * `trackerArchivedAt` exactly matches the milestone's own `archivedAt` — exactly the
+   * ones the `archive` choice co-archived, so a ticket archived some other way (its own
+   * epic, its project, or a direct archive) stays archived. `changedTaskIds` is those
+   * restored tickets; `milestonesChanged` is always `true`.
+   */
+  restoreMilestone(id: string): ArchiveResult;
+
+  /**
+   * Archive a native epic, one transaction (F14.3). Refuses a row that is not a native
+   * ticket or not an epic (`not-an-epic`), and an already-archived one
+   * (`already-archived`).
+   *
+   * Only the epic's OWN `trackerArchivedAt` is written — its children are never touched,
+   * because `archivedBy` (`@shared/trackerArchive`) already hides them through the
+   * epic's own column. `changedTaskIds` is always `[id]`; `milestonesChanged` is always
+   * `false`.
+   */
+  archiveEpic(id: string, at: number): ArchiveResult;
+
+  /** Undo `archiveEpic`. Refuses `not-found` or an already-active epic (`not-archived`). */
+  restoreEpic(id: string): ArchiveResult;
+
+  /**
+   * Archive a ticket project, one transaction (F14.3) — only `projects.archivedAt` is
+   * written; its milestones and tickets are left untouched, and hide through
+   * `archivedBy`'s project arm instead. Refuses `not-found`, a non-ticket project
+   * (`not-a-ticket-project`), and an already-archived one (`already-archived`).
+   *
+   * `changedTaskIds` is always `[]` and `milestonesChanged` is always `false` — the caller
+   * re-reads `project:list` to see the project itself change.
+   */
+  archiveTicketProject(id: string, at: number): ArchiveResult;
+
+  /** Undo `archiveTicketProject`. Refuses `not-found`, `not-a-ticket-project`, or an
+   *  already-active project (`not-archived`). */
+  restoreTicketProject(id: string): ArchiveResult;
+
+  /**
+   * The archived rows a project's (or the whole app's) "Archived" view lists: archived
+   * ticket projects, archived milestones, and archived native epics
+   * (`trackerArchivedAt IS NOT NULL`) — newest archived first in each list. Scoped to one
+   * project when `projectId` is given, across every project otherwise.
+   */
+  listArchived(projectId?: string): ArchivedListing;
 
   /** A project's label registry, oldest first — what gives a chip its colour. */
   listTicketLabels(projectId: string): TicketLabel[];
@@ -2941,6 +3031,11 @@ export function createStore(dbPath: string): Store {
   // Cards only (`parentTaskId IS NULL`), because `deleteTaskDeep` already takes a card's steps
   // with it and a step is only ever archived by its own card's cascade — counting the steps
   // would report four removals for one card and then delete three rows that were already gone.
+  //
+  // Must NEVER read `trackerArchivedAt` (F14.3): that column is the TRACKER's own archive —
+  // "finished, put away, still editable" — and this is the BOARD's retention clock, which
+  // destroys the row outright. A ticket put away by `archiveMilestone`/`archiveEpic`/
+  // `archiveTicketProject` must stay exactly as editable and un-pruned as it was before.
   const selectArchivedBefore = db.prepare(
     `SELECT id FROM tasks WHERE archivedAt IS NOT NULL AND archivedAt < ? AND parentTaskId IS NULL`,
   );
@@ -3446,6 +3541,70 @@ export function createStore(dbPath: string): Store {
   const deleteMilestoneStmt = db.prepare(`DELETE FROM milestones WHERE id = ?`);
   const clearMilestoneOnTasks = db.prepare(
     `UPDATE tasks SET milestoneId = NULL WHERE milestoneId = ?`,
+  );
+
+  // F14.3's archive sweep: the open tickets on a milestone being archived, and the writes
+  // that apply an `OpenTicketsChoice` to them. "Open" mirrors `isOpenTicketStatus`
+  // (`@shared/tickets`) exactly — a done/cancelled ticket is never selected, moved, or
+  // archived by any statement below.
+  const selectOpenTicketsOnMilestone = db.prepare(
+    `SELECT id FROM tasks WHERE milestoneId = ? AND status NOT IN ('done', 'cancelled')`,
+  );
+  // `backlog` binds `newMilestoneId: null`; `milestone` binds the target's id.
+  const moveTicketsMilestone = db.prepare(
+    `UPDATE tasks SET milestoneId = @newMilestoneId
+     WHERE milestoneId = @milestoneId AND status NOT IN ('done', 'cancelled')`,
+  );
+  // The `archive` choice's co-archive. Guarded by `trackerArchivedAt IS NULL` so a ticket
+  // already tracker-archived some other way (its own epic, say) keeps that timestamp
+  // rather than being overwritten with the milestone's.
+  const setTicketTrackerArchived = db.prepare(
+    `UPDATE tasks SET trackerArchivedAt = @at
+     WHERE milestoneId = @milestoneId AND status NOT IN ('done', 'cancelled')
+       AND trackerArchivedAt IS NULL`,
+  );
+  // `restoreMilestone`'s half of the same choice: the tickets the `archive` choice
+  // co-archived, found by the exact timestamp match rather than by status — a ticket's
+  // status may have moved on since, and it still gets its co-archive cleared.
+  const selectCoArchivedTickets = db.prepare(
+    `SELECT id FROM tasks WHERE milestoneId = @milestoneId AND trackerArchivedAt = @at`,
+  );
+  const clearCoArchivedTickets = db.prepare(
+    `UPDATE tasks SET trackerArchivedAt = NULL
+     WHERE milestoneId = @milestoneId AND trackerArchivedAt = @at`,
+  );
+  // One column, written by id — `archiveMilestone` binds `at`, `restoreMilestone` binds
+  // `null`.
+  const setMilestoneArchived = db.prepare(
+    `UPDATE milestones SET archivedAt = @archivedAt WHERE id = @id`,
+  );
+  // The epic's own flag (`archiveEpic`/`restoreEpic`). Never touches a child row; those
+  // hide through `archivedBy`'s epic arm instead — see the `Store.archiveEpic` docstring.
+  const setTaskTrackerArchived = db.prepare(
+    `UPDATE tasks SET trackerArchivedAt = @trackerArchivedAt WHERE id = @id`,
+  );
+  // One column, written by id — `archiveTicketProject`/`restoreTicketProject`'s only write.
+  const setProjectArchived = db.prepare(
+    `UPDATE projects SET archivedAt = @archivedAt WHERE id = @id`,
+  );
+  // `listArchived`'s three reads, each taking one bind — `@projectId` — used as a scoping
+  // filter when given and ignored (via the `IS NULL` arm) when the view wants every
+  // project's archived rows at once.
+  const selectArchivedProjects = db.prepare(
+    `SELECT * FROM projects WHERE archivedAt IS NOT NULL
+       AND (@projectId IS NULL OR id = @projectId)
+     ORDER BY archivedAt DESC`,
+  );
+  const selectArchivedMilestones = db.prepare(
+    `SELECT * FROM milestones WHERE archivedAt IS NOT NULL
+       AND (@projectId IS NULL OR projectId = @projectId)
+     ORDER BY archivedAt DESC`,
+  );
+  const selectArchivedEpics = db.prepare(
+    `SELECT * FROM tasks WHERE source = 'ticket' AND issueType = 'epic'
+       AND trackerArchivedAt IS NOT NULL
+       AND (@projectId IS NULL OR projectId = @projectId)
+     ORDER BY trackerArchivedAt DESC`,
   );
 
   interface TicketLabelRow {
@@ -4262,6 +4421,16 @@ export function createStore(dbPath: string): Store {
     return (selectAllArchivedBoardTasks.all() as TaskRow[]).map(rowToTask);
   }
 
+  /** See `Store.listArchived`. */
+  function listArchivedTx(projectId?: string): ArchivedListing {
+    const param = { projectId: projectId ?? null };
+    return {
+      projects: (selectArchivedProjects.all(param) as ProjectRow[]).map(rowToProject),
+      milestones: (selectArchivedMilestones.all(param) as MilestoneRow[]).map(rowToMilestone),
+      epics: (selectArchivedEpics.all(param) as TaskRow[]).map(rowToTask),
+    };
+  }
+
   function getTask(id: string): Task | undefined {
     const row = selectTask.get(id) as TaskRow | undefined;
     return row ? rowToTask(row) : undefined;
@@ -4456,6 +4625,178 @@ export function createStore(dbPath: string): Store {
   const deleteMilestoneTx = db.transaction((id: string) => {
     clearMilestoneOnTasks.run(id);
     deleteMilestoneStmt.run(id);
+  });
+
+  /** See `Store.archiveMilestone`. Validation runs inside the transaction, so a refusal
+   *  never leaves a half-applied write. */
+  const archiveMilestoneTx = db.transaction(
+    (id: string, choice: OpenTicketsChoice, at: number): ArchiveResult => {
+      const milestoneRow = selectMilestone.get(id) as MilestoneRow | undefined;
+      if (!milestoneRow) {
+        return { ok: false, reason: 'not-found', message: 'Milestone not found' };
+      }
+      const milestone = rowToMilestone(milestoneRow);
+      if (milestone.archivedAt != null) {
+        return {
+          ok: false,
+          reason: 'already-archived',
+          message: `${milestone.name} is already archived`,
+        };
+      }
+      const projectRow = selectProject.get(milestone.projectId) as ProjectRow | undefined;
+      const project = projectRow ? rowToProject(projectRow) : undefined;
+      if (!project || !ownsTickets(project)) {
+        return {
+          ok: false,
+          reason: 'not-a-ticket-project',
+          message: `${milestone.name}'s project is not a ticket project`,
+        };
+      }
+
+      const changedTaskIds = (selectOpenTicketsOnMilestone.all(id) as Array<{ id: string }>).map(
+        (row) => row.id,
+      );
+
+      // No open tickets: the choice has nothing to act on, so it is never validated — a
+      // `milestone` choice naming a bad target is accepted as-is, since nothing would
+      // move either way. See the `Store.archiveMilestone` docstring.
+      if (changedTaskIds.length > 0) {
+        if (choice.kind === 'backlog') {
+          moveTicketsMilestone.run({ milestoneId: id, newMilestoneId: null });
+        } else if (choice.kind === 'milestone') {
+          const targetRow = selectMilestone.get(choice.milestoneId) as MilestoneRow | undefined;
+          if (!targetRow) {
+            return { ok: false, reason: 'target-not-found', message: 'Target milestone not found' };
+          }
+          if (choice.milestoneId === id) {
+            return {
+              ok: false,
+              reason: 'target-is-self',
+              message: 'Cannot move tickets onto the milestone being archived',
+            };
+          }
+          const target = rowToMilestone(targetRow);
+          if (target.archivedAt != null) {
+            return { ok: false, reason: 'target-archived', message: `${target.name} is archived` };
+          }
+          if (target.projectId !== milestone.projectId) {
+            return {
+              ok: false,
+              reason: 'target-other-project',
+              message: `${target.name} belongs to a different project`,
+            };
+          }
+          moveTicketsMilestone.run({ milestoneId: id, newMilestoneId: target.id });
+        } else {
+          setTicketTrackerArchived.run({ milestoneId: id, at });
+        }
+      }
+
+      setMilestoneArchived.run({ id, archivedAt: at });
+      return { ok: true, projectId: milestone.projectId, changedTaskIds, milestonesChanged: true };
+    },
+  );
+
+  /** See `Store.restoreMilestone`. */
+  const restoreMilestoneTx = db.transaction((id: string): ArchiveResult => {
+    const milestoneRow = selectMilestone.get(id) as MilestoneRow | undefined;
+    if (!milestoneRow) {
+      return { ok: false, reason: 'not-found', message: 'Milestone not found' };
+    }
+    const milestone = rowToMilestone(milestoneRow);
+    if (milestone.archivedAt == null) {
+      return { ok: false, reason: 'not-archived', message: `${milestone.name} is not archived` };
+    }
+
+    const changedTaskIds = (
+      selectCoArchivedTickets.all({ milestoneId: id, at: milestone.archivedAt }) as Array<{
+        id: string;
+      }>
+    ).map((row) => row.id);
+    clearCoArchivedTickets.run({ milestoneId: id, at: milestone.archivedAt });
+    setMilestoneArchived.run({ id, archivedAt: null });
+
+    return { ok: true, projectId: milestone.projectId, changedTaskIds, milestonesChanged: true };
+  });
+
+  /** See `Store.archiveEpic`. */
+  const archiveEpicTx = db.transaction((id: string, at: number): ArchiveResult => {
+    const row = selectTask.get(id) as TaskRow | undefined;
+    if (!row) return { ok: false, reason: 'not-found', message: 'Epic not found' };
+    const task = rowToTask(row);
+    if (!isNativeTicket(task) || !isEpic(task)) {
+      return { ok: false, reason: 'not-an-epic', message: `${task.title} is not an epic` };
+    }
+    if (task.trackerArchivedAt != null) {
+      return {
+        ok: false,
+        reason: 'already-archived',
+        message: `${task.ticketKey ?? task.title} is already archived`,
+      };
+    }
+    setTaskTrackerArchived.run({ id, trackerArchivedAt: at });
+    return { ok: true, projectId: task.projectId, changedTaskIds: [id], milestonesChanged: false };
+  });
+
+  /** See `Store.restoreEpic`. */
+  const restoreEpicTx = db.transaction((id: string): ArchiveResult => {
+    const row = selectTask.get(id) as TaskRow | undefined;
+    if (!row) return { ok: false, reason: 'not-found', message: 'Epic not found' };
+    const task = rowToTask(row);
+    if (!isNativeTicket(task) || !isEpic(task)) {
+      return { ok: false, reason: 'not-an-epic', message: `${task.title} is not an epic` };
+    }
+    if (task.trackerArchivedAt == null) {
+      return {
+        ok: false,
+        reason: 'not-archived',
+        message: `${task.ticketKey ?? task.title} is not archived`,
+      };
+    }
+    setTaskTrackerArchived.run({ id, trackerArchivedAt: null });
+    return { ok: true, projectId: task.projectId, changedTaskIds: [id], milestonesChanged: false };
+  });
+
+  /** See `Store.archiveTicketProject`. */
+  const archiveTicketProjectTx = db.transaction((id: string, at: number): ArchiveResult => {
+    const row = selectProject.get(id) as ProjectRow | undefined;
+    if (!row) return { ok: false, reason: 'not-found', message: 'Project not found' };
+    const project = rowToProject(row);
+    if (!ownsTickets(project)) {
+      return {
+        ok: false,
+        reason: 'not-a-ticket-project',
+        message: `${project.name} is not a ticket project`,
+      };
+    }
+    if (project.archivedAt != null) {
+      return {
+        ok: false,
+        reason: 'already-archived',
+        message: `${project.name} is already archived`,
+      };
+    }
+    setProjectArchived.run({ id, archivedAt: at });
+    return { ok: true, projectId: id, changedTaskIds: [], milestonesChanged: false };
+  });
+
+  /** See `Store.restoreTicketProject`. */
+  const restoreTicketProjectTx = db.transaction((id: string): ArchiveResult => {
+    const row = selectProject.get(id) as ProjectRow | undefined;
+    if (!row) return { ok: false, reason: 'not-found', message: 'Project not found' };
+    const project = rowToProject(row);
+    if (!ownsTickets(project)) {
+      return {
+        ok: false,
+        reason: 'not-a-ticket-project',
+        message: `${project.name} is not a ticket project`,
+      };
+    }
+    if (project.archivedAt == null) {
+      return { ok: false, reason: 'not-archived', message: `${project.name} is not archived` };
+    }
+    setProjectArchived.run({ id, archivedAt: null });
+    return { ok: true, projectId: id, changedTaskIds: [], milestonesChanged: false };
   });
 
   /**
@@ -5855,6 +6196,34 @@ export function createStore(dbPath: string): Store {
 
     deleteMilestone(id) {
       deleteMilestoneTx(id);
+    },
+
+    archiveMilestone(id, choice, at) {
+      return archiveMilestoneTx(id, choice, at);
+    },
+
+    restoreMilestone(id) {
+      return restoreMilestoneTx(id);
+    },
+
+    archiveEpic(id, at) {
+      return archiveEpicTx(id, at);
+    },
+
+    restoreEpic(id) {
+      return restoreEpicTx(id);
+    },
+
+    archiveTicketProject(id, at) {
+      return archiveTicketProjectTx(id, at);
+    },
+
+    restoreTicketProject(id) {
+      return restoreTicketProjectTx(id);
+    },
+
+    listArchived(projectId) {
+      return listArchivedTx(projectId);
     },
 
     listTicketLabels(projectId) {

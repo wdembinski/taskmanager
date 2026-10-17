@@ -312,7 +312,7 @@ from disagreeing — the same reason F12 made one panel.
     archived value; a ticket whose milestone id points at a deleted milestone is not hidden;
     JIRA-sourced rows are never hidden by this. Gates green.
 
-- [ ] F14.3 Add archive and restore to the store in one transaction with the open-tickets choice @needs: F14.1 Add the archive columns to milestones, projects and tasks with a verified migration, F14.2 Write the shared archive predicate used by every surface
+- [x] F14.3 Add archive and restore to the store in one transaction with the open-tickets choice @needs: F14.1 Add the archive columns to milestones, projects and tasks with a verified migration, F14.2 Write the shared archive predicate used by every surface
 
   - `archiveMilestone(id, choice, at)`, `restoreMilestone`, `archiveEpic`, `restoreEpic`,
     `archiveTicketProject`, `restoreTicketProject`, `listArchived(projectId?)` in `store.ts`;
