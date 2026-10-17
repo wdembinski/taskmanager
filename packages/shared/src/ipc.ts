@@ -125,6 +125,12 @@ import type {
   WorkflowImportResult,
   WorkflowSaveResult,
 } from './workflow';
+import type {
+  ArchivedListing,
+  ArchiveResult,
+  ArchiveTarget,
+  OpenTicketsChoice,
+} from './trackerArchive';
 
 /** Result of checking whether the local `claude` CLI is installed and logged in. */
 export interface ClaudeStatus {
@@ -1429,6 +1435,31 @@ export interface IpcApi {
   ) => Promise<Milestone>;
   /** Delete a milestone; every ticket planned for it is nulled, not cascaded away. */
   'milestone:remove': (id: string) => Promise<void>;
+
+  /**
+   * Archive a milestone, epic or ticket project. Refusals come back as data (`ArchiveResult`)
+   * — the same shape `ticketLink:add`'s `TicketLinkResult` uses — rather than a rejected
+   * promise, since "that's already archived" is something to tell the human, not an error.
+   * `choice` says what to do with the target's still-open tickets; omitted, they are left
+   * where they are. A successful change rides `milestone:changed` and `project:tasksChanged`
+   * for the renderer to patch without a full refetch; archiving a project also needs a
+   * `project:list` re-read, since the project row itself changed.
+   */
+  'archive:apply': (target: ArchiveTarget, choice?: OpenTicketsChoice) => Promise<ArchiveResult>;
+  /**
+   * Restore a milestone, epic or ticket project. Refusals come back as data (`ArchiveResult`)
+   * — the same shape `ticketLink:add`'s `TicketLinkResult` uses — rather than a rejected
+   * promise, since "that's not archived" is something to tell the human, not an error. A
+   * successful change rides `milestone:changed` and `project:tasksChanged` for the renderer to
+   * patch without a full refetch; restoring a project also needs a `project:list` re-read,
+   * since the project row itself changed.
+   */
+  'archive:restore': (target: ArchiveTarget) => Promise<ArchiveResult>;
+  /**
+   * A project's archived rows for its "Archived" view, grouped by kind. Same optional
+   * `projectId` as `label:list` and `milestone:list`, and for the same reason.
+   */
+  'archive:list': (projectId?: string) => Promise<ArchivedListing>;
 
   /** Every documented ticket relationship, oldest first — small enough to hand over whole. */
   'ticketLink:list': () => Promise<TicketLink[]>;

@@ -321,7 +321,7 @@ from disagreeing — the same reason F12 made one panel.
     milestone, archive too), restore restoring exactly the co-archived tickets, every refusal,
     and a `pruneArchivedBefore` run that leaves a tracker-archived ticket alone. Gates green.
 
-- [ ] F14.4 Expose the archive channels and classify them in the relay @needs: F14.3 Add archive and restore to the store in one transaction with the open-tickets choice
+- [x] F14.4 Expose the archive channels and classify them in the relay @needs: F14.3 Add archive and restore to the store in one transaction with the open-tickets choice
 
   - `archive:apply`, `archive:restore`, `archive:list` in `packages/shared/src/ipc.ts`, handled
     in `apps/client/src/main/ipc.ts`, classified `'relay'` in `ipcRelay.ts`; no new event
@@ -330,6 +330,9 @@ from disagreeing — the same reason F12 made one panel.
     passing.
   - Acceptance: `test/ipc-relay-coverage.test.ts` green; `httpTransport` relays the three
     channels; a refusal reaches the renderer as data, not a rejected promise. Gates green.
+  - **Decision taken in passing:** `archiveMilestone` now refuses `choice-required` when a
+    milestone has open tickets and no `choice` was sent, rather than defaulting to one of the
+    three (landed with F14.3; see `store.ts`'s `archiveMilestoneTx`).
 
 ### F14 · Phase 2 — Hide everywhere
 

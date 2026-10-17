@@ -298,32 +298,39 @@ reconciler for a native ticket to be structurally isolated from in the first pla
 
 ## The relay classification
 
-Phase 24 added 21 new `IpcApi` channels and 5 new `IpcEvents`, and every one of them was
+Phase 24 added 17 new `IpcApi` channels and 4 new `IpcEvents`, and every one of them was
 classified rather than left to a default the day it was declared — both `ipcRelay.ts` and
 `ipcEventFanout.ts` are `satisfies`-checked exhaustively over their respective contracts
 ([`docs/11`](11-ci-cd-pipeline.md) territory: this is a `pnpm typecheck` gate, not a review
 habit), so a channel that shipped unclassified would fail to compile rather than silently pick
-a behaviour.
+a behaviour. Ticket projects are **not** among them: they are `projects` rows, so they are
+edited through the general `project:list|add|update|remove` the Personal board already used,
+never a `ticketProject:*` channel of their own.
 
-The 21 invoke channels — `ticketProject:list|add|update|remove`, `board:scopes`,
-`ticket:create|update`, `person:list|add|update|remove|setMe`, `label:list|save|remove`,
+The 17 invoke channels — `board:scopes`, `ticket:create|update`,
+`person:list|add|update|remove|setMe`, `label:list|save|remove`,
 `milestone:list|save|remove`, `ticketLink:list|add|remove`
-([`ipcRelay.ts:147-173`](../packages/shared/src/ipcRelay.ts)) — are every one classified
+([`ipcRelay.ts:176-199`](../packages/shared/src/ipcRelay.ts)) — are every one classified
 `'relay'`: a web client may invoke them against a desktop `Client` exactly as the desktop
 renderer does. None needed a stricter tier, because a ticket project has no filesystem and no
 exec target to protect (**D2** below) — there is nothing about these channels a browser tab
 can reach that the desktop app itself couldn't already.
 
-The 5 events — `ticketProject:changed`, `ticketLink:changed`, `person:changed`,
-`label:changed`, `milestone:changed`
-([`ipcEventFanout.ts:118-124`](../packages/shared/src/ipcEventFanout.ts)) — are all
+The 4 events — `ticketLink:changed`, `person:changed`, `label:changed`, `milestone:changed`
+([`ipcEventFanout.ts:123-126`](../packages/shared/src/ipcEventFanout.ts)) — are all
 `'replace-last'`: each one is a whole-list replacement, reproducible from its own `*:list`
 read, so a queue holding three of them is holding two stale copies worth discarding, the same
 class `chain:changed` and `settings:changed` are already in. `project:tasksChanged` — the
 event a ticket's own row-level change actually rides on — is deliberately **not** one of the
-five: it's a `'drop'` for every project, ticket or not, because those rows already reach a
+four: it's a `'drop'` for every project, ticket or not, because those rows already reach a
 browser through the cloud mirror on their own schedule, and forwarding them over the event
 channel too would ship the same data twice with the second copy the one that can go stale.
+
+F14 adds three more invoke channels on top of that count — `archive:apply|restore|list`,
+classified `'relay'` for the same reason: they touch rows only. No new event: a milestone
+archive or restore rides the existing `milestone:changed`, a ticket-level one rides
+`project:tasksChanged`, and a project archive or restore is followed by a `project:list`
+re-read, the same way a `project:update` already requires one.
 
 ---
 

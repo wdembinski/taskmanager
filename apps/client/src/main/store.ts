@@ -877,10 +877,11 @@ export interface Store {
    *
    * Only **open** tickets — `milestoneId = id` and a status outside `done`/`cancelled`
    * (`isOpenTicketStatus`) — are ever touched; a closed one stays exactly where it is.
-   * When there are none, `choice` is never even validated: a `{ kind: 'milestone' }`
-   * choice naming a target that does not exist, is itself archived, or belongs to another
-   * project is accepted as-is, since nothing would move either way. Otherwise the choice
-   * decides what the open tickets do:
+   * When there are none, `choice` may be omitted and is never even validated: a
+   * `{ kind: 'milestone' }` choice naming a target that does not exist, is itself archived,
+   * or belongs to another project is accepted as-is, since nothing would move either way.
+   * Otherwise `choice` is required — omitting it refuses `choice-required` without
+   * archiving the milestone — and it decides what the open tickets do:
    *  - `backlog` nulls their `milestoneId`.
    *  - `milestone` moves them onto another live milestone of the SAME project — refusing
    *    `target-not-found`, `target-is-self`, `target-archived`, or `target-other-project`
@@ -894,7 +895,7 @@ export interface Store {
    * `milestonesChanged` is always `true` on success — the milestone itself is always
    * archived.
    */
-  archiveMilestone(id: string, choice: OpenTicketsChoice, at: number): ArchiveResult;
+  archiveMilestone(id: string, choice: OpenTicketsChoice | undefined, at: number): ArchiveResult;
 
   /**
    * Undo `archiveMilestone`. Refuses `not-found` or an already-active milestone
@@ -4674,7 +4675,7 @@ export function createStore(dbPath: string): Store {
   /** See `Store.archiveMilestone`. Validation runs inside the transaction, so a refusal
    *  never leaves a half-applied write. */
   const archiveMilestoneTx = db.transaction(
-    (id: string, choice: OpenTicketsChoice, at: number): ArchiveResult => {
+    (id: string, choice: OpenTicketsChoice | undefined, at: number): ArchiveResult => {
       const milestoneRow = selectMilestone.get(id) as MilestoneRow | undefined;
       if (!milestoneRow) {
         return { ok: false, reason: 'not-found', message: 'Milestone not found' };
@@ -4705,6 +4706,13 @@ export function createStore(dbPath: string): Store {
       // `milestone` choice naming a bad target is accepted as-is, since nothing would
       // move either way. See the `Store.archiveMilestone` docstring.
       if (changedTaskIds.length > 0) {
+        if (!choice) {
+          return {
+            ok: false,
+            reason: 'choice-required',
+            message: `${milestone.name} has ${changedTaskIds.length} open ticket${changedTaskIds.length === 1 ? '' : 's'}`,
+          };
+        }
         if (choice.kind === 'backlog') {
           moveTicketsMilestone.run({ milestoneId: id, newMilestoneId: null });
         } else if (choice.kind === 'milestone') {

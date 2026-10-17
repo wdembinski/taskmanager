@@ -738,6 +738,29 @@ check(
     store.getTask(ot1.id)?.trackerArchivedAt == null,
 );
 
+// M5 still has OT1 open and still has no choice applied, so it is exactly the case a
+// missing `choice` must refuse rather than guess at.
+check(
+  'refuse: archiveMilestone(M5, no choice) is choice-required',
+  store.archiveMilestone(m5.id, undefined, nextAt()).reason === 'choice-required',
+);
+check(
+  'refuse: that refusal left M5 and OT1 untouched',
+  store.listMilestones(projectA.id).find((m) => m.id === m5.id)?.archivedAt == null &&
+    store.getTask(ot1.id)?.milestoneId === m5.id &&
+    store.getTask(ot1.id)?.trackerArchivedAt == null,
+);
+
+// MB2 has no open tickets at all, so omitting `choice` is fine — there is nothing for it
+// to decide.
+const atMb2 = nextAt();
+const mb2Result = store.archiveMilestone(mb2.id, undefined, atMb2);
+check('archive: archiveMilestone(MB2, no choice) succeeds', mb2Result.ok === true);
+check(
+  'archive: MB2 is archived',
+  store.listMilestones(projectB.id).find((m) => m.id === mb2.id)?.archivedAt === atMb2,
+);
+
 // ───────────────────────────── 6. Prune guard ─────────────────────────────
 store.archiveTask(controlTask.id, Date.now() - 10000);
 check(

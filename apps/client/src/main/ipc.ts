@@ -86,6 +86,7 @@ import { toMoveActivity, transitionThenRecord } from './moveActivity';
 import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
 import { createAutomationHandlers } from './automationHandlers';
+import { createArchiveHandlers } from './archiveHandlers';
 import type { Automation } from '@shared/automation';
 import { createSkillHandlers } from './skillHandlers';
 import { createWorkflowHandlers } from './workflowHandlers';
@@ -3730,6 +3731,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     store.deleteMilestone(id);
     pushMilestones();
   });
+
+  // --- Archive (F14.4) — apply/restore/list. The three handler bodies live in
+  // `archiveHandlers.ts`, so they can be driven through a real `RelayRegistry` in a test
+  // without standing up Electron, the same way `automationHandlers.ts` is above.
+  const archiveHandlers = createArchiveHandlers({
+    store,
+    pushMilestones,
+    pushTasks: (id) => send('project:tasksChanged', { projectId: id, tasks: store.getTasks(id) }),
+    now: () => Date.now(),
+  });
+  // Three literal calls, not a loop over `Object.keys` — `test/ipc-relay-coverage.test.ts` finds
+  // registrations with a regex over quoted text right after the `handle(` helper's name, so a
+  // variable in that position would make every archive channel invisible to it.
+  handle('archive:apply', archiveHandlers['archive:apply']);
+  handle('archive:restore', archiveHandlers['archive:restore']);
+  handle('archive:list', archiveHandlers['archive:list']);
 
   // --- Ticket links (documentation, not the chain of execution) --------------
   function pushTicketLinks(): TicketLink[] {
