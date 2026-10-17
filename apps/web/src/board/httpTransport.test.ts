@@ -8,6 +8,7 @@ import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import type { RepoSkillSummary, Skill } from '@tm/shared/skills';
 import type { WorkflowApplyResult, WorkflowDoc } from '@tm/shared/workflow';
 import type { CommandResult } from '@tm/protocol/wire';
+import type { ArchiveResult } from '@tm/shared/trackerArchive';
 import {
   EMPTY_REVIEW,
   fileFailed,
@@ -973,6 +974,78 @@ describe("HttpTransport: the review pane's channels", () => {
 
     expect(state.files['a.ts']).toEqual({ status: 'tooLargeForBrowser', bytes: 2_000_000 });
     expect(fileLoadNotice(state.files['a.ts'])).toContain('too large to send to the browser');
+  });
+});
+
+describe('HttpTransport: the archive channels', () => {
+  /**
+   * F14.4: the three archive channels relay to the desktop the same as any other
+   * `ipc-invoke` channel, shaped like the review pane's table above.
+   */
+  const ARCHIVE: Array<{
+    channel: keyof IpcApi;
+    args: readonly unknown[];
+    call: (x: HttpTransport) => Promise<unknown>;
+  }> = [
+    {
+      channel: 'archive:apply',
+      args: [{ kind: 'milestone', id: 'm1' }, { kind: 'backlog' }],
+      call: (x) => x.invoke('archive:apply', { kind: 'milestone', id: 'm1' }, { kind: 'backlog' }),
+    },
+    {
+      channel: 'archive:restore',
+      args: [{ kind: 'milestone', id: 'm1' }],
+      call: (x) => x.invoke('archive:restore', { kind: 'milestone', id: 'm1' }),
+    },
+    {
+      channel: 'archive:list',
+      args: ['p1'],
+      call: (x) => x.invoke('archive:list', 'p1'),
+    },
+  ];
+
+  for (const { channel, args, call } of ARCHIVE) {
+    it(`relays ${channel} over the wire`, async () => {
+      expect(isRelayable(channel)).toBe(true);
+
+      const server = makeServer();
+      const { transport } = makeTransport({
+        fetchImpl: server.fetchImpl as unknown as typeof fetch,
+        newCommandId: () => 'cmd-1',
+      });
+
+      const pending = call(transport);
+      server.answer('cmd-1', { ok: true, value: null });
+      await pending;
+
+      expect(server.queued).toHaveLength(1);
+      expect(server.queued[0]).toMatchObject({
+        kind: 'ipc-invoke',
+        payload: { channel, args },
+      });
+    });
+  }
+
+  /**
+   * `archive:apply`'s refusals come back as data (`ArchiveResult`), not a rejected
+   * promise — the relay just carries that value through unchanged.
+   */
+  it('resolves (not rejects) when the desktop answers with an already-archived refusal', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-1',
+    });
+
+    const pending = transport.invoke('archive:apply', { kind: 'milestone', id: 'm1' });
+    const refusal: ArchiveResult = {
+      ok: false,
+      reason: 'already-archived',
+      message: 'M2 · Review is archived',
+    };
+    server.answer('cmd-1', { ok: true, value: refusal });
+
+    await expect(pending).resolves.toEqual(refusal);
   });
 });
 
