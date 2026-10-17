@@ -731,6 +731,188 @@ plus a "monochrome code" setting. Chrome around the diff gets no new colour (mem
     unviewed file, an expansion answer for an old `diffId` (a no-op), and keys ignored inside
     the comment editor.
 
+  - **Design decisions, taken against the current code — step 3 implements these, it does
+    not re-derive them:**
+    - **`taskId` stays the one frontier key; `subjectId` is derived, never stored.**
+      `ReviewState` (`reviewState.ts:81-107`) and every guard on it (`reviewAccepts`,
+      `commentsAccepted`, `fileLoadStarted`, …) key on `taskId`, and F15.13 does not touch
+      that — the ticket's own brief says so, and `ReviewComment.taskId` (`review.ts:622`) has
+      not been generalised to `subjectId` either yet (F15.4 is still `[ ]`). But
+      `ReviewViewedMark` (`review.ts:609-614`) already carries `subjectId`, not `taskId` —
+      it is shared with drafts and the queue cache (`review.ts:10`). The bridge: wherever a
+      mark must be built or compared, derive it on the spot with the already-exported
+      `taskSubjectId(taskId)` (`review.ts:79`, `taskSubjectId(subject.taskId)` is exactly
+      what `subjectId()` does for a task subject at `:73`). `viewedMarks`/`viewedLoadStarted`/
+      `viewedArrived` never filter by subject themselves — they store and overwrite
+      wholesale, exactly like `comments`/`commentsLoadStarted`/`commentsArrived` do today
+      (`:483-501`). Filtering the marks array down to this card's own `subjectId` before
+      calling `viewedArrived` is the host's job (`ReviewPane.tsx`, F15.14), matching
+      `viewedState`'s own documented contract: "the caller is expected to have already
+      filtered marks by `subjectId`" (`review.ts:1039`). `viewedStatuses(s)` therefore just
+      calls `viewedState(s.summary.summary.files, s.viewedMarks)` with no subject logic of
+      its own.
+    - **`setViewed`'s refusals, precisely:** refuse (return `s`) when `s.taskId === null`
+      (nothing to derive a `subjectId` from), when `s.summary?.status !== 'ok'`, when no entry
+      in `s.summary.summary.files` matches `path`, or — only for `viewed: true` — when that
+      entry's `newBlobSha` is `undefined` (`review.ts:197-198`; there is nothing for a mark to
+      key on). Once past the guards: `viewed: true` upserts
+      `{ subjectId: taskSubjectId(s.taskId), path, blobSha: entry.newBlobSha, viewedAt: now }`
+      into `viewedMarks` (replace any existing mark for the same `path`, else append) and
+      removes `path` from `expanded` (collapses it); `viewed: false` removes any mark for
+      `path` from `viewedMarks` and leaves `expanded` untouched (unviewing never re-expands).
+      `setViewed` never touches `viewedSeq` — that counter belongs to the load race
+      (`viewedLoadStarted`/`viewedArrived`) only, the same separation `editDraft`/`clickLine`
+      already keep from `commentsSeq`. There is deliberately no `viewedSaved`/`viewedRefused`
+      counterpart: unlike comments, a viewed mark has no draft to keep on a refusal, so the
+      optimistic local mark IS the state until the next `viewedArrived` reconciles it — step 3
+      must not invent a save-ack handler nothing in this brief asks for.
+    - **`toggleViewedAndAdvance(s, now)`, built on `setViewed` and `viewedState`:** no-op when
+      `s.selectedPath === null` or `s.summary?.status !== 'ok'`. Otherwise read
+      `wasViewed = viewedState(s.summary.summary.files, s.viewedMarks).byPath[s.selectedPath]
+      === 'viewed'`, then `next = setViewed(s, s.selectedPath, !wasViewed, now)`. If
+      `next === s` (the toggle itself was refused — e.g. no `newBlobSha`), return `s`
+      unchanged. If the toggle turned a file OFF (`wasViewed` was `true`), return `next` with
+      the selection untouched — only turning a file ON advances. When it turned ON: recompute
+      `viewedState` against `next.viewedMarks`, walk the navigation order (below) starting
+      just after `s.selectedPath`, wrapping to the start, and `selectFile(next, found)` for
+      the first path whose status is `'unviewed'` or `'changed'`; if none qualifies, return
+      `next` with the selection exactly as `setViewed` left it ("stays put").
+    - **Navigation order avoids the import cycle by moving, not just reusing,
+      `buildFileTree`.** `reviewView.ts` already imports *runtime* values from
+      `reviewState.ts` (`filesToLoad`, `isCollapsedByDefault` — `reviewView.ts:22-28`), so a
+      new import the other way (`reviewState.ts` pulling `buildFileTree` out of
+      `reviewView.ts`) would be a genuine two-file runtime cycle, not just a type-only one.
+      The fix: move `buildFileTree` and its private helpers (`insert`, `collapseChain`,
+      `buildChildren`, the `RawDir`/`RawNode` types) and the public `FileTreeNode`/
+      `FileTreeDir`/`FileTreeFile` types (`reviewView.ts:30-112`) into `reviewState.ts`, add a
+      pure `navigationOrder(entries: readonly DiffFileEntry[]): readonly string[]` next to it
+      that flattens the tree into leaf path order (dirs in their already-sorted order, depth
+      first, same traversal `buildChildren` already produces), and have `reviewView.ts`
+      re-export all four names from `reviewState.ts` — the same re-export shape it already
+      uses for `pairWordDiffs` (`reviewView.ts:148`, `export { pairWordDiffs } from
+      '@tm/shared/review';`). `FileTree.tsx`, `ReviewPaneView.tsx` and `reviewView.test.ts`
+      all import `buildFileTree`/`FileTreeNode`/`FileTreeDir`/`FileTreeFile` from
+      `./reviewView` today (confirmed by grep) and need no changes. This file-level move is
+      step 2's job ("Files"); step 3 only adds `navigationOrder` and the cursor logic that
+      calls it.
+    - **`nextFile`/`prevFile` need no "selected path not in the order" branch.**
+      `summaryArrived` already prunes `selectedPath` to a path present in the current summary
+      or to `null` (`reviewState.ts:191`), so by construction `selectedPath` is always either
+      `null` or found in `navigationOrder(s.summary.summary.files)`. `indexOf` on a `null`
+      selection is handled by an explicit `selectedPath === null` branch (→ first for `next`,
+      last for `prev`), not by relying on `indexOf`'s `-1`.
+    - **`nextHunk`/`prevHunk` read the hunk count off the loaded file, not off any cached
+      length.** No-op when `s.selectedPath === null`, when `s.files[s.selectedPath]?.status
+      !== 'loaded'`, or when that file's `hunks.length === 0`. Otherwise, with
+      `hunks = (s.files[s.selectedPath] as { status: 'loaded'; file: DiffFile }).file.hunks`:
+      `nextHunk` — `null` → `0`; at `hunks.length - 1` → no-op; else `+1`. `prevHunk` — `null`
+      → no-op (per the brief); at `0` → no-op; else `-1`.
+    - **`selectFile` gains `hunkIndex: null` in its returned object**, with no change to its
+      existing early-return guard (`s.selectedPath === path && s.expanded.includes(path)`) —
+      that guard only short-circuits when nothing about the selection is actually changing
+      (e.g. `toggleViewedAndAdvance` landing back on the same path because none qualified),
+      so the cursor staying put in that one case is intentional, not an oversight.
+    - **`gapBounds`/`contextRequest` reuse `expandContext`'s own arithmetic by export, not by
+      copy.** `firstLine`/`endLine` (`review.ts:922-929`) are today module-private; this step
+      adds `export` to both (no rename, no signature change) so `gapBounds(file: DiffFile,
+      gap: number): { low: number; high: number }` in `reviewState.ts` can compute exactly
+      `expandContext`'s own `low`/`high` (`review.ts:987-988`): `prev = gap > 0 ?
+      file.hunks[gap - 1] : undefined`, `next = gap < file.hunks.length ? file.hunks[gap] :
+      undefined`, `low = prev ? endLine(prev.newStart, prev.newLines) : 1`, `high = next ?
+      firstLine(next.newStart, next.newLines) : Infinity`.
+    - **`contextRequest(file, gap, mode)`'s two modes, concretely, always `side: 'new'`:**
+      with `{ low, high } = gapBounds(file, gap)` and `next = gap < file.hunks.length ?
+      file.hunks[gap] : undefined`:
+      - `'step'`: when `next` exists, the 20 lines right before it —
+        `from = Math.max(low, high - 20)`, `to = high - 1`; for the trailing gap (`next`
+        undefined, `high === Infinity`), the 20 lines right after the previous hunk instead —
+        `from = low`, `to = low + 19`.
+      - `'all'`: the whole gap, capped — `from = low`, `to = Number.isFinite(high) ?
+        Math.min(high - 1, low + DIFF_CONTEXT_MAX_LINES - 1) : low + DIFF_CONTEXT_MAX_LINES -
+        1`.
+
+      Nothing here needs to clamp to the file's own last line — the `review:context` handler
+      (F15.10, not this step) already clips to the file length and sets `DiffContext.truncated`
+      (`review.ts:684`); `contextRequest` only ever has hunk bounds to work from.
+    - **`context`'s key is the bound captured at request time, not re-derived at answer
+      time.** `contextLoadStarted(s, taskId, diffId, path, gap, seq)` is refused (same object)
+      unless `taskId === s.taskId`, `diffId === s.diffId` and `s.files[path]?.status ===
+      'loaded'`; once past those, it computes `{ low } = gapBounds(loadedFile, gap)` from
+      that file's *current* hunks and sets `context[path][low] = { status: 'loading', seq }`
+      unconditionally (overwriting any prior entry at that bound, same as `fileLoadStarted`
+      overwrites `files[path]` unconditionally once its own guards pass). The caller (F15.14)
+      carries this same `low` forward into the `review:context` request and the eventual
+      `contextArrived`/`contextFailed` call — it must not recompute `gap`/`low` from
+      possibly-shifted hunks when the answer lands, which is exactly why `contextArrived`'s
+      signature takes `low` and not `gap`.
+    - **`contextArrived(s, taskId, diffId, path, low, seq, result)`, the four outcomes:**
+      refused (same object) unless `taskId === s.taskId`, `diffId === s.diffId`, and
+      `context[path]?.[low]` is `{ status: 'loading', seq }` with this exact `seq` (the same
+      "a newer re-request wins" rule `isLoadingThisSeq`/`fileArrived` already use,
+      `reviewState.ts:240-242,250-260`).
+      - `result.status === 'ok'`: re-scan `0..file.hunks.length` on the *current* loaded file
+        for a gap `g` with `gapBounds(file, g).low === low`. If found, apply
+        `expandContext(file, g, { start: result.context.start, text: result.context.text })`,
+        store the merged file at `files[path]`, clamp `hunkIndex` to
+        `Math.min(s.hunkIndex, mergedFile.hunks.length - 1)` when `hunkIndex` is not `null`
+        (a merge can only ever reduce the hunk count, never grow it), and delete the
+        `context[path][low]` entry. If no such gap is found (a neighbouring expansion already
+        swallowed this bound first), apply nothing to `files[path]` — the text would double
+        up — but still delete `context[path][low]`, since the row it belonged to no longer
+        exists to ever read that key again.
+      - `result.status === 'tooLarge'`: `context[path][low] = { status: 'tooLarge', bytes:
+        result.bytes }`.
+      - `result.status === 'stale'`: sets `staleDiffId = result.currentDiffId`, same as
+        `fileArrived`'s own stale handling (`reviewState.ts:270`), and otherwise leaves
+        `context[path][low]` as `'loading'` — harmless, since `staleDiffId` being set already
+        freezes every other load (`filesToLoad`, `reviewState.ts:646`) until Reload, which
+        clears `context` wholesale via the next `summaryArrived` anyway.
+      - `contextFailed(s, taskId, diffId, path, low, seq, error)`: same guards, sets
+        `context[path][low] = { status: 'idle', error }`.
+    - **`context` resets in two places, "same as `files`":** inside `summaryArrived`, both
+      the existing non-ok branch (`reviewState.ts:167-178`) and the new-`diffId` branch
+      (`:180-194`) additionally reset `context: {}` in the same object they already reset
+      `files: {}` in. And `fileLoadStarted` (`:229-238`) additionally sets `context[path] =
+      {}` for that one path every time it re-enters `'loading'` — a file being refetched
+      invalidates any gap bounds computed against its previous hunks, the same reasoning
+      `expandContext`'s own gap arithmetic depends on.
+    - **`reviewKeys.ts`'s guard order matters — `editorOpen` is checked before
+      `isEditableTarget`, not after.** `isComposing`/`repeat` are checked first and always
+      return `null`, matching `shortcutMatches`'s own guard (`palette/shortcut.ts:43`). Then,
+      if `ctx.editorOpen`: return `evt.key === 'Escape' ? 'escape' : null` immediately,
+      *without* consulting `isEditableTarget` at all — this is deliberate, not an oversight,
+      because `CommentThread.tsx:166` already lets Escape close the editor from inside its own
+      textarea, and the brief's "ignored … even if focus has left its textarea" requires the
+      opposite case too (Escape must still fire when focus has moved to some other, non-
+      editable element while the editor is logically still open). Only once `editorOpen` is
+      `false` does `isEditableTarget(evt.target)` (reusing `palette/shortcut.ts:35-39`,
+      requiring a local `ReviewKeyEventLike extends ShortcutEventLike` that adds
+      `target?: EditableTargetLike | null`) gate everything else, followed by the
+      Ctrl/Meta/Alt guard, then `evt.key === '?'` → `'showKeys'`, then each letter via
+      `shortcutMatches(evt, letter)` (`n`/`p`/`j`/`k`/`v`/`s`/`e`/`c`), then a final
+      `evt.key === 'Escape'` → `'escape'` (the "no editor, close the workspace" case the host
+      handles), then `null`. Letters deliberately do **not** get `?`'s Shift exception —
+      `shortcutMatches` already requires Shift to be absent for a bare letter spec
+      (`palette/shortcut.ts:55`), and nothing in the brief asks to loosen that.
+    - **`REVIEW_KEYS` reuses F9.6's `KeyboardShortcutItem` shape** (`id`, `label`, `spec`,
+      `palette/KeyboardShortcutsList.tsx:27-33`) so F15.14 can pass it straight into
+      `<KeyboardShortcutsList items={REVIEW_KEYS} />` for the `?` dialog with no adapting, and
+      map it over the palette's own command list separately. One row per discoverable action —
+      `nextFile`/`n`, `prevFile`/`p`, `nextHunk`/`j`, `prevHunk`/`k`, `toggleViewed`/`v`,
+      `toggleLayout`/`s`, `expandContext`/`e`, `comment`/`c`, `showKeys`/`?` — deliberately with
+      no row for `escape`: it is the universal close/cancel key, and no other `?`-list or
+      palette table in this codebase lists it either.
+    - **`applyReviewKey(s, action, now)`'s full dispatch:** `'nextFile'` → `nextFile(s)`,
+      `'prevFile'` → `prevFile(s)`, `'nextHunk'` → `nextHunk(s)`, `'prevHunk'` → `prevHunk(s)`,
+      `'toggleViewed'` → `toggleViewedAndAdvance(s, now)`, `'escape'` → `s.editor !== null ?
+      closeEditor(s) : s` (the no-editor case is UI-only — the host closes the whole
+      workspace, this function has no such concept). `'toggleLayout'`, `'expandContext'`,
+      `'comment'` and `'showKeys'` always return `s` unchanged — each needs something this
+      pure module cannot do alone (a per-viewer layout setting, a specific gap/anchor to
+      expand, focusing a textarea, opening a dialog), so F15.14 reads the action off
+      `reviewKeyAction` directly and handles those five itself without ever calling
+      `applyReviewKey` for them.
+
 - [ ] F15.14 Build the ReviewWorkspace screen and the Reviews entry @needs: F15.10 Expose the subject, context, viewed and queue channels over IPC, F15.11 Add syntax highlighting with highlight.js core and lazily loaded languages, F15.12 Add the side-by-side layout to DiffView, F15.13 Extend reviewState with viewed files, expanded context and keyboard navigation
 
   - `packages/ui/src/review/ReviewWorkspace.tsx`, split into an effects component and a
