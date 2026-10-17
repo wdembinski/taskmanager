@@ -4,6 +4,11 @@
  * surface (board, Backlog, Timeline, Graph, sidebar, pickers, palette) must share rather than
  * each writing its own filter.
  *
+ * Also the shared **archive/restore contract**: the request and result types `store.ts`
+ * (F14.4), `ipc.ts` (F14.4) and the UI (F14.7/F14.8) all import, so the main-process store and
+ * the renderer agree on one shape for "archive this", "restore this" and what either can
+ * refuse.
+ *
  * This is the **tracker's** archive — "finished, put away, still editable, never pruned" —
  * and not `Task.archivedAt`, which means *taken off the board*: set by the JIRA/GitHub
  * reconcilers and by variant discard, excluded from `board:tasks`, and destroyed by
@@ -19,6 +24,50 @@
  */
 import type { Milestone, Project, Task } from './model';
 import { isNativeTicket } from './tickets';
+
+/**
+ * What to do with a milestone's (or epic's/project's) still-open tickets when it is
+ * archived: leave them where they are and only bucket them as "No milestone" in views that
+ * drop into one (`backlog`), move them to another milestone that outlives this one
+ * (`milestone`), or archive them along with their parent (`archive`).
+ */
+export type OpenTicketsChoice =
+  { kind: 'backlog' } | { kind: 'milestone'; milestoneId: string } | { kind: 'archive' };
+
+/** The thing an archive/restore call acts on — one row, named by its own id. */
+export type ArchiveTarget = { kind: 'milestone' | 'epic' | 'project'; id: string };
+
+/**
+ * Why an archive/restore call was refused. The store (F14.4) returns one of these instead of
+ * throwing, so the renderer can show the human a reason rather than a stack trace.
+ */
+export type ArchiveRefusalReason =
+  | 'not-found' // unknown id
+  | 'already-archived'
+  | 'not-archived' // restore of something active
+  | 'not-a-ticket-project' // agent/plan project (ownsTickets false)
+  | 'not-an-epic' // epic op on a non-epic or non-native ticket
+  | 'target-not-found' // choice.milestoneId unknown
+  | 'target-is-self'
+  | 'target-archived'
+  | 'target-other-project';
+
+/**
+ * What an archive/restore call hands back: on success, the project touched and which tasks
+ * and milestones changed (for the renderer to patch without a full refetch); on refusal, a
+ * reason plus a short, specific `message` ready to show as-is — for example
+ * `"M2 · Review is archived"` — so the IPC layer never has to synthesize its own copy.
+ */
+export type ArchiveResult =
+  | { ok: true; projectId: string; changedTaskIds: string[]; milestonesChanged: boolean }
+  | { ok: false; reason: ArchiveRefusalReason; message: string };
+
+/** The archived rows a project's "Archived" view lists, grouped by kind. */
+export interface ArchivedListing {
+  projects: Project[];
+  milestones: Milestone[];
+  epics: Task[];
+}
 
 /** The slice of a `Milestone` this module needs, before or after F14.1 adds the column. */
 export type ArchivableMilestone = Pick<Milestone, 'id'> & { archivedAt?: number | null };
