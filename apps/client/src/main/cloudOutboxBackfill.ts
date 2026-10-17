@@ -167,3 +167,40 @@ export function backfillAutomationCloudOutbox(
     .run(nowMs, nowMs - BACKFILL_AUTOMATION_RUN_MAX_AGE_MS).changes;
   return { automations, automationRuns };
 }
+
+/**
+ * Guard for the one-shot mirror of milestones that predate `trg_milestones_*` (F14.11) — a
+ * separate key from both backfills above for the same reason {@link
+ * CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY} is its own: a database may already have cleared
+ * either of them long before this build gained milestone triggers.
+ */
+export const CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY = 'migration.cloudOutboxMilestoneBackfill';
+
+/** Every milestone the outbox has never spoken for. */
+export const BACKFILL_MILESTONES_SQL = `
+  INSERT INTO cloud_outbox (entity, entityId, op, at)
+  SELECT 'milestone', m.id, 'insert', ?
+    FROM milestones m
+   WHERE NOT EXISTS (
+     SELECT 1 FROM cloud_outbox o WHERE o.entity = 'milestone' AND o.entityId = m.id
+   )
+   ORDER BY m.rowid
+`;
+
+/** What the milestone back-fill queued, for its own guard row to record. */
+export interface CloudOutboxMilestoneBackfillCounts {
+  milestones: number;
+}
+
+/**
+ * Queue an outbox row for every milestone that has none — the milestone sibling of
+ * {@link backfillCloudOutbox}/{@link backfillAutomationCloudOutbox}, guarded by its own
+ * `app_state` key for the same two reasons those functions' own docstrings give.
+ */
+export function backfillMilestoneCloudOutbox(
+  db: BackfillDb,
+  nowMs: number,
+): CloudOutboxMilestoneBackfillCounts {
+  const milestones = db.prepare(BACKFILL_MILESTONES_SQL).run(nowMs).changes;
+  return { milestones };
+}

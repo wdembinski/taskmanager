@@ -10,16 +10,16 @@
  *
  * `buildMirrorDelta` is the one further step `shapeCloudDelta`'s own docstring names
  * but doesn't take: turning a shaped ROW (entity + id + op) into the actual `Task`/
- * `Project`/`Automation`/`AutomationRun` `@tm/protocol/wire`'s `MirrorDelta` wants, via
- * lookup callbacks rather than a `Store` — `cloudPoller.ts` is the only caller, and it
- * already has `store.getTask`/`store.getProject`/`store.getAutomation`/
- * `store.getAutomationRun` to pass in directly.
+ * `Project`/`Automation`/`AutomationRun`/`Milestone` `@tm/protocol/wire`'s `MirrorDelta`
+ * wants, via lookup callbacks rather than a `Store` — `cloudPoller.ts` is the only caller,
+ * and it already has `store.getTask`/`store.getProject`/`store.getAutomation`/
+ * `store.getAutomationRun`/`store.getMilestone` to pass in directly.
  */
 import { AUTOMATION_RUNS_PER_SYNC, type MirrorDelta } from '@protocol/wire';
 import type { Automation, AutomationRun } from '@shared/automation';
-import type { Project, Task } from '@shared/model';
+import type { Milestone, Project, Task } from '@shared/model';
 
-export type CloudEntity = 'task' | 'project' | 'automation' | 'automationRun';
+export type CloudEntity = 'task' | 'project' | 'automation' | 'automationRun' | 'milestone';
 export type CloudOp = 'insert' | 'update' | 'delete';
 
 export interface CloudOutboxRow {
@@ -31,15 +31,16 @@ export interface CloudOutboxRow {
 }
 
 /**
- * The four lookups a shaped outbox row resolves through, one per {@link CloudEntity} — a
- * single object rather than four positional callbacks, since every function below now takes
- * all four and a fifth entity would otherwise mean a fifth parameter at every call site.
+ * The five lookups a shaped outbox row resolves through, one per {@link CloudEntity} — a
+ * single object rather than five positional callbacks, since every function below now takes
+ * all five and a sixth entity would otherwise mean a sixth parameter at every call site.
  */
 export interface CloudDeltaLookups {
   getTask: (id: string) => Task | undefined;
   getProject: (id: string) => Project | undefined;
   getAutomation: (id: string) => Automation | undefined;
   getAutomationRun: (id: string) => AutomationRun | undefined;
+  getMilestone: (id: string) => Milestone | undefined;
 }
 
 /**
@@ -90,12 +91,15 @@ export function buildMirrorDelta(
   const automations: Automation[] = [];
   const automationRuns: AutomationRun[] = [];
   const deletedAutomationIds: string[] = [];
+  const milestones: Milestone[] = [];
+  const deletedMilestoneIds: string[] = [];
 
   for (const row of rows) {
     if (row.op === 'delete') {
       if (row.entity === 'task') deletedTaskIds.push(row.entityId);
       else if (row.entity === 'project') deletedProjectIds.push(row.entityId);
       else if (row.entity === 'automation') deletedAutomationIds.push(row.entityId);
+      else if (row.entity === 'milestone') deletedMilestoneIds.push(row.entityId);
       // 'automationRun' deletes never occur — the outbox has no delete trigger for runs,
       // only an automation's own delete, which already carries its runs in this same array.
       continue;
@@ -124,11 +128,17 @@ export function buildMirrorDelta(
         if (run) automationRuns.push(run);
         break;
       }
+      case 'milestone': {
+        const milestone = lookups.getMilestone(row.entityId);
+        if (milestone) milestones.push(milestone);
+        else deletedMilestoneIds.push(row.entityId);
+        break;
+      }
     }
   }
 
-  // All seven fields, always — a v2 server reading an older `MirrorDelta` shape simply
-  // ignores the four keys it has never heard of (see wire.ts's own PROTOCOL_VERSION rule).
+  // All nine fields, always — a v2 server reading an older `MirrorDelta` shape simply
+  // ignores the six keys it has never heard of (see wire.ts's own PROTOCOL_VERSION rule).
   return {
     tasks,
     projects,
@@ -137,6 +147,8 @@ export function buildMirrorDelta(
     automations,
     automationRuns,
     deletedAutomationIds,
+    milestones,
+    deletedMilestoneIds,
   };
 }
 
@@ -198,6 +210,7 @@ export function buildMirrorDeltaWithin(
   const projectCache = new Map<string, Project | undefined>();
   const automationCache = new Map<string, Automation | undefined>();
   const automationRunCache = new Map<string, AutomationRun | undefined>();
+  const milestoneCache = new Map<string, Milestone | undefined>();
   const memoized: CloudDeltaLookups = {
     getTask: (id) => {
       if (!taskCache.has(id)) taskCache.set(id, lookups.getTask(id));
@@ -216,6 +229,10 @@ export function buildMirrorDeltaWithin(
         automationRunCache.set(id, lookups.getAutomationRun(id));
       }
       return automationRunCache.get(id);
+    },
+    getMilestone: (id) => {
+      if (!milestoneCache.has(id)) milestoneCache.set(id, lookups.getMilestone(id));
+      return milestoneCache.get(id);
     },
   };
 
@@ -251,7 +268,7 @@ function rowBytes(row: CloudOutboxRow, lookups: CloudDeltaLookups): number {
 function resolveEntity(
   row: CloudOutboxRow,
   lookups: CloudDeltaLookups,
-): Task | Project | Automation | AutomationRun | undefined {
+): Task | Project | Automation | AutomationRun | Milestone | undefined {
   switch (row.entity) {
     case 'task':
       return lookups.getTask(row.entityId);
@@ -261,5 +278,7 @@ function resolveEntity(
       return lookups.getAutomation(row.entityId);
     case 'automationRun':
       return lookups.getAutomationRun(row.entityId);
+    case 'milestone':
+      return lookups.getMilestone(row.entityId);
   }
 }

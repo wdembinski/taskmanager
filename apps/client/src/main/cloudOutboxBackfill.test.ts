@@ -10,13 +10,16 @@ import {
   BACKFILL_AUTOMATION_RUNS_SQL,
   BACKFILL_AUTOMATION_RUN_MAX_AGE_MS,
   BACKFILL_AUTOMATIONS_SQL,
+  BACKFILL_MILESTONES_SQL,
   BACKFILL_PROJECTS_SQL,
   BACKFILL_TASKS_SQL,
   type BackfillDb,
   CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY,
   CLOUD_OUTBOX_BACKFILL_KEY,
+  CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY,
   backfillAutomationCloudOutbox,
   backfillCloudOutbox,
+  backfillMilestoneCloudOutbox,
 } from './cloudOutboxBackfill';
 
 interface Call {
@@ -149,5 +152,50 @@ describe('the automation back-fill statements', () => {
     // A run older than 30 days is retention's to drop, not this backfill's to queue for a
     // server about to drop it right back.
     expect(BACKFILL_AUTOMATION_RUNS_SQL).toContain('r.at >= ?');
+  });
+});
+
+describe('backfillMilestoneCloudOutbox', () => {
+  it('runs the one statement', () => {
+    const { db, calls } = recorder([5]);
+    backfillMilestoneCloudOutbox(db, 1000);
+    expect(calls.map((c) => c.sql)).toEqual([BACKFILL_MILESTONES_SQL]);
+  });
+
+  it('threads `at` into the statement', () => {
+    const { db, calls } = recorder([0]);
+    backfillMilestoneCloudOutbox(db, 1_691_000_000_000);
+    expect(calls.map((c) => c.params)).toEqual([[1_691_000_000_000]]);
+  });
+
+  it('returns the count the statement reported', () => {
+    const { db } = recorder([6]);
+    expect(backfillMilestoneCloudOutbox(db, 1000)).toEqual({ milestones: 6 });
+  });
+
+  it('reports nothing queued on a board the outbox already speaks for', () => {
+    const { db } = recorder([0]);
+    expect(backfillMilestoneCloudOutbox(db, 1000)).toEqual({ milestones: 0 });
+  });
+
+  it('has a guard key of its own, shared with neither other backfill', () => {
+    expect(CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY).toBe('migration.cloudOutboxMilestoneBackfill');
+    expect(CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY).not.toBe(CLOUD_OUTBOX_BACKFILL_KEY);
+    expect(CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY).not.toBe(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY);
+  });
+});
+
+describe('the milestone back-fill statement', () => {
+  it('only queues what the outbox has never spoken for', () => {
+    expect(BACKFILL_MILESTONES_SQL).toContain('NOT EXISTS');
+    expect(BACKFILL_MILESTONES_SQL).toContain('FROM cloud_outbox o');
+  });
+
+  it('queues rows in a deterministic order', () => {
+    expect(BACKFILL_MILESTONES_SQL).toContain('ORDER BY m.rowid');
+  });
+
+  it("says 'insert' — the server has never seen these", () => {
+    expect(BACKFILL_MILESTONES_SQL).toContain("'milestone', m.id, 'insert'");
   });
 });

@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { AUTOMATION_RUNS_PER_SYNC } from '@protocol/wire';
 import type { Automation, AutomationRun } from '@shared/automation';
-import type { Project, Task } from '@shared/model';
+import type { Milestone, Project, Task } from '@shared/model';
 import {
   buildMirrorDelta,
   buildMirrorDeltaWithin,
@@ -31,6 +31,7 @@ function lookups(overrides: Partial<CloudDeltaLookups> = {}): CloudDeltaLookups 
     getProject: () => undefined,
     getAutomation: () => undefined,
     getAutomationRun: () => undefined,
+    getMilestone: () => undefined,
     ...overrides,
   };
 }
@@ -46,6 +47,8 @@ const emptyFields = {
   automations: [],
   automationRuns: [],
   deletedAutomationIds: [],
+  milestones: [],
+  deletedMilestoneIds: [],
 };
 
 describe('shapeCloudDelta', () => {
@@ -183,6 +186,40 @@ describe('buildMirrorDelta', () => {
       lookups({ getAutomationRun }),
     );
     expect(result).toEqual({ ...emptyFields, automationRuns: [r1] });
+  });
+
+  it('resolves a milestone insert row to the milestone', () => {
+    const m1 = { id: 'm1', projectId: 'p1', name: 'Beta' } as Milestone;
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'milestone', entityId: 'm1', op: 'insert' })],
+      lookups({ getMilestone: (id) => (id === 'm1' ? m1 : undefined) }),
+    );
+    expect(result).toEqual({ ...emptyFields, milestones: [m1] });
+  });
+
+  it('carries archivedAt on a milestone update row after archiving', () => {
+    const archived = { id: 'm1', projectId: 'p1', name: 'Beta', archivedAt: 123 } as Milestone;
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'milestone', entityId: 'm1', op: 'update' })],
+      lookups({ getMilestone: (id) => (id === 'm1' ? archived : undefined) }),
+    );
+    expect(result.milestones?.[0]?.archivedAt).toBe(123);
+  });
+
+  it('sends a milestone delete row as a bare id', () => {
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'milestone', entityId: 'gone', op: 'delete' })],
+      lookups(),
+    );
+    expect(result).toEqual({ ...emptyFields, deletedMilestoneIds: ['gone'] });
+  });
+
+  it('folds a milestone lookup MISS into a delete — the entity is gone either way', () => {
+    const result = buildMirrorDelta(
+      [row({ seq: 1, entity: 'milestone', entityId: 'vanished', op: 'insert' })],
+      lookups(),
+    );
+    expect(result).toEqual({ ...emptyFields, deletedMilestoneIds: ['vanished'] });
   });
 
   it('carries a gate step card whole — stepSpec and gateAttempts ride along with the Task', () => {
@@ -334,6 +371,25 @@ describe('buildMirrorDeltaWithin', () => {
     expect(sent.map((r) => r.entityId)).toEqual(['vanished', 'b']);
     expect(delta.deletedTaskIds).toEqual(['vanished']);
     expect(delta.tasks.map((t) => t.id)).toEqual(['b']);
+  });
+
+  it('defers a milestone that does not fit the byte budget to the next call', () => {
+    function bigMilestone(id: string, bytes = 1000): Milestone {
+      return { id, projectId: 'p1', name: 'x'.repeat(bytes) } as Milestone;
+    }
+
+    const milestoneRows: CloudOutboxRow[] = ['a', 'b'].map((id, index) =>
+      row({ seq: index + 1, entity: 'milestone', entityId: id, op: 'update' }),
+    );
+    const milestones = ['a', 'b'].map((id) => bigMilestone(id));
+    const { delta, sent } = buildMirrorDeltaWithin(
+      milestoneRows,
+      lookups({ getMilestone: (id) => milestones.find((m) => m.id === id) }),
+      1030, // one ~1030-byte milestone fits; the second does not
+    );
+
+    expect(sent.map((r) => r.entityId)).toEqual(['a']);
+    expect(delta.milestones?.map((m) => m.id)).toEqual(['a']);
   });
 
   it('stops at AUTOMATION_RUNS_PER_SYNC runs even with budget and rows left, so a later task is not lost', () => {

@@ -16,7 +16,7 @@
  */
 import type { CadenceDirective } from '@tm/protocol/cadence';
 import type { BoardResponse, ClientPresence } from '@tm/protocol/wire';
-import type { ManualStatus, Project, Task } from '@tm/shared/model';
+import type { ManualStatus, Milestone, Project, Task } from '@tm/shared/model';
 
 export interface PendingStatusChange {
   commandId: string;
@@ -28,6 +28,8 @@ export interface PendingStatusChange {
 export interface CloudBoardState {
   tasks: Record<string, Task>;
   projects: Record<string, Project>;
+  /** Mirrored milestones (F14.11), keyed by id — same accumulate-by-id shape as `projects`. */
+  milestones: Record<string, Milestone>;
   /** `SinceRowversion` — `null` until the first successful poll. */
   cursor: string | null;
   /** The desktop Clients on this account, as of the last poll — see `ClientPresence`. */
@@ -40,6 +42,7 @@ export interface CloudBoardState {
 export const EMPTY_BOARD_STATE: CloudBoardState = {
   tasks: {},
   projects: {},
+  milestones: {},
   cursor: null,
   clients: [],
   cadence: null,
@@ -62,9 +65,19 @@ export function applyBoardResponse(
   for (const project of response.deltas.projects) projects[project.id] = project;
   for (const id of response.deltas.deletedProjectIds) delete projects[id];
 
+  const milestones = { ...state.milestones };
+  for (const milestone of response.deltas.milestones ?? []) milestones[milestone.id] = milestone;
+  for (const id of response.deltas.deletedMilestoneIds ?? []) delete milestones[id];
+  for (const milestone of Object.values(milestones)) {
+    if (response.deltas.deletedProjectIds.includes(milestone.projectId)) {
+      delete milestones[milestone.id];
+    }
+  }
+
   return {
     tasks,
     projects,
+    milestones,
     cursor: response.cursor,
     clients: response.clients,
     cadence: response.cadence,
@@ -165,4 +178,14 @@ export function mergeProject(state: CloudBoardState, project: Project): CloudBoa
  */
 export function mergeTask(state: CloudBoardState, task: Task): CloudBoardState {
   return { ...state, tasks: { ...state.tasks, [task.id]: task } };
+}
+
+/**
+ * The mirrored milestones, optionally narrowed to one project. Returns every milestone
+ * regardless of {@link Milestone.archivedAt} or {@link Milestone.closed} — hiding archived
+ * ones from a picker is F14.12's own concern, not this selector's.
+ */
+export function mirroredMilestones(state: CloudBoardState, projectId?: string): Milestone[] {
+  const all = Object.values(state.milestones);
+  return projectId ? all.filter((milestone) => milestone.projectId === projectId) : all;
 }

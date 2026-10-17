@@ -119,8 +119,10 @@ import { type CloudOutboxRow, shapeCloudDelta } from './cloudDelta';
 import {
   CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY,
   CLOUD_OUTBOX_BACKFILL_KEY,
+  CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY,
   backfillAutomationCloudOutbox,
   backfillCloudOutbox,
+  backfillMilestoneCloudOutbox,
 } from './cloudOutboxBackfill';
 import type { JiraEpicFieldCache } from './jira/epicField';
 import type { JiraSprintFieldCache } from './jira/jiraSprint';
@@ -853,6 +855,9 @@ export interface Store {
 
   /** A project's milestones, earliest due first (undated last). */
   listMilestones(projectId: string): Milestone[];
+  /** One milestone by id, however the caller already got it — a cloud outbox lookup
+   *  (F14.11) does not have a `projectId` to call `listMilestones` with. */
+  getMilestone(id: string): Milestone | undefined;
   /** Add one. Undefined when the name is blank or the project is unknown. */
   addMilestone(projectId: string, input: MilestoneInput): Milestone | undefined;
   updateMilestone(id: string, patch: MilestonePatch): Milestone | undefined;
@@ -1956,7 +1961,7 @@ export function createStore(dbPath: string): Store {
     -- happened for the mirror to hear about it.
     CREATE TABLE IF NOT EXISTS cloud_outbox (
       seq      INTEGER PRIMARY KEY AUTOINCREMENT,
-      entity   TEXT    NOT NULL,   -- 'task' | 'project' | 'automation' | 'automationRun'
+      entity   TEXT    NOT NULL,   -- 'task' | 'project' | 'automation' | 'automationRun' | 'milestone'
       entityId TEXT    NOT NULL,
       op       TEXT    NOT NULL,   -- 'insert' | 'update' | 'delete'
       at       INTEGER NOT NULL
@@ -2697,23 +2702,43 @@ export function createStore(dbPath: string): Store {
   // the touch's nested UPDATE crossing into the update trigger) — a one-time cost per
   // entity, not per edit, and exactly what `shapeCloudDelta`'s collapse-to-last-row exists
   // to absorb.
+  //
+  // `milestones` (F14.11) joins this loop with `touch: false`: the table has no `updatedAt`
+  // column at all (see the `archivedAt` ALTER just above, which is the only column this
+  // build added to it), so there is nothing to stamp and no nested UPDATE to cross-fire —
+  // the trigger body is the outbox INSERT alone, which keeps every milestone write at one
+  // outbox row instead of the task/project pair above. A project's `ON DELETE CASCADE` into
+  // `milestones` still fires `trg_milestones_after_delete` for each cascaded row exactly as
+  // it does for tasks (see the `cloud_outbox` table's own docstring), so the server hears
+  // about a project's milestones going away without this loop having to know about cascades
+  // at all.
   const nowMs = `CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`;
-  for (const table of ['tasks', 'projects'] as const) {
-    const entity = table === 'tasks' ? 'task' : 'project';
+  const OUTBOX_TOUCH_TABLES = [
+    { table: 'tasks', entity: 'task', touch: true },
+    { table: 'projects', entity: 'project', touch: true },
+    { table: 'milestones', entity: 'milestone', touch: false },
+  ] as const;
+  for (const { table, entity, touch } of OUTBOX_TOUCH_TABLES) {
+    const touchOnInsert = touch
+      ? `UPDATE ${table} SET updatedAt = ${nowMs} WHERE id = NEW.id AND updatedAt IS NULL;`
+      : '';
+    const touchOnUpdate = touch
+      ? `UPDATE ${table} SET updatedAt = ${nowMs} WHERE id = NEW.id AND updatedAt IS OLD.updatedAt;`
+      : '';
     db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_${table}_after_insert
       AFTER INSERT ON ${table}
       BEGIN
         INSERT INTO cloud_outbox (entity, entityId, op, at)
         VALUES ('${entity}', NEW.id, 'insert', ${nowMs});
-        UPDATE ${table} SET updatedAt = ${nowMs} WHERE id = NEW.id AND updatedAt IS NULL;
+        ${touchOnInsert}
       END;
       CREATE TRIGGER IF NOT EXISTS trg_${table}_after_update
       AFTER UPDATE ON ${table}
       BEGIN
         INSERT INTO cloud_outbox (entity, entityId, op, at)
         VALUES ('${entity}', NEW.id, 'update', ${nowMs});
-        UPDATE ${table} SET updatedAt = ${nowMs} WHERE id = NEW.id AND updatedAt IS OLD.updatedAt;
+        ${touchOnUpdate}
       END;
       CREATE TRIGGER IF NOT EXISTS trg_${table}_after_delete
       AFTER DELETE ON ${table}
@@ -3933,6 +3958,15 @@ export function createStore(dbPath: string): Store {
     db.transaction(() => {
       const queued = backfillAutomationCloudOutbox(db, Date.now());
       upsertState.run(CLOUD_OUTBOX_AUTOMATION_BACKFILL_KEY, JSON.stringify(queued));
+    })();
+  }
+  // Same shape again (F14.11): milestones gained `trg_milestones_*` after this build shipped,
+  // so anything saved before then needs the identical one-shot catch-up, under its own guard
+  // key since a database may already have cleared either backfill above.
+  if (!selectState.get(CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY)) {
+    db.transaction(() => {
+      const queued = backfillMilestoneCloudOutbox(db, Date.now());
+      upsertState.run(CLOUD_OUTBOX_MILESTONE_BACKFILL_KEY, JSON.stringify(queued));
     })();
   }
   // ---------------------------------------------------------------------------
@@ -6156,6 +6190,11 @@ export function createStore(dbPath: string): Store {
 
     listMilestones(projectId) {
       return (selectMilestones.all(projectId) as MilestoneRow[]).map(rowToMilestone);
+    },
+
+    getMilestone(id) {
+      const row = selectMilestone.get(id) as MilestoneRow | undefined;
+      return row ? rowToMilestone(row) : undefined;
     },
 
     addMilestone(projectId, input) {

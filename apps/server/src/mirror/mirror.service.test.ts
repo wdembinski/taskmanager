@@ -3,12 +3,13 @@ import type { DataSource, Repository } from 'typeorm';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
 import { buildProject } from '@tm/shared/projectBuilders';
 import type { Automation, AutomationRun } from '@tm/shared/automation';
-import type { Task } from '@tm/shared/model';
+import type { Milestone, Task } from '@tm/shared/model';
 import { EventBus } from '../events/eventBus';
 import { PresenceRegistry } from '../presence/presence.registry';
 import { PresenceService } from '../presence/presence.service';
 import { AutomationMirror } from '../entities/automationMirror.entity';
 import { AutomationRunMirror } from '../entities/automationRunMirror.entity';
+import { MilestoneMirror } from '../entities/milestoneMirror.entity';
 import { ProjectMirror } from '../entities/projectMirror.entity';
 import { SettingsMirror } from '../entities/settingsMirror.entity';
 import { TaskMirror } from '../entities/taskMirror.entity';
@@ -60,6 +61,21 @@ function buildRun(overrides: Partial<AutomationRun> = {}): AutomationRun {
   };
 }
 
+function buildMilestone(overrides: Partial<Milestone> = {}): Milestone {
+  return {
+    id: 'milestone-1',
+    projectId: 'project-1',
+    name: 'Beta',
+    description: '',
+    dueAt: null,
+    color: '',
+    closed: false,
+    archivedAt: null,
+    createdAt: Date.now(),
+    ...overrides,
+  };
+}
+
 /**
  * A hand-rolled stand-in for the slice of TypeORM `MirrorService` actually calls: `upsert`
  * and `delete` inside a transaction, `findOne`/`find` for the two validation reads, and the
@@ -71,6 +87,7 @@ function buildRun(overrides: Partial<AutomationRun> = {}): AutomationRun {
 class FakeStore {
   readonly projectRows: ProjectMirror[] = [];
   readonly taskRows: TaskMirror[] = [];
+  readonly milestoneRows: MilestoneMirror[] = [];
   readonly settingsRows: SettingsMirror[] = [];
   readonly automationRows: AutomationMirror[] = [];
   readonly automationRunRows: AutomationRunMirror[] = [];
@@ -90,6 +107,7 @@ class FakeStore {
   arrayFor<T>(entity: unknown): T[] {
     if (entity === ProjectMirror) return this.projectRows as unknown as T[];
     if (entity === TaskMirror) return this.taskRows as unknown as T[];
+    if (entity === MilestoneMirror) return this.milestoneRows as unknown as T[];
     if (entity === SettingsMirror) return this.settingsRows as unknown as T[];
     if (entity === AutomationMirror) return this.automationRows as unknown as T[];
     if (entity === AutomationRunMirror) return this.automationRunRows as unknown as T[];
@@ -291,6 +309,7 @@ describe('MirrorService.createTask', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -336,6 +355,7 @@ describe('MirrorService.updateTask / deleteTask', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -490,6 +510,7 @@ describe('MirrorService.createProject / updateProject / deleteProject', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -574,6 +595,7 @@ describe('MirrorService replay to a desktop Client', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -706,6 +728,7 @@ describe('MirrorService settings mirror', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -813,6 +836,7 @@ describe('MirrorService.sync automation mirror', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -916,6 +940,7 @@ describe('MirrorService.sync workflow step fields', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -968,6 +993,7 @@ describe('MirrorService.sync Linear task mirroring (F4.13)', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -1041,6 +1067,7 @@ describe('MirrorService.automations / automationRuns', () => {
       fakeRepository(store.clientRows),
       fakeRepository(store.taskRows),
       fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
       fakeRepository(store.settingsRows),
       fakeRepository(store.automationRows),
       fakeRepository(store.automationRunRows),
@@ -1098,5 +1125,98 @@ describe('MirrorService.automations / automationRuns', () => {
     expect(result.runs).toHaveLength(100);
     expect(result.runs[0]?.id).toBe('run-149'); // newest first
     expect(result.runs[99]?.id).toBe('run-50');
+  });
+});
+
+describe('MirrorService.sync milestone mirror (F14.11)', () => {
+  function buildService(): { service: MirrorService; store: FakeStore } {
+    const store = new FakeStore();
+    const service = new MirrorService(
+      fakeDataSource(store),
+      fakeRepository(store.clientRows),
+      fakeRepository(store.taskRows),
+      fakeRepository(store.projectRows),
+      fakeRepository(store.milestoneRows),
+      fakeRepository(store.settingsRows),
+      fakeRepository(store.automationRows),
+      fakeRepository(store.automationRunRows),
+      fakeRepository(store.tombstoneRows),
+      fakeRepository<CommandResultRow>([] as unknown as CommandResultRow[]),
+      new PresenceService(new PresenceRegistry()),
+      new EventBus(),
+    );
+    return { service, store };
+  }
+
+  function syncMilestones(
+    service: MirrorService,
+    overrides: {
+      milestones?: Milestone[];
+      deletedMilestoneIds?: string[];
+    },
+  ): Promise<unknown> {
+    return service.sync('account-1', {
+      clientId: 'desktop-1',
+      cursor: null,
+      focused: false,
+      deltas: { tasks: [], projects: [], deletedTaskIds: [], deletedProjectIds: [], ...overrides },
+      ackedCommandIds: [],
+    });
+  }
+
+  it('a sync with a milestone shows on board()', async () => {
+    const { service } = buildService();
+    const milestone = buildMilestone();
+
+    await syncMilestones(service, { milestones: [milestone] });
+
+    const board = await service.board('account-1', undefined, undefined, false);
+    expect(board.deltas.milestones).toHaveLength(1);
+    expect(board.deltas.milestones?.[0]?.id).toBe(milestone.id);
+  });
+
+  it('a second sync with archivedAt set returns the archived milestone past the first cursor', async () => {
+    const { service } = buildService();
+    const milestone = buildMilestone();
+
+    await syncMilestones(service, { milestones: [milestone] });
+    const firstBoard = await service.board('account-1', undefined, undefined, false);
+
+    await syncMilestones(service, {
+      milestones: [{ ...milestone, archivedAt: 1_700_000_000_000 }],
+    });
+
+    const secondBoard = await service.board('account-1', firstBoard.cursor, undefined, false);
+    expect(secondBoard.deltas.milestones).toHaveLength(1);
+    expect(secondBoard.deltas.milestones?.[0]?.archivedAt).toBe(1_700_000_000_000);
+  });
+
+  it('a delete returns deletedMilestoneIds and removes the row', async () => {
+    const { service, store } = buildService();
+    const milestone = buildMilestone();
+
+    await syncMilestones(service, { milestones: [milestone] });
+    await syncMilestones(service, { deletedMilestoneIds: [milestone.id] });
+
+    expect(store.milestoneRows).toHaveLength(0);
+    const board = await service.board('account-1', undefined, undefined, false);
+    expect(board.deltas.milestones).toHaveLength(0);
+    expect(board.deltas.deletedMilestoneIds).toContain(milestone.id);
+  });
+
+  it('re-upserting clears the tombstone', async () => {
+    const { service, store } = buildService();
+    const milestone = buildMilestone();
+
+    await syncMilestones(service, { milestones: [milestone] });
+    await syncMilestones(service, { deletedMilestoneIds: [milestone.id] });
+    expect(store.tombstoneRows).toHaveLength(1);
+
+    await syncMilestones(service, { milestones: [milestone] });
+
+    expect(store.tombstoneRows).toHaveLength(0);
+    const board = await service.board('account-1', undefined, undefined, false);
+    expect(board.deltas.milestones).toHaveLength(1);
+    expect(board.deltas.deletedMilestoneIds).not.toContain(milestone.id);
   });
 });

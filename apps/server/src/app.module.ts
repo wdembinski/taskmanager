@@ -11,6 +11,7 @@ import { AutomationRunMirror } from './entities/automationRunMirror.entity';
 import { Client } from './entities/client.entity';
 import { Command } from './entities/command.entity';
 import { CommandResultRow } from './entities/commandResult.entity';
+import { MilestoneMirror } from './entities/milestoneMirror.entity';
 import { PersonalAccessToken } from './entities/personalAccessToken.entity';
 import { SettingsMirror } from './entities/settingsMirror.entity';
 import { SkillMirror } from './entities/skillMirror.entity';
@@ -58,6 +59,7 @@ import { WorkflowsModule } from './workflows/workflows.module';
           Client,
           Command,
           CommandResultRow,
+          MilestoneMirror,
           PersonalAccessToken,
           ProjectMirror,
           SettingsMirror,

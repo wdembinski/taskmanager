@@ -277,6 +277,7 @@ export class CloudPoller {
         getProject: this.deps.store.getProject,
         getAutomation: this.deps.store.getAutomation,
         getAutomationRun: this.deps.store.getAutomationRun,
+        getMilestone: this.deps.store.getMilestone,
       },
       SYNC_BYTES_LIMIT,
     );
