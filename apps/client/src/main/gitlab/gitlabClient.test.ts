@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GitLabClient, GitLabError, toMergeRequestState, toPipelineStatus } from './gitlabClient';
+import { mergeRequestChangesBody, mergeRequestDiffsPage1 } from './__fixtures__/mergeRequestDiffs';
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return {
@@ -8,6 +9,17 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
     statusText: 'OK',
     json: async () => body,
     text: async () => JSON.stringify(body),
+    headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
+  } as unknown as Response;
+}
+
+function textResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 404 ? 'Not Found' : 'OK',
+    json: async () => JSON.parse(body),
+    text: async () => body,
     headers: { get: (k: string) => headers[k.toLowerCase()] ?? null },
   } as unknown as Response;
 }
@@ -411,5 +423,211 @@ describe('GitLabClient.getMergeProposal', () => {
       vi.fn().mockResolvedValue(jsonResponse({ errors: [{ message: 'not found' }] })),
     );
     await expect(client().getMergeProposal('g/p', 12)).rejects.toBeInstanceOf(GitLabError);
+  });
+});
+
+describe('GitLabClient.getMergeRequest', () => {
+  it('surfaces diff_refs from a recorded detail body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          id: 1,
+          iid: 7,
+          project_id: 42,
+          title: 't',
+          state: 'opened',
+          web_url: 'u',
+          source_branch: 'feat',
+          target_branch: 'main',
+          updated_at: 'x',
+          diff_refs: {
+            base_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            head_sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+            start_sha: 'cccccccccccccccccccccccccccccccccccccccc',
+          },
+        }),
+      ),
+    );
+
+    const mr = await client().getMergeRequest(42, 7);
+
+    expect(mr.diff_refs).toEqual({
+      base_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      head_sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      start_sha: 'cccccccccccccccccccccccccccccccccccccccc',
+    });
+  });
+});
+
+describe('GitLabClient.listMergeRequestDiffs', () => {
+  it('pages /diffs via x-next-page and reports truncated: false once the last page has none', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(mergeRequestDiffsPage1, 200, { 'x-next-page': '2' }))
+      .mockResolvedValueOnce(jsonResponse([], 200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().listMergeRequestDiffs(42, 7);
+
+    expect(result.endpoint).toBe('diffs');
+    expect(result.truncated).toBe(false);
+    expect(result.diffs.map((d) => d.new_path)).toEqual(['src/app.ts', 'src/utils/format.ts']);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://gitlab.com/api/v4/projects/42/merge_requests/7/diffs?per_page=100&page=1',
+    );
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
+      'https://gitlab.com/api/v4/projects/42/merge_requests/7/diffs?per_page=100&page=2',
+    );
+  });
+
+  it('reports truncated: true when the page cap stops it with a next page still on offer', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(mergeRequestDiffsPage1, 200, { 'x-next-page': '2' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().listMergeRequestDiffs(42, 7, 1);
+
+    expect(result.truncated).toBe(true);
+    expect(result.diffs).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to /changes on a 404 from the first page, mapping changes to diffs', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ message: '404 Merge Request Not Found' }, 404))
+      .mockResolvedValueOnce(jsonResponse(mergeRequestChangesBody));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().listMergeRequestDiffs(42, 7);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.endpoint).toBe('changes');
+    expect(result.truncated).toBe(true);
+    expect(result.diffs.map((d) => d.new_path)).toEqual(['assets/logo.png', 'docs/old-notes.md']);
+    expect(String(fetchMock.mock.calls[1][0])).toBe(
+      'https://gitlab.com/api/v4/projects/42/merge_requests/7/changes',
+    );
+  });
+
+  it('does not fall back to /changes on a non-404 error from /diffs', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ message: 'boom' }, 500));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(client().listMergeRequestDiffs(42, 7)).rejects.toMatchObject({ status: 500 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates a 404 from /changes too, rather than swallowing it', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ message: 'not found' }, 404))
+      .mockResolvedValueOnce(jsonResponse({ message: 'not found' }, 404));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(client().listMergeRequestDiffs(42, 7)).rejects.toMatchObject({ status: 404 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates a 404 on a LATER page rather than falling back — only the first page does', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(mergeRequestDiffsPage1, 200, { 'x-next-page': '2' }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'not found' }, 404));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(client().listMergeRequestDiffs(42, 7)).rejects.toMatchObject({ status: 404 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes a too_large entry with an empty diff through untouched', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ message: '404' }, 404))
+      .mockResolvedValueOnce(jsonResponse(mergeRequestChangesBody));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().listMergeRequestDiffs(42, 7);
+
+    const tooLarge = result.diffs.find((d) => d.new_path === 'assets/logo.png');
+    expect(tooLarge).toMatchObject({ too_large: true, diff: '' });
+  });
+});
+
+describe('GitLabClient.getRawFile', () => {
+  it('URL-encodes the whole path as one %2F-joined segment and carries ?ref=', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(textResponse('export const x = 1;\n'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const text = await client().getRawFile(42, 'src/components/Button.tsx', 'feature/x');
+
+    expect(text).toBe('export const x = 1;\n');
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://gitlab.com/api/v4/projects/42/repository/files/src%2Fcomponents%2FButton.tsx/raw?ref=feature%2Fx',
+    );
+  });
+
+  it('accepts a URL-encoded project path as well as a numeric id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(textResponse('content'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().getRawFile('g/s/p', 'README.md', 'main');
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      'https://gitlab.com/api/v4/projects/g%2Fs%2Fp/repository/files/README.md/raw?ref=main',
+    );
+  });
+
+  it('rejects a missing file at that ref with a GitLabError carrying status 404', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(textResponse('{"message":"404 File Not Found"}', 404)),
+    );
+
+    await expect(client().getRawFile(42, 'gone.ts', 'main')).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(client().getRawFile(42, 'gone.ts', 'main')).rejects.toBeInstanceOf(GitLabError);
+  });
+});
+
+describe('GitLabClient.listReviewerMergeRequests', () => {
+  it('sends reviewer_username, scope=all (the default would hide them) and state=opened', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([{ iid: 1 }], 200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().listReviewerMergeRequests('wd');
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('/merge_requests?reviewer_username=wd');
+    expect(url).toContain('scope=all');
+    expect(url).toContain('state=opened');
+  });
+
+  it('pages via x-next-page and reports truncated at the cap', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse([{ iid: 1 }], 200, { 'x-next-page': '2' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { mergeRequests, truncated } = await client().listReviewerMergeRequests('wd', 1);
+
+    expect(mergeRequests).toHaveLength(1);
+    expect(truncated).toBe(true);
+  });
+
+  it('reports truncated: false once the last page has no next-page header', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([{ iid: 1 }], 200, { 'x-next-page': '2' }))
+      .mockResolvedValueOnce(jsonResponse([{ iid: 2 }], 200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { mergeRequests, truncated } = await client().listReviewerMergeRequests('wd');
+
+    expect(mergeRequests.map((m) => m.iid)).toEqual([1, 2]);
+    expect(truncated).toBe(false);
   });
 });
