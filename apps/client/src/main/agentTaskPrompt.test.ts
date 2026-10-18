@@ -499,10 +499,18 @@ describe('the plan scope rules', () => {
     expect(prompt).toMatch(/Verification IS work and does belong/);
   });
 
+  it('tells it that a UI step must screenshot itself and ask for sign-off', () => {
+    const prompt = planned();
+    expect(prompt).toMatch(/ui-shots\.mjs --attach/);
+    expect(prompt).toMatch(/needs visual sign-off/);
+    expect(prompt).toMatch(/a UI task is not Done until a human has looked/);
+  });
+
   it('says none of it to an ordinary run — only a planning turn writes steps', () => {
     const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, { branch: 'orch/abc' });
     expect(prompt).not.toMatch(/Merging or releasing/);
     expect(prompt).not.toMatch(/Sections that are not work/);
+    expect(prompt).not.toMatch(/ui-shots\.mjs/);
     expect(prompt).not.toContain('\n\n\n');
   });
 
@@ -512,6 +520,7 @@ describe('the plan scope rules', () => {
     });
     expect(prompt).toMatch(/Merging or releasing/);
     expect(prompt).toMatch(/Sections that are not work/);
+    expect(prompt).toMatch(/needs visual sign-off/);
     expect(prompt).not.toContain('\n\n\n');
   });
 });

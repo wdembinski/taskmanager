@@ -50,14 +50,27 @@
  * `useResolvedAppearance` stamps independently of which theme object the provider happens to
  * be handed. Reverted immediately after.
  */
-import { spawn, spawnSync } from 'node:child_process';
-import { createServer } from 'node:http';
-import { createServer as createNetServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  collectExceptions,
+  connectCdp,
+  emulateScheme,
+  evaluate,
+  findBrowser,
+  freshLoad,
+  getFreePort,
+  killBrowser,
+  launchChrome,
+  openTab,
+  screenshot,
+  startStaticServer,
+  waitFor,
+} from './lib/cdp.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const requireFromWeb = createRequire(join(root, 'apps', 'web', 'noop.cjs'));
@@ -117,196 +130,11 @@ function buildClientRenderer() {
   if (res.status !== 0) throw new Error('electron-vite build failed for @tm/client');
 }
 
-// ── Two static file servers, one per host's built output ───────────────────────────────────
+// ── Two static file servers, one per host's built output; Chrome discovery and CDP driving —
+// all shared with shots-board.mjs via scripts/lib/cdp.mjs ──────────────────────────────────
 
-const CONTENT_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
-  '.webmanifest': 'application/manifest+json',
-  '.map': 'application/json',
-};
-
-function serveStatic(outDir, pathname, res) {
-  let rel = pathname === '/' ? '/index.html' : pathname;
-  let filePath = join(outDir, rel);
-  if (!existsSync(filePath) || statSync(filePath).isDirectory()) {
-    filePath = join(outDir, 'index.html');
-  }
-  const body = readFileSync(filePath);
-  const type = CONTENT_TYPES[extname(filePath)] ?? 'application/octet-stream';
-  res.writeHead(200, { 'content-type': type });
-  res.end(body);
-}
-
-async function startStaticServer(outDir) {
-  const server = createServer((req, res) => {
-    try {
-      const url = new URL(req.url, 'http://127.0.0.1');
-      serveStatic(outDir, url.pathname, res);
-    } catch (e) {
-      res.writeHead(500);
-      res.end(String(e));
-    }
-  });
-  const port = await new Promise((resolve, reject) => {
-    server.listen(0, '127.0.0.1', () => resolve(server.address().port));
-    server.on('error', reject);
-  });
-  return { server, port };
-}
-
-// ── Chrome discovery and CDP driving — same mechanism as verify-mobile.mjs ─────────────────
-
-function findBrowser() {
-  const envPath = process.env.CHROME_PATH;
-  if (envPath && existsSync(envPath)) return envPath;
-
-  const candidates =
-    process.platform === 'win32'
-      ? [
-          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-          join(process.env.LOCALAPPDATA ?? '', 'Google\\Chrome\\Application\\chrome.exe'),
-          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-        ]
-      : process.platform === 'darwin'
-        ? [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-          ]
-        : [
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/usr/bin/chromium-browser',
-            '/usr/bin/chromium',
-            '/usr/bin/microsoft-edge',
-          ];
-  const found = candidates.find((p) => p && existsSync(p));
-  if (!found) {
-    throw new Error(
-      'no Chrome or Edge found — set CHROME_PATH, or install Chrome/Edge at a standard location',
-    );
-  }
-  return found;
-}
-
-async function waitFor(
-  conditionFn,
-  { timeoutMs = 5000, intervalMs = 150, label = 'condition' } = {},
-) {
-  const deadline = Date.now() + timeoutMs;
-  let lastErr;
-  for (;;) {
-    try {
-      if (await conditionFn()) return true;
-    } catch (e) {
-      lastErr = e;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for ${label}${lastErr ? `: ${lastErr.message}` : ''}`);
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-}
-
-function launchChrome(execPath, rdpPort) {
-  const args = [
-    '--headless=new',
-    `--remote-debugging-port=${rdpPort}`,
-    `--user-data-dir=${chromeProfileDir}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-extensions',
-    '--disable-component-update',
-    '--disable-background-networking',
-    '--hide-scrollbars',
-    'about:blank',
-  ];
-  return spawn(execPath, args, { stdio: ['ignore', 'ignore', 'ignore'] });
-}
-
-async function openTab(rdpPort, url) {
-  let res = await fetch(`http://127.0.0.1:${rdpPort}/json/new?${encodeURIComponent(url)}`, {
-    method: 'PUT',
-  });
-  if (!res.ok) {
-    res = await fetch(`http://127.0.0.1:${rdpPort}/json/new?${encodeURIComponent(url)}`);
-  }
-  if (!res.ok) throw new Error(`could not open a tab (${res.status} ${res.statusText})`);
-  return res.json();
-}
-
-function connectCdp(wsUrl) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
-    const pending = new Map();
-    const eventListeners = new Map();
-    let nextId = 1;
-    const timer = setTimeout(() => reject(new Error('CDP connect timed out')), 10000);
-    ws.addEventListener('open', () => {
-      clearTimeout(timer);
-      resolve(cdp);
-    });
-    ws.addEventListener('error', () => {
-      clearTimeout(timer);
-      reject(new Error('CDP websocket error'));
-    });
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id !== undefined && pending.has(msg.id)) {
-        const { resolve: res, reject: rej } = pending.get(msg.id);
-        pending.delete(msg.id);
-        if (msg.error) rej(new Error(msg.error.message));
-        else res(msg.result);
-        return;
-      }
-      if (msg.method && eventListeners.has(msg.method)) {
-        for (const listener of eventListeners.get(msg.method)) listener(msg.params);
-      }
-    });
-    const cdp = {
-      send(method, params = {}) {
-        return new Promise((res, rej) => {
-          const id = nextId++;
-          pending.set(id, { resolve: res, reject: rej });
-          ws.send(JSON.stringify({ id, method, params }));
-        });
-      },
-      on(method, listener) {
-        if (!eventListeners.has(method)) eventListeners.set(method, []);
-        eventListeners.get(method).push(listener);
-      },
-      close() {
-        ws.close();
-      },
-    };
-  });
-}
-
-async function evaluate(cdp, expression) {
-  const result = await cdp.send('Runtime.evaluate', {
-    expression,
-    returnByValue: true,
-    awaitPromise: true,
-  });
-  if (result.exceptionDetails) {
-    const desc =
-      result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails);
-    throw new Error(`evaluate failed: ${desc}`);
-  }
-  return result.result.value;
-}
-
-async function screenshot(cdp, name) {
-  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
-  writeFileSync(join(shotsDir, `${name}.png`), Buffer.from(data, 'base64'));
+async function takeScreenshot(cdp, name) {
+  await screenshot(cdp, join(shotsDir, `${name}.png`));
 }
 
 /**
@@ -389,39 +217,6 @@ function clientInitScript(settingsOverrides) {
   })();`;
 }
 
-async function freshLoad(cdp, originUrl, { initScript = '' } = {}) {
-  await cdp.send('Storage.clearDataForOrigin', { origin: originUrl, storageTypes: 'all' });
-  if (cdp._initScriptId) {
-    await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: cdp._initScriptId });
-  }
-  const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
-    source: initScript,
-  });
-  cdp._initScriptId = identifier;
-  // A same-document navigation (e.g. the bare "/" every prior load left behind) reuses the
-  // existing execution context, so neither the storage clear above nor the init script about
-  // to run would ever reach a fresh page. Routing every load through about:blank first forces
-  // a genuine new document every time — same reasoning as verify-mobile.mjs's freshLoad.
-  await cdp.send('Page.navigate', { url: 'about:blank' });
-  await cdp.send('Page.navigate', { url: originUrl });
-  try {
-    await waitFor(
-      async () =>
-        (await evaluate(
-          cdp,
-          "document.readyState === 'complete' && document.getElementById('root') !== null && document.getElementById('root').children.length > 0",
-        )) === true,
-      { timeoutMs: 15000, label: 'page load' },
-    );
-  } catch (e) {
-    const diag = await evaluate(
-      cdp,
-      'JSON.stringify({ready: document.readyState, href: location.href, bodyLen: document.body.innerText.length})',
-    ).catch((e2) => `(diagnostics unavailable: ${e2.message})`);
-    throw new Error(`${e.message} — ${diag}`);
-  }
-}
-
 /** The provider root Fluent mounts — `#root`'s one child, carrying the `style` both hosts'
  *  `main.tsx` hand `FluentProvider`, including every `tokenCssVars(scheme)` custom property. */
 async function providerCustomProperty(cdp, name) {
@@ -481,19 +276,15 @@ async function assertSchemeFacts(cdp, label, scheme) {
 
 async function webScheme(cdp, origin, osScheme) {
   const label = `Web (OS ${osScheme})`;
-  await cdp.send('Emulation.setEmulatedMedia', {
-    features: [{ name: 'prefers-color-scheme', value: osScheme }],
-  });
+  await emulateScheme(cdp, osScheme);
   await freshLoad(cdp, origin);
   await assertSchemeFacts(cdp, label, osScheme);
-  await screenshot(cdp, `web-${osScheme}`);
+  await takeScreenshot(cdp, `web-${osScheme}`);
 }
 
 async function webPrefOverridesOs(cdp, origin) {
   const label = 'Web (stored dark pref under OS light)';
-  await cdp.send('Emulation.setEmulatedMedia', {
-    features: [{ name: 'prefers-color-scheme', value: 'light' }],
-  });
+  await emulateScheme(cdp, 'light');
   await freshLoad(cdp, origin);
   await evaluate(
     cdp,
@@ -507,16 +298,18 @@ async function webPrefOverridesOs(cdp, origin) {
     { timeoutMs: 5000, label: 'stored dark pref to take effect' },
   );
   await assertSchemeFacts(cdp, label, 'dark');
-  await screenshot(cdp, 'web-pref-overrides-os');
+  await takeScreenshot(cdp, 'web-pref-overrides-os');
 }
 
 // ── Desktop renderer ──────────────────────────────────────────────────────────────────────
 
 async function desktopScheme(cdp, origin, appearance) {
   const label = `Desktop (appearance: ${appearance})`;
-  await freshLoad(cdp, origin, {
-    initScript: clientInitScript({ appearance, transparency: 'reduced', fontSizePx: 14 }),
-  });
+  await freshLoad(
+    cdp,
+    origin,
+    clientInitScript({ appearance, transparency: 'reduced', fontSizePx: 14 }),
+  );
   await assertSchemeFacts(cdp, label, appearance);
   const dataGlass = await evaluate(cdp, 'document.documentElement.dataset.glass');
   check(
@@ -524,7 +317,7 @@ async function desktopScheme(cdp, origin, appearance) {
     dataGlass === 'opaque',
     `got "${dataGlass}"`,
   );
-  await screenshot(cdp, `desktop-${appearance}`);
+  await takeScreenshot(cdp, `desktop-${appearance}`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────────────────
@@ -533,7 +326,7 @@ let webServerHandle;
 let clientServerHandle;
 let chromeProc;
 let cdp;
-let pageErrors = 0;
+let pageErrors;
 
 async function main() {
   console.log('building @tm/web ...');
@@ -551,15 +344,8 @@ async function main() {
 
   const chromePath = findBrowser();
   console.log(`using browser: ${chromePath}`);
-  const rdpPort = await new Promise((resolve, reject) => {
-    const probe = createNetServer();
-    probe.listen(0, '127.0.0.1', () => {
-      const p = probe.address().port;
-      probe.close(() => resolve(p));
-    });
-    probe.on('error', reject);
-  });
-  chromeProc = launchChrome(chromePath, rdpPort);
+  const rdpPort = await getFreePort();
+  chromeProc = launchChrome(chromePath, rdpPort, { profileDir: chromeProfileDir });
   await waitFor(
     async () => {
       const res = await fetch(`http://127.0.0.1:${rdpPort}/json/version`);
@@ -571,14 +357,7 @@ async function main() {
   cdp = await connectCdp(tabInfo.webSocketDebuggerUrl);
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
-  cdp.on('Runtime.exceptionThrown', (params) => {
-    pageErrors++;
-    console.error(
-      'uncaught page exception:',
-      params.exceptionDetails?.text,
-      params.exceptionDetails?.exception?.description,
-    );
-  });
+  pageErrors = collectExceptions(cdp);
 
   await webScheme(cdp, webOrigin, 'light');
   await webScheme(cdp, webOrigin, 'dark');
@@ -587,7 +366,11 @@ async function main() {
   await desktopScheme(cdp, clientOrigin, 'light');
   await desktopScheme(cdp, clientOrigin, 'dark');
 
-  check('no uncaught page exceptions across every load', pageErrors === 0, `${pageErrors} thrown`);
+  check(
+    'no uncaught page exceptions across every load',
+    pageErrors.count === 0,
+    `${pageErrors.count} thrown`,
+  );
 
   console.log(`\n${checks} checks, ${failures === 0 ? 'ALL PASS' : `${failures} FAILED`}`);
   console.log(`screenshots: ${shotsDir}`);
@@ -605,13 +388,7 @@ main()
     } catch {
       // already closed
     }
-    if (chromeProc) {
-      if (process.platform === 'win32') {
-        spawnSync('taskkill', ['/PID', String(chromeProc.pid), '/T', '/F']);
-      } else {
-        chromeProc.kill('SIGKILL');
-      }
-    }
+    killBrowser(chromeProc);
     webServerHandle?.close();
     clientServerHandle?.close();
   });

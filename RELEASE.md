@@ -376,6 +376,18 @@ summary of the steps that worked.
 
 ---
 
+## UI changes
+
+Not one of the gates above, and not run by `release.yml` at all — there is no job in the
+pipeline for it, and none should be added. `node scripts/ui-shots.mjs --attach` screenshots
+the real UI headlessly next to its mockup; the sheet lands at `.vipper/shots/index.html`,
+and `--attach` copies it into `.vipper/attach/` for the app to pick up as attachments on the
+card. A human looks at the sheet and approves it before that **card** is Done — a release
+is not blocked on it, and nothing here checks that it happened. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) §6.
+
+---
+
 ## Things that have gone wrong before
 
 Each of these cost a release. They are here so they cost nothing again.

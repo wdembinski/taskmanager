@@ -762,6 +762,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   // is injected here, exactly as the store's own path is.
   scheduler.setAttachmentRoot(userData);
 
+  // Step 5 of the screenshot-the-real-UI plan: a settled run's own attach outbox is pushed
+  // to the UI the same way a human's `attachment:add` is — see `pushAttachments` below,
+  // hoisted into scope here.
+  scheduler.setAttachmentsChanged(() => pushAttachments());
+
   // Phase 6: heal tasks the previous run left mid-flight (running/waiting-input →
   // pending, keeping their session id so a re-run resumes them). Runs before the
   // window paints; the UI re-queries project:list on mount and sees the fix.

@@ -304,3 +304,22 @@ the change seen working. Then:
       derives the bump from the commit type, so the `feat`/`fix` type must be
       right.
 - [ ] No tag. The pipeline cuts it when this lands on `development` (§4).
+
+## 6. UI changes
+
+A commit that changes the UI is not Done when `pnpm test` is green — it still needs a
+human to look at it. Run:
+
+```bash
+node scripts/ui-shots.mjs --attach
+```
+
+This screenshots the real UI headlessly (no `pnpm dev`, no window — see
+[`RELEASE.md`](RELEASE.md)'s rule against launching the app) and lays each screen next to
+its mockup. The contact sheet lands at `.vipper/shots/index.html` (`--out` to point it
+elsewhere); `--attach` also copies the run into `.vipper/attach/`, which the app ingests as
+attachments on whichever card ran it, so the shots show up on the card itself.
+
+The human approves the shots before the card moves to Done — that approval is the sign-off,
+not a step in this checklist. This never runs in CI: it has no pass/fail verdict of its own,
+only screenshots for a person to look at, so there is nothing for a pipeline to gate on.
