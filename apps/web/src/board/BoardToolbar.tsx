@@ -26,7 +26,10 @@ import type { ReactNode } from 'react';
 import {
   Button,
   Dropdown,
+  MenuItem,
   Option,
+  Overflow,
+  OverflowItem,
   Spinner,
   Switch,
   ToggleButton,
@@ -41,7 +44,13 @@ import {
 } from '@fluentui/react-icons';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { LinkModeSwitch } from '@tm/ui/board/LinkModeSwitch';
-import type { LinkMode } from '@tm/ui/board/linkMode';
+import { nextLinkMode, type LinkMode } from '@tm/ui/board/linkMode';
+import {
+  TOOLBAR_OVERFLOW_PADDING,
+  ToolbarOverflowMenu,
+  ToolbarOverflowMenuGroup,
+  ToolbarOverflowMenuItem,
+} from '@tm/ui/board/ToolbarOverflow';
 import { archivedCountLabel, archivedCountTitle } from '@tm/ui/board/ArchivedCardsDialog';
 import {
   doneSwitchLabel,
@@ -118,117 +127,208 @@ export function BoardToolbar({
 }: BoardToolbarProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   return (
-    <div className={layout.toolbar}>
-      {/* Which board's cards are shown: every board unioned (the default), or one board
+    // One row, never two or three (the 2026-10-18 screenshot review) — `Overflow` hides
+    // whichever `OverflowItem`s below no longer fit behind the "···" menu at the end.
+    //
+    // EVERY real control is an `OverflowItem`, the always-visible ones included (`pinned`) —
+    // the overflow manager's `occupiedSize()` only sums the width of REGISTERED items against
+    // the container's full width (`@fluentui/priority-overflow`'s `overflowManager.js`), so an
+    // unwrapped child is invisible to its budget math and the row overflows the viewport
+    // instead of the menu. Only the spacer stays unregistered — see `ToolbarOverflow.tsx`.
+    <Overflow minimumVisible={1} padding={TOOLBAR_OVERFLOW_PADDING}>
+      <div className={layout.toolbar}>
+        {/* Which board's cards are shown: every board unioned (the default), or one board
           alone — the desktop's own scope picker (`MyTasks.tsx`), same options and same
           persisted setting. Absent entirely with only Personal to choose from, so a
           database with no other board renders a toolbar byte-identical to before this
           existed rather than one extra control that does nothing. */}
-      {scopes.length > 1 && (
-        <Dropdown
-          size="small"
-          value={scopeLabel}
-          selectedOptions={[scope]}
-          title="Which board this shows"
-          onOptionSelect={(_e, d) => {
-            if (d.optionValue) onScopeChange(d.optionValue);
-          }}
-        >
-          <Option value="all">All boards</Option>
-          {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
-            <Option key={s.id} value={s.id}>
-              {s.name}
-            </Option>
-          ))}
-        </Dropdown>
-      )}
-      <Switch
-        label={doneSwitchLabel(showDone, hiddenDone)}
-        title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}
-        checked={showDone}
-        onChange={(_e, d) => onShowDoneChange(d.checked)}
-      />
-      <Switch
-        label="Current sprint"
-        checked={currentSprintOnly}
-        disabled={syncing}
-        onChange={(_e, d) => onCurrentSprintOnlyChange(d.checked)}
-      />
-      <span className={layout.grow} />
-      {/* Focus the board on ONE route through it — the desktop's own reasoning, and its own
+        {scopes.length > 1 && (
+          // High `priority`, not `pinned` — see `ToolbarOverflow.tsx`'s own comment: at ~250px
+          // this is the widest control, and pinning it left nothing to hide once the detail
+          // pane narrowed the board enough that even the "···" button had nowhere to go.
+          //
+          // Wrapped in a plain `<div>`, not handed to `OverflowItem` directly — `Dropdown`
+          // renders its own outer wrapper around the combobox button it forwards a ref to, and
+          // `[data-overflowing]` only ever lands on that inner button; the wrapper keeps its
+          // own border and survives as a stray line once the button inside it vanishes.
+          <OverflowItem id="scope" priority={100}>
+            <div>
+              <Dropdown
+                size="small"
+                value={scopeLabel}
+                selectedOptions={[scope]}
+                title="Which board this shows"
+                onOptionSelect={(_e, d) => {
+                  if (d.optionValue) onScopeChange(d.optionValue);
+                }}
+              >
+                <Option value="all">All boards</Option>
+                {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
+                  <Option key={s.id} value={s.id}>
+                    {s.name}
+                  </Option>
+                ))}
+              </Dropdown>
+            </div>
+          </OverflowItem>
+        )}
+        <OverflowItem id="done" pinned>
+          <Switch
+            label={doneSwitchLabel(showDone, hiddenDone)}
+            title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}
+            checked={showDone}
+            onChange={(_e, d) => onShowDoneChange(d.checked)}
+          />
+        </OverflowItem>
+        <OverflowItem id="sprint">
+          <Switch
+            label="Current sprint"
+            checked={currentSprintOnly}
+            disabled={syncing}
+            onChange={(_e, d) => onCurrentSprintOnlyChange(d.checked)}
+          />
+        </OverflowItem>
+        <span className={layout.grow} />
+        {/* Focus the board on ONE route through it — the desktop's own reasoning, and its own
           `disabledFocusable`: with nothing selected the control has something to SAY, and a
           plainly disabled button can be neither hovered for its tooltip nor tabbed to. */}
-      <ToggleButton
-        size="small"
-        appearance="subtle"
-        icon={<ArrowRoutingRegular />}
-        checked={chainFocus}
-        disabledFocusable={!canFocusChain}
-        title={
-          !canFocusChain
-            ? 'Pick a card first — focus follows the selected card’s chain'
-            : chainFocus
-              ? 'Showing this card’s chain only — click for the whole board'
-              : 'Show only this card’s chain: what it waits for, and what waits on it'
-        }
-        onClick={() => onChainFocusChange(!chainFocus)}
-      >
-        Chain
-      </ToggleButton>
-      {/* Off/Focus/All: how the links themselves draw, distinct from Chain above — that one
+        <OverflowItem id="chain">
+          <ToggleButton
+            size="small"
+            appearance="subtle"
+            icon={<ArrowRoutingRegular />}
+            checked={chainFocus}
+            disabledFocusable={!canFocusChain}
+            title={
+              !canFocusChain
+                ? 'Pick a card first — focus follows the selected card’s chain'
+                : chainFocus
+                  ? 'Showing this card’s chain only — click for the whole board'
+                  : 'Show only this card’s chain: what it waits for, and what waits on it'
+            }
+            onClick={() => onChainFocusChange(!chainFocus)}
+          >
+            Chain
+          </ToggleButton>
+        </OverflowItem>
+        {/* Off/Focus/All: how the links themselves draw, distinct from Chain above — that one
           filters which cards are on the board, this one changes how the links between
           whatever cards ARE there look. `L` cycles it (`BoardScreen`'s own shortcut). */}
-      <LinkModeSwitch mode={boardLinks} onChange={onBoardLinksChange} />
-      {/* Sync the tracker now. It is the DESKTOP that talks to JIRA — this relays the same
+        <OverflowItem id="linkmode">
+          <LinkModeSwitch mode={boardLinks} onChange={onBoardLinksChange} />
+        </OverflowItem>
+        {/* Sync the tracker now. It is the DESKTOP that talks to JIRA — this relays the same
           `jira:sync` its own button calls — so the cards it changes arrive here on the next
           board poll rather than when this settles. */}
-      <Button
-        size="small"
-        appearance="subtle"
-        icon={syncing ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
-        disabled={syncing}
-        title={syncing ? 'Syncing…' : 'Sync the tracker now, on your desktop app'}
-        aria-label="Sync now"
-        onClick={onSync}
-      />
-      {/* What actually happened in the repo, beside what the board believes about it — the
+        <OverflowItem id="sync">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={syncing ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
+            disabled={syncing}
+            title={syncing ? 'Syncing…' : 'Sync the tracker now, on your desktop app'}
+            aria-label="Sync now"
+            onClick={onSync}
+          />
+        </OverflowItem>
+        {/* What actually happened in the repo, beside what the board believes about it — the
           desktop's own control, and its own reasoning: a view rather than a filter, and off
           by default because it costs a `git log`. Here that log runs on the desktop and the
           answer comes back over the relay, which is the only difference between the two. */}
-      <Button
-        size="small"
-        appearance="subtle"
-        icon={<BranchForkRegular />}
-        title={showGraph ? 'Hide the commit graph' : 'Show the repository’s commit graph'}
-        aria-label={showGraph ? 'Hide the commit graph' : 'Show the commit graph'}
-        aria-pressed={showGraph}
-        onClick={() => onShowGraphChange(!showGraph)}
-      />
-      <Button
-        size="small"
-        appearance="subtle"
-        icon={showDetail ? <PanelRightContractRegular /> : <PanelRightExpandRegular />}
-        title={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
-        aria-label={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
-        aria-pressed={showDetail}
-        onClick={() => onShowDetailChange(!showDetail)}
-      />
-      {/* Only when something has left the board: on a healthy board this is an empty list,
+        <OverflowItem id="graph">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<BranchForkRegular />}
+            title={showGraph ? 'Hide the commit graph' : 'Show the repository’s commit graph'}
+            aria-label={showGraph ? 'Hide the commit graph' : 'Show the commit graph'}
+            aria-pressed={showGraph}
+            onClick={() => onShowGraphChange(!showGraph)}
+          />
+        </OverflowItem>
+        <OverflowItem id="detail">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={showDetail ? <PanelRightContractRegular /> : <PanelRightExpandRegular />}
+            title={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
+            aria-label={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
+            aria-pressed={showDetail}
+            onClick={() => onShowDetailChange(!showDetail)}
+          />
+        </OverflowItem>
+        {/* Only when something has left the board: on a healthy board this is an empty list,
           and a permanent button for one is a permanent invitation to check whether anything
           has gone missing. */}
-      {archivedCount > 0 && (
-        <Button
-          size="small"
-          appearance="subtle"
-          icon={<ArchiveRegular />}
-          title={archivedCountTitle(archivedCount)}
-          aria-label={archivedCountTitle(archivedCount)}
-          onClick={onOpenArchived}
-        >
-          {archivedCountLabel(archivedCount)}
-        </Button>
-      )}
-      {addTask}
-    </div>
+        {archivedCount > 0 && (
+          <OverflowItem id="archived">
+            <Button
+              size="small"
+              appearance="subtle"
+              icon={<ArchiveRegular />}
+              title={archivedCountTitle(archivedCount)}
+              aria-label={archivedCountTitle(archivedCount)}
+              onClick={onOpenArchived}
+            >
+              {archivedCountLabel(archivedCount)}
+            </Button>
+          </OverflowItem>
+        )}
+        {/* `addTask` is a `ReactNode` from the host (`BoardScreen.tsx`'s own `<Button>`), not
+            necessarily a single `ReactElement` by its type — `OverflowItem` clones and refs
+            its one child, which a bare `ReactNode` cannot always satisfy, so it is wrapped in
+            a plain `<div>` here rather than passed straight through. */}
+        <OverflowItem id="add" pinned>
+          <div>{addTask}</div>
+        </OverflowItem>
+        <ToolbarOverflowMenu>
+          {/* The scope Dropdown's own options, one `MenuItem` apiece — the fallback for the
+              one control narrow viewports can still force into the menu (`priority` above),
+              so it stays reachable rather than silently dropped. */}
+          {scopes.length > 1 && (
+            <ToolbarOverflowMenuGroup id="scope">
+              <MenuItem onClick={() => onScopeChange('all')}>
+                {scope === 'all' ? '✓ ' : ''}All boards
+              </MenuItem>
+              {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
+                <MenuItem key={s.id} onClick={() => onScopeChange(s.id)}>
+                  {scope === s.id ? '✓ ' : ''}
+                  {s.name}
+                </MenuItem>
+              ))}
+            </ToolbarOverflowMenuGroup>
+          )}
+          <ToolbarOverflowMenuItem
+            id="sprint"
+            onClick={() => onCurrentSprintOnlyChange(!currentSprintOnly)}
+          >
+            {currentSprintOnly ? '✓ ' : ''}Current sprint
+          </ToolbarOverflowMenuItem>
+          <ToolbarOverflowMenuItem id="chain" onClick={() => onChainFocusChange(!chainFocus)}>
+            {chainFocus ? '✓ ' : ''}Focus this card’s chain
+          </ToolbarOverflowMenuItem>
+          <ToolbarOverflowMenuItem
+            id="linkmode"
+            onClick={() => onBoardLinksChange(nextLinkMode(boardLinks))}
+          >
+            Chain links: {boardLinks === 'off' ? 'Off' : boardLinks === 'focus' ? 'Focus' : 'All'}
+          </ToolbarOverflowMenuItem>
+          <ToolbarOverflowMenuItem id="sync" onClick={onSync}>
+            {syncing ? 'Syncing…' : 'Sync the tracker now'}
+          </ToolbarOverflowMenuItem>
+          <ToolbarOverflowMenuItem id="graph" onClick={() => onShowGraphChange(!showGraph)}>
+            {showGraph ? 'Hide' : 'Show'} the commit graph
+          </ToolbarOverflowMenuItem>
+          <ToolbarOverflowMenuItem id="detail" onClick={() => onShowDetailChange(!showDetail)}>
+            {showDetail ? 'Hide' : 'Show'} the detail pane
+          </ToolbarOverflowMenuItem>
+          {archivedCount > 0 && (
+            <ToolbarOverflowMenuItem id="archived" onClick={onOpenArchived}>
+              {archivedCountLabel(archivedCount)}
+            </ToolbarOverflowMenuItem>
+          )}
+        </ToolbarOverflowMenu>
+      </div>
+    </Overflow>
   );
 }
