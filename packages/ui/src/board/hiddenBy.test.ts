@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@tm/shared/model';
+import { archiveIndexOf, type ArchivableTicket } from '@tm/shared/trackerArchive';
 import { type BoardViewState, hiddenBy, hiddenByMessage } from './hiddenBy';
 
 const card = (id: string, overrides: Partial<Task> = {}): Task => ({
@@ -174,6 +175,88 @@ describe('hiddenBy', () => {
       expect(hiddenBy(t, null, state)).toEqual({ kind: 'focus' });
     });
   });
+
+  describe('tracker archive', () => {
+    const native = (id: string, overrides: Partial<Task> = {}): Task =>
+      card(id, { source: 'ticket', ...overrides });
+
+    it('names archived with by:milestone for a ticket on an archived milestone', () => {
+      const t = native('t1', { milestoneId: 'm1' });
+      const index = archiveIndexOf([{ id: 'm1', archivedAt: 1 }], [], []);
+      const state = { ...VISIBLE_STATE, archiveIndex: index };
+      expect(hiddenBy(t, null, state)).toEqual({
+        kind: 'archived',
+        by: { by: 'milestone', id: 'm1' },
+      });
+    });
+
+    it('names archived with by:epic for a ticket under an archived epic', () => {
+      const t = native('t1', { epicTaskId: 'e1' });
+      const epic: ArchivableTicket = native('e1', { trackerArchivedAt: 1 });
+      const index = archiveIndexOf([], [epic], []);
+      const state = { ...VISIBLE_STATE, archiveIndex: index };
+      expect(hiddenBy(t, null, state)).toEqual({ kind: 'archived', by: { by: 'epic', id: 'e1' } });
+    });
+
+    it('names archived with by:project for a ticket in an archived project', () => {
+      const t = native('t1', { projectId: 'p1' });
+      const index = archiveIndexOf([], [], [{ id: 'p1', archivedAt: 1 }]);
+      const state = { ...VISIBLE_STATE, archiveIndex: index };
+      expect(hiddenBy(t, null, state)).toEqual({
+        kind: 'archived',
+        by: { by: 'project', id: 'p1' },
+      });
+    });
+
+    it('names archived with by:self for an epic archived directly', () => {
+      const t = native('e1', { issueType: 'epic', trackerArchivedAt: 1 });
+      const index = archiveIndexOf([], [], []);
+      const state = { ...VISIBLE_STATE, archiveIndex: index };
+      expect(hiddenBy(t, null, state)).toEqual({ kind: 'archived', by: { by: 'self', id: 'e1' } });
+    });
+
+    it('board archivedAt still wins over the tracker archive, with no by', () => {
+      const t = native('t1', { archivedAt: 1, milestoneId: 'm1' });
+      const index = archiveIndexOf([{ id: 'm1', archivedAt: 1 }], [], []);
+      const state = { ...VISIBLE_STATE, archiveIndex: index };
+      expect(hiddenBy(t, null, state)).toEqual({ kind: 'archived' });
+    });
+
+    it('a JIRA row is never tracker-archived', () => {
+      const t = card('t1', { externalSource: 'jira', source: 'jira', milestoneId: 'm1' });
+      const index = archiveIndexOf([{ id: 'm1', archivedAt: 1 }], [], []);
+      const state = { ...VISIBLE_STATE, archiveIndex: index };
+      expect(hiddenBy(t, null, state)).toBeNull();
+    });
+
+    it('no archiveIndex at all just skips the check', () => {
+      const t = native('t1', { milestoneId: 'm1' });
+      expect(hiddenBy(t, null, VISIBLE_STATE)).toBeNull();
+    });
+
+    it('outranks current-sprint, scope, focus and column all at once', () => {
+      const t = native('other', {
+        externalSource: 'jira',
+        externalSprint: 'Sprint 6',
+        milestoneId: 'm1',
+        status: 'done',
+      });
+      const index = archiveIndexOf([{ id: 'm1', archivedAt: 1 }], [], []);
+      const state: BoardViewState = {
+        ...VISIBLE_STATE,
+        archiveIndex: index,
+        currentSprintOnly: true,
+        currentSprint: 'Sprint 7',
+        loadedIds: new Set(['t1']),
+        focusIds: new Set(['other2']),
+        hiddenColumns: ['done'],
+      };
+      expect(hiddenBy(t, null, state)).toEqual({
+        kind: 'archived',
+        by: { by: 'milestone', id: 'm1' },
+      });
+    });
+  });
 });
 
 describe('hiddenByMessage', () => {
@@ -185,6 +268,50 @@ describe('hiddenByMessage', () => {
     expect(hiddenByMessage(t, { kind: 'archived' })).toEqual({
       text: 'TM-42 is archived',
       action: 'Restore',
+    });
+  });
+
+  describe('archived, by the tracker', () => {
+    it('names the milestone, with a name lookup', () => {
+      const names = { milestones: new Map([['m1', 'M2 · Review']]), epics: new Map(), projects: new Map() };
+      expect(
+        hiddenByMessage(t, { kind: 'archived', by: { by: 'milestone', id: 'm1' } }, names),
+      ).toEqual({ text: 'TM-42 is archived with M2 · Review', action: 'Restore' });
+    });
+
+    it('falls back to plain "archived" without a name lookup', () => {
+      expect(hiddenByMessage(t, { kind: 'archived', by: { by: 'milestone', id: 'm1' } })).toEqual({
+        text: 'TM-42 is archived',
+        action: 'Restore',
+      });
+    });
+
+    it('falls back to plain "archived" when the lookup misses', () => {
+      const names = { milestones: new Map(), epics: new Map(), projects: new Map() };
+      expect(
+        hiddenByMessage(t, { kind: 'archived', by: { by: 'milestone', id: 'ghost' } }, names),
+      ).toEqual({ text: 'TM-42 is archived', action: 'Restore' });
+    });
+
+    it('names the epic by its key, with the "epic" word', () => {
+      const names = { milestones: new Map(), epics: new Map([['e1', 'TM-1']]), projects: new Map() };
+      expect(
+        hiddenByMessage(t, { kind: 'archived', by: { by: 'epic', id: 'e1' } }, names),
+      ).toEqual({ text: 'TM-42 is archived with epic TM-1', action: 'Restore' });
+    });
+
+    it('names the project, with the "project" word', () => {
+      const names = { milestones: new Map(), epics: new Map(), projects: new Map([['p1', 'Billing']]) };
+      expect(
+        hiddenByMessage(t, { kind: 'archived', by: { by: 'project', id: 'p1' } }, names),
+      ).toEqual({ text: 'TM-42 is archived with project Billing', action: 'Restore' });
+    });
+
+    it('self reads the same as a plain archived card', () => {
+      const epic = card('e1', { externalKey: 'TM-1', issueType: 'epic' });
+      expect(
+        hiddenByMessage(epic, { kind: 'archived', by: { by: 'self', id: 'e1' } }),
+      ).toEqual({ text: 'TM-1 is archived', action: 'Restore' });
     });
   });
 

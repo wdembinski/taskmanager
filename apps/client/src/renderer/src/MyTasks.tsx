@@ -92,7 +92,12 @@ import {
   taskIdUnder,
   type LinkDragState,
 } from '@ui/board/chainDrag';
-import { archiveIndexOf, pickableProjects } from '@shared/trackerArchive';
+import {
+  archivedByNamesOf,
+  archiveIndexOf,
+  archiveRestoreTarget,
+  pickableProjects,
+} from '@shared/trackerArchive';
 import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@ui/board/shelvedCards';
@@ -577,6 +582,24 @@ export function MyTasks({
     [chainFocus, focusAnchor, links],
   );
 
+  /** The lookups `bucketBoardCards`' `archive` option needs to hide a ticket whose tracker
+   *  project, milestone or epic has been archived (F14.5) — epics are looked up in `tasks`,
+   *  this scope's own rows. Also what `hiddenBy` below needs on `BoardViewState` to name the
+   *  SAME tracker archive (F14.9), rather than the board's `hiddenNotice` disagreeing with
+   *  the board it is describing about why a card is off it. */
+  const archiveIndex = useMemo(
+    () => archiveIndexOf(milestones, tasks ?? [], projectList),
+    [milestones, tasks, projectList],
+  );
+
+  /** Display names for `hiddenByMessage`'s "archived with <name>" clause (F14.9) — built from
+   *  the same three lists `archiveIndex` is, so a milestone/epic/project named in the notice
+   *  reads as itself rather than as a generic "its milestone". */
+  const archiveNames = useMemo(
+    () => archivedByNamesOf(milestones, tasks ?? [], projectList),
+    [milestones, tasks, projectList],
+  );
+
   // Waits for `tasks` to load (the caller may have switched tabs before the board's own
   // first fetch lands) before resolving, then tells the caller it's done so a later visit
   // to this tab on its own doesn't re-resolve a stale id.
@@ -616,6 +639,7 @@ export function MyTasks({
         currentSprintOnly,
         currentSprint: currentSprintName(tasks),
         hiddenColumns,
+        archiveIndex,
       };
       const filter = hiddenBy(found, parent, state);
       if (filter === null) {
@@ -637,6 +661,7 @@ export function MyTasks({
     focusIds,
     currentSprintOnly,
     hiddenColumns,
+    archiveIndex,
     onOpenTaskIdHandled,
   ]);
 
@@ -646,14 +671,6 @@ export function MyTasks({
    * the Personal/All split needs: see `partitionShelved`.
    */
   const shelvedIds = useMemo(() => shelvedCardSet(settings?.shelvedCardIds), [settings]);
-
-  /** The lookups `bucketBoardCards`' `archive` option needs to hide a ticket whose tracker
-   *  project, milestone or epic has been archived (F14.5) — epics are looked up in `tasks`,
-   *  this scope's own rows. */
-  const archiveIndex = useMemo(
-    () => archiveIndexOf(milestones, tasks ?? [], projectList),
-    [milestones, tasks, projectList],
-  );
 
   const { cardsByColumn, shelvedCards } = useMemo(
     () =>
@@ -906,15 +923,48 @@ export function MyTasks({
    * the SAME setter the toolbar control for that filter already uses — never a duplicate
    * settings write — then selects the card and dismisses the bar. A `card: null` notice (the
    * ticket could not be found at all) has no filter to lift, so this is never offered one.
+   *
+   * `archived` with a `by` (F14.9, the tracker's own archive) restores through
+   * `archive:restore` on `archiveRestoreTarget`'s target instead of opening the Removed-cards
+   * dialog — that dialog is only for `Task.archivedAt`, the board's OWN archive, which is what
+   * a `by`-less `archived` filter still means. A `self` target that is not an epic (should
+   * never happen — `archivedBy`'s own `self` only ever names one, see `archiveEpicTx`) has no
+   * target to restore, so this just selects the card, same as opening it would.
+   *
+   * Restoring a milestone or epic pushes `milestone:changed`/`project:tasksChanged`, which
+   * this screen already listens for — nothing to re-fetch. Restoring a project does not (its
+   * own row changed, not a task or milestone list), so `project:list` is re-read by hand, the
+   * same gap `archiveHandlers.ts`'s own docstring calls out.
    */
   const liftHiddenFilter = useCallback(
-    (notice: { taskId: string; filter: BoardFilter | null }) => {
+    async (notice: { taskId: string; filter: BoardFilter | null; card: Task | null }) => {
       const filter = notice.filter;
       if (!filter) return;
       switch (filter.kind) {
-        case 'archived':
-          setArchivedOpenedAt(Date.now());
+        case 'archived': {
+          if (!filter.by) {
+            setArchivedOpenedAt(Date.now());
+            break;
+          }
+          const target = notice.card && archiveRestoreTarget(notice.card, filter.by);
+          if (target) {
+            try {
+              const result = await window.api.invoke('archive:restore', target);
+              if (!result.ok) {
+                setError(result.message);
+                return;
+              }
+              if (target.kind === 'project') {
+                const projects = await window.api.invoke('project:list');
+                setProjectList(projects.map((p) => p.project));
+              }
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+              return;
+            }
+          }
           break;
+        }
         case 'current-sprint':
           void setCurrentSprintOnly(false);
           break;
@@ -1391,7 +1441,7 @@ export function MyTasks({
           <MessageBar intent="info">
             <MessageBarBody>
               {hiddenNotice.filter && hiddenNotice.card
-                ? hiddenByMessage(hiddenNotice.card, hiddenNotice.filter).text
+                ? hiddenByMessage(hiddenNotice.card, hiddenNotice.filter, archiveNames).text
                 : 'That ticket no longer exists'}
             </MessageBarBody>
             <MessageBarActions>
@@ -1399,9 +1449,9 @@ export function MyTasks({
                 <Button
                   size="small"
                   appearance="transparent"
-                  onClick={() => liftHiddenFilter(hiddenNotice)}
+                  onClick={() => void liftHiddenFilter(hiddenNotice)}
                 >
-                  {hiddenByMessage(hiddenNotice.card, hiddenNotice.filter).action}
+                  {hiddenByMessage(hiddenNotice.card, hiddenNotice.filter, archiveNames).action}
                 </Button>
               )}
               <Button size="small" appearance="transparent" onClick={() => setHiddenNotice(null)}>

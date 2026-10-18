@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from './model';
 import {
+  archivedBanner,
   archivedBy,
+  archivedByNamesOf,
   archiveIndexOf,
+  archiveRestoreTarget,
   isHidden,
   pickableEpics,
   pickableMilestones,
@@ -256,5 +259,88 @@ describe('pickableProjects', () => {
 
     expect(pickableProjects([open, archived, current], 'current')).toEqual([open, current]);
     expect(pickableProjects([open, archived, current])).toEqual([open]);
+  });
+});
+
+describe('archiveRestoreTarget', () => {
+  it('a project by names the project itself', () => {
+    expect(archiveRestoreTarget(ticket({ id: 't1' }), { by: 'project', id: 'p1' })).toEqual({
+      kind: 'project',
+      id: 'p1',
+    });
+  });
+
+  it('a milestone by names the milestone itself', () => {
+    expect(archiveRestoreTarget(ticket({ id: 't1' }), { by: 'milestone', id: 'm1' })).toEqual({
+      kind: 'milestone',
+      id: 'm1',
+    });
+  });
+
+  it('an epic by names the epic itself', () => {
+    expect(archiveRestoreTarget(ticket({ id: 't1' }), { by: 'epic', id: 'e1' })).toEqual({
+      kind: 'epic',
+      id: 'e1',
+    });
+  });
+
+  it('a self by on an epic restores by its own id', () => {
+    expect(
+      archiveRestoreTarget(ticket({ id: 'e1', issueType: 'epic' }), { by: 'self', id: 'e1' }),
+    ).toEqual({ kind: 'epic', id: 'e1' });
+  });
+
+  it('a self by on a non-epic restores nothing', () => {
+    expect(
+      archiveRestoreTarget(ticket({ id: 't1', issueType: 'story' }), { by: 'self', id: 't1' }),
+    ).toBeNull();
+  });
+});
+
+describe('archivedByNamesOf', () => {
+  it('names a milestone and a project by their own name, and an epic by its key alone', () => {
+    const names = archivedByNamesOf(
+      [{ id: 'm1', name: 'M2 · Review' }],
+      [ticket({ id: 'e1', ticketKey: 'TM-1', title: 'Epic' })],
+      [{ id: 'p1', name: 'Billing' }],
+    );
+    expect(names.milestones.get('m1')).toBe('M2 · Review');
+    expect(names.epics.get('e1')).toBe('TM-1');
+    expect(names.projects.get('p1')).toBe('Billing');
+  });
+
+  it('an epic with no ticket key falls back to its title alone', () => {
+    const names = archivedByNamesOf([], [ticket({ id: 'e1', ticketKey: null, title: 'Epic' })], []);
+    expect(names.epics.get('e1')).toBe('Epic');
+  });
+});
+
+describe('archivedBanner', () => {
+  it('names a milestone by its own name alone, with a name lookup', () => {
+    const names = archivedByNamesOf([{ id: 'm1', name: 'M2 · Review' }], [], []);
+    expect(archivedBanner({ by: 'milestone', id: 'm1' }, names)).toBe('Archived with M2 · Review');
+  });
+
+  it('names an epic with the "epic" word plus its key', () => {
+    const names = archivedByNamesOf([], [ticket({ id: 'e1', ticketKey: 'TM-3' })], []);
+    expect(archivedBanner({ by: 'epic', id: 'e1' }, names)).toBe('Archived with epic TM-3');
+  });
+
+  it('names a project with the "project" word plus its name', () => {
+    const names = archivedByNamesOf([], [], [{ id: 'p1', name: 'Billing' }]);
+    expect(archivedBanner({ by: 'project', id: 'p1' }, names)).toBe('Archived with project Billing');
+  });
+
+  it('falls back to plain "Archived" with no names at all', () => {
+    expect(archivedBanner({ by: 'project', id: 'p1' })).toBe('Archived');
+  });
+
+  it('falls back to plain "Archived" when the lookup misses', () => {
+    const names = archivedByNamesOf([], [], []);
+    expect(archivedBanner({ by: 'project', id: 'ghost' }, names)).toBe('Archived');
+  });
+
+  it('self reads as plain "Archived" — the ticket IS the archived epic', () => {
+    expect(archivedBanner({ by: 'self', id: 'e1' })).toBe('Archived');
   });
 });

@@ -23,7 +23,7 @@
  * DB — the same discipline as `@shared/tickets`.
  */
 import type { Milestone, Project, Task } from './model';
-import { isNativeTicket } from './tickets';
+import { isEpic, isNativeTicket } from './tickets';
 
 /**
  * What to do with a milestone's (or epic's/project's) still-open tickets when it is
@@ -141,6 +141,68 @@ export function archivedBy<
   if (ticket.trackerArchivedAt != null) return { by: 'self', id: ticket.id };
 
   return null;
+}
+
+/**
+ * Where a restore call for `by` should land — the one `ArchiveTarget` `archive:restore` can
+ * act on (F14.9). A project or milestone restores itself; an epic restores by its own id
+ * either way `by` named it (`epic`, or `self` when the archived ticket IS that epic — the
+ * only way `archivedBy` ever returns `self`, see `archiveEpicTx`). `null` only guards against
+ * a `self` ticket that somehow isn't an epic, which `archivedBy` should never produce.
+ */
+export function archiveRestoreTarget(
+  ticket: Pick<Task, 'id' | 'issueType'>,
+  by: NonNullable<ArchivedBy>,
+): ArchiveTarget | null {
+  switch (by.by) {
+    case 'project':
+    case 'milestone':
+    case 'epic':
+      return { kind: by.by, id: by.id };
+    case 'self':
+      return isEpic(ticket) ? { kind: 'epic', id: ticket.id } : null;
+  }
+}
+
+/** Display names for {@link archivedBanner}'s "with <name>" clause, keyed the same way
+ *  {@link ArchiveIndex} is — a milestone's own `name`, an epic's own ticket key alone (its
+ *  banner already says "epic", so repeating the title would be noise), a project's own
+ *  `name`. */
+export interface ArchivedByNames {
+  projects: Map<string, string>;
+  milestones: Map<string, string>;
+  epics: Map<string, string>;
+}
+
+/** Builds {@link ArchivedByNames} from the same three lists {@link archiveIndexOf} reads.
+ *  `epics` can be a whole ticket list, same as `archiveIndexOf`'s own argument: only the ids
+ *  `by` actually names are ever looked up. An epic with no `ticketKey` (shouldn't happen — a
+ *  native ticket always has one) falls back to its title rather than going nameless. */
+export function archivedByNamesOf(
+  milestones: readonly Pick<Milestone, 'id' | 'name'>[],
+  epics: readonly Pick<Task, 'id' | 'ticketKey' | 'title'>[],
+  projects: readonly Pick<Project, 'id' | 'name'>[],
+): ArchivedByNames {
+  return {
+    milestones: new Map(milestones.map((m) => [m.id, m.name])),
+    epics: new Map(epics.map((e) => [e.id, e.ticketKey ?? e.title])),
+    projects: new Map(projects.map((p) => [p.id, p.name])),
+  };
+}
+
+/**
+ * The sentence naming what hid a ticket (F14.9) — `"Archived with <milestone name>"`,
+ * `"Archived with epic <key>"`, `"Archived with project <name>"`, or plain `"Archived"` for
+ * `self` (the ticket IS the archived epic) and for a lookup `names` can't resolve — a miss
+ * degrades to the same plain text a `by`-less filter already reads, rather than a sentence
+ * naming a project/milestone/epic with no name in it. Shared by the F12 panel's restore
+ * banner and the board's `hiddenByMessage`, which lower-cases it to fit mid-sentence.
+ */
+export function archivedBanner(by: NonNullable<ArchivedBy>, names?: ArchivedByNames): string {
+  if (by.by === 'self') return 'Archived';
+  const name = names?.[`${by.by}s` as 'projects' | 'milestones' | 'epics']?.get(by.id);
+  if (!name) return 'Archived';
+  return by.by === 'milestone' ? `Archived with ${name}` : `Archived with ${by.by} ${name}`;
 }
 
 /**
