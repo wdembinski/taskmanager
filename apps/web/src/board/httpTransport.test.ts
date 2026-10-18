@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IpcApi } from '@tm/shared/ipc';
 import { CLOUD_BLOB_MAX_BYTES, type TaskAttachment } from '@tm/shared/attachments';
 import type { Automation, AutomationRun } from '@tm/shared/automation';
+import { isForwarded } from '@tm/shared/ipcEventFanout';
 import { hostOnlyMessage, isRelayable, oversizedAnswerMessage } from '@tm/shared/ipcRelay';
 import type { Project } from '@tm/shared/model';
 import { DEFAULT_SETTINGS } from '@tm/shared/settings';
@@ -1432,4 +1433,167 @@ describe('HttpTransport: automation edits relay to the owner', () => {
     );
     expect(server.queued).toHaveLength(0);
   });
+});
+
+describe("HttpTransport: the Projects panel's channels", () => {
+  /**
+   * F12.10: the Tickets tab's own channels — the ticket-project workspace `Projects.tsx`
+   * renders (backlog/timeline/graph, a ticket's native fields and links), read out of
+   * `packages/ui/src/projects/Projects.tsx`, `BacklogTable.tsx`, `TimelinePane.tsx`,
+   * `GraphPane.tsx`, `GraphLinkPicker.tsx`, `NewTicketDialog.tsx`, `TicketFieldsSection.tsx`,
+   * `TicketLinksEditor.tsx`, `TaskLinksSection.tsx`, `LabelRegistry.tsx`, `MilestoneList.tsx`,
+   * `useProjectTickets.ts`, `useTicketLinks.ts` and `useTicketRegistries.ts`. Shaped like the
+   * review pane's table above: each case proves the channel reaches the wire rather than
+   * being refused or answered locally, so the next channel one of those files starts calling
+   * needs a row here too.
+   *
+   * Left out on purpose: the three `archive:*` channels, already their own table above; the
+   * repo-project admin channels (`project:add`/`update`/`remove`, `exec:listDistros`,
+   * `project:pickDirectory`) that `ProjectForm.tsx`/`ProjectAdmin.tsx` use — `Projects.tsx`'s
+   * own header says those are about *repo* projects and do not apply to this ticket-project
+   * workspace; and `settings:get`/`settings:save`, which take the direct tier below instead.
+   */
+  const RELAYED: Array<{
+    channel: keyof IpcApi;
+    args: readonly unknown[];
+    call: (x: HttpTransport) => Promise<unknown>;
+  }> = [
+    { channel: 'project:list', args: [], call: (x) => x.invoke('project:list') },
+    { channel: 'board:tasks', args: ['p1'], call: (x) => x.invoke('board:tasks', 'p1') },
+    {
+      channel: 'ticket:create',
+      args: ['p1', { title: 'New ticket' }],
+      call: (x) => x.invoke('ticket:create', 'p1', { title: 'New ticket' }),
+    },
+    {
+      channel: 'ticket:update',
+      args: ['t1', { milestoneId: 'm1' }],
+      call: (x) => x.invoke('ticket:update', 't1', { milestoneId: 'm1' }),
+    },
+    { channel: 'ticketLink:list', args: [], call: (x) => x.invoke('ticketLink:list') },
+    {
+      channel: 'ticketLink:add',
+      args: ['t1', 't2', 'blocks'],
+      call: (x) => x.invoke('ticketLink:add', 't1', 't2', 'blocks'),
+    },
+    {
+      channel: 'ticketLink:remove',
+      args: ['tl1'],
+      call: (x) => x.invoke('ticketLink:remove', 'tl1'),
+    },
+    {
+      channel: 'ticketGraph:getLayout',
+      args: ['p1'],
+      call: (x) => x.invoke('ticketGraph:getLayout', 'p1'),
+    },
+    {
+      channel: 'ticketGraph:saveLayout',
+      args: ['p1', [{ taskId: 't1', x: 10, y: 20 }]],
+      call: (x) => x.invoke('ticketGraph:saveLayout', 'p1', [{ taskId: 't1', x: 10, y: 20 }]),
+    },
+    { channel: 'chain:links', args: [], call: (x) => x.invoke('chain:links') },
+    {
+      channel: 'chain:link',
+      args: ['t1', 't2', 'after-merge'],
+      call: (x) => x.invoke('chain:link', 't1', 't2', 'after-merge'),
+    },
+    { channel: 'chain:unlink', args: ['cl1'], call: (x) => x.invoke('chain:unlink', 'cl1') },
+    {
+      channel: 'chain:setGate',
+      args: ['cl1', 'after-merge'],
+      call: (x) => x.invoke('chain:setGate', 'cl1', 'after-merge'),
+    },
+    { channel: 'person:list', args: [], call: (x) => x.invoke('person:list') },
+    { channel: 'milestone:list', args: ['p1'], call: (x) => x.invoke('milestone:list', 'p1') },
+    {
+      channel: 'milestone:save',
+      args: ['p1', { name: 'M1' }],
+      call: (x) => x.invoke('milestone:save', 'p1', { name: 'M1' }),
+    },
+    {
+      channel: 'milestone:remove',
+      args: ['m1'],
+      call: (x) => x.invoke('milestone:remove', 'm1'),
+    },
+    { channel: 'label:list', args: ['p1'], call: (x) => x.invoke('label:list', 'p1') },
+    {
+      channel: 'label:save',
+      args: ['p1', { name: 'bug', color: '#ff0000' }],
+      call: (x) => x.invoke('label:save', 'p1', { name: 'bug', color: '#ff0000' }),
+    },
+    { channel: 'label:remove', args: ['l1'], call: (x) => x.invoke('label:remove', 'l1') },
+  ];
+
+  for (const { channel, args, call } of RELAYED) {
+    it(`relays ${channel} over the wire`, async () => {
+      expect(isRelayable(channel)).toBe(true);
+
+      const server = makeServer();
+      const { transport } = makeTransport({
+        fetchImpl: server.fetchImpl as unknown as typeof fetch,
+        newCommandId: () => 'cmd-1',
+      });
+
+      let rejection: Error | undefined;
+      const pending = call(transport).catch((e: Error) => {
+        rejection = e;
+      });
+      server.answer('cmd-1', { ok: true, value: null });
+      await pending;
+
+      expect(rejection?.message).not.toBe(hostOnlyMessage(channel));
+      expect(server.queued).toHaveLength(1);
+      expect(server.queued[0]).toMatchObject({
+        kind: 'ipc-invoke',
+        payload: { channel, args },
+      });
+    });
+  }
+
+  it('takes settings:get and settings:save direct, not through the relay', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ settings: DEFAULT_SETTINGS }),
+    });
+    const { transport } = makeTransport({ fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    await expect(transport.invoke('settings:get')).resolves.toEqual(DEFAULT_SETTINGS);
+    let [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.example.com/v1/settings');
+    expect(init.method).toBeUndefined(); // a GET
+
+    await expect(
+      transport.invoke('settings:save', { ...DEFAULT_SETTINGS, branchPrefix: 'wd' }),
+    ).resolves.toBeUndefined();
+    [url, init] = fetchImpl.mock.calls[1];
+    expect(url).toBe('https://api.example.com/v1/settings');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ ...DEFAULT_SETTINGS, branchPrefix: 'wd' });
+  });
+
+  /**
+   * The pane's own live refresh — `task:changed` (a ticket row), `ticketLink:changed`,
+   * `chain:changed`, `person:changed`, `milestone:changed` and `label:changed` (the four
+   * native-ticket registries), plus `settings:changed` (the pane's own display/feature
+   * flags) — must all reach the browser. `project:tasksChanged`, which `useProjectTickets.ts`
+   * and `TimelinePane.tsx`/`GraphPane.tsx` also listen for, is deliberately excluded: it is
+   * classified `drop` in `ipcEventFanout.ts` because its rows already reach the browser
+   * through the mirror.
+   */
+  const EVENTS: string[] = [
+    'task:changed',
+    'ticketLink:changed',
+    'chain:changed',
+    'person:changed',
+    'milestone:changed',
+    'label:changed',
+    'settings:changed',
+  ];
+
+  for (const channel of EVENTS) {
+    it(`forwards ${channel} to the browser`, () => {
+      expect(isForwarded(channel)).toBe(true);
+    });
+  }
 });
