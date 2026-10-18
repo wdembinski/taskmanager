@@ -503,6 +503,12 @@ function SignedInBoardView({
               loading={!sidebarData.loaded}
             />
           }
+          // Every screen but My Tasks is a document and wants a margin — the same rule the
+          // desktop shell applies (`apps/client/src/renderer/src/App.tsx`'s own `padded`).
+          // Left unset here, every one of them (Projects' tabs, the Archived title, Settings,
+          // …) sat flush against the rail and the top edge instead of getting the inset the
+          // desktop and the mockups both draw.
+          padded={screen !== 'mytasks'}
           banners={
             // The shell's own banner strip, which is where the desktop's outage bars go too —
             // above the screen rather than inside it, so the board below is the board and

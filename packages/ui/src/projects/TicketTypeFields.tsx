@@ -11,12 +11,21 @@
  * `Field`s. The caller owns `epicCandidates` because who is eligible differs by context — the
  * drawer excludes the ticket being edited, the Add-task dialog has no ticket yet to exclude.
  */
-import { Dropdown, Field, Option } from '@fluentui/react-components';
+import { Dropdown, Field, Option, makeStyles } from '@fluentui/react-components';
 import type { IssueType, Task } from '@tm/shared/model';
 import { ISSUE_TYPES } from '@tm/shared/tickets';
 
 /** Sentinel for "no epic" in the Epic dropdown (an `Option` needs a value). */
 const NO_EPIC = '';
+
+/** Fluent's `Dropdown` sizes its trigger to its widest option by default — an epic's title
+ *  can run far longer than the `Field` wrapping it, which is how the Epic picker overflowed
+ *  the panel's right edge (border cut off) while the shorter `issueType` list never visibly
+ *  did. `width: 100%` plus `minWidth: 0` makes both pickers obey the `Field`'s own width
+ *  instead of their content's. */
+const useStyles = makeStyles({
+  dropdown: { width: '100%', minWidth: 0 },
+});
 
 export interface TicketTypeFieldsProps {
   issueType: IssueType;
@@ -42,10 +51,12 @@ export function TicketTypeFields({
   className,
   disabled = false,
 }: TicketTypeFieldsProps): JSX.Element {
+  const styles = useStyles();
   return (
     <>
       <Field label="Type" className={className}>
         <Dropdown
+          className={styles.dropdown}
           value={issueType}
           selectedOptions={[issueType]}
           disabled={disabled}
@@ -68,6 +79,7 @@ export function TicketTypeFields({
 
       <Field label="Epic" className={className}>
         <Dropdown
+          className={styles.dropdown}
           disabled={disabled || issueType === 'epic'}
           value={epicCandidates.find((e) => e.id === epicTaskId)?.title ?? 'None'}
           selectedOptions={[epicTaskId || NO_EPIC]}

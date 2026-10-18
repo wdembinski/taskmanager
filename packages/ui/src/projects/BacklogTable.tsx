@@ -36,9 +36,21 @@ import { type BacklogSortKey } from './backlogView';
 import { NewTicketDialog } from './NewTicketDialog';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0 },
-  toolbar: { display: 'flex', alignItems: 'center', gap: '8px' },
-  search: { flex: 1, maxWidth: '320px' },
+  // `minWidth: 0`: a flex item's default `min-width: auto` holds it to its content's
+  // min-content size, which is exactly what let the toolbar below overflow this column's
+  // own box — undetected, because nothing here clips — and bleed into the peek pane opening
+  // beside it (`Projects.tsx`'s `.backlog` already shrinks; this is what refused to follow).
+  root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, minWidth: 0 },
+  // `flexWrap: 'wrap'`: once the column has actually shrunk, the toolbar's own buttons wrap
+  // onto a second line rather than clipping — "Sort by due date" and "New ticket" staying
+  // reachable instead of sitting, unreachable, under the peek.
+  toolbar: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' },
+  search: { flex: 1, minWidth: '160px', maxWidth: '320px' },
+  // The default flex-shrink let each button narrow past its own text's width before the row
+  // ever wrapped — "Sort by due date" breaking word-by-word into an unreadable column rather
+  // than moving to a second line as a whole. `flexShrink: 0` makes the wrap decision (above)
+  // the only thing a tight column can do to these; shrinking the search box is still fine.
+  toolbarButton: { flexShrink: 0 },
   scroll: {
     overflowY: 'auto',
     minHeight: 0,
@@ -163,6 +175,7 @@ export function BacklogTable({
           placeholder="Search title, key or label…"
         />
         <ToggleButton
+          className={styles.toolbarButton}
           size="small"
           appearance="subtle"
           checked={includeArchived}
@@ -171,6 +184,7 @@ export function BacklogTable({
           Include archived
         </ToggleButton>
         <ToggleButton
+          className={styles.toolbarButton}
           size="small"
           appearance="subtle"
           checked={sortKey === 'key'}
@@ -179,6 +193,7 @@ export function BacklogTable({
           Sort by key
         </ToggleButton>
         <ToggleButton
+          className={styles.toolbarButton}
           size="small"
           appearance="subtle"
           checked={sortKey === 'due'}
@@ -187,6 +202,7 @@ export function BacklogTable({
           Sort by due date
         </ToggleButton>
         <Button
+          className={styles.toolbarButton}
           size="small"
           appearance="primary"
           icon={<AddRegular />}
