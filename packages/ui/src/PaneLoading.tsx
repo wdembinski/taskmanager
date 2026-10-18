@@ -25,13 +25,16 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
+import { BOARD_COLUMN_MIN_WIDTH } from './board/boardLayout';
 
 const useStyles = makeStyles({
-  /** Columns of cards, matching the Kanban grid the real board lays out. */
+  /** Columns of cards, matching the Kanban grid the real board lays out — same track floor
+   *  (`BOARD_COLUMN_MIN_WIDTH`), so the skeleton never promises a width the real board would
+   *  refuse to hold. */
   board: {
     display: 'grid',
     gridAutoFlow: 'column',
-    gridAutoColumns: 'minmax(0, 1fr)',
+    gridAutoColumns: `minmax(${BOARD_COLUMN_MIN_WIDTH}, 1fr)`,
     gap: '12px',
     flex: 1,
     minHeight: 0,

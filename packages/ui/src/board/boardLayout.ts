@@ -15,6 +15,11 @@
  */
 import { makeStyles, tokens } from '@fluentui/react-components';
 
+/** A column's floor — below it a card's header has nowhere left to give, and its title
+ *  wraps one word per line instead of two. Shared with `PaneLoading`'s skeleton track so
+ *  the loading state does not promise a width the real board would refuse to hold. */
+export const BOARD_COLUMN_MIN_WIDTH = '260px';
+
 export const useBoardLayoutStyles = makeStyles({
   // No gap: the detail pane's own surface runs to the board's edge, and the change of
   // shade is the seam.
@@ -44,11 +49,17 @@ export const useBoardLayoutStyles = makeStyles({
   columns: {
     display: 'grid',
     gridAutoFlow: 'column',
-    gridAutoColumns: 'minmax(0, 1fr)',
+    // A floor on each track, not `minmax(0, 1fr)`: with enough columns to crush a track
+    // below ~160px a card's header has nowhere left to give and its title wraps one word
+    // per line — the grid should scroll sideways before it does that to a column.
+    gridAutoColumns: `minmax(${BOARD_COLUMN_MIN_WIDTH}, 1fr)`,
     gap: '12px',
     flex: 1,
     minHeight: 0,
-    overflowY: 'auto',
+    // Both axes: once the floor above is reached, more columns than fit make the grid
+    // wider than the pane, and `auto` is what lets it scroll sideways for that instead of
+    // only ever vertically.
+    overflow: 'auto',
     // The containing block for the chain overlay (`ChainOverlay`), which is one `<svg>`
     // laid over the whole board. It had none, and this is exactly why one overlay is
     // possible at all: this is the ONLY scrolling element, so an absolutely-positioned
