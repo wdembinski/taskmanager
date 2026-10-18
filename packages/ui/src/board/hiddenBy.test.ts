@@ -273,7 +273,11 @@ describe('hiddenByMessage', () => {
 
   describe('archived, by the tracker', () => {
     it('names the milestone, with a name lookup', () => {
-      const names = { milestones: new Map([['m1', 'M2 · Review']]), epics: new Map(), projects: new Map() };
+      const names = {
+        milestones: new Map([['m1', 'M2 · Review']]),
+        epics: new Map(),
+        projects: new Map(),
+      };
       expect(
         hiddenByMessage(t, { kind: 'archived', by: { by: 'milestone', id: 'm1' } }, names),
       ).toEqual({ text: 'TM-42 is archived with M2 · Review', action: 'Restore' });
@@ -294,14 +298,22 @@ describe('hiddenByMessage', () => {
     });
 
     it('names the epic by its key, with the "epic" word', () => {
-      const names = { milestones: new Map(), epics: new Map([['e1', 'TM-1']]), projects: new Map() };
-      expect(
-        hiddenByMessage(t, { kind: 'archived', by: { by: 'epic', id: 'e1' } }, names),
-      ).toEqual({ text: 'TM-42 is archived with epic TM-1', action: 'Restore' });
+      const names = {
+        milestones: new Map(),
+        epics: new Map([['e1', 'TM-1']]),
+        projects: new Map(),
+      };
+      expect(hiddenByMessage(t, { kind: 'archived', by: { by: 'epic', id: 'e1' } }, names)).toEqual(
+        { text: 'TM-42 is archived with epic TM-1', action: 'Restore' },
+      );
     });
 
     it('names the project, with the "project" word', () => {
-      const names = { milestones: new Map(), epics: new Map(), projects: new Map([['p1', 'Billing']]) };
+      const names = {
+        milestones: new Map(),
+        epics: new Map(),
+        projects: new Map([['p1', 'Billing']]),
+      };
       expect(
         hiddenByMessage(t, { kind: 'archived', by: { by: 'project', id: 'p1' } }, names),
       ).toEqual({ text: 'TM-42 is archived with project Billing', action: 'Restore' });
@@ -309,9 +321,10 @@ describe('hiddenByMessage', () => {
 
     it('self reads the same as a plain archived card', () => {
       const epic = card('e1', { externalKey: 'TM-1', issueType: 'epic' });
-      expect(
-        hiddenByMessage(epic, { kind: 'archived', by: { by: 'self', id: 'e1' } }),
-      ).toEqual({ text: 'TM-1 is archived', action: 'Restore' });
+      expect(hiddenByMessage(epic, { kind: 'archived', by: { by: 'self', id: 'e1' } })).toEqual({
+        text: 'TM-1 is archived',
+        action: 'Restore',
+      });
     });
   });
 

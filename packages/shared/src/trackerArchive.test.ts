@@ -328,7 +328,9 @@ describe('archivedBanner', () => {
 
   it('names a project with the "project" word plus its name', () => {
     const names = archivedByNamesOf([], [], [{ id: 'p1', name: 'Billing' }]);
-    expect(archivedBanner({ by: 'project', id: 'p1' }, names)).toBe('Archived with project Billing');
+    expect(archivedBanner({ by: 'project', id: 'p1' }, names)).toBe(
+      'Archived with project Billing',
+    );
   });
 
   it('falls back to plain "Archived" with no names at all', () => {
