@@ -35,6 +35,7 @@ const DIALOG_FILES = [
   'packages/ui/src/SkillsSection.tsx',
   'packages/ui/src/TaskAgentPanel.tsx',
   'packages/ui/src/TaskDetailsCell.tsx',
+  'packages/ui/src/VisualSignOff.tsx',
   'packages/ui/src/WorkflowBuilder.tsx',
   'packages/ui/src/automations/AutomationEditor.tsx',
   'packages/ui/src/automations/AutomationsView.tsx',
