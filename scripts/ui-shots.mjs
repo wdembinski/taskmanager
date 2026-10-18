@@ -109,6 +109,27 @@ export const SCREENS = [
     mockup: 'v9-7b-board-dark.svg',
   },
   {
+    // Frames the milestone/epic/ticket tree itself (status glyphs, a finished milestone
+    // folded by default) rather than the Board's own columns — `board-light`/`-dark` above
+    // happen to show the same sidebar, but neither is named for it or was added to prove it.
+    // No mockup draws the tree's folded/status-glyph states on their own, so `board-light`'s
+    // own reference is the nearest available.
+    name: 'sidebar-tree-light',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: null,
+    mockup: 'v9-7-board-light.svg',
+  },
+  {
+    name: 'sidebar-tree-dark',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'dark',
+    setup: null,
+    mockup: 'v9-7b-board-dark.svg',
+  },
+  {
     // No mockup draws a folded sidebar with the detail panel open — v9-7-board-light.svg is the
     // nearest available (sidebar open, no detail panel), kept only as an orientation reference.
     name: 'board-sidebar-folded-detail-open',

@@ -529,7 +529,6 @@ export function App(): JSX.Element {
             onNewIssue={() => {
               if (tracker.projectId) setNewIssueDialogOpen(true);
             }}
-            folds={sidebarFolds}
             onToggleFold={toggleSidebarFold}
             projectOptions={tracker.projectOptions}
             selectedProjectId={tracker.projectId}

@@ -39,7 +39,6 @@ import {
   BranchRegular,
   ChevronDownRegular,
   ChevronRightRegular,
-  CircleSmallRegular,
   DesktopRegular,
   FlagRegular,
   FolderRegular,
@@ -47,9 +46,12 @@ import {
   TaskListSquareLtrRegular,
   TicketDiagonalRegular,
 } from '@fluentui/react-icons';
+import { columnForStatus } from '@tm/shared/board';
+import { STATUS_GLYPH } from '../issues/IssueRow';
 import { useGlobalShortcut } from '../palette/shortcut';
 import { shortcutLabel } from '../palette/shortcutLabel';
 import { issueTypeGlyph } from '../projects/issueTypeGlyph';
+import { STATUS_LABEL } from '../taskStatus';
 import type { SidebarSection, SidebarTreeNode, SidebarView as ViewRow } from './sidebarModel';
 import { flattenVisible, treeKeyReducer, type TreeKeyState } from './sidebarTree';
 import type { TrackerProjectOption } from './useTrackerProject';
@@ -77,9 +79,10 @@ export interface SidebarProps {
   onNavigate: (target: SidebarNavTarget) => void;
   onOpenTicket: (taskId: string) => void;
   onNewIssue: () => void;
-  /** This device's folded tree-node ids (`useDeviceFolds`'s own `folds`). */
-  folds: readonly string[];
-  onToggleFold: (id: string) => void;
+  /** Toggles a node's fold state against its own default (`node.defaultFolded`) — the
+   *  caller (`useDeviceFolds`'s own `toggleFold`) only records an id when the new state
+   *  differs from that default. */
+  onToggleFold: (id: string, defaultFolded?: boolean) => void;
   /** The web's cross-project destination the desktop does not have at all (`shellNav.ts`'s
    *  own F13.8 header) — off by default, so the desktop need not pass anything to hide it. */
   showFleet?: boolean;
@@ -212,6 +215,14 @@ const useStyles = makeStyles({
     '& svg': { fontSize: '16px', color: 'var(--tm-text-muted)' },
   },
   footerHint: { color: 'var(--tm-text-faint)' },
+  statusGlyph: {
+    display: 'flex',
+    alignItems: 'center',
+    flexShrink: 0,
+  },
+  statusGlyphRunning: { '& svg': { color: 'var(--tm-brand)' } },
+  statusGlyphWaitingInput: { '& svg': { color: 'var(--tm-attention)' } },
+  doneLabel: { color: 'var(--tm-text-muted)' },
 });
 
 const VIEW_ICON: Record<ViewRow['id'], ReactNode> = {
@@ -241,10 +252,40 @@ function indexTree(nodes: readonly SidebarTreeNode[], out: Map<string, SidebarTr
   }
 }
 
-function treeIcon(node: SidebarTreeNode): ReactNode {
+/** Every node id the model itself resolved to folded — a node's own `folded` already weighs
+ *  `defaultFolded` against the device's stored overrides (`sidebarFolds.ts`'s `isFolded`), so
+ *  this, not the raw stored list, is what {@link flattenVisible} must hide behind. */
+function collectFolded(
+  nodes: readonly SidebarTreeNode[],
+  out: Set<string> = new Set(),
+): Set<string> {
+  for (const node of nodes) {
+    if (node.folded) out.add(node.id);
+    collectFolded(node.children, out);
+  }
+  return out;
+}
+
+function treeIcon(node: SidebarTreeNode, styles: ReturnType<typeof useStyles>): ReactNode {
   if (node.kind === 'milestone') return <FlagRegular />;
   if (node.kind === 'epic') return issueTypeGlyph('epic');
-  return <CircleSmallRegular />;
+  const status = node.status ?? 'pending';
+  const column = columnForStatus(status);
+  const tone =
+    status === 'running'
+      ? styles.statusGlyphRunning
+      : status === 'waiting-input'
+        ? styles.statusGlyphWaitingInput
+        : undefined;
+  return (
+    <span
+      className={mergeClasses(styles.statusGlyph, tone)}
+      aria-label={STATUS_LABEL[status]}
+      title={STATUS_LABEL[status]}
+    >
+      {STATUS_GLYPH[column]}
+    </span>
+  );
 }
 
 export function Sidebar({
@@ -253,7 +294,6 @@ export function Sidebar({
   onNavigate,
   onOpenTicket,
   onNewIssue,
-  folds,
   onToggleFold,
   showFleet = false,
   projectOptions,
@@ -271,7 +311,7 @@ export function Sidebar({
   const newIssue = sections.find((s) => s.kind === 'newIssue');
 
   const treeNodes = team?.kind === 'team' ? team.tree : [];
-  const foldSet = useMemo(() => new Set(folds), [folds]);
+  const foldSet = useMemo(() => collectFolded(treeNodes), [treeNodes]);
   const rows = useMemo(() => flattenVisible(treeNodes, foldSet), [treeNodes, foldSet]);
   const nodesById = useMemo(() => {
     const map = new Map<string, SidebarTreeNode>();
@@ -310,7 +350,7 @@ export function Sidebar({
       if (node.taskId) onOpenTicket(node.taskId);
       return;
     }
-    onToggleFold(node.id);
+    onToggleFold(node.id, node.defaultFolded ?? false);
   }
 
   function onTreeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
@@ -330,7 +370,9 @@ export function Sidebar({
 
     const result = treeKeyReducer(keyState, event.key, rows);
     setKeyState({ focusId: result.focusId, typeahead: result.typeahead });
-    if (result.toggle) onToggleFold(result.toggle.id);
+    if (result.toggle) {
+      onToggleFold(result.toggle.id, nodesById.get(result.toggle.id)?.defaultFolded ?? false);
+    }
     if (result.activate) activate(result.activate);
     scheduleTypeaheadReset(result.typeahead.buffer);
   }
@@ -467,6 +509,8 @@ export function Sidebar({
                     node.taskId !== undefined &&
                     selectedView?.kind === 'ticket' &&
                     selectedView.taskId === node.taskId;
+                  const done =
+                    node.kind === 'ticket' && columnForStatus(node.status ?? 'pending') === 'done';
                   return (
                     <div
                       key={row.id}
@@ -487,11 +531,13 @@ export function Sidebar({
                       ) : (
                         <span className={styles.chevronPlaceholder} />
                       )}
-                      {treeIcon(node)}
+                      {treeIcon(node, styles)}
                       {node.ticketKey && (
                         <Caption1 className={styles.rowCount}>{node.ticketKey}</Caption1>
                       )}
-                      <span className={styles.rowLabel}>{node.label}</span>
+                      <span className={mergeClasses(styles.rowLabel, done && styles.doneLabel)}>
+                        {node.label}
+                      </span>
                       {node.kind !== 'ticket' && (
                         <Caption1 className={styles.rowCount}>{node.count}</Caption1>
                       )}
