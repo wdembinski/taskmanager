@@ -59,12 +59,14 @@
  * has to say WHICH gate. One guessed sentence covering six different walls is the failure
  * `a-refusal-that-named-the-wrong-wall` is about.
  */
+import type { TaskAttachment } from '@shared/attachments';
 import type { ForgeProvider, MergeRequest } from '@shared/mergeRequest';
 import { forgeName, mrIsSettled, mrNoun, mrRef } from '@shared/mergeRequest';
-import type { Project, Task } from '@shared/model';
+import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { sanitizeToken } from '@shared/secretToken';
 import { variantWorkOwner } from '@shared/variants';
+import { latestVisualState, shotPairs } from '@shared/visualSignOff';
 import {
   aggregateTested,
   branchChangesBody,
@@ -102,6 +104,17 @@ export interface CreatePrDeps {
   /** Every live variant row of any leader — `store.listVariantRows()`, for `variantWorkOwner`. */
   listVariantRows(leaderId?: string): Task[];
   /**
+   * The owner card's own attachments — `store.attachmentsForTask`. Read to find a pending
+   * visual sign-off (`shotPairs`), never a step's.
+   */
+  listAttachments(taskId: string): TaskAttachment[];
+  /**
+   * The owner card's own timeline — `store.getTaskActivity`. Read for the latest agent
+   * verdict and human sign-off (`latestVisualState`), the same comments the card panel's
+   * `VisualSignOff` section reads.
+   */
+  listActivity(taskId: string): TaskActivityEntry[];
+  /**
    * What the card's worktree and branch ARE on disk right now, or null.
    * `WorktreeManager.inspect` — reading, never preparing.
    */
@@ -138,6 +151,49 @@ export interface CreatePrDeps {
   /** File a note on the card's timeline. */
   note(projectId: string, taskId: string, body: string): void;
   now(): number;
+}
+
+/**
+ * What {@link prBody} needs to know about a card's pending visual sign-off — built from
+ * {@link shotPairs}/{@link latestVisualState} at the call site (`visualSignOffFor`), never
+ * recomputed inside `prBody` itself, so it stays a pure function of its arguments.
+ */
+export interface PrVisualSignOff {
+  /** The text after "review them on" — the card's ticketKey/externalKey, or its title when
+   *  it has neither. */
+  cardKey: string;
+  screens: readonly { name: string; verdict?: string }[];
+}
+
+/**
+ * The owner card's pending visual sign-off, read fresh on every call (the attachments and the
+ * timeline can both have changed since the last push) — `undefined` for the common case, a
+ * card `ui-shots.mjs` never shot.
+ */
+function visualSignOffFor(
+  deps: CreatePrDeps,
+  owner: Pick<Task, 'id' | 'title' | 'ticketKey' | 'externalKey'>,
+): PrVisualSignOff | undefined {
+  const { pairs } = shotPairs(deps.listAttachments(owner.id));
+  if (pairs.length === 0) return undefined;
+
+  const screenNames = pairs.map((p) => p.name);
+  const state = latestVisualState(deps.listActivity(owner.id), screenNames);
+  const cardKey = (owner.ticketKey ?? owner.externalKey ?? '').trim() || owner.title;
+
+  return {
+    cardKey,
+    screens: pairs.map((p) => {
+      const row = state.rows.get(p.name);
+      const verdict =
+        row?.status === 'mismatch'
+          ? row.note || 'flagged, no reason given'
+          : row?.status === 'ok'
+            ? 'matched the mockup'
+            : undefined;
+      return { name: p.name, verdict };
+    }),
+  };
 }
 
 /** What the caller gets back — enough to link to, and enough to know not to shout. */
@@ -316,6 +372,11 @@ export async function openPullRequest(
   // array as "fall back to the card's own description" rather than "say nothing".
   const commits = await branchCommitMessages(live.cwd, compareBase, live.branch, host);
 
+  // Read fresh on every push — never cached from the last time this card's PR was opened or
+  // refreshed, since a step running between pushes can leave new shots, or a human can have
+  // signed off since.
+  const signOff = visualSignOffFor(deps, owner);
+
   // Leased whenever the sync above actually rebased the branch: its commits now have SHAs
   // that nothing pushed under this name before would recognise, so an ordinary push is
   // rejected as non-fast-forward the moment the branch already exists on the far side. The
@@ -365,7 +426,7 @@ export async function openPullRequest(
       target.provider,
       target.path,
       alreadyOpen.number,
-      prBody(owner, target.provider, commits),
+      prBody(owner, target.provider, commits, signOff),
     );
     deps.note(
       project.id,
@@ -377,7 +438,7 @@ export async function openPullRequest(
   }
 
   const title = prTitle(owner);
-  const body = prBody(owner, target.provider, commits);
+  const body = prBody(owner, target.provider, commits, signOff);
   const created =
     target.provider === 'github'
       ? await createOnGitHub(
@@ -628,6 +689,12 @@ export function prTitle(task: Pick<Task, 'title' | 'type' | 'issueType' | 'exter
  * files itself against this card with no extra bookkeeping. Only for GitHub: the syntax
  * means nothing on GitLab, and a card mirrored from a GitHub issue whose code lives on
  * GitLab is not a shape worth inventing a reference for.
+ *
+ * `signOff` — when given, and carrying at least one screen — adds a "Visual sign-off"
+ * section before the trailers, naming how many screens `ui-shots.mjs` shot and each one's
+ * latest agent verdict, so a human reviewing the pull request knows to go look at the card
+ * before merging rather than discovering the shots exist by accident. Built by
+ * {@link visualSignOffFor}, never recomputed here.
  */
 export function prBody(
   task: Pick<
@@ -636,6 +703,7 @@ export function prBody(
   >,
   provider: ForgeProvider,
   commits: readonly string[],
+  signOff?: PrVisualSignOff,
 ): string {
   const changes = branchChangesBody(commits);
   // `externalDescription` FIRST, and it is not the obviously-named field: that is the one a
@@ -664,7 +732,28 @@ export function prBody(
   const tested = wrapHanging(`Tested: ${testedValue || testedFallback}`, 72, 8);
 
   const trailers = [ticketId, closes, tested].filter(Boolean).join('\n');
-  return [wrapped, trailers].filter(Boolean).join('\n\n');
+  return [wrapped, formatVisualSignOffSection(signOff), trailers].filter(Boolean).join('\n\n');
+}
+
+/**
+ * The "Visual sign-off" section `prBody` inserts before the trailers — `''` when `signOff` is
+ * absent or names no screens, which is the common case (a card `ui-shots.mjs` never shot).
+ * Wrapped at 72 columns the same way the rest of the body is: the heading as a plain
+ * paragraph, each screen as a `wrapPlainText`-style bullet.
+ */
+function formatVisualSignOffSection(signOff: PrVisualSignOff | undefined): string {
+  if (!signOff || signOff.screens.length === 0) return '';
+  const n = signOff.screens.length;
+  const heading = wrapHanging(
+    `Visual sign-off: ${n} screen${n === 1 ? '' : 's'} compared - review them on ` +
+      `${signOff.cardKey} in VIPPER before merging.`,
+    72,
+    0,
+  );
+  const bullets = signOff.screens.map((s) =>
+    wrapHanging(`- ${s.name}${s.verdict ? `: ${s.verdict}` : ''}`, 72, 2),
+  );
+  return [heading, ...bullets].join('\n');
 }
 
 /**

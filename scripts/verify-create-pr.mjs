@@ -380,6 +380,10 @@ const deps = {
   getSettings: () => store.getSettings(),
   listMergeRequests: () => store.listMergeRequests(),
   upsertMergeRequest: (mr) => store.upsertMergeRequest(mr),
+  // None of the cards here are ever shot by `ui-shots.mjs`, so these never have anything to
+  // find — but `openPullRequest` calls them on every card, so they have to exist.
+  listAttachments: (taskId) => store.attachmentsForTask(taskId),
+  listActivity: (taskId) => store.getTaskActivity(taskId),
   // Standing in for `WorktreeManager.inspect`, the one dependency this scenario has no use
   // for: it exists to READ a branch/base pair off disk, and here they are already known.
   inspect: async () => ({ cwd: repo, branch: BRANCH, base }),
@@ -1189,8 +1193,8 @@ check(
   'without commitLeftover, leftover work refuses, naming the uncommitted file',
   Boolean(
     leftoverRefusal &&
-      /uncommitted changes/.test(leftoverRefusal) &&
-      leftoverRefusal.includes('leftover.ts'),
+    /uncommitted changes/.test(leftoverRefusal) &&
+    leftoverRefusal.includes('leftover.ts'),
   ),
   leftoverRefusal ?? '(it did not refuse)',
 );
