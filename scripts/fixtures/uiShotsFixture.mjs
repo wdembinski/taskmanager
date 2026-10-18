@@ -307,6 +307,71 @@ export const TICKET_COMMENTS = {
 const TASKS_BY_ID = Object.fromEntries(TASKS.map((t) => [t.id, t]));
 
 /**
+ * The shots `ui-shots.mjs`'s own `visual-signoff-dark` row proves the card panel's "Visual
+ * sign-off" section renders from — exactly the shape `ingestAttachOutbox` would have left on
+ * an owner card: a real shot, its mockup, the side-by-side page, the shared contact sheet and
+ * the manifest `shots.json` ingests itself, never the agent's own `verdicts.txt` (that one is
+ * read as a comment, not attached — see `TASK_ACTIVITY` above, which this row adds no row to,
+ * so the section's badge reads "Pending").
+ *
+ * Hung off `chainWaitingPredecessor`'s id (`'13a'`) — NOT `agentRunningParent`'s (`'3'`),
+ * despite `visual-signoff-dark`'s own setup steps being the exact ones `issue-peek`/
+ * `issue-full-screen` use (`'Tickets'`, `'issue-row:first'`, `'Open full screen'`). Checked
+ * empirically (`node scripts/ui-shots.mjs --only visual-signoff-dark`): the Tickets screen's
+ * own `[role="option"]` order puts `'13a'` first, not `'3'` — `TASK_ACTIVITY`'s own comment
+ * above, naming `3`/`6` as "the one card issue-peek/issue-full-screen opens", no longer holds
+ * for whatever position in that list is actually first. Attaching to the wrong id left this
+ * row's own `[data-visual-signoff]` `expect` unmatched (`selectorMissed`) the first time.
+ */
+export const VISUAL_SIGNOFF_ATTACHMENTS = [
+  {
+    id: 'vso-real',
+    taskId: '13a',
+    name: 'board-light.png',
+    fileName: 'board-light.png',
+    mimeType: 'image/png',
+    size: 48_000,
+    createdAt: now - 60_000,
+  },
+  {
+    id: 'vso-mockup',
+    taskId: '13a',
+    name: 'board-light-mockup.png',
+    fileName: 'board-light-mockup.png',
+    mimeType: 'image/png',
+    size: 51_000,
+    createdAt: now - 60_000,
+  },
+  {
+    id: 'vso-html',
+    taskId: '13a',
+    name: 'board-light.html',
+    fileName: 'board-light.html',
+    mimeType: 'text/html',
+    size: 900,
+    createdAt: now - 60_000,
+  },
+  {
+    id: 'vso-index',
+    taskId: '13a',
+    name: 'index.html',
+    fileName: 'index.html',
+    mimeType: 'text/html',
+    size: 1200,
+    createdAt: now - 60_000,
+  },
+  {
+    id: 'vso-manifest',
+    taskId: '13a',
+    name: 'shots.json',
+    fileName: 'shots.json',
+    mimeType: 'application/json',
+    size: 300,
+    createdAt: now - 60_000,
+  },
+];
+
+/**
  * The three archived milestones `archived-light`'s own screen seeds (F14.8 step 4) — named
  * after the mockup's own rows (`v10-21-archived-light.svg`) so the shot reads the same way the
  * mockup does, on the fixture's one ticket project (`boardShotsFixture.mjs`'s `PROJECT_ID`).
@@ -450,7 +515,7 @@ export const BOOT_CHANNELS = {
   'scheduler:activeRuns': ACTIVE_RUNS,
   'scheduler:states': 'list',
   'scheduler:integrating': 'list',
-  'attachment:list': 'list',
+  'attachment:list': VISUAL_SIGNOFF_ATTACHMENTS,
   'board:scopes': 'list',
   // `ArchivedPane.tsx` and `useSidebarData.ts`'s own count both read this unscoped — an
   // `ArchivedListing`, not the bare `[]` the `'list'` fallback would answer with (that shape

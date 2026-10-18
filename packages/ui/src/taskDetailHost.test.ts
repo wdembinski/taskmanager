@@ -121,6 +121,7 @@ function myTasksProps(): TaskDetailHostProps {
     quietAgentProgress: true,
     attachments: [],
     parentAttachments: [],
+    subtaskAttachments: [],
     statusKeywords: [],
     priorityDisplay: 'color',
     attention: buildAttentionIndex([]),
@@ -155,6 +156,7 @@ function webBoardProps(): TaskDetailHostProps {
     quietAgentProgress: true,
     attachments: [],
     parentAttachments: [],
+    subtaskAttachments: [],
     statusKeywords: [],
     priorityDisplay: 'color',
     attention: buildAttentionIndex([]),
@@ -189,6 +191,7 @@ describe('neededLoads', () => {
     ['mergeRequests', 'mergeRequests'],
     ['attachments', 'attachments'],
     ['parentAttachments', 'attachments'],
+    ['subtaskAttachments', 'attachments'],
     ['chainLinks', 'chainLinks'],
     ['attention', 'attention'],
     ['liveRunTaskIds', 'liveRuns'],
@@ -212,6 +215,7 @@ describe('assembleTaskDetailProps', () => {
       mergeRequests: [],
       attachments: [],
       parentAttachments: [],
+      subtaskAttachments: [],
       chainLinks: [],
       chainTasksById: new Map(),
       attention: buildAttentionIndex([]),
@@ -246,6 +250,7 @@ describe('assembleTaskDetailProps', () => {
     expect(result.mergeRequests).toBe(provided.mergeRequests);
     expect(result.attachments).toBe(provided.attachments);
     expect(result.parentAttachments).toBe(provided.parentAttachments);
+    expect(result.subtaskAttachments).toBe(provided.subtaskAttachments);
     expect(result.chainLinks).toBe(provided.chainLinks);
     expect(result.chainTasksById).toBe(provided.chainTasksById);
     expect(result.attention).toBe(provided.attention);
@@ -291,10 +296,33 @@ describe('assembleTaskDetailProps', () => {
     expect(result.mergeRequests?.map((m) => m.id)).toEqual(['mr-1']);
     expect(result.attachments?.map((a) => a.id)).toEqual(['a1']);
     expect(result.parentAttachments?.map((a) => a.id)).toEqual(['a2']);
+    // Flat over every sibling (`step-1`, `step-2`, `step-3`) — only `step-2` owns one.
+    expect(result.subtaskAttachments?.map((a) => a.id)).toEqual(['a1']);
     expect(result.chainTasksById?.get('pred')).toBe(pred);
     expect(result.chainTasksById?.size).toBe(5);
     expect(result.chainWaitingOn?.map((t) => t.id)).toEqual(['pred']);
     expect(result.chainMergeHeld?.map((t) => t.id)).toEqual(['pred']);
+  });
+
+  it("derives subtaskAttachments as the flat union of every one of the CARD's own steps' files", () => {
+    const card = task({ id: 'card-1' });
+    const step1 = task({ id: 'step-1', parentTaskId: 'card-1', order: 0 });
+    const step2 = task({ id: 'step-2', parentTaskId: 'card-1', order: 1 });
+
+    const loaded: LoadedTaskDetailData = {
+      tasks: [card, step1, step2],
+      attachments: [
+        attachment('a1', 'step-1'),
+        attachment('a2', 'step-2'),
+        attachment('a3', 'card-1'),
+        attachment('a4', 'unrelated'),
+      ],
+    };
+
+    const result = assembleTaskDetailProps('card-1', { taskId: 'card-1' }, loaded);
+
+    expect(result.attachments?.map((a) => a.id)).toEqual(['a3']);
+    expect(result.subtaskAttachments?.map((a) => a.id)).toEqual(['a1', 'a2']);
   });
 
   it('derives empty slices and null answers for a task with nothing loaded and nothing supplied', () => {
@@ -306,6 +334,7 @@ describe('assembleTaskDetailProps', () => {
     expect(result.mergeRequests).toEqual([]);
     expect(result.attachments).toEqual([]);
     expect(result.parentAttachments).toEqual([]);
+    expect(result.subtaskAttachments).toEqual([]);
     expect(result.chainLinks).toEqual([]);
     expect(result.chainTasksById?.size).toBe(0);
     expect(result.attention?.count).toBe(0);

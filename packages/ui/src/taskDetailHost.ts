@@ -63,7 +63,11 @@ export function neededLoads(provided: TaskDetailHostProps): ReadonlySet<HostLoad
     loads.add('tasks');
   }
   if (provided.mergeRequests === undefined) loads.add('mergeRequests');
-  if (provided.attachments === undefined || provided.parentAttachments === undefined) {
+  if (
+    provided.attachments === undefined ||
+    provided.parentAttachments === undefined ||
+    provided.subtaskAttachments === undefined
+  ) {
     loads.add('attachments');
   }
   if (provided.chainLinks === undefined) loads.add('chainLinks');
@@ -127,6 +131,7 @@ export function assembleTaskDetailProps(
     mergeRequests: providedMergeRequests,
     attachments: providedAttachments,
     parentAttachments: providedParentAttachments,
+    subtaskAttachments: providedSubtaskAttachments,
     chainLinks: providedChainLinks,
     chainTasksById: providedChainTasksById,
     attention: providedAttention,
@@ -174,6 +179,11 @@ export function assembleTaskDetailProps(
         ? (attachmentsByTask.get(parentTask.id) ?? [])
         : [];
 
+  const subtaskAttachments =
+    providedSubtaskAttachments !== undefined
+      ? providedSubtaskAttachments
+      : subtasks.flatMap((s) => attachmentsByTask.get(s.id) ?? []);
+
   const chainLinks =
     providedChainLinks !== undefined ? providedChainLinks : (loaded.chainLinks ?? []);
 
@@ -212,6 +222,7 @@ export function assembleTaskDetailProps(
     mergeRequests,
     attachments,
     parentAttachments,
+    subtaskAttachments,
     chainLinks,
     chainTasksById,
     attention,

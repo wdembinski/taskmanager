@@ -1777,6 +1777,9 @@ export function MyTasks({
             parentAttachments={
               parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : []
             }
+            // Every one of the shown card's own steps' files — the Files section groups
+            // them back out by step; see `FilesSection.tsx`.
+            subtaskAttachments={chain.flatMap((s) => attachmentsByTask.get(s.id) ?? [])}
             statusKeywords={settings?.statusKeywords}
             // The pane draws priority the same way the cards beside it do — one setting,
             // both surfaces, so they can never show the same fact two different ways.

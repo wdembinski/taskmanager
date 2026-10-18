@@ -28,7 +28,7 @@ const useStyles = makeStyles({
 
 export function NeedsYouRail(): JSX.Element {
   const styles = useStyles();
-  const { items, initial, answer, dismiss } = useAttentionItems();
+  const { items, initial, answer, dismiss, attachmentsByTask } = useAttentionItems();
 
   return (
     <div className={styles.root}>
@@ -55,7 +55,13 @@ export function NeedsYouRail(): JSX.Element {
       ) : (
         <div className={styles.list}>
           {items.map((item) => (
-            <InboxItem key={item.id} item={item} onAnswer={answer} onDismiss={dismiss} />
+            <InboxItem
+              key={item.id}
+              item={item}
+              attachments={attachmentsByTask.get(item.taskId)}
+              onAnswer={answer}
+              onDismiss={dismiss}
+            />
           ))}
         </div>
       )}

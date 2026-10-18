@@ -246,6 +246,24 @@ export const SCREENS = [
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {
+    // Same setup as `issue-full-screen` — `'Tickets'`, `'issue-row:first'`, `'Open full
+    // screen'` — opening whichever card the Tickets list puts first; `uiShotsFixture.mjs`'s
+    // own `VISUAL_SIGNOFF_ATTACHMENTS` hangs a shot pair off that same id (see its own doc
+    // comment on which id, and why) so this row's `expect` can prove `VisualSignOff.tsx`
+    // actually renders in the card panel, not just in its own render test. `scheme: 'dark'`
+    // (unlike `issue-full-screen`'s `'light'`) is not just variety: with the exact same
+    // setup steps, a `'light'` shot here would be byte-identical to `issue-full-screen`'s own
+    // and `--attach` would refuse the whole run as a duplicate (see `SCREENS`' own doc on
+    // hashing). No mockup draws this section yet.
+    name: 'visual-signoff-dark',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'dark',
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    expect: '[data-visual-signoff]',
+    mockup: null,
+  },
+  {
     // The "Settings" tab is NavRail's foot group (apps/client/src/renderer/src/App.tsx).
     name: 'settings',
     app: 'client',

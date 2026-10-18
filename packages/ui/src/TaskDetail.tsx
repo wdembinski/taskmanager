@@ -77,8 +77,11 @@ import { ReviewPane } from './review/ReviewPane';
 import { TaskChain } from './TaskChain';
 import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
+import { AttachmentGallery } from './AttachmentGallery';
+import { FilesSection } from './FilesSection';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
+import { VisualSignOff } from './VisualSignOff';
 import { TaskLinksSection } from './projects/TaskLinksSection';
 import { TaskTicketSection } from './projects/TaskTicketSection';
 import { useTicketLinks } from './projects/useTicketLinks';
@@ -324,6 +327,13 @@ export interface TaskDetailProps {
    * for an ordinary card, which has no parent to inherit from.
    */
   parentAttachments?: readonly TaskAttachment[];
+  /**
+   * Every one of {@link subtasks}' own files, flat — not grouped, since the two places that
+   * read this (the "waiting for you" band, filtered to whichever step is actually parked,
+   * and the Files section, which groups by step itself) want different slices of it. Empty
+   * for a step being shown (which has no steps of its own to carry files for).
+   */
+  subtaskAttachments?: readonly TaskAttachment[];
   /** The status-note vocabulary, so a past update reads in the colour the board gave it. */
   statusKeywords?: readonly StatusKeyword[];
   /** How the board draws priority, so this pane draws it the same way. */
@@ -481,6 +491,7 @@ export function TaskDetail({
   quietAgentProgress = true,
   attachments = [],
   parentAttachments = [],
+  subtaskAttachments = [],
   statusKeywords,
   priorityDisplay = 'color',
   readOnlyNotice,
@@ -945,6 +956,22 @@ export function TaskDetail({
     // looking at the pane can catch.
     run.phase === 'blocked';
 
+  /**
+   * Which task — the card itself, or the one step holding it up — is actually `waiting-input`,
+   * the same fact `runPhase`'s own `waiting` phase is derived from (see its `parked` lookup
+   * in `@tm/shared/board`) but that function never hands back by id. Needed here, not there,
+   * only to show that task's own files alongside the question — nothing else reads it.
+   */
+  const waitingTaskId =
+    run.phase === 'waiting'
+      ? task.status === 'waiting-input'
+        ? task.id
+        : (subtasks.find((s) => s.status === 'waiting-input')?.id ?? null)
+      : null;
+  const waitingAttachments = waitingTaskId
+    ? [...attachments, ...subtaskAttachments].filter((a) => a.taskId === waitingTaskId)
+    : [];
+
   async function addComment(): Promise<void> {
     if (!task || !comment.text.trim()) return;
     setBusy('note');
@@ -1267,6 +1294,17 @@ export function TaskDetail({
         </Caption1>
       </div>
 
+      {/* The owner card's own look at `ui-shots.mjs`'s shots — never shown for a step, whose
+          detail is its brief, not the card's UI review. Renders nothing when the card was
+          never shot. */}
+      {!isStep && (
+        <VisualSignOff
+          attachments={attachments}
+          activity={timeline.activity}
+          onNeedsChanges={(text) => composer.set({ ...EMPTY_COMPOSER, text })}
+        />
+      )}
+
       <TaskAgentPanel
         task={task}
         subtasks={subtasks}
@@ -1352,16 +1390,27 @@ export function TaskDetail({
   // `detailsContent`, so this split is invisible there. `null` for a step: it cannot be
   // chained or linked at either end.
   const linksContent = !isStep && (
-    <TaskLinksSection
-      task={task}
-      ticketLinks={resolvedTicketLinks}
-      chainLinks={chainLinks}
-      tasksById={chainTasksById}
-      candidates={projectTickets}
-      onOpenTask={onOpenTask}
-      chainRef={chainSectionRef}
-      readOnly={ticketReadOnly}
-    />
+    <>
+      <TaskLinksSection
+        task={task}
+        ticketLinks={resolvedTicketLinks}
+        chainLinks={chainLinks}
+        tasksById={chainTasksById}
+        candidates={projectTickets}
+        onOpenTask={onOpenTask}
+        chainRef={chainSectionRef}
+        readOnly={ticketReadOnly}
+      />
+      {/* Every attachment of the card AND of its steps, grouped by step — so nothing
+          an agent attaches is reachable only through a step's own editor. */}
+      <FilesSection
+        cardId={task.id}
+        cardTitle={task.title}
+        attachments={attachments}
+        subtaskAttachments={subtaskAttachments}
+        subtasks={subtasks}
+      />
+    </>
   );
 
   const stepsContent = !isStep && (
@@ -1559,6 +1608,11 @@ export function TaskDetail({
                 )}
               </div>
             ))}
+            {/* The files the parked run already produced, right under the words that say
+                it's waiting — not reachable only through that step's own editor. */}
+            {waitingAttachments.length > 0 && (
+              <AttachmentGallery attachments={waitingAttachments} />
+            )}
           </div>
         )}
 
