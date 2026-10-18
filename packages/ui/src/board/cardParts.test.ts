@@ -143,12 +143,9 @@ describe('cardParts', () => {
       expect(parts.statusLine).toEqual({ kind: 'running', label: 'Merging', ink: 'cyan' });
     });
 
-    it('swaps the step label for the run\'s purpose on a remediation errand', () => {
+    it("swaps the step label for the run's purpose on a remediation errand", () => {
       const card = task({ id: 'c1', status: 'running', agentProjectId: 'proj-1' });
-      const parts = cardParts(
-        card,
-        ctx({ runPurposes: new Map([['c1', 'fix-pipeline']]) }),
-      );
+      const parts = cardParts(card, ctx({ runPurposes: new Map([['c1', 'fix-pipeline']]) }));
       expect(parts.statusLine).toEqual({ kind: 'running', label: 'fixing CI', ink: 'cyan' });
     });
 
@@ -307,9 +304,7 @@ describe('cardParts', () => {
       const parts = cardParts(
         task({ status: 'in-review' }),
         ctx({
-          mergeRequests: [
-            mr({ hasConflicts: true, approvalsRequired: 1, approvalsGiven: 1 }),
-          ],
+          mergeRequests: [mr({ hasConflicts: true, approvalsRequired: 1, approvalsGiven: 1 })],
         }),
       );
       expect(parts.statusLine).toEqual({
@@ -319,12 +314,15 @@ describe('cardParts', () => {
       });
     });
 
-    it('is silent for a merged MR — the footer\'s own ref already says it landed', () => {
-      const parts = cardParts(task({ status: 'done' }), ctx({ mergeRequests: [mr({ state: 'merged' })] }));
+    it("is silent for a merged MR — the footer's own ref already says it landed", () => {
+      const parts = cardParts(
+        task({ status: 'done' }),
+        ctx({ mergeRequests: [mr({ state: 'merged' })] }),
+      );
       expect(parts.statusLine).toBeUndefined();
     });
 
-    it('is silent for an untouched, awaiting MR — every open MR\'s resting state', () => {
+    it("is silent for an untouched, awaiting MR — every open MR's resting state", () => {
       const parts = cardParts(
         task({ status: 'in-review' }),
         ctx({ mergeRequests: [mr({ approvalsRequired: 1, approvalsGiven: 0 })] }),

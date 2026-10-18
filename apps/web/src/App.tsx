@@ -58,7 +58,7 @@ import { StaleBanner } from './board/StaleBanner';
 import { boardIsReady, syncBusyLabel, syncCurtainText, syncStatusLabel } from './board/syncGate';
 import { UnreachableBanner } from './board/UnreachableBanner';
 import { describeClient, versionSkew } from './board/targetClient';
-import { useCloudBoard } from './board/useCloudBoard';
+import { useCloudBoard, type CloudBoardApi } from './board/useCloudBoard';
 import { CompactApp } from './compact/CompactApp';
 import { useHashRoute } from './compact/useHashRoute';
 import { loadWebConfig } from './env';
@@ -196,8 +196,31 @@ function SignedInBoard({
    *  its own `signOut`. */
   onSignOut: () => void;
 }): JSX.Element {
-  const styles = useStyles();
+  // `board.transport` only exists once `useCloudBoard` has run, so it can only ever reach
+  // `useSidebarData`'s own `useTransport()` call (below, in `SignedInBoardView`) via a
+  // Provider mounted in a PARENT's returned JSX — never via one this same function returns,
+  // since a hook call in a component's own body runs before that component's own JSX ever
+  // mounts anything. `SignedInBoardView` is the child that is actually wrapped.
   const board = useCloudBoard(auth, config);
+  return (
+    <TransportProvider transport={board.transport}>
+      <SignedInBoardView board={board} auth={auth} config={config} onSignOut={onSignOut} />
+    </TransportProvider>
+  );
+}
+
+function SignedInBoardView({
+  board,
+  auth,
+  config,
+  onSignOut,
+}: {
+  board: CloudBoardApi;
+  auth: CloudAuth;
+  config: ReturnType<typeof loadWebConfig>;
+  onSignOut: () => void;
+}): JSX.Element {
+  const styles = useStyles();
   const now = useTick(AGE_TICK_MS);
   // Both sources, one indicator: `polling` alone strobes ~24x/min against a 2.5s cadence of
   // sub-200ms requests, and relays alone hide the time the board read itself is in flight.

@@ -80,8 +80,7 @@ export type CardStatusLine =
 
 /** The footer's one trailing fact — the MR ref, else the due date, never both. */
 export type CardTrailing =
-  | { kind: 'mr'; ref: string; url: string }
-  | { kind: 'due'; label: string; flagged: boolean };
+  { kind: 'mr'; ref: string; url: string } | { kind: 'due'; label: string; flagged: boolean };
 
 export interface CardParts {
   /** `ticketKey` for a native ticket, `externalKey` for a mirrored issue, else `''`. */
@@ -215,7 +214,11 @@ function statusLineFor(
   }
 
   if (ctx.chainPosition) {
-    return { kind: 'chain', label: `${ctx.chainPosition.n} of ${ctx.chainPosition.m}`, ink: 'faint' };
+    return {
+      kind: 'chain',
+      label: `${ctx.chainPosition.n} of ${ctx.chainPosition.m}`,
+      ink: 'faint',
+    };
   }
 
   return undefined;
