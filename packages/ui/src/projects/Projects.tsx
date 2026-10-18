@@ -78,16 +78,43 @@ export interface ProjectsProps {
    *  shared pane's own "Show on board" button. Left `undefined` when this screen is hosted
    *  with no board of its own to jump to (the host decides, the same way `TaskDetail` does). */
   onShowOnBoard?: (taskId: string) => void;
+  /** Hands the selected ticket project to this screen rather than letting it default to the
+   *  first one — the desktop App and the web App both lift it so their sidebar switcher
+   *  (`useTrackerProject`) and this workspace always agree on which project is open. Passing
+   *  `undefined` (the default) keeps this screen's own first-project selection instead; a
+   *  controlling host must pass `onSelectProject` alongside it. */
+  selectedProjectId?: string | null;
+  /** Reports a `ProjectPicker` pick back up to the controlling host — only read while
+   *  `selectedProjectId` is passed. */
+  onSelectProject?: (id: string) => void;
 }
 
-export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
+export function Projects({
+  onShowOnBoard,
+  selectedProjectId: controlledProjectId,
+  onSelectProject,
+}: ProjectsProps = {}): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const [projects, setProjects] = useState<Project[] | null>(null);
   /** The repos a ticket can be delegated to — for resolving `agentProjectId` to a name
    *  wherever a ticket surface shows its assignee, alongside the human `people` roster. */
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  /** This screen's own first-project default (:126) — ignored once a host controls the
+   *  selection via `selectedProjectId`. */
+  const [internalProjectId, setInternalProjectId] = useState<string | null>(null);
+  const controlled = controlledProjectId !== undefined;
+  const selectedProjectId = controlled ? controlledProjectId : internalProjectId;
+  const setSelectedProjectId = useCallback(
+    (id: string) => {
+      if (controlled) {
+        onSelectProject?.(id);
+      } else {
+        setInternalProjectId(id);
+      }
+    },
+    [controlled, onSelectProject],
+  );
   const [view, setView] = useState<ProjectView>('backlog');
   const [settings, setSettings] = useState<AppSettings | null>(null);
   /** Whether the selected ticket is closed, a peek beside the list, or a full-screen page —
@@ -122,12 +149,14 @@ export function Projects({ onShowOnBoard }: ProjectsProps = {}): JSX.Element {
   }, [transport]);
 
   // Keep a project selected once there is one to select — the backlog otherwise has nothing
-  // to show and the picker's list has nothing highlighted.
+  // to show and the picker's list has nothing highlighted. Skipped while a host controls the
+  // selection: it owns the default (and the empty-state) instead.
   useEffect(() => {
+    if (controlled) return;
     if (!projects || projects.length === 0) return;
     if (selectedProjectId && projects.some((p) => p.id === selectedProjectId)) return;
     setSelectedProjectId(projects[0].id);
-  }, [projects, selectedProjectId]);
+  }, [controlled, projects, selectedProjectId]);
 
   useEffect(() => {
     dispatch({ type: 'reset' });
