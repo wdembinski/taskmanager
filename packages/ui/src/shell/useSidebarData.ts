@@ -27,6 +27,15 @@ function machineProjectsOf(projects: readonly Project[]): Array<Pick<Project, 'i
   return [...(personal ? [personal] : []), ...repos].map((p) => ({ id: p.id, name: p.name }));
 }
 
+/** `milestone:list`'s own rows carry archived ones too (the store does not filter them, see
+ *  `ipc.ts`'s `listMilestones`) — without this, `buildTree` reads every one of them as live,
+ *  contradicting the Archived view's own "hidden from the tree" copy (`ArchivedPane.tsx`). A
+ *  stable module-level reference, not an inline closure, so it never busts `sections`' own
+ *  `useMemo` on its own. */
+function isMilestoneArchived(milestone: Milestone): boolean {
+  return milestone.archivedAt != null;
+}
+
 export interface UseSidebarDataOptions {
   /** How many items wait on a human — the Inbox row's own count, read by whichever host
    *  already subscribes to `attention:new`/`attention:resolved` for its own badge. */
@@ -111,6 +120,7 @@ export function useSidebarData(
       archivedCount,
       folds: options.folds,
       reviewsEnabled: options.reviewsEnabled,
+      isMilestoneArchived,
     };
     return buildSidebar(input);
   }, [

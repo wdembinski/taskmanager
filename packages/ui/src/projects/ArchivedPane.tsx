@@ -66,16 +66,39 @@ const TAB_LABEL: Record<ArchivedTab, string> = {
   project: 'Projects',
 };
 
+/** The name column's own header — singular, unlike `TAB_LABEL`'s tab text, since it names
+ *  the one thing a row is, the same way the mockup's own "Milestone" column header reads. */
+const NAME_HEADER: Record<ArchivedTab, string> = {
+  milestone: 'Milestone',
+  epic: 'Epic',
+  project: 'Project',
+};
+
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, height: '100%' },
   info: {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
+    padding: '10px 12px',
+    borderRadius: tokens.borderRadiusLarge,
+    backgroundColor: tokens.colorNeutralBackground3,
     color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
     '& svg': { flexShrink: 0, fontSize: '16px' },
   },
   table: { display: 'flex', flexDirection: 'column', gap: '2px', overflowY: 'auto', minHeight: 0 },
+  headerRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '0 10px 6px',
+    borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  headerSpacer: { width: '46px', flexShrink: 0 },
+  headerRestore: { width: '84px', flexShrink: 0 },
   group: { display: 'flex', flexDirection: 'column' },
   row: {
     display: 'flex',
@@ -257,6 +280,14 @@ export function ArchivedPane({
         <Body1 className={styles.empty}>Nothing archived here yet.</Body1>
       ) : (
         <div className={styles.table} role="table" aria-label={TAB_LABEL[tab]}>
+          <div className={styles.headerRow} role="row">
+            <span className={styles.headerSpacer} />
+            <span className={styles.name}>{NAME_HEADER[tab]}</span>
+            <span className={styles.dates}>Dates</span>
+            <span className={styles.summary}>Tickets</span>
+            <span className={styles.archivedAt}>Archived</span>
+            <span className={styles.headerRestore} />
+          </div>
           {rows.map((row) => (
             <ArchivedRowView
               key={row.id}
