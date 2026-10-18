@@ -4274,7 +4274,7 @@ describe('Scheduler.onRunEvent — a step’s attach outbox lands on its owner c
         'r1',
         event,
       );
-    return { card, step, attachments, comments, worktree, fire, onAttachmentsChanged };
+    return { card, step, attachments, comments, worktree, fire, onAttachmentsChanged, store };
   }
 
   const resultEvent = {
@@ -4298,6 +4298,47 @@ describe('Scheduler.onRunEvent — a step’s attach outbox lands on its owner c
     expect(h.attachments[0]).toMatchObject({ taskId: 'c1', fileName: 'board-light.png' });
     expect(h.attachments.some((a) => a.taskId === 's1')).toBe(false);
     expect(h.onAttachmentsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * TM-442: "it doesn't make sense to ask the question about screenshots but show them
+   * after I respond." A run that PARKS (an `AskUserQuestion`, a plan approval, a permission
+   * ask, or a prose question) must have already ingested its attach outbox onto the owner
+   * card by the time the attention item goes up — not only once the run later settles.
+   * `raiseAttention` is the one chokepoint every one of those four kinds passes through
+   * (`task-failed`/`merge-conflict`/`proposal` build their own item inline and never reach
+   * it), so this exercises it through the `AskUserQuestion` fallback path `onRunEvent`
+   * already has, the same way the settle-path suite above does for `result`.
+   */
+  it('ingests the attach outbox before raising an agent question, not after', async () => {
+    const h = setup();
+    mkdirSync(join(h.worktree, '.vipper', 'attach'), { recursive: true });
+    writeFileSync(join(h.worktree, '.vipper', 'attach', 'board-light.png'), 'bytes');
+
+    const order: string[] = [];
+    const store = h.store;
+    const originalAdd = store.addAttachment.bind(store);
+    store.addAttachment = ((input: Parameters<Store['addAttachment']>[0]) => {
+      order.push('attached');
+      return originalAdd(input);
+    }) as Store['addAttachment'];
+    const originalSave = store.saveAttention.bind(store);
+    store.saveAttention = ((...args: Parameters<Store['saveAttention']>) => {
+      order.push('raised');
+      return originalSave(...args);
+    }) as Store['saveAttention'];
+
+    await h.fire({
+      kind: 'tool-use',
+      name: 'AskUserQuestion',
+      input: {
+        questions: [{ question: 'Does the screenshot look right?', options: [{ label: 'Yes' }] }],
+      },
+    });
+
+    expect(h.attachments).toHaveLength(1);
+    expect(h.attachments[0]).toMatchObject({ taskId: 'c1', fileName: 'board-light.png' });
+    expect(order).toEqual(['attached', 'raised']);
   });
 });
 
