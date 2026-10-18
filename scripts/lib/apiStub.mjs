@@ -41,8 +41,16 @@ function partitionChannels(bootChannels) {
  * columns are forced to `hiddenColumns: []` (every column visible, Done included — see
  * `boardShotsFixture.mjs`'s own comment on `SETTINGS_OVERRIDES`) unless `settingsOverrides.board`
  * says otherwise.
+ *
+ * `attachmentUrls` (`id -> url`) backs `window.api.attachmentUrl`, the desktop `Transport`'s
+ * optional method (`packages/ui/src/transport.tsx`). A real Electron main process answers
+ * every id through its own `vipper-attachment://` scheme (`registerAttachmentProtocol`), which
+ * this headless-Chrome tab — never a real Electron process — cannot resolve at all; an id
+ * missing from the table returns `undefined` so callers' own `transport.attachmentUrl?.(a) ??
+ * attachmentUrl(a.id)` fallback still reaches for that scheme unchanged, the same broken image
+ * every row that carries no real fixture bytes already rendered before this existed.
  */
-export function buildApiStub({ defaultSettings, fixture, settingsOverrides = {} }) {
+export function buildApiStub({ defaultSettings, fixture, settingsOverrides = {}, attachmentUrls = {} }) {
   const settings = {
     ...defaultSettings,
     ...fixture.SETTINGS_OVERRIDES,
@@ -58,6 +66,7 @@ export function buildApiStub({ defaultSettings, fixture, settingsOverrides = {} 
     const BY_ARG_CHANNELS = ${JSON.stringify(byArg)};
     const LIST_CHANNELS = new Set(${JSON.stringify(listChannels)});
     const NULL_CHANNELS = new Set(${JSON.stringify(nullChannels)});
+    const ATTACHMENT_URLS = ${JSON.stringify(attachmentUrls)};
     window.api = {
       invoke(channel, ...args) {
         if (channel === 'settings:get') return Promise.resolve(SETTINGS);
@@ -80,6 +89,11 @@ export function buildApiStub({ defaultSettings, fixture, settingsOverrides = {} 
       },
       pathForFile() {
         return '';
+      },
+      attachmentUrl(attachment) {
+        return Object.prototype.hasOwnProperty.call(ATTACHMENT_URLS, attachment.id)
+          ? ATTACHMENT_URLS[attachment.id]
+          : undefined;
       },
     };
   })();`;

@@ -130,7 +130,15 @@ function planHeadingLines(): string[] {
  * Verification also carries the visual sign-off rule (the "screenshot the real UI
  * headlessly" plan): a step that changes the UI runs `scripts/ui-shots.mjs --attach` as
  * its own verification and says so in its summary, because nothing else in this prompt
- * ever tells the agent a human has to look at a screenshot before the card is Done.
+ * ever tells the agent a human has to look at a screenshot before the card is Done. A
+ * refusal from that command (a duplicate or an unmatched selector) means the shot was
+ * never really taken, so it is told to fix the underlying click/selector rather than
+ * ignore the exit code — an attached pair the agent never actually looked at is worse
+ * than no pair at all. And because nobody but the agent has the real screen and the
+ * mockup open side by side at that moment, it is told to render its own verdict per
+ * screen into `.vipper/attach/verdicts.txt` and repeat those lines in its summary — a
+ * human then reads a verdict instead of having to eyeball every pair itself to find the
+ * one that drifted.
  */
 function planScopeLines(): string[] {
   return [
@@ -153,9 +161,14 @@ function planScopeLines(): string[] {
     `If any step changes the UI, that step's Verification must run`,
     `\`node scripts/ui-shots.mjs --attach\` (when this project has that script) to`,
     `screenshot the real UI headlessly next to its mockup — a build or a test run proves`,
-    `the code runs, not that it looks right. That step's final summary must say it`,
-    `needs visual sign-off: a UI task is not Done until a human has looked at the`,
-    `shots and approved them.`,
+    `the code runs, not that it looks right. If that command refuses to attach (a`,
+    `duplicate shot or a selector that never matched), the shot was never really taken —`,
+    `fix the click or selector it names and re-run it, don't ignore the refusal. Then open`,
+    `each \`<name>.png\` / \`<name>-mockup.png\` pair yourself and write`,
+    `\`.vipper/attach/verdicts.txt\`, one line per screen:`,
+    `\`<screen>: close|partly|far — <concrete defects>\`, and repeat those lines in your`,
+    `final summary. That summary must also say it needs visual sign-off: a UI task is not`,
+    `Done until a human has looked at the shots and approved them.`,
     '',
   ];
 }

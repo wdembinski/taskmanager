@@ -25,7 +25,8 @@
  * events (`task:changed`, `scheduler:changed`).
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type {
   ChatRefusal,
   ChatSendResult,
@@ -3178,19 +3179,40 @@ export class Scheduler {
       const open = this.openAttentionOfKind(request.runId, 'agent-question');
       const adoptable =
         open && !this.pendingDecisions.has(open.id) && open.prompt === describeQuestions(questions);
-      const item =
-        adoptable && open
-          ? open
-          : this.raiseAttention(run, {
-              kind: 'agent-question',
-              prompt: describeQuestions(questions),
-              toolName: request.toolName,
-              reason: null,
-              questions,
-            });
-      return new Promise<PermissionDecisionResult>((resolve) => {
-        this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
-      });
+      if (adoptable && open) {
+        const item = open;
+        return new Promise<PermissionDecisionResult>((resolve) => {
+          this.pendingDecisions.set(item.id, {
+            runId: request.runId,
+            input: request.input,
+            resolve,
+          });
+        });
+      }
+      const raise = (): Promise<PermissionDecisionResult> => {
+        const item = this.raiseAttention(run, {
+          kind: 'agent-question',
+          prompt: describeQuestions(questions),
+          toolName: request.toolName,
+          reason: null,
+          questions,
+        });
+        return new Promise<PermissionDecisionResult>((resolve) => {
+          this.pendingDecisions.set(item.id, {
+            runId: request.runId,
+            input: request.input,
+            resolve,
+          });
+        });
+      };
+      // TM-442: only the slow (ingest-needed) path chains through a `.then` — the common
+      // case (no outbox) returns the very same synchronously-built promise as before this
+      // existed, so a run that never dropped screenshots pays no extra tick for it. (A plain
+      // `async`/`await` here would cost that tick on EVERY call, not just this one — an
+      // async function's returned promise, even on a path with no `await` at all, still
+      // takes an extra microtask to settle when it resolves to another promise, which broke
+      // several single-`await Promise.resolve()` timing assumptions elsewhere in this suite.)
+      return this.hasAttachOutbox(run) ? this.ingestOutboxBeforePark(run).then(raise) : raise();
     }
 
     // A finished plan gets its own inbox kind rather than a generic permission prompt:
@@ -3219,18 +3241,31 @@ export class Scheduler {
     if (request.toolName === EXIT_PLAN_MODE_TOOL) {
       const open = this.openAttentionOfKind(request.runId, 'plan-approval');
       const adoptable = open && !this.pendingDecisions.has(open.id);
-      let item: AttentionItem;
       if (adoptable && open) {
-        item = open;
+        const item = open;
         // Whoever raised the item already set this, but `describeEmptyOutcome` depends on
         // it and one line keeps that fact local to the branch.
         run.planPresented = true;
-      } else {
-        item = this.raisePlanApproval(run);
+        return new Promise<PermissionDecisionResult>((resolve) => {
+          this.pendingDecisions.set(item.id, {
+            runId: request.runId,
+            input: request.input,
+            resolve,
+          });
+        });
       }
-      return new Promise<PermissionDecisionResult>((resolve) => {
-        this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
-      });
+      const raise = (): Promise<PermissionDecisionResult> => {
+        const item = this.raisePlanApproval(run);
+        return new Promise<PermissionDecisionResult>((resolve) => {
+          this.pendingDecisions.set(item.id, {
+            runId: request.runId,
+            input: request.input,
+            resolve,
+          });
+        });
+      };
+      // TM-442, see the identical comment in the `agent-question` branch above.
+      return this.hasAttachOutbox(run) ? this.ingestOutboxBeforePark(run).then(raise) : raise();
     }
 
     const project = this.store.getProject(run.projectId);
@@ -3245,15 +3280,21 @@ export class Scheduler {
     }
 
     // Risky: park the task and hold the tool until the human answers.
-    const item = this.raiseAttention(run, {
-      kind: 'permission',
-      prompt: describeToolUse(request.toolName, request.input),
-      toolName: request.toolName,
-      reason: decision.reason,
-    });
-    return new Promise<PermissionDecisionResult>((resolve) => {
-      this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
-    });
+    const raisePermission = (): Promise<PermissionDecisionResult> => {
+      const item = this.raiseAttention(run, {
+        kind: 'permission',
+        prompt: describeToolUse(request.toolName, request.input),
+        toolName: request.toolName,
+        reason: decision.reason,
+      });
+      return new Promise<PermissionDecisionResult>((resolve) => {
+        this.pendingDecisions.set(item.id, { runId: request.runId, input: request.input, resolve });
+      });
+    };
+    // TM-442, see the identical comment in the `agent-question` branch above.
+    return this.hasAttachOutbox(run)
+      ? this.ingestOutboxBeforePark(run).then(raisePermission)
+      : raisePermission();
   }
 
   /**
@@ -4601,7 +4642,10 @@ export class Scheduler {
     // `answerAttention` already tolerates an item with no held tool.
     if (event.kind === 'tool-use' && event.name === EXIT_PLAN_MODE_TOOL) {
       this.capturePlan(run.taskId, event.input);
-      if (!this.openAttentionOfKind(runId, 'plan-approval')) this.raisePlanApproval(run);
+      if (!this.openAttentionOfKind(runId, 'plan-approval')) {
+        if (this.hasAttachOutbox(run)) await this.ingestOutboxBeforePark(run);
+        this.raisePlanApproval(run);
+      }
     }
 
     // The same belt-and-braces for `AskUserQuestion` (Phase 17). If the CLI ever declines
@@ -4624,6 +4668,7 @@ export class Scheduler {
     ) {
       const questions = parseAskUserQuestion(event.input);
       if (questions.length > 0) {
+        if (this.hasAttachOutbox(run)) await this.ingestOutboxBeforePark(run);
         this.raiseAttention(run, {
           kind: 'agent-question',
           prompt: describeQuestions(questions),
@@ -4650,6 +4695,7 @@ export class Scheduler {
       } else {
         const question = detectQuestion(event.text);
         if (question) {
+          if (this.hasAttachOutbox(run)) await this.ingestOutboxBeforePark(run);
           this.raiseAttention(run, {
             kind: 'question',
             prompt: question.prompt,
@@ -4862,13 +4908,23 @@ export class Scheduler {
           );
           // A run that actually did something, in its own worktree, may have dropped files
           // in its attach outbox (`scripts/ui-shots.mjs --attach` is the first producer) —
-          // see `attachOutbox.ts`. Attached to the run's OWN task id: a step's files show on
-          // the step, exactly as a step's other attachments already do via
-          // `attachmentsInScope`. Skipped for `empty`/failed runs and for the shared-project
-          // mode (`run.worktree` unset), where there is no outbox to ingest.
+          // see `attachOutbox.ts`. Attached to the run's OWNER, not the run's own task id: a
+          // step's shots are about the CARD's UI, so they must show up where a human looking
+          // for "did this change" would check, not hidden on whichever step happened to run
+          // `ui-shots.mjs` this time. Skipped for `empty`/failed runs and for the
+          // shared-project mode (`run.worktree` unset), where there is no outbox to ingest.
           if (!empty && event.success && run.worktree && this.attachmentRoot) {
-            await ingestAttachOutbox(this.store, this.attachmentRoot, run.taskId, run.worktree);
-            this.onAttachmentsChanged?.();
+            const finished = this.store.getTask(run.taskId);
+            const owner = finished?.parentTaskId
+              ? (this.store.getTask(finished.parentTaskId) ?? finished)
+              : finished;
+            if (owner) {
+              await ingestAttachOutbox(this.store, this.attachmentRoot, owner.id, run.worktree, {
+                projectId: owner.projectId,
+                stepTitle: finished?.title ?? '',
+              });
+              this.onAttachmentsChanged?.();
+            }
           }
         }
         // stdin is held open in Phase 4, so the process won't exit by itself —
@@ -5484,6 +5540,46 @@ export class Scheduler {
   private onAuthChanged(state: AuthState | null): void {
     this.store.saveAuthGate(state);
     this.emitAuth?.(state);
+  }
+
+  /**
+   * Cheap synchronous pre-check for {@link ingestOutboxBeforePark} below (TM-442) — whether
+   * this run's own attach outbox has anything in it worth ingesting before its task parks.
+   * Mirrors `ingestAttachOutbox`'s own `readdir`, just synchronous and tolerant of a missing
+   * directory: the overwhelming majority of runs have no worktree, or an empty outbox, and
+   * every `raiseAttention` call site only awaits the async ingest when this says yes — so
+   * the common park stays exactly as synchronous as it was before TM-442, and nothing here
+   * costs a tick it didn't need.
+   */
+  private hasAttachOutbox(run: Run): boolean {
+    if (!run.worktree || !this.attachmentRoot) return false;
+    try {
+      return readdirSync(join(run.worktree, '.vipper', 'attach')).length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * TM-442: ingest a run's attach outbox onto its owner card BEFORE it parks for a human —
+   * an agent question, a prose question, a plan approval or a permission ask (every kind
+   * `raiseAttention` raises; `task-failed`/`merge-conflict`/`proposal` build their own item
+   * inline and never call it). Same owner rule and the same replace-don't-pile-up ingest as
+   * the settle path (`onRunEvent`'s `result` case) — just run here too, earlier, so a human
+   * answering "the question about screenshots" already sees them, instead of only after
+   * replying. Every call site guards this with {@link hasAttachOutbox} first, so it is only
+   * ever awaited when there is something to ingest.
+   */
+  private async ingestOutboxBeforePark(run: Run): Promise<void> {
+    if (!run.worktree || !this.attachmentRoot) return;
+    const task = this.store.getTask(run.taskId);
+    const owner = task ? this.planOwnerOf(task) : null;
+    if (!owner) return;
+    await ingestAttachOutbox(this.store, this.attachmentRoot, owner.id, run.worktree, {
+      projectId: owner.projectId,
+      stepTitle: task?.title ?? '',
+    });
+    this.onAttachmentsChanged?.();
   }
 
   /** Raise one Attention-inbox item for a run, park its task, and return the item. */

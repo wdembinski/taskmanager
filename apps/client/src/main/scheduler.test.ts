@@ -4,7 +4,7 @@
  * hand / verify; here we prove the selection rule and prompt shape.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,6 +23,7 @@ import {
 } from './scheduler';
 import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
 import { MAX_PLAN_STEPS } from '@shared/board';
+import type { TaskAttachment } from '@shared/attachments';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task } from '@shared/model';
 import type { LimitState } from '@shared/limit';
@@ -4163,6 +4164,181 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
         expect(h.children[0].status).toBe('waiting-input');
       });
     });
+  });
+});
+
+describe('Scheduler.onRunEvent — a step’s attach outbox lands on its owner card', () => {
+  /**
+   * A card with one step, settling a successful run whose worktree dropped a shot in its
+   * attach outbox. `run.branch`/`run.base` are left unset so `settle` never computes a
+   * `landing` and never needs a real `WorktreeManager` — this is about where the outbox's
+   * files land, not about merging anything.
+   */
+  function setup() {
+    const project = {
+      id: 'agent-1',
+      path: 'C:/repo',
+      planPath: '',
+      name: 'P',
+      concurrency: 1,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+    } as Project;
+    const card: Task = {
+      id: 'c1',
+      projectId: 'agent-1',
+      phase: '',
+      title: 'Add the board screen',
+      status: 'in-progress',
+      sessionId: null,
+      order: 0,
+      source: 'plan',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      parentTaskId: null,
+    } as unknown as Task;
+    const step: Task = {
+      id: 's1',
+      projectId: 'agent-1',
+      phase: '',
+      title: 'Screenshot the board',
+      status: 'running',
+      sessionId: 's1',
+      order: 0,
+      source: 'adhoc',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      parentTaskId: 'c1',
+    } as unknown as Task;
+    const tasks = [card, step];
+    const attachments: TaskAttachment[] = [];
+    const comments: Array<{ projectId: string; taskId: string; body: string }> = [];
+    let nextAttachmentId = 1;
+    const store = {
+      getTasks: () => tasks,
+      getProject: () => project,
+      getTask: (id: string) => tasks.find((t) => t.id === id),
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const t = tasks.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
+      },
+      appendTaskEvent: vi.fn(),
+      appendTokenUsage: vi.fn(),
+      getSubtasks: () => [step],
+      listTaskLinks: () => [],
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      attachmentsForTask: (taskId: string) => attachments.filter((a) => a.taskId === taskId),
+      addAttachment: (input: Omit<TaskAttachment, 'id' | 'createdAt'>) => {
+        const row: TaskAttachment = {
+          ...input,
+          id: `a${nextAttachmentId++}`,
+          createdAt: Date.now(),
+        };
+        attachments.push(row);
+        return row;
+      },
+      deleteAttachment: (id: string) => {
+        const index = attachments.findIndex((a) => a.id === id);
+        if (index === -1) return undefined;
+        return attachments.splice(index, 1)[0];
+      },
+      addComment: (projectId: string, taskId: string, body: string) => {
+        comments.push({ projectId, taskId, body });
+        return undefined;
+      },
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const sessions = {
+      start: vi.fn(() => ({ runId: 'r1' })),
+      stop: vi.fn(),
+      send: vi.fn(),
+    } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    scheduler.setAttachmentRoot(mkdtempSync(join(tmpdir(), 'attach-owner-root-')));
+    const onAttachmentsChanged = vi.fn();
+    scheduler.setAttachmentsChanged(onAttachmentsChanged);
+    const worktree = mkdtempSync(join(tmpdir(), 'attach-owner-worktree-'));
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r1', {
+      taskId: 's1',
+      projectId: 'agent-1',
+      runId: 'r1',
+      settled: false,
+      worktree,
+    });
+    (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('s1');
+    const fire = (event: unknown): Promise<void> =>
+      (scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }).onRunEvent(
+        'r1',
+        event,
+      );
+    return { card, step, attachments, comments, worktree, fire, onAttachmentsChanged, store };
+  }
+
+  const resultEvent = {
+    kind: 'result',
+    success: true,
+    resultText: 'Screenshots attached, ready for sign-off.',
+    costUsd: 0.01,
+    durationMs: 500,
+    stopReason: null,
+    terminalReason: null,
+  };
+
+  it('attaches a step\u2019s dropped shot to the owner card, not the step', async () => {
+    const h = setup();
+    mkdirSync(join(h.worktree, '.vipper', 'attach'), { recursive: true });
+    writeFileSync(join(h.worktree, '.vipper', 'attach', 'board-light.png'), 'bytes');
+
+    await h.fire(resultEvent);
+
+    expect(h.attachments).toHaveLength(1);
+    expect(h.attachments[0]).toMatchObject({ taskId: 'c1', fileName: 'board-light.png' });
+    expect(h.attachments.some((a) => a.taskId === 's1')).toBe(false);
+    expect(h.onAttachmentsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * TM-442: "it doesn't make sense to ask the question about screenshots but show them
+   * after I respond." A run that PARKS (an `AskUserQuestion`, a plan approval, a permission
+   * ask, or a prose question) must have already ingested its attach outbox onto the owner
+   * card by the time the attention item goes up — not only once the run later settles.
+   * `raiseAttention` is the one chokepoint every one of those four kinds passes through
+   * (`task-failed`/`merge-conflict`/`proposal` build their own item inline and never reach
+   * it), so this exercises it through the `AskUserQuestion` fallback path `onRunEvent`
+   * already has, the same way the settle-path suite above does for `result`.
+   */
+  it('ingests the attach outbox before raising an agent question, not after', async () => {
+    const h = setup();
+    mkdirSync(join(h.worktree, '.vipper', 'attach'), { recursive: true });
+    writeFileSync(join(h.worktree, '.vipper', 'attach', 'board-light.png'), 'bytes');
+
+    const order: string[] = [];
+    const store = h.store;
+    const originalAdd = store.addAttachment.bind(store);
+    store.addAttachment = ((input: Parameters<Store['addAttachment']>[0]) => {
+      order.push('attached');
+      return originalAdd(input);
+    }) as Store['addAttachment'];
+    const originalSave = store.saveAttention.bind(store);
+    store.saveAttention = ((...args: Parameters<Store['saveAttention']>) => {
+      order.push('raised');
+      return originalSave(...args);
+    }) as Store['saveAttention'];
+
+    await h.fire({
+      kind: 'tool-use',
+      name: 'AskUserQuestion',
+      input: {
+        questions: [{ question: 'Does the screenshot look right?', options: [{ label: 'Yes' }] }],
+      },
+    });
+
+    expect(h.attachments).toHaveLength(1);
+    expect(h.attachments[0]).toMatchObject({ taskId: 'c1', fileName: 'board-light.png' });
+    expect(order).toEqual(['attached', 'raised']);
   });
 });
 

@@ -10,15 +10,24 @@
  *
  * `--out` defaults to `.vipper/shots` (see `.gitignore`'s own comment on `.vipper/`) and holds,
  * per row: `<name>.png` (the real screenshot), `<name>-mockup.png` (the mockup rasterized at the
- * same size, when `mockup` is set), `<name>.html` (the two side by side), plus one `index.html`
- * contact sheet linking all of them. `--only` restricts the run to a comma-separated subset of
- * `SCREENS`' own `name`s — and skips building whichever `app` no selected row needs. `--attach`
- * additionally copies the whole `--out` directory into `<cwd>/.vipper/attach/` — the outbox the
- * plan's step 5 ingests once a run settles.
+ * same size, when `mockup` is set), `<name>.html` (the two side by side), one `shots.json`
+ * (every row's status plus whatever `shotChecks.mjs`'s `shotProblems` found), and one
+ * `index.html` contact sheet linking all of them. `--only` restricts the run to a comma-
+ * separated subset of `SCREENS`' own `name`s — and skips building whichever `app` no selected
+ * row needs. `--attach` additionally copies the whole `--out` directory into
+ * `<cwd>/.vipper/attach/` — the outbox the plan's step 5 ingests once a run settles.
  *
  * Exits 1 if any row threw (a failed build, a setup step that never found its target, a timed-
  * out wait) or logged an uncaught page exception — never silently drops a row and calls the run
- * green.
+ * green. A row may also carry `expect`, a CSS selector proving its `setup` actually landed
+ * where it claims (a click that silently missed leaves the previous screen's shot behind under
+ * a new name); unlike a `setup` step itself, a missed `expect` does not throw — it is recorded
+ * as `selectorMissed` so the sheet still renders, and surfaces as a problem below. Every shot
+ * is also hashed (`node:crypto`'s `createHash('sha256')`) once the loop ends, and any two
+ * differently-named shots sharing a hash are flagged as duplicates — almost always the same
+ * "the click silently missed" bug, caught after the fact instead of by a selector nobody wrote.
+ * `--attach` refuses to copy anything, and exits 1, if `shotProblems` found a single problem —
+ * a run with a duplicate or a missed selector is not safe to hand to a human as "the real UI".
  *
  * Adding a screen is adding a row to `SCREENS` — nothing else here should need to change for
  * that.
@@ -60,6 +69,9 @@
  *     - `{ scroll: 'sidebar-bottom' }` — scrolls the sidebar's own scrollable region (the one
  *       `overflowY: auto` child of `nav[aria-label="Sidebar"]`) to its bottom, so a folded tail
  *       below the fold (a fully-done milestone sorted last) is actually in frame for the shot.
+ *     - `{ scrollToSelector: selector }` — waits for `selector` to appear, then
+ *       `scrollIntoView({ block: 'start' })`s it — for a section proven to render (by its own
+ *       `expect`) but not necessarily in frame at the top of a long, scrollable detail pane.
  * - `mockup` — a filename under `docs/plan/feature-roadmap/mockups/`, or `null` where no mockup
  *   draws this exact state (an approximate stand-in mockup is noted per row below instead).
  * - `clip` — `'sidebar'` crops the capture to `nav[aria-label="Sidebar"]`'s own bounding rect
@@ -81,8 +93,9 @@
  * split (`TaskCard.tsx`) at both 1440 and 1100, with the detail pane closed and open.
  * `board-light` above already covers 1440/closed, so it is not repeated among them.
  */
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -107,6 +120,7 @@ import {
 } from './lib/cdp.mjs';
 import { startFakeRelay } from './lib/fakeRelay.mjs';
 import * as uiShotsFixture from './fixtures/uiShotsFixture.mjs';
+import { shotProblems } from './lib/shotChecks.mjs';
 
 export const SCREENS = [
   {
@@ -201,6 +215,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }],
+    expect: '[role="option"]',
     mockup: 'v9-1-issues-list-light.svg',
   },
   {
@@ -209,6 +224,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'dark',
     setup: [{ click: 'Tickets' }],
+    expect: '[role="option"]',
     mockup: 'v9-3-issues-list-dark.svg',
   },
   {
@@ -220,6 +236,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
+    expect: 'button[aria-label="Open full screen"]',
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {
@@ -232,12 +249,81 @@ export const SCREENS = [
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {
+    // Same setup as `issue-full-screen` — `'Tickets'`, `'issue-row:first'`, `'Open full
+    // screen'` — opening whichever card the Tickets list puts first; `uiShotsFixture.mjs`'s
+    // own `VISUAL_SIGNOFF_ATTACHMENTS` hangs a shot pair off that same id (see its own doc
+    // comment on which id, and why) so this row's `expect` can prove `VisualSignOff.tsx`
+    // actually renders in the card panel, not just in its own render test. `scheme: 'dark'`
+    // (unlike `issue-full-screen`'s `'light'`) is not just variety: with the exact same
+    // setup steps, a `'light'` shot here would be byte-identical to `issue-full-screen`'s own
+    // and `--attach` would refuse the whole run as a duplicate (see `SCREENS`' own doc on
+    // hashing). No mockup draws this section yet.
+    name: 'visual-signoff-dark',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'dark',
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    expect: '[data-visual-signoff]',
+    mockup: null,
+  },
+  {
+    // Proves the Inbox (`Attention.tsx`'s `InboxItem`) shows an agent question's own files
+    // inline, not just the card panel's own sections. `attachment:list` is already globally
+    // `VISUAL_SIGNOFF_ATTACHMENTS` (hung off task `13a` — see `visual-signoff-dark`'s own
+    // comment), so the one thing missing is a real `attention:list` item for that same task;
+    // this row's `channelOverrides` supplies it (`uiShotsFixture.INBOX_QUESTION_ITEM`).
+    // Every other row leaves that channel at the shared fixture's empty `'list'` fallback, so
+    // nothing elsewhere grows an inbox item it was not asked to.
+    name: 'inbox-item-attachments',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ click: 'Inbox' }],
+    expect: '[data-attachment-gallery]',
+    mockup: null,
+    channelOverrides: {
+      'attention:list': [uiShotsFixture.INBOX_QUESTION_ITEM],
+    },
+  },
+  {
+    // Proves `FilesSection` actually groups a card's files by step, not just by the card
+    // itself. Same setup as `issue-full-screen`/`visual-signoff-dark` (`'Tickets'`,
+    // `'issue-row:first'`, `'Open full screen'`), but `channelOverrides` additionally gives
+    // 13a one step of its own (`VISUAL_SIGNOFF_STEP_TASK`) carrying a file of its own
+    // (`VISUAL_SIGNOFF_STEP_ATTACHMENT`) — scoped to this row alone so `issue-row:first`'s
+    // position cannot shift for either of those other two rows (see that task's own doc
+    // comment on why it never counts as a ticket/board row of its own). The extra
+    // `scrollToSelector` step is what actually brings `[data-files-section]` into frame —
+    // `issue-full-screen`/`visual-signoff-dark` never scroll past it, so neither has proven
+    // this section renders at all, only that it does not crash.
+    name: 'files-section-grouped',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [
+      { click: 'Tickets' },
+      { click: 'issue-row:first' },
+      { click: 'Open full screen' },
+      { scrollToSelector: '[data-files-section]' },
+    ],
+    expect: '[data-files-section]',
+    mockup: null,
+    channelOverrides: {
+      'board:tasks': [...uiShotsFixture.BOOT_CHANNELS['board:tasks'], uiShotsFixture.VISUAL_SIGNOFF_STEP_TASK],
+      'attachment:list': [
+        ...uiShotsFixture.VISUAL_SIGNOFF_ATTACHMENTS,
+        uiShotsFixture.VISUAL_SIGNOFF_STEP_ATTACHMENT,
+      ],
+    },
+  },
+  {
     // The "Settings" tab is NavRail's foot group (apps/client/src/renderer/src/App.tsx).
     name: 'settings',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Settings' }],
+    expect: '[aria-label="Settings sections"]',
     mockup: 'v10-19-settings-light.svg',
   },
   {
@@ -274,6 +360,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'board-card:1' }, { key: 'mod+k' }],
+    expect: '[role="dialog"]',
     mockup: 'v10-20-palette-light.svg',
   },
   {
@@ -313,6 +400,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }],
+    expect: '[role="option"]',
     mockup: 'v9-1-issues-list-light.svg',
   },
   {
@@ -430,8 +518,12 @@ window.__tm = {
  * `BOOT_CHANNELS` — for the one screen that needs to see a state the other rows must NOT
  * (e.g. the updater's `auto` mode, to show the private-feed token field), rather than mutating
  * the fixture module's exports for every row that happens to run afterward.
+ *
+ * `attachmentUrls` is `buildFixtureAttachmentUrls`'s own table (`main`, below) — real, fetchable
+ * URLs for the handful of fixture attachment ids a row actually draws as `<img>`, threaded
+ * straight through to `buildApiStub`.
  */
-function clientInitScript(defaultSettings, row) {
+function clientInitScript(defaultSettings, row, attachmentUrls) {
   const fixture = row.channelOverrides
     ? {
         ...uiShotsFixture,
@@ -442,6 +534,7 @@ function clientInitScript(defaultSettings, row) {
     defaultSettings,
     fixture,
     settingsOverrides: { appearance: row.scheme, transparency: 'reduced', fontSizePx: 14 },
+    attachmentUrls,
   });
   return `${PAGE_HELPERS_SRC}\n${stub}`;
 }
@@ -571,6 +664,21 @@ async function runSetupStep(cdp, step) {
     if (!scrolled) throw new Error("could not find the sidebar's own scroll region");
     return;
   }
+  if (step.scrollToSelector !== undefined) {
+    // Unlike `{ scroll: 'sidebar-bottom' }`'s one fixed region, this brings an arbitrary
+    // element into frame — for a row proving a section renders at all, not just that it is
+    // somewhere in a scrollable pane past the viewport's own height.
+    const selector = JSON.stringify(step.scrollToSelector);
+    await waitFor(
+      async () => (await evaluate(cdp, `!!document.querySelector(${selector})`)) === true,
+      { timeoutMs: 10000, label: `"${step.scrollToSelector}" to appear before scrolling to it` },
+    );
+    await evaluate(
+      cdp,
+      `document.querySelector(${selector}).scrollIntoView({ block: 'start' })`,
+    );
+    return;
+  }
   throw new Error(`unknown setup step: ${JSON.stringify(step)}`);
 }
 
@@ -632,6 +740,45 @@ function buildClientRenderer(requireFromClient, outDir) {
   if (res.status !== 0) throw new Error('electron-vite build failed for @tm/client');
 }
 
+/**
+ * Real, decodable PNGs for the handful of `VISUAL_SIGNOFF_*` fixture attachment ids the
+ * `visual-signoff-dark`/`inbox-item-attachments`/`files-section-grouped` rows draw as `<img>` —
+ * rasterized with `renderSvgToPng`, the same headless-Chrome-screenshots-an-SVG-file approach
+ * every mockup row already uses, rather than hand-rolling a PNG encoder. A real Electron main
+ * process would answer these through `vipper-attachment://` (`registerAttachmentProtocol`),
+ * which this harness's plain Chrome tab can never resolve (see `apiStub.mjs`'s own doc on
+ * `attachmentUrls`) — these are what `window.api.attachmentUrl` points at instead.
+ *
+ * Written under the client renderer's own served output directory so `startStaticServer`
+ * answers them for free; the scratch SVGs are removed immediately, since only the PNGs are
+ * ever fetched.
+ */
+function buildFixtureAttachmentUrls(browserPath, clientRendererOutDir, clientOrigin) {
+  const dir = join(clientRendererOutDir, 'fixture-attachments');
+  mkdirSync(dir, { recursive: true });
+  const swatches = {
+    'vso-real': { color: '#0F6CBD', label: 'REAL' },
+    'vso-mockup': { color: '#616161', label: 'MOCKUP' },
+    'vso-step-shot': { color: '#107C10', label: 'STEP' },
+  };
+  const urls = {};
+  for (const [id, { color, label }] of Object.entries(swatches)) {
+    const svgPath = join(dir, `${id}.svg`);
+    const pngPath = join(dir, `${id}.png`);
+    writeFileSync(
+      svgPath,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200">` +
+        `<rect width="320" height="200" fill="${color}"/>` +
+        `<text x="160" y="104" font-family="sans-serif" font-size="22" fill="white" ` +
+        `text-anchor="middle">${label}</text></svg>`,
+    );
+    renderSvgToPng(browserPath, svgPath, pngPath, 320, 200);
+    rmSync(svgPath);
+    urls[id] = `${clientOrigin}/fixture-attachments/${id}.png`;
+  }
+  return urls;
+}
+
 /** `verify-mobile.mjs`'s own `buildWeb`, generalized to a caller-supplied `outDir`. */
 function buildWeb(requireFromWeb, outDir, apiBase, iamIssuer) {
   const viteBin = join(dirname(requireFromWeb.resolve('vite/package.json')), 'bin', 'vite.js');
@@ -689,25 +836,53 @@ function writeSideBySideHtml(outDir, row, mockupFile) {
   return htmlPath;
 }
 
-function writeContactSheet(outDir, results) {
+/** One clear sentence per `shotProblems` entry — used both for `writeContactSheet`'s status
+ *  column and for `--attach`'s refusal-to-copy console output. */
+function describeProblem(problem) {
+  switch (problem.kind) {
+    case 'failed':
+      return `${problem.name} failed: ${problem.message}`;
+    case 'selectorMissed':
+      return `${problem.name}: selector "${problem.selector}" never matched`;
+    case 'duplicate':
+      return `${problem.name} is a DUPLICATE of ${problem.otherName} (identical bytes)`;
+    default:
+      return JSON.stringify(problem);
+  }
+}
+
+function writeContactSheet(outDir, results, problems) {
+  const duplicateOf = new Map(
+    problems.filter((p) => p.kind === 'duplicate').map((p) => [p.name, p.otherName]),
+  );
   const rows = results
-    .map(({ row, ok, exceptionCount, error, sideBySidePath, shotPath }) => {
+    .map(({ row, ok, exceptionCount, error, sideBySidePath, shotPath, selectorMissed }) => {
       const thumbHref = sideBySidePath ? basename(sideBySidePath) : basename(shotPath ?? '');
       const thumbImg = shotPath
         ? `<a href="${thumbHref}"><img src="${basename(shotPath)}" style="max-width:220px;display:block"></a>`
         : '(no screenshot — the row failed before one was taken)';
-      const status =
+      const statusParts = [
         ok && exceptionCount === 0
           ? 'ok'
-          : `FAILED${exceptionCount > 0 ? ` — ${exceptionCount} page exception(s)` : ''}${error ? `: ${escapeHtml(String(error.message ?? error))}` : ''}`;
+          : `FAILED${exceptionCount > 0 ? ` — ${exceptionCount} page exception(s)` : ''}${error ? `: ${escapeHtml(String(error.message ?? error))}` : ''}`,
+      ];
+      if (selectorMissed)
+        statusParts.push(`selector "${escapeHtml(selectorMissed)}" never matched`);
+      if (duplicateOf.has(row.name)) {
+        statusParts.push(`DUPLICATE of ${escapeHtml(duplicateOf.get(row.name))}`);
+      }
       return `<tr>
         <td>${thumbImg}</td>
         <td>${escapeHtml(row.name)}</td>
         <td>${row.mockup ? escapeHtml(row.mockup) : '(none)'}</td>
-        <td>${status}</td>
+        <td>${statusParts.join(' — ')}</td>
       </tr>`;
     })
     .join('\n');
+  const banner =
+    problems.length > 0
+      ? `<p style="background:#5a2d2d;padding:8px 12px;border-radius:4px">${problems.length} problem(s) found — see the status column.</p>`
+      : '';
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>ui-shots</title>
 <style>
@@ -718,6 +893,7 @@ function writeContactSheet(outDir, results) {
 </style></head>
 <body>
   <h1>ui-shots</h1>
+  ${banner}
   <table>
     <tr><th>shot</th><th>name</th><th>mockup</th><th>status</th></tr>
     ${rows}
@@ -752,6 +928,7 @@ async function main() {
 
   let clientServerHandle;
   let clientOrigin;
+  let clientRendererOutDir;
   let clientDefaultSettings;
   let relayHandle;
   let relayOrigin;
@@ -766,7 +943,8 @@ async function main() {
       const clientOutDir = join(scratch, 'client-out');
       mkdirSync(clientOutDir, { recursive: true });
       buildClientRenderer(requireFromClient, clientOutDir);
-      const client = await startStaticServer(join(clientOutDir, 'renderer'));
+      clientRendererOutDir = join(clientOutDir, 'renderer');
+      const client = await startStaticServer(clientRendererOutDir);
       clientServerHandle = client.server;
       clientOrigin = `http://127.0.0.1:${client.port}`;
     }
@@ -791,6 +969,13 @@ async function main() {
 
     const browserPath = findBrowser();
     console.log(`using browser: ${browserPath}`);
+
+    // Real bytes for the `VISUAL_SIGNOFF_*` fixture's attachment ids — see
+    // `buildFixtureAttachmentUrls`'s own doc for why a plain Chrome tab needs this at all.
+    const attachmentUrls = needsClient
+      ? buildFixtureAttachmentUrls(browserPath, clientRendererOutDir, clientOrigin)
+      : {};
+
     const rdpPort = await getFreePort();
     chromeProc = launchChrome(browserPath, rdpPort, {
       profileDir: chromeProfileDir,
@@ -826,6 +1011,8 @@ async function main() {
         shotPath: null,
         mockupPath: null,
         sideBySidePath: null,
+        selectorMissed: null,
+        hash: null,
       };
       try {
         exceptions.count = 0;
@@ -834,7 +1021,7 @@ async function main() {
 
         let initScript;
         if (row.app === 'client') {
-          initScript = clientInitScript(clientDefaultSettings, row);
+          initScript = clientInitScript(clientDefaultSettings, row, attachmentUrls);
           await freshLoad(cdp, clientOrigin, initScript);
         } else {
           relayHandle.state.settings.appearance = row.scheme;
@@ -847,6 +1034,21 @@ async function main() {
           await runSetupStep(cdp, step);
         }
         await waitForIdle(cdp, { allowSpinner: row.allowPersistentSpinner === true });
+
+        if (row.expect) {
+          try {
+            await waitFor(
+              async () =>
+                (await evaluate(
+                  cdp,
+                  `document.querySelector(${JSON.stringify(row.expect)}) !== null`,
+                )) === true,
+              { timeoutMs: 5000, label: `"${row.expect}" to appear` },
+            );
+          } catch {
+            result.selectorMissed = row.expect;
+          }
+        }
 
         const shotPath = join(outDir, `${row.name}.png`);
         const clip = row.clip === 'sidebar' ? await sidebarClipRect(cdp) : undefined;
@@ -877,15 +1079,48 @@ async function main() {
       results.push(result);
     }
 
-    const sheetPath = writeContactSheet(outDir, results);
+    for (const result of results) {
+      if (result.shotPath) {
+        result.hash = createHash('sha256').update(readFileSync(result.shotPath)).digest('hex');
+      }
+    }
+
+    const problems = shotProblems(results);
+    const sheetPath = writeContactSheet(outDir, results, problems);
     console.log(`\ncontact sheet: ${sheetPath}`);
 
+    // `[{ name, mockup, ok, problems[] }]` — the manifest `attachOutbox.ts`'s ingest reads
+    // (see the plan's own Decisions on "replace, don't pile up") to know exactly which files
+    // this run owns, so it is ingested like any other outbox file, not skipped the way
+    // `verdicts.txt` is.
+    writeFileSync(
+      join(outDir, 'shots.json'),
+      JSON.stringify(
+        results.map((r) => ({
+          name: r.row.name,
+          mockup: r.row.mockup ?? null,
+          ok: r.ok,
+          problems: problems
+            .filter((p) => p.name === r.row.name)
+            .map(({ name: _name, ...rest }) => rest),
+        })),
+        null,
+        2,
+      ),
+    );
+
     if (opts.attach) {
-      const attachDir = join(process.cwd(), '.vipper', 'attach');
-      rmSync(attachDir, { recursive: true, force: true });
-      mkdirSync(dirname(attachDir), { recursive: true });
-      cpSync(outDir, attachDir, { recursive: true });
-      console.log(`attached: ${attachDir}`);
+      if (problems.length > 0) {
+        console.error(`\n${problems.length} problem(s) found — refusing to attach:`);
+        for (const problem of problems) console.error(`  - ${describeProblem(problem)}`);
+        process.exitCode = 1;
+      } else {
+        const attachDir = join(process.cwd(), '.vipper', 'attach');
+        rmSync(attachDir, { recursive: true, force: true });
+        mkdirSync(dirname(attachDir), { recursive: true });
+        cpSync(outDir, attachDir, { recursive: true });
+        console.log(`attached: ${attachDir}`);
+      }
     }
 
     const failed = results.filter((r) => !r.ok);

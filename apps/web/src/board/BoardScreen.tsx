@@ -674,6 +674,7 @@ export function BoardScreen({
     quietAgentProgress: settings.features.quietAgentProgress,
     attachments: selectedTask ? (attachmentsByTask.get(selectedTask.id) ?? []) : [],
     parentAttachments: parentOfSelected ? (attachmentsByTask.get(parentOfSelected.id) ?? []) : [],
+    subtaskAttachments: chain.flatMap((s) => attachmentsByTask.get(s.id) ?? []),
     statusKeywords: settings.statusKeywords,
     priorityDisplay: display.priorityDisplay,
     attention: extras.attention,

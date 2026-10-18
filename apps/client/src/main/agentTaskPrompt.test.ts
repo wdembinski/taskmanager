@@ -503,7 +503,19 @@ describe('the plan scope rules', () => {
     const prompt = planned();
     expect(prompt).toMatch(/ui-shots\.mjs --attach/);
     expect(prompt).toMatch(/needs visual sign-off/);
-    expect(prompt).toMatch(/a UI task is not Done until a human has looked/);
+    expect(prompt).toMatch(/a UI task is not\s+Done until a human has looked/);
+  });
+
+  it('tells it to write a verdict per screen into verdicts.txt', () => {
+    const prompt = planned();
+    expect(prompt).toMatch(/verdicts\.txt/);
+    expect(prompt).toMatch(/close\|partly\|far/);
+    expect(prompt).toMatch(/repeat those lines in your\s+final summary/);
+  });
+
+  it('tells it that a ui-shots refusal means the shot was never really taken', () => {
+    const prompt = planned();
+    expect(prompt).toMatch(/shot was never really taken/);
   });
 
   it('says none of it to an ordinary run — only a planning turn writes steps', () => {
@@ -521,6 +533,8 @@ describe('the plan scope rules', () => {
     expect(prompt).toMatch(/Merging or releasing/);
     expect(prompt).toMatch(/Sections that are not work/);
     expect(prompt).toMatch(/needs visual sign-off/);
+    expect(prompt).toMatch(/verdicts\.txt/);
+    expect(prompt).toMatch(/close\|partly\|far/);
     expect(prompt).not.toContain('\n\n\n');
   });
 });

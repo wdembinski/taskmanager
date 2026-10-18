@@ -229,6 +229,92 @@ describe('prBody', () => {
   });
 });
 
+// Step 5 of "Show the screenshot comparisons on the card and the PR, not on a hidden step":
+// the PR body is the one other place a pending visual sign-off has to surface, so a human
+// reviewing the pull request knows to go look at the card before merging rather than finding
+// the shots by accident.
+describe('prBody — visual sign-off section', () => {
+  const task = {
+    description: 'Fixes the thing.',
+    externalDescription: null,
+    externalSource: null,
+    externalKey: null,
+    ticketKey: 'TM-461',
+  };
+
+  it('names how many screens were compared, the card to review them on, and each verdict', () => {
+    const body = prBody(task, 'github', ['fix: the one change'], {
+      cardKey: 'TM-461',
+      screens: [
+        { name: 'board-light', verdict: 'the header drifted' },
+        { name: 'board-dark', verdict: 'matched the mockup' },
+      ],
+    });
+    expect(body).toContain('Visual sign-off: 2 screens compared');
+    expect(body.replace(/\n/g, ' ')).toContain('review them on TM-461 in VIPPER before merging.');
+    expect(body).toContain('- board-light: the header drifted');
+    expect(body).toContain('- board-dark: matched the mockup');
+  });
+
+  it('uses the singular for one screen', () => {
+    const body = prBody(task, 'github', ['fix: the one change'], {
+      cardKey: 'TM-461',
+      screens: [{ name: 'board-light', verdict: 'matched the mockup' }],
+    });
+    expect(body).toContain('Visual sign-off: 1 screen compared');
+  });
+
+  it('names a screen with no verdict yet, rather than inventing one', () => {
+    const body = prBody(task, 'github', ['fix: the one change'], {
+      cardKey: 'TM-461',
+      screens: [{ name: 'board-light' }],
+    });
+    expect(body).toContain('- board-light');
+    expect(body).not.toContain('- board-light:');
+  });
+
+  it('falls back to the card title when it has no ticket or external key', () => {
+    const body = prBody(task, 'github', ['fix: the one change'], {
+      cardKey: 'Add the export dialog',
+      screens: [{ name: 'board-light' }],
+    });
+    expect(body.replace(/\n/g, ' ')).toContain(
+      'review them on Add the export dialog in VIPPER before merging.',
+    );
+  });
+
+  it('is unchanged when there is no sign-off to report', () => {
+    const without = prBody(task, 'github', ['fix: the one change']);
+    expect(without).not.toContain('Visual sign-off');
+  });
+
+  it('is unchanged when the sign-off names no screens', () => {
+    const without = prBody(task, 'github', ['fix: the one change']);
+    const empty = prBody(task, 'github', ['fix: the one change'], {
+      cardKey: 'TM-461',
+      screens: [],
+    });
+    expect(empty).toBe(without);
+  });
+
+  it('wraps every line within 72 columns even with a long verdict', () => {
+    const body = prBody(task, 'github', ['fix: the one change'], {
+      cardKey: 'TM-461',
+      screens: [
+        {
+          name: 'board-light',
+          verdict:
+            'the header background drifted from the mockup and the spacing around the ' +
+            'search box looks off too',
+        },
+      ],
+    });
+    for (const line of body.split('\n')) {
+      expect(line.length).toBeLessThanOrEqual(72);
+    }
+  });
+});
+
 // CONTRIBUTING.md §2 says "`Ticket ID:` and `Tested:` are trailers; git only recognises
 // them as such if they sit in the final paragraph" — worth checking against the REAL `git
 // interpret-trailers` rather than our own looser `parseCommitMessage`, since a squash merge
@@ -340,6 +426,8 @@ describe('openPullRequest — routed through a variant pick (F10.6)', () => {
       listMergeRequests: () => [],
       upsertMergeRequest: () => undefined,
       listVariantRows: () => [row],
+      listAttachments: () => [],
+      listActivity: () => [],
       inspect,
       syncOntoRemoteBase: async () => ({ status: 'up-to-date' }),
       tokenFor: () => 'tok',
@@ -441,6 +529,8 @@ describe('openPullRequest — routed through a variant pick (F10.6)', () => {
           upserts.push(mr as unknown as { taskId: string; sourceBranch: string });
         },
         listVariantRows: (leaderId) => (!leaderId || leaderId === picked.id ? [row] : []),
+        listAttachments: () => [],
+        listActivity: () => [],
         inspect: async (_p, ownerTaskId, branch) => {
           inspectCalls.push({ ownerTaskId, branch });
           return { cwd: repo, branch: branch ?? ROW_BRANCH, base };

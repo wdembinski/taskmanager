@@ -33,6 +33,7 @@ import {
 } from '@fluentui/react-components';
 import { ArrowLeftRegular, DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
+import type { TaskAttachment } from '@tm/shared/attachments';
 import { InboxItem, KindBadge } from './Attention';
 import { invokeAttentionAnswer } from './attentionAnswer';
 import { questionDeadline, sortByUrgency } from './attentionUrgency';
@@ -54,6 +55,7 @@ import {
 } from './inboxState';
 import { PaneLoading } from './PaneLoading';
 import { GlassPane } from './shell/GlassPane';
+import { byTask } from './taskDetailHost';
 import { REFUSAL_HINT } from './taskChat';
 import { useTransport } from './transport';
 import { useInitialLoad } from './useInitialLoad';
@@ -177,6 +179,25 @@ export function CompactInbox(): JSX.Element {
     };
   }, [transport]);
 
+  // The files behind the open item's own run (`InboxItem`'s own `attachments` prop) — a
+  // separate fetch from `seed`'s, same as the wide inbox's `useAttentionItems`, so a slow
+  // attachment read never blocks the question itself.
+  const [attachments, setAttachments] = useState<readonly TaskAttachment[]>([]);
+  useEffect(() => {
+    let live = true;
+    void transport.invoke('attachment:list').then((v) => {
+      if (live) setAttachments(v);
+    });
+    const off = transport.on('attachment:changed', (v) => {
+      if (live) setAttachments(v);
+    });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [transport]);
+  const attachmentsByTask = useMemo(() => byTask(attachments), [attachments]);
+
   const hasCountingItem = useMemo(
     () => (state.items ?? []).some((item) => questionDeadline(item, now)?.kind === 'counting'),
     [state.items, now],
@@ -272,7 +293,12 @@ export function CompactInbox(): JSX.Element {
               onDismiss={dismiss}
             />
           ) : (
-            <InboxItem item={openItem} onAnswer={answer} onDismiss={dismiss} />
+            <InboxItem
+              item={openItem}
+              attachments={attachmentsByTask.get(openItem.taskId)}
+              onAnswer={answer}
+              onDismiss={dismiss}
+            />
           )}
         </GlassPane>
       </div>

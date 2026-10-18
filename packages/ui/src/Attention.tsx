@@ -12,7 +12,7 @@
  * session (no restart) and returns the task to `running`. Items arrive/leave live
  * over `attention:new` / `attention:resolved`, so the inbox never polls.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Body1,
@@ -28,14 +28,17 @@ import {
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
+import type { TaskAttachment } from '@tm/shared/attachments';
 import { GATE_TRUST_ACTION } from '@tm/shared/workflow';
 import { AgentQuestionForm } from './AgentQuestionForm';
+import { AttachmentGallery } from './AttachmentGallery';
 import { invokeAttentionAnswer } from './attentionAnswer';
 import { Markdown } from './chat/MarkdownView';
 import { draftKey, useDraft } from './drafts';
 import { gateTrustChoices, gateTrustWaitingText } from './gateStepView';
 import { useGateTrustHost } from './gateTrustHost';
 import { PaneLoading } from './PaneLoading';
+import { byTask } from './taskDetailHost';
 import { useTransport } from './transport';
 import { useInitialLoad, type InitialLoad } from './useInitialLoad';
 
@@ -137,10 +140,13 @@ export function KindBadge({ kind }: { kind: AttentionItem['kind'] }): JSX.Elemen
 /** One inbox card: shows the ask and collects the answer. */
 export function InboxItem({
   item,
+  attachments = [],
   onAnswer,
   onDismiss,
 }: {
   item: AttentionItem;
+  /** The files `item`'s own run produced — the owner card's and/or the step's own. */
+  attachments?: readonly TaskAttachment[];
   onAnswer: (id: string, answer: AttentionAnswer) => Promise<void>;
   onDismiss: (id: string) => Promise<void>;
 }): JSX.Element {
@@ -209,6 +215,9 @@ export function InboxItem({
       <div className={styles.prompt}>
         <Markdown source={item.prompt} />
       </div>
+      {/* The files this run already produced — with the question, not hidden behind a
+          step's own editor (see `AttachmentGallery`'s own header). */}
+      {attachments.length > 0 && <AttachmentGallery attachments={attachments} />}
       {item.reason && <Caption1 className={styles.reason}>Held because it {item.reason}.</Caption1>}
       {item.kind === 'plan-approval' && (item.steps?.length ?? 0) > 0 && (
         <Caption1 className={styles.reason}>
@@ -373,7 +382,13 @@ export interface AttentionItems {
   initial: InitialLoad;
   answer: (id: string, a: AttentionAnswer) => Promise<void>;
   dismiss: (id: string) => Promise<void>;
+  /** Every item's own files, keyed by `AttentionItem.taskId` — see `InboxItem`'s own
+   *  `attachments` prop. */
+  attachmentsByTask: ReadonlyMap<string, readonly TaskAttachment[]>;
 }
+
+/** One empty list for every item with no files of its own, rather than a new one per render. */
+const NO_ATTACHMENTS: readonly TaskAttachment[] = [];
 
 /**
  * Seeds the inbox, follows its two live events, and applies the optimistic removal both
@@ -383,6 +398,7 @@ export interface AttentionItems {
 export function useAttentionItems(): AttentionItems {
   const transport = useTransport();
   const [items, setItems] = useState<AttentionItem[] | null>(null);
+  const [attachments, setAttachments] = useState<readonly TaskAttachment[]>([]);
 
   const seed = useCallback(
     async () => setItems(await transport.invoke('attention:list')),
@@ -407,6 +423,25 @@ export function useAttentionItems(): AttentionItems {
     };
   }, [transport]);
 
+  // The files behind each item's own run — fetched alongside the items themselves, not
+  // gating on them: a slow or failed attachment fetch must never block the question itself
+  // from showing.
+  useEffect(() => {
+    let live = true;
+    void transport.invoke('attachment:list').then((v) => {
+      if (live) setAttachments(v);
+    });
+    const off = transport.on('attachment:changed', (v) => {
+      if (live) setAttachments(v);
+    });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [transport]);
+
+  const attachmentsByTask = useMemo(() => byTask(attachments), [attachments]);
+
   const answer = async (id: string, a: AttentionAnswer): Promise<void> => {
     await invokeAttentionAnswer(transport, id, a);
     // The engine will also emit `attention:resolved`; remove now for a snappy UI.
@@ -419,12 +454,12 @@ export function useAttentionItems(): AttentionItems {
     setItems((prev) => (prev ? prev.filter((i) => i.id !== id) : prev));
   };
 
-  return { items, initial, answer, dismiss };
+  return { items, initial, answer, dismiss, attachmentsByTask };
 }
 
 export function Attention(): JSX.Element {
   const styles = useStyles();
-  const { items, initial, answer, dismiss } = useAttentionItems();
+  const { items, initial, answer, dismiss, attachmentsByTask } = useAttentionItems();
 
   if (items === null) {
     return (
@@ -449,7 +484,13 @@ export function Attention(): JSX.Element {
   return (
     <div className={styles.root}>
       {items.map((item) => (
-        <InboxItem key={item.id} item={item} onAnswer={answer} onDismiss={dismiss} />
+        <InboxItem
+          key={item.id}
+          item={item}
+          attachments={attachmentsByTask.get(item.taskId) ?? NO_ATTACHMENTS}
+          onAnswer={answer}
+          onDismiss={dismiss}
+        />
       ))}
     </div>
   );

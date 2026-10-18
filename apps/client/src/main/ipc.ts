@@ -2605,6 +2605,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     getSettings: () => store.getSettings(),
     listMergeRequests: () => store.listMergeRequests(),
     listVariantRows: (leaderId) => store.listVariantRows(leaderId),
+    listAttachments: (taskId) => store.attachmentsForTask(taskId),
+    listActivity: (taskId) => store.getTaskActivity(taskId),
     upsertMergeRequest: (mr) => {
       store.upsertMergeRequest(mr);
       // Pushed straight out, for the reason the row is written here at all: the card's
