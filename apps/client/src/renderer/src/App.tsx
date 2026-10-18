@@ -35,8 +35,7 @@ import {
 import type { AuthState } from '@shared/auth';
 import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
-import { hasPlan, hasRepo, ownsTickets, type Project, type Task } from '@shared/model';
-import { pickableProjects } from '@shared/trackerArchive';
+import { hasPlan, hasRepo, type Project, type Task } from '@shared/model';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from '@ui/Attention';
 import { ActivityScreen } from '@ui/activity/ActivityScreen';
@@ -72,9 +71,11 @@ import { AppShell } from '@ui/shell/AppShell';
 import { NavRail } from '@ui/shell/NavRail';
 import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@ui/shell/Sidebar';
 import { useDeviceFolds } from '@ui/shell/sidebarFolds';
+import { openTicketCounts } from '@ui/shell/sidebarProject';
 import { SHELL_NAV } from '@ui/shell/shellNav';
 import { StatusBar, StatusDot, StatusSpacer } from '@ui/shell/StatusBar';
 import { useSidebarData } from '@ui/shell/useSidebarData';
+import { useTrackerProject } from '@ui/shell/useTrackerProject';
 import { TOASTER_ID } from '@ui/theme';
 import type { AttentionItem } from '@shared/attention';
 
@@ -215,13 +216,17 @@ export function App(): JSX.Element {
   const [attentionCount, setAttentionCount] = useState(0);
   /**
    * The sidebar's own tree (F13.11) is one ticket project's milestones/epics/tickets — the
-   * first ticket-owning project found at boot, same "pick the first one" rule `Projects.tsx`
-   * applies once its own `project:list` resolves. `null` until the boot effect below
-   * resolves, or forever if this machine has no ticket project at all.
+   * ticket project `useTrackerProject` resolves (F13.17): this device's own remembered
+   * choice, or else whichever ticket project has the most open tickets. `trackerProjects`
+   * is `null` until the boot effect below resolves, or forever if this machine has no
+   * ticket project at all; `openCounts` is kept current by the same `project:tasksChanged`
+   * subscription that already refreshes the footer's sprint.
    */
-  const [sidebarProjectId, setSidebarProjectId] = useState<string | null>(null);
+  const [trackerProjects, setTrackerProjects] = useState<Project[] | null>(null);
+  const [openCounts, setOpenCounts] = useState<ReadonlyMap<string, number>>(new Map());
+  const tracker = useTrackerProject(trackerProjects, openCounts);
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
-  const sidebarData = useSidebarData(sidebarProjectId, { attentionCount, folds: sidebarFolds });
+  const sidebarData = useSidebarData(tracker.projectId, { attentionCount, folds: sidebarFolds });
   const [newIssueDialogOpen, setNewIssueDialogOpen] = useState(false);
   /**
    * The Activity tab's persisted unread baseline (F2.13) — read once at boot, and advanced
@@ -306,9 +311,8 @@ export function App(): JSX.Element {
       window.api.invoke('project:list').then((projects) => {
         const projectList = projects.map((p) => p.project);
         setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
-        setSidebarProjectId(
-          (was) => was ?? pickableProjects(projectList).find(ownsTickets)?.id ?? null,
-        );
+        setTrackerProjects(projectList);
+        setOpenCounts(openTicketCounts(projects.flatMap((p) => p.tasks)));
       }),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
@@ -346,7 +350,17 @@ export function App(): JSX.Element {
     const offSync = window.api.on('sync:changed', setSyncState);
     // Both signals matter: a sync replaces the board (the sprint's cards may change),
     // and the engine can rewrite settings behind the UI's back.
-    const offTasks = window.api.on('project:tasksChanged', () => void readSprint());
+    const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks }) => {
+      void readSprint();
+      // Patch just the changed project's count rather than re-reading every project's
+      // tasks — the same per-project patch `useSidebarData`'s own `project:tasksChanged`
+      // subscription already makes for its tree.
+      setOpenCounts((counts) => {
+        const next = new Map(counts);
+        next.set(projectId, openTicketCounts(tasks).get(projectId) ?? 0);
+        return next;
+      });
+    });
     const offSettings = window.api.on('settings:changed', () => void readSprint());
     return () => {
       offNew();
@@ -358,6 +372,17 @@ export function App(): JSX.Element {
       offSettings();
     };
   }, []);
+
+  // A project archived (or restored) on the Projects tab changes which projects the
+  // switcher should offer — `archive:apply`/`archive:restore` carry no push of their own
+  // (see `project:list`'s own doc comment), so re-read it on every tab change instead.
+  useEffect(() => {
+    void window.api.invoke('project:list').then((projects) => {
+      const projectList = projects.map((p) => p.project);
+      setTrackerProjects(projectList);
+      setOpenCounts(openTicketCounts(projects.flatMap((p) => p.tasks)));
+    });
+  }, [tab]);
 
   // The Activity tab's unread badge count. Re-reads whenever `lastSeen` moves and on every
   // `activity:appended` push, with a trailing debounce so a burst of appends (a chain
@@ -453,7 +478,7 @@ export function App(): JSX.Element {
       />
       <NewTicketDialog
         open={newIssueDialogOpen}
-        projectId={sidebarProjectId ?? ''}
+        projectId={tracker.projectId ?? ''}
         tickets={sidebarData.tickets}
         onClose={() => setNewIssueDialogOpen(false)}
       />
@@ -492,10 +517,14 @@ export function App(): JSX.Element {
             onNavigate={handleSidebarNavigate}
             onOpenTicket={openTaskOnBoard}
             onNewIssue={() => {
-              if (sidebarProjectId) setNewIssueDialogOpen(true);
+              if (tracker.projectId) setNewIssueDialogOpen(true);
             }}
             folds={sidebarFolds}
             onToggleFold={toggleSidebarFold}
+            projectOptions={tracker.projectOptions}
+            selectedProjectId={tracker.projectId}
+            onSelectProject={tracker.selectProject}
+            loading={!sidebarData.loaded}
           />
         }
         banners={
@@ -619,7 +648,11 @@ export function App(): JSX.Element {
         ) : tab === 'projects' ? (
           <Projects />
         ) : tab === 'tickets' ? (
-          <TicketWorkspace onShowOnBoard={openTaskOnBoard} />
+          <TicketWorkspace
+            onShowOnBoard={openTaskOnBoard}
+            selectedProjectId={tracker.projectId}
+            onSelectProject={tracker.selectProject}
+          />
         ) : tab === 'issues' ? (
           <IssuesScreen onOpenTask={openTaskOnBoard} />
         ) : tab === 'automations' ? (
