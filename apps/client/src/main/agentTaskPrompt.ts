@@ -170,6 +170,59 @@ function planScopeLines(): string[] {
     `final summary. That summary must also say it needs visual sign-off: a UI task is not`,
     `Done until a human has looked at the shots and approved them.`,
     '',
+    ...planQualityLines(),
+  ];
+}
+
+/**
+ * The rules every plan has to meet before it is worth approving — project-agnostic, because
+ * each one is a way a plan for this orchestrator went wrong on 2026-10-18, on more than one
+ * ticket:
+ *
+ * - **The spec.** A ticket that says "Plan: docs/x.md — Phase 2" only works if the PLANNER reads
+ *   it: a step's prompt carries its own section plus the plan's framing, never the ticket or the
+ *   doc, so whatever a step needs from the spec has to be copied into the plan.
+ * - **References.** Line numbers and function names in tickets go stale within days; a plan
+ *   built on one that moved does the work in the wrong place.
+ * - **Acceptance a step can check.** "The human reviews it in both themes" is unreachable for an
+ *   agent, so the step passed on green gates and nothing was compared at all.
+ * - **UI proof that names what must be visible.** "Renders correctly" was written about a blank
+ *   panel and broken thumbnails; a named screen with named elements cannot be waved through.
+ * - **Owner decisions.** Paid services, accounts, tokens and product choices were picked silently
+ *   inside implementation plans; they are the human's.
+ * - **Files.** Cards that edit the same files collide at merge time; listing them under Critical
+ *   files is what lets the human (and the board) keep such cards out of each other's way.
+ * - **Size.** A ticket that needs a dozen steps across unrelated areas is several tickets; a plan
+ *   is the cheapest moment to say so.
+ */
+function planQualityLines(): string[] {
+  return [
+    `Before you call ExitPlanMode, make the plan meet these rules:`,
+    '',
+    `- **Read the spec it points to.** If the ticket names a document or section (a`,
+    `  "Plan:" line, a roadmap file, a design doc, a mockup), read that section first.`,
+    `  Steps never see the ticket or the document — only their own section and the`,
+    `  framing (Context/Facts/Decisions). Copy every definition, rule and decision a step`,
+    `  needs into the plan.`,
+    `- **Check every reference.** Confirm each file path, function, type and line number`,
+    `  the ticket mentions still exists before you build on it; record any that moved under`,
+    `  Facts, with where it is now.`,
+    `- **Acceptance an agent can check.** Each step ends with something it can prove by`,
+    `  itself: a test, a script, a command's output, a named screenshot. Never "the human`,
+    `  checks X" — turn that into a screenshot plus the visual sign-off described above.`,
+    `- **UI work names its proof.** For every screen a step changes, name the screenshot`,
+    `  (screen, theme, width), the mockup it is compared with, and the elements that must be`,
+    `  visible in it. If this project has no headless screenshot script, say so under Facts.`,
+    `- **Owner decisions are asked, not guessed.** Anything that costs money, needs an account,`,
+    `  token or external service, or is a product choice the ticket does not settle: ask with`,
+    `  "${NEEDS_INPUT_SENTINEL}" before you finish the plan.`,
+    `- **List the files.** Under a "Critical files" heading, list every file the plan creates`,
+    `  or edits, one path per line. The human uses it to keep cards that touch the same files`,
+    `  from running at the same time.`,
+    `- **Too big is a finding.** If the work needs more than about six steps, or spans`,
+    `  unrelated areas (engine and UI, server and desktop), say so and propose how to split`,
+    `  the ticket instead of planning all of it.`,
+    '',
   ];
 }
 
