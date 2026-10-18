@@ -289,7 +289,9 @@ describe('splitPlanIntoSteps', () => {
   it('degrades to a single step when only one work section exists', () => {
     const steps = splitPlanIntoSteps('# Title\n\n## Context\nframing\n\n## Do the work\nbody');
     expect(steps).toHaveLength(1);
-    expect(steps[0].title).toBe('Title');
+    // The work section names the step; the framing rides along in its brief.
+    expect(steps[0].title).toBe('Do the work');
+    expect(steps[0].description).toContain('framing');
   });
 
   it('returns nothing for an empty plan', () => {
@@ -311,6 +313,80 @@ describe('splitPlanIntoSteps', () => {
       (_, i) => `## Wire panel ${i + 1}\nbody`,
     ).join('\n\n');
     expect(splitPlanIntoSteps(plan)).toHaveLength(MAX_PLAN_STEPS);
+  });
+
+  describe('one work section beside framing', () => {
+    // TM-459's approved plan: Context, Out of scope, and ONE work section. Fewer than two
+    // work sections fell through to the list split, which made a step of every bullet in
+    // the whole plan — 17 of them, Context facts and Out-of-scope items included.
+    const tm459 = [
+      '# Stop the phone tab bar truncating its labels',
+      '## Context',
+      'At 390px the active label is clipped to "Inb".',
+      '- Each tile is 78px (5 tabs).',
+      '- The attention marker is a small orange dot.',
+      '## Out of scope',
+      '- The large Inbox title: that is F23.6 (TM-358).',
+      '- The final tab set: that is F23.5 (TM-357).',
+      "## Fix the phone tab bar's stacked layout",
+      '1. **Stack the grid instead of flexing it.** Replace flexDirection.',
+      '2. **Put the label on row 2.**',
+      '### Verification',
+      '- Run the gates.',
+    ].join('\n');
+
+    it('is one step, not one step per bullet', () => {
+      const steps = splitPlanIntoSteps(tm459);
+      expect(steps.map((s) => s.title)).toEqual(["Fix the phone tab bar's stacked layout"]);
+      expect(steps[0].description).toContain('Put the label on row 2');
+      expect(steps[0].description).toContain('### Verification');
+    });
+
+    it('still splits a framing-free single section by its list', () => {
+      const steps = splitPlanIntoSteps(['# Title', '1. Do a', '2. Do b'].join('\n'));
+      expect(steps.map((s) => s.title)).toEqual(['Do a', 'Do b']);
+    });
+  });
+
+  describe('framing text reaches every step', () => {
+    // A step's prompt carries only its own brief. TM-460's first step was told to
+    // "implement the Decisions above" and never saw them, because Decisions is framing.
+    const plan = [
+      '# Plan',
+      '## Context',
+      'The watcher rebased under a live step.',
+      '## Decisions',
+      '- One helper: worktreeBusy(ownerId).',
+      '## Fix the busy check',
+      'Implement the Decisions above.',
+      '## Verify it',
+      'Prove the test can fail.',
+      '## Out of scope',
+      '- The stale-rebase abort.',
+    ].join('\n');
+
+    it('appends the framing sections to each work step', () => {
+      const steps = splitPlanIntoSteps(plan);
+      expect(steps.map((s) => s.title)).toEqual(['Fix the busy check', 'Verify it']);
+      for (const step of steps) {
+        expect(step.description).toContain('One helper: worktreeBusy(ownerId).');
+        expect(step.description).toContain('## Context');
+        expect(step.description).toContain('## Out of scope');
+      }
+      expect(steps[0].description.startsWith('Implement the Decisions above.')).toBe(true);
+    });
+
+    it('leaves a framing-free plan untouched', () => {
+      const steps = splitPlanIntoSteps('## Build it\nbody one\n\n## Test it\nbody two');
+      expect(steps.map((s) => s.description)).toEqual(['body one', 'body two']);
+    });
+
+    it('caps the shared text', () => {
+      const huge = `## Context\n${'x'.repeat(20_000)}\n## Do a\na\n## Do b\nb`;
+      const [first] = splitPlanIntoSteps(huge);
+      expect(first.description.length).toBeLessThan(9_000);
+      expect(first.description).toContain('framing was cut');
+    });
   });
 });
 

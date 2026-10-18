@@ -16,6 +16,9 @@
  *   - Split on the SHALLOWEST heading level that yields at least two sections. For a
  *     typical plan (`# Title` / `## Phase 1` / `## Phase 2`) that is the phase level,
  *     and deeper headings stay inside their phase's brief, where they belong.
+ *     Framing headings (Context, Decisions, Out of scope …) are never steps, but their
+ *     text is appended to every step's brief, and ONE work section beside framing is a
+ *     one-step plan rather than a cue to fall through to the list split.
  *   - Failing that, split on top-level list items (`- [ ] x`, `- x`, `1. x`), folding
  *     each item's indented continuation lines into its brief.
  *   - Failing that, the whole plan becomes one step. Never zero: an approved plan must
@@ -251,6 +254,35 @@ function itemsAsSteps(lines: string[]): PlanStep[] {
   return steps;
 }
 
+/** The most framing text copied into each step's brief, so a sprawling Context cannot crowd out the step's own work. */
+const MAX_SHARED_CONTEXT = 8000;
+
+/**
+ * Hand every work step the plan's framing sections (Context, Facts, Decisions, Critical
+ * files, Out of scope …). A step's prompt carries only its own brief, so a section that is
+ * not a step reaches no agent at all: TM-460's first step was told to "implement the
+ * Decisions above" and never saw them. Dropping framing as STEPS (TM-445) is right; dropping
+ * its TEXT is not.
+ */
+function withSharedContext(work: PlanStep[], framing: PlanStep[]): PlanStep[] {
+  if (framing.length === 0) return work;
+  const shared = framing.map((s) => `## ${s.title}\n\n${s.description}`.trim()).join('\n\n');
+  const capped =
+    shared.length > MAX_SHARED_CONTEXT
+      ? `${shared.slice(0, MAX_SHARED_CONTEXT)}\n\n… (the rest of the plan's framing was cut)`
+      : shared;
+  return work.map((s) => ({
+    ...s,
+    description: [
+      s.description,
+      "Shared plan context — the approved plan's framing sections, given to every step:",
+      capped,
+    ]
+      .filter((part) => part.trim().length > 0)
+      .join('\n\n'),
+  }));
+}
+
 /**
  * Split an approved plan into ordered steps. Always returns at least one step for a
  * non-empty plan — an approved plan that produced nothing to run would strand the
@@ -270,9 +302,15 @@ export function splitPlanIntoSteps(markdown: string): PlanStep[] {
   for (const level of [...levels].sort((a, b) => a - b)) {
     const sections = sectionsAtLevel(lines, level);
     const work = sections.filter((s) => !isNonWorkHeading(s.title));
+    const framing = sections.filter((s) => isNonWorkHeading(s.title));
     // A single section at this level means the level is the plan's title, not its
-    // phases — keep descending. Two or more work sections is a real breakdown.
-    if (work.length >= 2) return finalize(work);
+    // phases — keep descending. Two or more work sections is a real breakdown. So is ONE
+    // work section beside framing siblings: that plan is one step, and falling through to
+    // the list split below would turn every bullet of the whole plan into a step — TM-459
+    // got 17, its Context facts and Out-of-scope items among them.
+    if (work.length >= 2 || (work.length === 1 && framing.length > 0)) {
+      return finalize(withSharedContext(work, framing));
+    }
   }
 
   // No usable headings — try a top-level list.
