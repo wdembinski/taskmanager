@@ -331,6 +331,27 @@ export interface CloudConfigStatus {
   legacySignInRetired: boolean;
 }
 
+/**
+ * Snapshot of the private update feed's token (for the Settings UI) — the same
+ * `hasToken`/`encryptionAvailable`/`plainTextStorage` trio as `JiraConfigStatus`, plus which
+ * source is actually feeding the updater right now.
+ */
+export interface UpdateTokenStatus {
+  /** Whether a token has been stored (never the token itself). */
+  hasToken: boolean;
+  /** Whether the OS secure store is available to encrypt the token. */
+  encryptionAvailable: boolean;
+  /** Linux only: no keyring found, so the token is obfuscated rather than encrypted — see
+   *  `JiraConfigStatus.plainTextStorage`. */
+  plainTextStorage: boolean;
+  /**
+   * Mirrors main's own `UpdateTokenSource` (`apps/client/src/main/updateFeed.ts`), kept as a
+   * plain string union here rather than imported, since main must not become a dependency of
+   * shared.
+   */
+  source: 'stored' | 'gh' | 'none';
+}
+
 /** Basic facts about the running app, shown in the UI footer / About. */
 export interface AppInfo {
   version: string;
@@ -1879,6 +1900,12 @@ export interface IpcApi {
    * so the button can be shown optimistically.
    */
   'update:install': () => Promise<void>;
+  /** Whether the private feed has a token, can encrypt one, and which source feeds it now. */
+  'update:getTokenStatus': () => Promise<UpdateTokenStatus>;
+  /** Store the update token, encrypted via the OS secure store. */
+  'update:setToken': (token: string) => Promise<{ ok: boolean; message: string }>;
+  /** Remove the stored update token. */
+  'update:clearToken': () => Promise<void>;
 
   // --- Issues (F5): the read-only browser over a tracker's open issues, and the ---------
   // one-click import that puts one on the board. See `@shared/issues` for the model.

@@ -23,8 +23,14 @@ import { app } from 'electron';
 // detected, so take the default export and destructure it — the documented interop path.
 import electronUpdater from 'electron-updater';
 import type { UpdateMode, UpdateState } from '@shared/update';
-import { logMain } from './log';
+import { formatError, logMain } from './log';
 import { updateMode } from './updateSupport';
+import {
+  classifyUpdateError,
+  redactSecret,
+  updateFeedConfig,
+  type UpdateTokenSource,
+} from './updateFeed';
 
 const { autoUpdater } = electronUpdater;
 
@@ -39,8 +45,23 @@ export class Updater {
   private timer: ReturnType<typeof setInterval> | null = null;
   private firstCheck: ReturnType<typeof setTimeout> | null = null;
   private wired = false;
+  /**
+   * The token/source last handed to `autoUpdater.setFeedURL`. `undefined` (rather than
+   * `null`, which is a real "no token" value `resolveToken` can return) so the very first
+   * check always applies a feed, even when there turns out to be no token at all.
+   */
+  private appliedToken: string | null | undefined = undefined;
+  private appliedSource: UpdateTokenSource | undefined = undefined;
+  /** Whether a token was in play on the most recent check — `fail()`'s only use for it. */
+  private hadToken = false;
 
-  constructor(private readonly push: (state: UpdateState) => void) {
+  constructor(
+    private readonly push: (state: UpdateState) => void,
+    private readonly resolveToken: () => Promise<{
+      token: string | null;
+      source: UpdateTokenSource;
+    }>,
+  ) {
     this.mode = updateMode(process.platform, process.env, app.isPackaged);
     this.state = { status: this.mode === 'auto' ? 'idle' : 'unsupported', mode: this.mode };
   }
@@ -68,11 +89,15 @@ export class Updater {
     // `info`, so a completely inert updater looks exactly like an up-to-date one. Set it
     // alongside UPDATE_CONFIG_PATH when a local feed appears to do nothing.
     const verbose = Boolean(process.env['UPDATE_LOG_VERBOSE']);
+    // Every level, redacted: the feed URL electron-updater logs carries the token as a query
+    // parameter, so even its routine chatter can leak it if nothing strips it first.
+    const log = (label: string, message: unknown) =>
+      logMain(label, redactSecret(formatError(message), this.appliedToken ?? null));
     autoUpdater.logger = {
-      info: verbose ? (message: unknown) => logMain('Updater', message) : () => {},
-      debug: verbose ? (message: unknown) => logMain('Updater debug', message) : () => {},
-      warn: (message: unknown) => logMain('Updater warning', message),
-      error: (message: unknown) => logMain('Updater error', message),
+      info: verbose ? (message: unknown) => log('Updater', message) : () => {},
+      debug: verbose ? (message: unknown) => log('Updater debug', message) : () => {},
+      warn: (message: unknown) => log('Updater warning', message),
+      error: (message: unknown) => log('Updater error', message),
     };
     // Escape hatch for testing a real installed build against a local feed without
     // cutting a release (see docs/07): point this at a generic-provider yml.
@@ -105,6 +130,17 @@ export class Updater {
     if (this.state.status === 'downloading' || this.state.status === 'downloaded') {
       return this.state;
     }
+    // `UPDATE_CONFIG_PATH` (local-feed testing) already names the whole feed config; the
+    // per-install token has no part to play there.
+    if (!process.env['UPDATE_CONFIG_PATH']) {
+      const { token, source } = await this.resolveToken();
+      this.hadToken = token !== null;
+      if (token !== this.appliedToken || source !== this.appliedSource) {
+        autoUpdater.setFeedURL(updateFeedConfig(token));
+        this.appliedToken = token;
+        this.appliedSource = source;
+      }
+    }
     try {
       await autoUpdater.checkForUpdates();
     } catch (err) {
@@ -112,6 +148,19 @@ export class Updater {
       this.fail(err);
     }
     return this.state;
+  }
+
+  /**
+   * The stored (or `gh`) token changed. Drop the remembered feed so the next check always
+   * re-applies it — `checkNow`'s `token !== this.appliedToken` guard would otherwise see no
+   * change and keep talking to the feed the OLD token was good for — and check right away
+   * unless a download is already underway.
+   */
+  tokenChanged(): void {
+    this.appliedToken = undefined;
+    this.appliedSource = undefined;
+    if (this.state.status === 'downloading') return;
+    void this.checkNow();
   }
 
   /**
@@ -124,13 +173,18 @@ export class Updater {
    */
   private fail(err: unknown): void {
     const fetching = this.state.status === 'available' || this.state.status === 'downloading';
-    logMain(fetching ? 'Update download failed' : 'Update check failed', err);
+    const redacted = redactSecret(formatError(err), this.appliedToken ?? null);
+    logMain(fetching ? 'Update download failed' : 'Update check failed', redacted);
     const code = (err as { code?: unknown } | null)?.code;
     this.set({
       status: 'error',
       version: fetching ? this.state.version : undefined,
-      message: err instanceof Error ? err.message : String(err),
+      message: redactSecret(
+        err instanceof Error ? err.message : String(err),
+        this.appliedToken ?? null,
+      ),
       code: typeof code === 'string' ? code : undefined,
+      reason: classifyUpdateError(err, this.hadToken) ?? undefined,
     });
   }
 
@@ -156,9 +210,11 @@ export class Updater {
   /** Merge a change into the state and push the whole thing (the UI replaces wholesale). */
   private set(change: Partial<UpdateState>): void {
     // Moving to any non-error status drops the previous failure's detail. Without this a
-    // stale message or ERR_ code rides along into "Checking…", where it describes nothing.
+    // stale message, code, or reason rides along into "Checking…", where it describes nothing.
     const cleared =
-      change.status && change.status !== 'error' ? { message: undefined, code: undefined } : {};
+      change.status && change.status !== 'error'
+        ? { message: undefined, code: undefined, reason: undefined }
+        : {};
     this.state = { ...this.state, mode: this.mode, ...cleared, ...change };
     this.push(this.state);
   }

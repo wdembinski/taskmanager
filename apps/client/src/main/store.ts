@@ -110,6 +110,7 @@ import {
   DEFAULT_JIRA_SETTINGS,
   DEFAULT_LINEAR_SETTINGS,
   DEFAULT_SETTINGS,
+  DEFAULT_UPDATE_SETTINGS,
   coerceBoardLinksMode,
   resolveSyncInterval,
   withExistingInstallAppearance,
@@ -1183,6 +1184,15 @@ export interface Store {
   /** Cache GitHub's `GET /user` per instance; see {@link saveGitLabIdentity}. */
   saveGitHubIdentity(cache: GitHubIdentityCache): void;
   loadGitHubIdentity(): GitHubIdentityCache | null;
+  /**
+   * The per-install GitHub token ciphertext for the private update feed — separate from
+   * {@link saveGitHubToken}, since that one is this app's own forge integration (issues,
+   * pull requests) and may be absent, scoped differently, or pointed at a different host
+   * than whatever is allowed to read `wdembinski/taskmanager`'s releases.
+   */
+  saveUpdateToken(value: string): void;
+  loadUpdateToken(): string | null;
+  clearUpdateToken(): void;
   /** The Linear API key ciphertext — the same trio again, one more forge over. */
   saveLinearApiKey(value: string): void;
   loadLinearApiKey(): string | null;
@@ -3314,6 +3324,9 @@ export function createStore(dbPath: string): Store {
   const GITHUB_TOKEN_KEY = 'github.pat';
   const GITHUB_IDENTITY_KEY = 'github.identity';
 
+  /** The private update feed's own token ciphertext — see `saveUpdateToken`'s doc. */
+  const UPDATE_TOKEN_KEY = 'update.token';
+
   /** The issue query the last GitHub sync ran — `JIRA_LAST_QUERY_KEY`'s counterpart. */
   const GITHUB_LAST_QUERY_KEY = 'github.lastQuery';
 
@@ -4195,6 +4208,7 @@ export function createStore(dbPath: string): Store {
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
         features: { ...DEFAULT_FEATURE_SETTINGS, ...(parsed.features ?? {}) },
         gantt: { ...DEFAULT_GANTT_SETTINGS, ...(parsed.gantt ?? {}) },
+        updates: { ...DEFAULT_UPDATE_SETTINGS, ...(parsed.updates ?? {}) },
         // A plain enum, not a nested block — but one a stored blob can hold any string in
         // (an older build, a hand-edited row), so it is coerced the same way the model
         // fields below are validated on the way IN at `settings:save`.
@@ -6857,6 +6871,19 @@ export function createStore(dbPath: string): Store {
       } catch {
         return null; // corrupt value — re-fetch
       }
+    },
+
+    saveUpdateToken(value) {
+      upsertState.run(UPDATE_TOKEN_KEY, value);
+    },
+
+    loadUpdateToken() {
+      const row = selectState.get(UPDATE_TOKEN_KEY) as { value: string } | undefined;
+      return row?.value ?? null;
+    },
+
+    clearUpdateToken() {
+      deleteState.run(UPDATE_TOKEN_KEY);
     },
 
     saveLinearApiKey(value) {
