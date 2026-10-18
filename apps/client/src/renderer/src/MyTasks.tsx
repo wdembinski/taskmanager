@@ -1643,6 +1643,7 @@ export function MyTasks({
             milestones={registries.milestones}
             labels={registries.labels}
             ticketLinks={registries.links}
+            ticketProjects={projectList}
             afterMergePipeline={settings?.features.afterMergePipeline}
             mrRebaseButton={settings?.features.mrRebaseButton}
             mrMergeButton={settings?.features.mrMergeButton}

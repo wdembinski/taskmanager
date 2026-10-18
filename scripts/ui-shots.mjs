@@ -255,6 +255,20 @@ export const SCREENS = [
     mockup: 'v10-21-archived-light.svg',
   },
   {
+    // The ticket panel's own restore banner (F14.9) — opens one of the Archived view's own
+    // seeded tickets (`uiShotsFixture.mjs`'s `ARCHIVED_MILESTONE_TICKETS`, filed under
+    // `ARCHIVED_MILESTONES`) by expanding its milestone row and clicking the ticket, the
+    // same two steps a human would take. No mockup draws this exact bar — `v10-21-archived
+    // -light.svg` is the nearest (same screen, before the ticket is opened), needing human
+    // visual sign-off rather than a pixel diff.
+    name: 'ticket-archived-banner',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ click: 'Archived' }, { click: 'Expand' }, { click: 'issue-row:first' }],
+    mockup: 'v10-21-archived-light.svg',
+  },
+  {
     // The web mirrors the desktop's own Tickets screen (see `web-mirrors-the-desktop` plan
     // notes) — same mockup as `issue-list-light`, no separate "web board" mockup exists. Both
     // hosts default to the Board (`apps/web/src/App.tsx`'s `useState<Screen>('mytasks')`,
@@ -375,7 +389,10 @@ window.__tm = {
  */
 function clientInitScript(defaultSettings, row) {
   const fixture = row.channelOverrides
-    ? { ...uiShotsFixture, BOOT_CHANNELS: { ...uiShotsFixture.BOOT_CHANNELS, ...row.channelOverrides } }
+    ? {
+        ...uiShotsFixture,
+        BOOT_CHANNELS: { ...uiShotsFixture.BOOT_CHANNELS, ...row.channelOverrides },
+      }
     : uiShotsFixture;
   const stub = buildApiStub({
     defaultSettings,

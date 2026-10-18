@@ -687,6 +687,7 @@ export function BoardScreen({
     milestones: registries.milestones,
     labels: registries.labels,
     ticketLinks: registries.links,
+    ticketProjects: Object.values(state.projects),
     onUnlinkChain: (linkId: string) => void extras.removeLink(linkId).catch(reportError),
     onOpenTask: compact?.card ? compact.onOpenCard : setSelectedTaskId,
     readOnlyNotice: RELAY_NOTICE,

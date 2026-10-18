@@ -15,6 +15,7 @@
 import { Caption1, Text, makeStyles } from '@fluentui/react-components';
 import type { Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
 import { FoldToggle } from '../FoldToggle';
+import { ArchivedTicketBanner } from './ArchivedTicketBanner';
 import { useDeviceFold } from './deviceFold';
 import { ticketSummaryLine } from './ticketSummary';
 import { TicketFieldsSection } from './TicketFieldsSection';
@@ -37,6 +38,9 @@ export interface TaskTicketSectionProps {
   labels: TicketLabel[];
   /** This project's milestones. */
   milestones: Milestone[];
+  /** The tracker projects the restore banner's own project check reads (F14.9) — absent on
+   *  a host that hasn't wired one through yet, see `ArchivedTicketBanner`'s own `projects`. */
+  projects?: Project[];
   /** Set when the Links section is absent — candidates for this ticket's first link. */
   addLink?: { candidates: LinkCandidate[] };
   /** Set when the host relaying ticket writes is unreachable — every field and the add-link
@@ -55,6 +59,7 @@ export function TaskTicketSection({
   agentProjects,
   labels,
   milestones,
+  projects,
   addLink,
   readOnly = false,
   fold = { key: 'tm.taskDetail.ticketOpen', defaultOpen: false },
@@ -64,6 +69,13 @@ export function TaskTicketSection({
 
   return (
     <div className={styles.box}>
+      <ArchivedTicketBanner
+        ticket={ticket}
+        milestones={milestones}
+        tickets={tickets}
+        projects={projects}
+        readOnly={readOnly}
+      />
       <FoldToggle open={open} onToggle={toggle} summary={ticketSummaryLine(ticket, { milestones })}>
         <Text weight="semibold">Ticket</Text>
       </FoldToggle>

@@ -320,6 +320,7 @@ export function Projects({
       milestones={registries.milestones}
       labels={registries.labels}
       ticketLinks={registries.links}
+      ticketProjects={projects}
       statusKeywords={settings?.statusKeywords}
       priorityDisplay={display.priorityDisplay}
       afterMergePipeline={settings?.features.afterMergePipeline}
