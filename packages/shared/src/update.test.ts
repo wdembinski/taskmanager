@@ -65,6 +65,18 @@ describe('describeUpdate', () => {
     ).toBe('Update check failed: ERR_UPDATER_ZIP_FILE_NOT_FOUND');
   });
 
+  it('names the token as the reason instead of a generic failure', () => {
+    expect(describeUpdate({ status: 'error', mode: 'auto', reason: 'needs-token' })).toBe(
+      'Updates need a GitHub token',
+    );
+    expect(describeUpdate({ status: 'error', mode: 'auto', reason: 'token-rejected' })).toBe(
+      'Update token rejected or expired — replace it in Settings',
+    );
+    expect(describeUpdate({ status: 'error', mode: 'auto', reason: 'token-blind' })).toBe(
+      'Token cannot see wdembinski/taskmanager',
+    );
+  });
+
   it('reads as up to date when idle', () => {
     expect(describeUpdate({ status: 'idle', mode: 'auto' })).toBe('Up to date.');
     expect(describeUpdate({ status: 'idle', mode: 'auto', version: '0.29.0' })).toContain('0.29.0');
