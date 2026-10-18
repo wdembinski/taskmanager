@@ -171,17 +171,11 @@ describe('mergeAppSettings', () => {
   });
 });
 
-// A blob written before Phase 24 (native tickets) has no `board.showAssignee`/`showPoints`
-// and no `boardScopeId` at all — the defaults below are what such a blob fills in as, and
-// they are what keeps a board with no ticket project drawing exactly as it always has.
-describe('DEFAULT_SETTINGS / DEFAULT_BOARD_DISPLAY (Phase 24 fields)', () => {
+// A blob written before Phase 24 (native tickets) has no `boardScopeId` at all — the default
+// below is what such a blob fills in as.
+describe('DEFAULT_SETTINGS (Phase 24 fields)', () => {
   it('scopes to every board out of the box', () => {
     expect(DEFAULT_SETTINGS.boardScopeId).toBe('all');
-  });
-
-  it('draws no assignee avatar or points chip out of the box', () => {
-    expect(DEFAULT_BOARD_DISPLAY.showAssignee).toBe(false);
-    expect(DEFAULT_BOARD_DISPLAY.showPoints).toBe(false);
   });
 });
 

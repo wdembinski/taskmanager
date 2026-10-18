@@ -3,10 +3,56 @@
  * joins its segments in order, and the peek's header carries both icon buttons with their own
  * labels. `renderToStaticMarkup` rather than a DOM testing library — this package has none —
  * the same approach `TaskDetailHostView.render.test.tsx` uses.
+ *
+ * Also proves F13.24's acceptance for the one piece of it that lives here: the board card's
+ * Merge requests section — pipeline stage dots, the verdict badge — renders exactly as it
+ * would anywhere else once it is `IssuePeek`'s `children`, so a real `TaskDetailHost` dropped
+ * into this pane (as both hosts already do) loses nothing by being inside it.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import type { MergeRequest } from '@tm/shared/mergeRequest';
+import { MergeRequests } from '../MergeRequests';
 import { IssueFullPage, IssuePeek } from './IssueViewPanes';
+
+const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
+  id: 'gl-9-1',
+  taskId: 't1',
+  openedForTaskId: null,
+  provider: 'gitlab',
+  repoId: 9,
+  projectPath: 'acme/web',
+  number: 1,
+  title: 'ENG-1 fix the thing',
+  displayName: null,
+  webUrl: 'https://gitlab.com/acme/web/-/merge_requests/1',
+  sourceBranch: 'feature/ENG-1',
+  targetBranch: 'main',
+  state: 'opened',
+  draft: false,
+  headSha: null,
+  lastActedSha: null,
+  lastActedAction: null,
+  pipelineStatus: 'running',
+  pipelineStages: [
+    { name: 'build', status: 'success' },
+    { name: 'test', status: 'running' },
+  ],
+  pipelineUrl: null,
+  approvalsRequired: 1,
+  approvalsGiven: 1,
+  changesRequested: false,
+  detailedMergeStatus: 'mergeable',
+  hasConflicts: false,
+  issueKeys: ['ENG-1'],
+  latestNoteAt: null,
+  lastReadAt: null,
+  lastEventAt: null,
+  lastEventSeenAt: null,
+  updatedAt: 100,
+  syncedAt: 100,
+  ...over,
+});
 
 describe('IssueFullPage', () => {
   it('renders the breadcrumb segments in order', () => {
@@ -62,5 +108,62 @@ describe('IssuePeek', () => {
     );
 
     expect(html).toContain('peek detail');
+  });
+
+  it('shows pipeline stage dots and the verdict badge for a MergeRequests child (F13.24)', () => {
+    const html = renderToStaticMarkup(
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+        <MergeRequests
+          mergeRequests={[mr()]}
+          onMarkRead={() => {}}
+          onMarkEventsSeen={() => {}}
+          onRename={() => {}}
+          onRebase={() => {}}
+          onMerge={() => Promise.resolve([])}
+          onLoadMergeProposal={() => Promise.resolve({ method: 'merge', message: null })}
+        />
+      </IssuePeek>,
+    );
+
+    expect(html).toContain('build');
+    expect(html).toContain('test');
+    expect(html).toContain('ENG-1 fix the thing');
+  });
+
+  it('honours mrRebaseButton/mrMergeButton off, same as either host would ask for', () => {
+    const readyMr = mr({ approvalsRequired: 1, approvalsGiven: 1, pipelineStatus: 'success' });
+
+    const withButtons = renderToStaticMarkup(
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+        <MergeRequests
+          mergeRequests={[readyMr]}
+          onMarkRead={() => {}}
+          onMarkEventsSeen={() => {}}
+          onRename={() => {}}
+          onRebase={() => {}}
+          onMerge={() => Promise.resolve([])}
+          onLoadMergeProposal={() => Promise.resolve({ method: 'merge', message: null })}
+          mrMergeButton
+        />
+      </IssuePeek>,
+    );
+    const withoutButton = renderToStaticMarkup(
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+        <MergeRequests
+          mergeRequests={[readyMr]}
+          onMarkRead={() => {}}
+          onMarkEventsSeen={() => {}}
+          onRename={() => {}}
+          onRebase={() => {}}
+          onMerge={() => Promise.resolve([])}
+          onLoadMergeProposal={() => Promise.resolve({ method: 'merge', message: null })}
+          mrMergeButton={false}
+        />
+      </IssuePeek>,
+    );
+
+    expect(withButtons).toContain('>Merge<');
+    expect(withoutButton).not.toContain('>Merge<');
+    expect(withoutButton).toContain('ready to merge');
   });
 });

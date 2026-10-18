@@ -11,8 +11,6 @@
 import { useState } from 'react';
 import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import type { Person, Task } from '@tm/shared/model';
-import type { StatusKeyword } from '@tm/shared/statusKeywords';
-import type { BoardDisplaySettings } from '@tm/shared/settings';
 import type { RunPurpose } from '@tm/shared/scheduler';
 import { TaskCard } from './TaskCard';
 import type { AutomationOrigin } from './automationOrigin';
@@ -107,16 +105,13 @@ export interface KanbanColumnProps {
    * wide rendering is unchanged.
    */
   layout?: 'compact';
-  projectNameOf: (task: Task) => string | undefined;
   /** Name of the agent project a delegated card runs in (tooltip on the agent glyph). */
   agentNameOf: (task: Task) => string | undefined;
-  /** The card's project colour, for the stripe along its top edge. */
-  projectColorOf: (task: Task) => string | undefined;
   /**
    * A native ticket's parent epic, by NAME (Phase 24) — resolved by whoever holds the whole
    * board (`task.epicTaskId` names another card) and asked per card, the same shape as
-   * `projectNameOf`. Absent on a board with no epics to resolve, which is also what leaves
-   * `TaskCard`'s epic line falling back to a mirrored card's own `externalEpicName`.
+   * `agentNameOf`. Absent on a board with no epics to resolve, which is also what leaves the
+   * footer's epic chip falling back to a mirrored card's own `externalEpicName`.
    */
   epicNameOf?: (task: Task) => string | undefined;
   /** A native ticket's assignee (Phase 24), for the avatar in its footer. Same shape as
@@ -128,46 +123,17 @@ export interface KanbanColumnProps {
    * (F1.11/F1.15), which is also what leaves the glyph's tooltip on its generic fallback.
    */
   originAutomationOf?: (task: Task) => AutomationOrigin | undefined;
-  /** Whether cards show their sprint chip (false while the sprint filter is on). */
-  showSprint?: boolean;
-  /** The user's status-note vocabulary, which colours each card's progress line. */
-  statusKeywords?: readonly StatusKeyword[];
   /** Task ids the inbox holds an item for — the ring's authoritative signal. */
   attentionTaskIds?: ReadonlySet<string>;
   /** Task ids the engine has a live run for, so a spawning run still spins. */
   liveRunTaskIds?: ReadonlySet<string>;
   /** Why the engine is running an agent on a task, when it is a remediation — see `RunPurpose`. */
   runPurposes?: ReadonlyMap<string, RunPurpose>;
+  /** When each live run started (epoch ms), for the card's elapsed-time chip — see
+   *  `ActiveRun.startedAt`. */
+  runStartedAt?: ReadonlyMap<string, number>;
   /** Task ids whose branch is being merged, so the card says so while git works. */
   mergingTaskIds?: ReadonlySet<string>;
-  /** Which optional context lines each card draws. */
-  display?: BoardDisplaySettings;
-  /**
-   * The cards whose Steps section is folded away. A set for the whole board rather than a
-   * flag per card, for the same reason `attentionTaskIds` is one: the answer is held in one
-   * place (a saved setting — see `foldedSteps.ts`) and every card asks the same copy of it.
-   */
-  foldedStepTaskIds?: ReadonlySet<string>;
-  /**
-   * Fold or unfold one card's steps. Absent on a board with nowhere to remember the fold, and
-   * that absence is also what keeps the heading a plain caption — see `TaskCard`.
-   */
-  onToggleSteps?: (taskId: string) => void;
-  /**
-   * The cards showing the steps from their earlier planning rounds. The default — absent from
-   * this set — is that a re-planned card shows only its newest bunch; see `splitEarlierSteps`.
-   */
-  shownEarlierStepTaskIds?: ReadonlySet<string>;
-  /** Show or hide one card's earlier rounds. Absent = the card never hides them. */
-  onToggleEarlierSteps?: (taskId: string) => void;
-  /**
-   * The cards showing the steps from phases after their current one. The default — absent
-   * from this set — is that a phase nobody has reached yet stays folded; see
-   * `splitStepPhases`.
-   */
-  shownLaterStepTaskIds?: ReadonlySet<string>;
-  /** Show or hide one card's later phases. Absent = the card never hides them. */
-  onToggleLaterSteps?: (taskId: string) => void;
   /**
    * The chain overlay's measuring tap, handed to each card's root element. The column
    * only passes it through — it knows nothing about links, and the overlay is drawn once
@@ -189,7 +155,7 @@ export interface KanbanColumnProps {
   linksDrawn?: boolean;
   /**
    * Links Focus mode dims — neither the selection nor one of its direct links
-   * (`linkMode.linkView`'s `dimmedTaskIds`). Asked per card like `foldedStepTaskIds`: the
+   * (`linkMode.linkView`'s `dimmedTaskIds`). Asked per card like `attentionTaskIds`: the
    * answer lives in one place (the board) and every card here asks the same copy of it.
    */
   dimmedTaskIds?: ReadonlySet<string>;
@@ -246,12 +212,6 @@ export interface KanbanColumnProps {
    * has drag.
    */
   onMoveTask?: (id: string) => void;
-  /** `settings.features.afterMergePipeline` — passed straight through to each `TaskCard`. */
-  afterMergePipeline?: boolean;
-  /** `settings.features.mrRebaseButton` — passed straight through to each `TaskCard`. */
-  mrRebaseButton?: boolean;
-  /** `settings.features.mrMergeButton` — passed straight through to each `TaskCard`. */
-  mrMergeButton?: boolean;
   onSelectTask: (id: string) => void;
   onDragStartTask: (id: string) => void;
   onDragEndTask: () => void;
@@ -321,34 +281,19 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
             <TaskCard
               key={task.id}
               task={task}
-              projectName={props.projectNameOf(task)}
               epicName={props.epicNameOf?.(task)}
               assignee={props.assigneeOf?.(task)}
               agentName={props.agentNameOf(task)}
               originAutomation={props.originAutomationOf?.(task)}
-              projectColor={props.projectColorOf(task)}
-              showSprint={props.showSprint}
               subtasks={subtasks}
               variants={variants}
-              stepsFolded={props.foldedStepTaskIds?.has(task.id)}
-              onToggleSteps={props.onToggleSteps && (() => props.onToggleSteps?.(task.id))}
-              earlierStepsShown={props.shownEarlierStepTaskIds?.has(task.id)}
-              onToggleEarlierSteps={
-                props.onToggleEarlierSteps && (() => props.onToggleEarlierSteps?.(task.id))
-              }
-              laterStepsShown={props.shownLaterStepTaskIds?.has(task.id)}
-              onToggleLaterSteps={
-                props.onToggleLaterSteps && (() => props.onToggleLaterSteps?.(task.id))
-              }
               mergeRequests={mergeRequests}
-              statusKeywords={props.statusKeywords}
               attentionTaskIds={props.attentionTaskIds}
               liveRunTaskIds={props.liveRunTaskIds}
               runPurposes={props.runPurposes}
+              runStartedAt={props.runStartedAt}
               mergingTaskIds={props.mergingTaskIds}
-              display={props.display}
               selected={task.id === props.selectedTaskId}
-              selectedTaskId={props.selectedTaskId}
               dimmed={props.dimmedTaskIds?.has(task.id)}
               anchorRef={props.anchorRef?.(task.id)}
               linkState={props.linkDrag?.states.get(task.id)}
@@ -362,9 +307,6 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
               onToggleShelved={props.onToggleShelved && (() => props.onToggleShelved?.(task.id))}
               onMoveTo={props.onMoveTask && (() => props.onMoveTask?.(task.id))}
-              afterMergePipeline={props.afterMergePipeline}
-              mrRebaseButton={props.mrRebaseButton}
-              mrMergeButton={props.mrMergeButton}
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}
@@ -380,7 +322,6 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               draggable={!compact}
               dragging={task.id === props.draggingId}
               onSelect={() => props.onSelectTask(task.id)}
-              onSelectSubtask={props.onSelectTask}
               onDragStart={(e) => {
                 e.dataTransfer.setData('text/plain', task.id);
                 e.dataTransfer.effectAllowed = 'move';

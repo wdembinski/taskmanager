@@ -752,28 +752,6 @@ export function SettingsScreen({
               </div>
             </Field>
 
-            <div className={styles.switchRow}>
-              <Switch
-                label="Show labels on cards"
-                checked={settings.board.showLabels}
-                onChange={(_e, d) => patch({ board: { ...settings.board, showLabels: d.checked } })}
-              />
-              <Switch
-                label="Show the project name"
-                checked={settings.board.showProjectName}
-                onChange={(_e, d) =>
-                  patch({ board: { ...settings.board, showProjectName: d.checked } })
-                }
-              />
-              <Switch
-                label="Show the epic name"
-                checked={settings.board.showEpicName}
-                onChange={(_e, d) =>
-                  patch({ board: { ...settings.board, showEpicName: d.checked } })
-                }
-              />
-            </div>
-
             <Field
               label="Auto-archive finished milestones after (weeks)"
               hint="Once every ticket on a milestone has been done or cancelled for this many weeks, the sweep archives it on its own — restore it any time from Archived. Blank turns auto-archive off."

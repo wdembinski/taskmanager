@@ -35,7 +35,6 @@ import {
   hasPlan,
   hasRepo,
   PERSONAL_PROJECT_ID,
-  type ManualStatus,
   type Milestone,
   type Project,
   type Task,
@@ -43,10 +42,8 @@ import {
 import {
   DEFAULT_BOARD_DISPLAY,
   hiddenBoardColumns,
-  shouldAutoFoldOnMove,
   withColumnHidden,
   type AppSettings,
-  type BoardDisplaySettings,
 } from '@shared/settings';
 import type { BoardScope, IpcEvents } from '@shared/ipc';
 import type { MergeRequest } from '@shared/mergeRequest';
@@ -76,7 +73,6 @@ import { KanbanColumn } from '@ui/board/KanbanColumn';
 import { useBoardLayoutStyles } from '@ui/board/boardLayout';
 import { currentSprintName } from '@ui/board/currentSprint';
 import { doneSwitchLabel, doneSwitchTitle } from '@ui/board/doneSwitchLabel';
-import { BoardDisplayMenu } from '@ui/board/BoardDisplayMenu';
 import { ChainOverlay } from '@ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@ui/board/ChainLinkPopover';
 import { LinkModeSwitch } from '@ui/board/LinkModeSwitch';
@@ -99,7 +95,6 @@ import {
 import { archiveIndexOf, pickableProjects } from '@shared/trackerArchive';
 import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
-import { ensureFoldedCard, foldedCardSet, toggleFoldedCard } from '@ui/board/foldedSteps';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@ui/board/shelvedCards';
 import { ShelfStrip } from '@ui/board/ShelfStrip';
 import { useAttentionIndex } from './useAttentionIndex';
@@ -212,8 +207,6 @@ export function MyTasks({
   const scopeIds = useMemo(() => new Set(scopes.map((s) => s.id)), [scopes]);
   const scopeIdsRef = useRef(scopeIds);
   scopeIdsRef.current = scopeIds;
-  /** Board metadata by project id — the name/colour a mixed board draws per card. */
-  const boardsById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -303,7 +296,7 @@ export function MyTasks({
    * that must agree. See `useAttentionIndex` for the three bugs this replaced.
    */
   const attention = useAttentionIndex();
-  const { ids: liveRuns, purposes: runPurposes } = useActiveRuns();
+  const { ids: liveRuns, purposes: runPurposes, startedAt: runStartedAt } = useActiveRuns();
   // The third of the same kind: which cards are having their branch merged. Nothing about
   // a merging task changes while it merges, so this is the only thing any surface has to
   // go on — see `useIntegratingTasks`.
@@ -322,16 +315,6 @@ export function MyTasks({
   const gitlabEnabled = settings?.gitlab.enabled ?? false;
   const githubEnabled = settings?.github.enabled ?? false;
   const display = settings?.board ?? DEFAULT_BOARD_DISPLAY;
-  /**
-   * What the cards actually draw: `display`, with the project name forced on while the
-   * board mixes projects together. A single-board scope already says which project
-   * every card is on (the scope picker itself), so the saved preference is left alone
-   * there — it is only the All view that needs the line to stay legible.
-   */
-  const boardDisplay = useMemo(
-    () => (scope === 'all' ? { ...display, showProjectName: true } : display),
-    [display, scope],
-  );
   /** The scope Dropdown's closed-state label. */
   const scopeLabel = useMemo(
     () =>
@@ -779,20 +762,6 @@ export function MyTasks({
     });
   }, []);
 
-  /**
-   * The card's optional lines. Saved through the whole settings blob like the other board
-   * switches, so the Display menu and the Settings page are two views of one value rather
-   * than two places that can disagree.
-   */
-  const saveDisplay = useCallback((board: BoardDisplaySettings) => {
-    setSettings((prev) => {
-      if (!prev) return prev;
-      const next = { ...prev, board };
-      void window.api.invoke('settings:save', next);
-      return next;
-    });
-  }, []);
-
   const setShowDetail = useCallback((value: boolean) => {
     setSettings((prev) => {
       if (!prev) return prev;
@@ -801,96 +770,6 @@ export function MyTasks({
       return next;
     });
   }, []);
-
-  /**
-   * The three step folds a card can be in — saved, so they survive leaving the screen (which
-   * unmounts this whole board) and closing the app. See `foldedSteps.ts` for what each list
-   * means and why one records what is SHUT and the other two what is OPEN.
-   *
-   * Written the same optimistic way the toolbar's switches are: the section folds on the
-   * click and the settings blob follows. The board's own task ids go along for the prune —
-   * see `toggleFoldedCard`, which is where a fold for a card that has since left the board
-   * is dropped.
-   */
-  const foldedSteps = useMemo(() => foldedCardSet(settings?.foldedStepCards), [settings]);
-  const shownEarlierSteps = useMemo(
-    () => foldedCardSet(settings?.shownEarlierStepCards),
-    [settings],
-  );
-  const shownLaterSteps = useMemo(() => foldedCardSet(settings?.shownLaterStepCards), [settings]);
-  const toggleSteps = useCallback(
-    (taskId: string) => {
-      const onBoard = new Set((tasks ?? []).map((t) => t.id));
-      setSettings((prev) => {
-        if (!prev) return prev;
-        const next = {
-          ...prev,
-          foldedStepCards: toggleFoldedCard(prev.foldedStepCards, taskId, onBoard),
-        };
-        void window.api.invoke('settings:save', next);
-        return next;
-      });
-    },
-    [tasks],
-  );
-  const toggleEarlierSteps = useCallback(
-    (taskId: string) => {
-      const onBoard = new Set((tasks ?? []).map((t) => t.id));
-      setSettings((prev) => {
-        if (!prev) return prev;
-        const next = {
-          ...prev,
-          shownEarlierStepCards: toggleFoldedCard(prev.shownEarlierStepCards, taskId, onBoard),
-        };
-        void window.api.invoke('settings:save', next);
-        return next;
-      });
-    },
-    [tasks],
-  );
-  const toggleLaterSteps = useCallback(
-    (taskId: string) => {
-      const onBoard = new Set((tasks ?? []).map((t) => t.id));
-      setSettings((prev) => {
-        if (!prev) return prev;
-        const next = {
-          ...prev,
-          shownLaterStepCards: toggleFoldedCard(prev.shownLaterStepCards, taskId, onBoard),
-        };
-        void window.api.invoke('settings:save', next);
-        return next;
-      });
-    },
-    [tasks],
-  );
-
-  /**
-   * Auto-fold a card's Steps section the moment it lands in Review or Done — the behaviour
-   * `settings.features.autoFoldReviewDone` switches off. `ensureFoldedCard` (add-if-absent),
-   * not `toggleFoldedCard`: a card the human had reopened after the move must stay open, so
-   * this may only ever ADD the fold, never take one back off that a click just removed.
-   *
-   * Called once from each place a human can actually move a card — `moveTask` below (drag,
-   * and the arrow-driven release-now paths that share it) and the detail pane's State
-   * dropdown (`onStatusSet`) — so it fires once per explicit move and never on a re-render,
-   * which is what leaves a reopened card open.
-   */
-  const foldOnAutoFoldColumn = useCallback(
-    (taskId: string, column: BoardColumn | ManualStatus) => {
-      if (!settings || !shouldAutoFoldOnMove(settings.features, column)) return;
-      const onBoard = new Set((tasks ?? []).map((t) => t.id));
-      setSettings((prev) => {
-        if (!prev) return prev;
-        const next = {
-          ...prev,
-          foldedStepCards: ensureFoldedCard(prev.foldedStepCards, taskId, onBoard),
-        };
-        void window.api.invoke('settings:save', next);
-        return next;
-      });
-    },
-    [settings, tasks],
-  );
 
   /**
    * Move a card onto the shelf, or back off it — one menu item either way (`TaskCard`'s
@@ -1075,13 +954,12 @@ export function MyTasks({
       patchTask(optimisticMove(task, column)); // optimistic
       try {
         patchTask(await window.api.invoke('task:move', taskId, column));
-        foldOnAutoFoldColumn(taskId, column);
       } catch (e) {
         patchTask(prev); // rollback (e.g. JIRA transition unavailable)
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [tasks, patchTask, foldOnAutoFoldColumn],
+    [tasks, patchTask],
   );
 
   /**
@@ -1431,12 +1309,6 @@ export function MyTasks({
               one changes how the links between whatever cards ARE there look. `L` cycles it
               without reaching for the mouse (see the shortcut registered above). */}
           <LinkModeSwitch mode={boardLinks} onChange={setBoardLinks} />
-          {/* The card's optional lines, switchable HERE as well as in Settings — this is
-              where you actually notice the noise, and a trip to Settings to quiet a board
-              you are looking at is a trip most people won't make. Disabled until the
-              settings land: until then `display` is the default, and toggling one item
-              would save that default over what is on disk. */}
-          <BoardDisplayMenu display={display} onChange={saveDisplay} disabled={!settings} />
           {/* What actually happened in the repo, beside what the board believes about it.
               The same kind of control as the fold beside it — a view, not a filter — and off
               by default, because it costs a `git log` on the project it is pointed at. */}
@@ -1588,57 +1460,16 @@ export function MyTasks({
               column={col}
               label={COLUMN_LABEL[col]}
               cards={cardsByColumn.get(col) ?? []}
-              // On a single-board scope: any tracker's `phase` (the JIRA project's name
-              // or the GitHub repository's path), same as always. On the All scope, a
-              // mixed board needs to say which BOARD a card is on before it needs to say
-              // which tracker phase it's in — the board wins where the two would both
-              // have something to say (see `boardsById`, keyed by the card's own
-              // `projectId`, not its `projectTagId`).
-              projectNameOf={(t) => {
-                if (scope === 'all') {
-                  const board = boardsById.get(t.projectId);
-                  if (board && board.id !== PERSONAL_PROJECT_ID) return board.name;
-                }
-                return t.externalSource ? t.phase || undefined : undefined;
-              }}
               // A native ticket's parent epic, by NAME (Phase 24) — `t.epicTaskId` names
               // another card on this same board.
               epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
               assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
               agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
-              // The stripe is the PROJECT the card is filed under first — `projectTagId`,
-              // written only by delegation — and, on the All scope, the card's own BOARD
-              // project as a fallback: a card added straight onto a project's board
-              // carries no tag at all, and its board is the only project it names.
-              projectColorOf={(t) => {
-                const tagColor = agentProjects.find((p) => p.id === t.projectTagId)?.color;
-                if (tagColor) return tagColor;
-                if (scope !== 'all') return undefined;
-                const board = boardsById.get(t.projectId);
-                return board && board.id !== PERSONAL_PROJECT_ID
-                  ? board.color || undefined
-                  : undefined;
-              }}
-              // With the sprint filter on every card carries the same chip, so the name
-              // moves to the status bar and is said once. Off, the chip earns its place.
-              showSprint={!currentSprintOnly}
-              statusKeywords={settings?.statusKeywords}
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
               runPurposes={runPurposes}
+              runStartedAt={runStartedAt}
               mergingTaskIds={merging}
-              display={boardDisplay}
-              // Which cards are showing their steps, and the one control that changes it.
-              // Saved rather than local, so it survives this board being unmounted.
-              foldedStepTaskIds={foldedSteps}
-              onToggleSteps={toggleSteps}
-              // And which of them are showing the rounds before their newest — the fold that
-              // happens by itself when a card is re-planned.
-              shownEarlierStepTaskIds={shownEarlierSteps}
-              onToggleEarlierSteps={toggleEarlierSteps}
-              // …and the mirror of that, for the phases after the current one.
-              shownLaterStepTaskIds={shownLaterSteps}
-              onToggleLaterSteps={toggleLaterSteps}
               anchorRef={anchors.anchorRef}
               linksDrawn={linksDrawn}
               dimmedTaskIds={linkState.dimmedTaskIds}
@@ -1664,9 +1495,6 @@ export function MyTasks({
               onStopTask={(taskId) => void stopTask(taskId)}
               onResumeTask={(taskId) => void resumeTask(taskId)}
               onToggleShelved={settings?.features.shelf ? toggleShelved : undefined}
-              afterMergePipeline={settings?.features.afterMergePipeline}
-              mrRebaseButton={settings?.features.mrRebaseButton}
-              mrMergeButton={settings?.features.mrMergeButton}
               onSelectTask={selectTask}
               onDragStartTask={setDraggingId}
               onDragEndTask={() => setDraggingId(null)}
@@ -1724,32 +1552,14 @@ export function MyTasks({
             cards={shelvedCards}
             folded={settings?.shelfFolded ?? false}
             onToggleFolded={toggleShelfFolded}
-            projectNameOf={(t) => {
-              if (scope === 'all') {
-                const board = boardsById.get(t.projectId);
-                if (board && board.id !== PERSONAL_PROJECT_ID) return board.name;
-              }
-              return t.externalSource ? t.phase || undefined : undefined;
-            }}
             epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
             assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
             agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
-            projectColorOf={(t) => {
-              const tagColor = agentProjects.find((p) => p.id === t.projectTagId)?.color;
-              if (tagColor) return tagColor;
-              if (scope !== 'all') return undefined;
-              const board = boardsById.get(t.projectId);
-              return board && board.id !== PERSONAL_PROJECT_ID
-                ? board.color || undefined
-                : undefined;
-            }}
-            showSprint={!currentSprintOnly}
-            statusKeywords={settings?.statusKeywords}
             attentionTaskIds={attention.taskIds}
             liveRunTaskIds={liveRuns}
             runPurposes={runPurposes}
+            runStartedAt={runStartedAt}
             mergingTaskIds={merging}
-            display={boardDisplay}
             selectedTaskId={selectedTaskId}
             draggingId={draggingId}
             onStopTask={(taskId) => void stopTask(taskId)}
@@ -1759,9 +1569,6 @@ export function MyTasks({
             onDragEndTask={() => setDraggingId(null)}
             onToggleShelved={toggleShelved}
             onDropOnShelf={dropOnShelf}
-            afterMergePipeline={settings?.features.afterMergePipeline}
-            mrRebaseButton={settings?.features.mrRebaseButton}
-            mrMergeButton={settings?.features.mrMergeButton}
           />
         )}
       </div>
@@ -1824,7 +1631,6 @@ export function MyTasks({
               setSelectedTaskId(id);
             }}
             onStatusChanged={patchTask}
-            onStatusSet={foldOnAutoFoldColumn}
             onSubtasksChanged={() => void refresh()}
             dictation={dictation}
           />

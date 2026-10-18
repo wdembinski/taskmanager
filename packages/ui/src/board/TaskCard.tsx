@@ -1,41 +1,21 @@
 /**
- * TaskCard — one draggable card on the My Tasks Kanban board.
+ * TaskCard — one draggable card on the My Tasks Kanban board, drawn in the v9 mockup's own
+ * four-row anatomy (`docs/plan/feature-roadmap/F13-design-system-and-shell.md`'s Board
+ * bullet, `mockups/v9-7-board-light.svg`): a header (key + owner), the title, one status
+ * line, and a footer (epic chip + MR ref or due date). `cardParts` (F13.22) decides WHICH of
+ * those optional pieces are present; this component only draws what it is handed.
  *
- * Mirrors the product mockup: a stripe of its project's colour along the top, a type
- * icon + title, an optional label chip, its progress note, the card's "Project:" line,
- * and a footer with the ticket badge — the tracker's own mark and the issue's key, for
- * JIRA's cards and GitHub's alike (`../tracker`) — and a priority square. A small status
- * badge appears only for the "unusual" states bucketed into a column (an AI run, or a
- * failed/stopped/cancelled task in Done).
+ * The Steps and Merge requests sections, the chain/link chips' old home in a footer row, and
+ * the sprint/points/label chips are gone — F13.24 moves what is still needed into the F12
+ * peek. What survives unchanged: the attention ring, selection, the link handle and drop
+ * states, drag, dimmed, the hover-revealed "More actions" menu with Stop/Resume, the variants
+ * badge, the automation-origin flash, the needs/unblocks row, and the tracker link on the key.
  *
- * The card itself has NO frame — the fill is brighter than the column, which is edge
- * enough. The only frames are rings painted outside the box: orange for unread ticket
- * comments or an agent waiting on an answer, brand for the selected card, both when
- * both. Outside, so clicking a card never moves its own text.
- *
- * Steps (Phase 11) and merge requests each render as a **section** of the card: one
- * hairline above the group, a quiet caption naming it, and the card's own fill
- * continuing underneath. They are part of the card, not strips floating on it. A step is
- * never a card of its own — it travels with its parent between columns — so the rows are
- * not draggable; clicking one selects that step in the detail pane.
- *
- * A card an automation started (`task.originAutomationId`, F1.18) carries one more glyph in
- * the title row — a monochrome flash, never coloured, since it names a standing fact rather
- * than something moving (see the colour-budget note on `originIcon` below).
- *
- * Phase 17 changed three things about what the card can say:
- *
- *   - The ring is driven by the INBOX (`attentionTaskIds`), not inferred from status and
- *     JIRA timestamps, so an item raised without a status flip no longer goes unshown.
- *   - The spinner comes from `runPhase`, which can see a run that has spawned but is not
- *     yet persisted as `running`, and it is accompanied by words — "Running step 2 of 5"
- *     rather than bare motion.
- *   - A row that wants you takes a TINT and the ticket badge takes the tracker's signal, so
- *     the card's one orange ring keeps its meaning and the reason stays legible.
+ * The card itself has NO frame — the fill is brighter than the column, which is edge enough.
+ * The only frames are rings painted outside the box: orange for unread ticket comments or an
+ * agent waiting on an answer, brand for the selected card, both when both.
  */
-import { useState } from 'react';
 import {
-  Badge,
   Button,
   Caption1,
   Menu,
@@ -51,27 +31,17 @@ import {
 } from '@fluentui/react-components';
 import {
   ArrowRightRegular,
-  ArrowSyncRegular,
   BeakerRegular,
   BookmarkRegular,
-  BranchForkRegular,
-  BranchRequestClosedFilled,
   BugRegular,
-  CheckmarkCircleFilled,
-  CheckmarkCircleRegular,
-  ChevronDownRegular,
-  ChevronRightRegular,
   CircleRegular,
-  DismissCircleFilled,
+  FlagRegular,
   FlashRegular,
   LinkRegular,
-  MergeFilled,
-  MergeRegular,
   MoreHorizontalRegular,
-  PlayCircleRegular,
   NoteRegular,
-  PersonFilled,
   PersonRegular,
+  PlayCircleRegular,
   PresenceBlockedRegular,
   RecordStopRegular,
   SparkleRegular,
@@ -81,32 +51,22 @@ import type { Person, Task } from '@tm/shared/model';
 import {
   canResumeWork,
   canStopWork,
-  cardRunLabel,
   chainNeedsAttention,
   hasUnreadJira,
-  isAgentAssigned,
   needsAgentInput,
-  parkedStep,
   restingStatus,
   runPhase,
 } from '@tm/shared/board';
+import { formatElapsed } from '@tm/shared/elapsed';
 import type { ChainDecline } from '@tm/shared/taskChain';
 import type { LinkChips } from './linkChips';
-import { RUN_PURPOSE_LABEL, runPurposeOf, type RunPurpose } from '@tm/shared/scheduler';
-import { priorityIndicatorShown } from '@tm/shared/priority';
+import type { RunPurpose } from '@tm/shared/scheduler';
 import { delegatedAgentName } from '@tm/shared/tickets';
-import { statusNoteColor, type StatusKeyword } from '@tm/shared/statusKeywords';
-import { DEFAULT_BOARD_DISPLAY, type BoardDisplaySettings } from '@tm/shared/settings';
 import type { VariantGroupState } from '@tm/shared/variants';
 import { AgentGlyph } from '../AgentGlyph';
-import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
+import { STATUS_LABEL } from '../taskStatus';
 import { automationOriginTitle, type AutomationOrigin } from './automationOrigin';
-import {
-  cardBadgeStatus,
-  splitEarlierSteps,
-  subtaskProgress,
-  variantStripTone,
-} from './boardColumns';
+import { cardParts, type CardInk } from './cardParts';
 import type { ChainPosition } from './chainPosition';
 import {
   CHAIN_LINK_MIME,
@@ -116,124 +76,29 @@ import {
   type LinkDropState,
 } from './chainDrag';
 import { ACCENT, RING } from '../theme';
-import { FLUO_VAR, PIPELINE_VAR, STATUS_INDICATOR_VAR } from '../tokens';
-import { PriorityGlyph } from '../PriorityGlyph';
+import { FLUO_VAR } from '../tokens';
 import { AssigneeDisplay } from '../projects/AssigneeDisplay';
-import { TrackerMark, shortTicketKey } from '../tracker';
-import {
-  forgeName,
-  mrAttentionReason,
-  mrHeading,
-  mrLabel,
-  mrNeedsRebase,
-  mrNoun,
-  mrReadyToMerge,
-  mrRef,
-  mrVerdict,
-  showPipeline,
-  verdictSummary,
-  type MergeRequest,
-  type MrVerdict,
-} from '@tm/shared/mergeRequest';
-import { ConfirmMergeDialog } from '../ConfirmMergeDialog';
-import { useTransport } from '../transport';
+import { ticketLinkTitle } from '../tracker';
+import type { MergeRequest } from '@tm/shared/mergeRequest';
+import { useElapsedClock } from '../useElapsedClock';
 
-/**
- * The delegation glyph, white so a card an agent owns reads at a glance. Sized to sit
- * with the card's type icon rather than tower over it.
- */
+/** The delegation glyph, sized to sit with the owner slot rather than tower over it. */
 const AGENT_ICON_SIZE = '16px';
 
 /** The group every card that never started variants carries — see the `variants` prop. */
 const NO_VARIANTS: VariantGroupState = { state: 'none', rows: [] };
 
-/**
- * The running band's geometry — see `runningBand` for what it draws.
- *
- * The band is a repeating gradient swept along its OWN axis rather than straight sideways.
- * CSS measures a gradient angle clockwise from "to top", so a θ gradient points along
- * `(sin θ, −cos θ)` in screen coordinates (y growing downwards) — which is where `DX`/`DY`
- * come from. One cycle travels exactly `PERIOD` along that axis, so the last frame is
- * identical to the first and the loop has no seam.
- *
- * `ANGLE` is that CSS angle, NOT the lean you see: the band tilts `ANGLE − 90` off vertical
- * and its travel runs the same `ANGLE − 90` below horizontal. Worth stating because the two
- * numbers are ten apart at 100 and twenty at 110, and reading `110` as "110° of lean" is
- * exactly the mistake this block exists to prevent.
- *
- * Derived rather than typed out: an angle and a travel vector that disagree would show up as
- * a slow drift with a jump once per cycle, which is precisely the artefact this is built to
- * avoid, and is not a thing anyone would spot by reading two number literals.
- *
- * `PERIOD` is one crest PLUS the dark stretch behind it, so it and `animationDuration` are
- * the two halves of one decision — the band is a flash that passes, not a light that stays on:
- *
- *     speed          = PERIOD / duration        ≈ 404 px/s
- *     flash, at a point = crest / speed         ≈ 1.2s   (a quick sweep across)
- *     dark, between     = (PERIOD − crest)/speed ≈ 4.0s   (a real pause, not a blink)
- *
- * Lengthening the pause has to be done in `PERIOD` rather than by slowing the animation: the
- * duration governs how fast the crest MOVES, and the two ask for opposite things.
- */
-// 20° of lean. At 10° the sweep was geometrically correct — travel perpendicular to the band,
-// tilted by the same 10° — but read as plain sideways motion: the lean was too shallow to see,
-// and an edge-to-edge band offers no ends to track its direction by. Doubling it is the one
-// lever that changes what actually reaches the eye.
-const RUN_BAND_ANGLE = 110;
-const RUN_BAND_PERIOD = 2100;
-const RUN_BAND_RAD = (RUN_BAND_ANGLE * Math.PI) / 180;
-const RUN_BAND_DX = (RUN_BAND_PERIOD * Math.sin(RUN_BAND_RAD)).toFixed(2);
-const RUN_BAND_DY = (RUN_BAND_PERIOD * -Math.cos(RUN_BAND_RAD)).toFixed(2);
-
-/**
- * `FLUO_VAR.cyan` at a given alpha, via `color-mix` rather than an `rgba(...)` triplet — the
- * var already tracks the resolved scheme's cyan, so mixing it toward transparent is the band's
- * only way to vary alpha without pinning itself back to one scheme's literal channels.
- */
-const runBandCyan = (alpha: number): string =>
-  `color-mix(in srgb, ${FLUO_VAR.cyan} ${Math.round(alpha * 100)}%, transparent)`;
-
-/**
- * The crest, sampled as a RAISED COSINE — `0.5 · (1 − cos 2πt)` at each eighth — instead of
- * the three stops it had before.
- *
- * This is the fix for the line you could see in the middle of the sweep. A gradient with few
- * stops is piecewise LINEAR, so its slope changes abruptly at each stop, and vision
- * exaggerates exactly that into a bright edge (Mach banding) — the crest read as a drawn line
- * rather than as light. A raised cosine has zero slope where it meets the transparent gap and
- * turns over smoothly at the peak, so there is no step in the slope left to exaggerate.
- *
- * The peak is 0.45 — bright enough that the crest still reads as cyan once composited over
- * the card's near-black fill, where 0.30 landed on a greyish teal.
- *
- * It used to be paired with a `runningText` rule that lifted every line of the card to pure
- * white so this number could be contrast-checked against something. That trade was the wrong
- * way round: the crest is over any given word for about 1.2s in every 5.2 (see the geometry
- * block above), and the white stayed on for the whole run — so a running card spent four
- * seconds out of five looking like an ordinary card whose title someone had bolded and
- * whitened for no reason. The board's text is #CCCCCC everywhere on purpose (see
- * `main.tsx`), and a card that quietly opts out of that is the more visible defect: it reads
- * as a styling bug on the board, where the dip reads as the sweep passing.
- *
- * So the text under the band is now left alone, and this number is the only lever left. At
- * 0.45 the crest takes the card's #CCCCCC from 11.3:1 down to 2.98:1 for the ~1.2s it is
- * overhead. If that ever reads as washing the title out rather than as light crossing it,
- * lower the peak — not the text: 0.28 puts #CCCCCC back over 4.5:1, at the cost of the fluo.
- */
-const RUN_BAND_BELL = [0, 0.066, 0.225, 0.384, 0.45, 0.384, 0.225, 0.066, 0];
-/**
- * Where the crest starts, and how far apart its eight samples sit — so the lit part is
- * `8 × STEP` and everything else in `PERIOD` is the pause between flashes.
- */
-const RUN_BAND_CREST_START = 120;
-const RUN_BAND_STEP = 60;
-const RUN_BAND_STOPS = [
-  `${runBandCyan(0)} 0px`,
-  ...RUN_BAND_BELL.map(
-    (alpha, i) => `${runBandCyan(alpha)} ${RUN_BAND_CREST_START + i * RUN_BAND_STEP}px`,
-  ),
-  `${runBandCyan(0)} ${RUN_BAND_PERIOD}px`,
-].join(', ');
+/** `CardStatusLine.ink`/`CardTrailing`'s flagged colour, resolved to an actual CSS value —
+ *  `cyan` is the only one with a dedicated `--tm-*` var (`FLUO_VAR.cyan`, the running state's
+ *  own colour); the rest fall back to the same tokens the rest of the shell already uses for
+ *  the same meaning (`IssueRow.dueFlagged`, `DiffView`'s added/deleted). */
+const INK_COLOR: Record<CardInk, string> = {
+  cyan: FLUO_VAR.cyan,
+  attention: `var(--tm-attention, ${tokens.colorPaletteDarkOrangeForeground1})`,
+  danger: tokens.colorPaletteRedForeground1,
+  success: tokens.colorPaletteGreenForeground1,
+  faint: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+};
 
 const useStyles = makeStyles({
   card: {
@@ -256,181 +121,106 @@ const useStyles = makeStyles({
     // whole edge — there is no frame, because a frame was saying a second time what the
     // fill already said, and it fought the rings below for the same pixels.
     backgroundColor: tokens.colorNeutralBackground1,
-    // The project notch is absolutely positioned against this box.
     position: 'relative',
-    // Step rows sit flush against the frame, so they must be clipped by its radius.
     overflow: 'hidden',
-    // ...but `overflow: hidden` also drops this flex item's automatic minimum size to
-    // zero, so inside the column's scrolling list the card would shrink and clip its
-    // own step rows instead of making the column scroll. Never shrink a card.
+    // `overflow: hidden` drops this flex item's automatic minimum size to zero, so inside
+    // the column's scrolling list the card would shrink and clip its own content instead of
+    // making the column scroll. Never shrink a card.
     flexShrink: 0,
     cursor: 'pointer',
     userSelect: 'none',
     // The column header is opaque and pinned (`KanbanColumn.header`), so a card scrolled
     // into view would stop UNDER it and lose its top edge — which is exactly where the
-    // project stripe and the attention ring live. Stop below the header instead.
-    // Un-pinning the header would cost the column labels on every scroll: a worse trade.
+    // attention ring lives. Stop below the header instead.
     scrollMarginTop: '36px',
   },
-  body: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' },
-  /**
-   * The card's project, as a **notch in the top-left corner**.
-   *
-   * It was a stripe across the whole top edge, and full width was more ink than the fact
-   * deserved: a board of thirty cards became thirty coloured rules, and the things actually
-   * worth a colour — the step dots, the pipeline dots, the running band — had to compete
-   * with them. A 12px corner is the same information at a sixth of the ink.
-   *
-   * Top-LEFT, and a triangle rather than a square: it reads as a corner fold on the card,
-   * which is unmistakably a marker, where a square in the corner reads as something clipped.
-   * `pointerEvents: none` so it never eats a click meant for the card, and the card's own
-   * `overflow: hidden` + radius rounds its outer corner to match the frame.
-   */
-  projectNotch: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: '12px',
-    height: '12px',
-    clipPath: 'polygon(0 0, 100% 0, 0 100%)',
-    pointerEvents: 'none',
+  body: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '12px' },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' },
+  key: {
+    flexShrink: 0,
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    textDecoration: 'none',
   },
   /**
-   * A group of rows (steps, or merge requests) as a SECTION of the card rather than a
-   * strip floating on it: one hairline above the group, a quiet caption naming it, and
-   * the card's own fill continuing underneath.
+   * The card's footer badge used to carry the unread signal; the header key takes it over
+   * now there is no badge left to wear it — same tint, `ACCENT.unread`/`unreadInk`.
    */
-  section: { borderTop: `1px solid ${tokens.colorNeutralStroke2}` },
-  sectionHead: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    padding: '6px 12px 2px',
-    color: tokens.colorNeutralForeground4,
-    textTransform: 'uppercase',
-    letterSpacing: '0.06em',
-    fontSize: '10px',
+  keyUnread: {
+    color: ACCENT.unreadInk,
+    backgroundColor: ACCENT.unread,
+    borderRadius: '3px',
+    padding: '0 3px',
+  },
+  /** The dashed-ring placeholder for a card with neither an assignee nor a delegated agent —
+   *  the one owner state `cardParts` leaves to the component, since "nothing to draw" and
+   *  "explicitly unassigned" are different facts the mockup draws differently. */
+  ownerPlaceholder: {
+    flexShrink: 0,
+    width: '18px',
+    height: '18px',
+    borderRadius: '50%',
+    border: `1px dashed ${tokens.colorNeutralStroke2}`,
+  },
+  /**
+   * `flex-start`, not `center`: a two-line title would otherwise push the trailing glyphs
+   * down to its middle, so the same icons sat at a different height on every card and the
+   * column lost the vertical rhythm you scan it by.
+   */
+  titleRow: { display: 'flex', alignItems: 'flex-start', gap: '6px' },
+  /** Clamped to two lines — the point of a column you can scan at a glance is that no card
+   *  grows to fit a whole sentence; the full title is in the tooltip and the peek. */
+  title: {
+    flex: 1,
+    minWidth: 0,
+    lineHeight: '18px',
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+  },
+  /** The "×N" a leader wears once it has started variants (F10.5) — monochrome: how many
+   *  rows exist is a standing fact about the card, not something in motion. */
+  variantBadge: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: '11px',
     fontWeight: 600,
-  },
-  /**
-   * The Steps caption, once it also folds the section away.
-   *
-   * The heading IS the control — there is no separate chevron button — so the whole row is a
-   * `<button>` and the reset below is what stops it looking like one. Kept as a second class
-   * composed onto `sectionHead` rather than a copy of it, so the two headings on a card (Steps
-   * and Merge requests) cannot drift apart in weight, colour or inset.
-   *
-   * `width: 100%` because a button shrink-wraps its content: without it the target would stop
-   * at the word "Steps" and the count at the far end — the part of the header your eye is
-   * actually on when you decide to fold — would not be clickable.
-   */
-  sectionToggle: {
-    background: 'none',
-    border: 'none',
-    width: '100%',
-    fontFamily: 'inherit',
-    textAlign: 'left',
-    cursor: 'pointer',
-    ':hover': { color: tokens.colorNeutralForeground2 },
-  },
-  /**
-   * The chevron. Larger than the 10px caption it sits in — a glyph at caption size reads as a
-   * speck rather than as an affordance — and `flexShrink: 0` so it survives a long count.
-   */
-  sectionChevron: { fontSize: '12px', display: 'flex', flexShrink: 0 },
-  /**
-   * The heading's inset once it is the last thing in the card. `sectionHead`'s 2px bottom is
-   * the gap to the first STEP ROW, not a margin — with the rows folded away it left the
-   * caption sitting on the card's bottom edge, which read as a card that had been cut off.
-   */
-  sectionHeadAlone: { paddingBottom: '8px' },
-  // No row border: the section owns the one hairline, and a rule per row turned a card
-  // with four steps into a ledger.
-  step: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '5px 12px',
-    // Transparent, so the row shows whatever the CARD is filled with — including the lift a
-    // selected card gets (`cardSelected`). It used to name `colorNeutralBackground1`
-    // explicitly, which was the same colour right up until selection changed it, and then
-    // every step row stayed behind as an unlit band across the bottom of a lit card.
-    backgroundColor: 'transparent',
-  },
-  /**
-   * The "4 earlier steps" row. A step row that happens to be a button, so a reset is all this
-   * class adds — the row's geometry and rhythm are the step rows' own, which is the point: it
-   * stands in for the rows behind it and should read as one of them.
-   */
-  earlierRow: {
-    background: 'none',
-    border: 'none',
-    width: '100%',
-    fontFamily: 'inherit',
-    textAlign: 'left',
-    color: tokens.colorNeutralForeground4,
-    ':hover': { color: tokens.colorNeutralForeground2 },
-  },
-  /**
-   * A step row that is itself the selected task. Brighter than `cardSelected`, and it has to
-   * be: selecting a step does NOT select its card, so this row is lit against an unlit card
-   * — but a card selected a moment earlier sits at `…1Selected`, and a step matching that
-   * exactly would vanish into it.
-   */
-  stepSelected: { backgroundColor: tokens.colorNeutralBackground1Hover },
-  /**
-   * A row that wants you: a TINT and nothing else.
-   *
-   * Not a border — the card already carries the orange ring, and a second orange edge a
-   * few pixels inside it made the two compete for the same glance. Not a fourth card
-   * boxShadow variant either: Griffel would have the later class REPLACE `boxShadow`,
-   * removing the ring from exactly the card that needs it.
-   */
-  stepLoud: { backgroundColor: 'var(--tm-attention-tint)' },
-  /** An MR row is a link, but it must look exactly like the step rows above it. */
-  mrRow: { textDecoration: 'none', color: 'inherit' },
-  /** The approval glyph, at the row's trailing edge opposite the pipeline dot. */
-  approval: { display: 'flex', alignItems: 'center', fontSize: '14px', flexShrink: 0 },
-  // The spinner (16px) and the dot (8px) share this slot so every row's title starts
-  // at the same x, whichever glyph the row is showing.
-  stepSlot: {
-    width: '16px',
-    height: '16px',
-    flexShrink: 0,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepDot: { width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0 },
-  /**
-   * The pipeline's stages on an MR row, one dot each.
-   *
-   * `minWidth` is the fixed slot the single dot used to occupy, so a one-stage pipeline
-   * still starts its title exactly where every step row above it does; more stages grow
-   * rightwards from there. `flexShrink: 0` because the title beside it is the elastic
-   * element — a pipeline that lost a dot to make room for two more characters of a branch
-   * name would be lying about the pipeline.
-   */
-  stageDots: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '3px',
-    minWidth: '16px',
     flexShrink: 0,
   },
-  /** 6px, against the step dot's 8px: several in a row read as a group, not as a queue. */
-  stageDot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
   /**
-   * **A dot that is live**, blinking between the spinner's two cyans — the same pair
-   * `MergeRequests.stageDotRunning` and the agent glyph use, so "working" looks like one
-   * thing whether you are reading the card or the pane.
-   *
-   * Worn by a pipeline STAGE and by a running STEP alike. The step row used to put a
-   * `Spinner` in its dot slot instead, which made one card carry two unrelated shapes for
-   * the same fact — a turning arc on the step and a blinking dot two rows below it on the
-   * merge request. Sets nothing but the colour, so it composes over either dot size.
+   * The automation-origin glyph: a neutral token, no new colour (memory
+   * *board-colour-budget* — colour is for things that MOVE, and "an automation started
+   * this" is a standing fact about the card, not an event in progress).
    */
-  dotRunning: {
+  originIcon: {
+    fontSize: AGENT_ICON_SIZE,
+    flexShrink: 0,
+    display: 'flex',
+    color: tokens.colorNeutralForeground3,
+  },
+  /**
+   * Stop/Resume/"More actions" — icon only, no wider than its glyph. Subtle by default so it
+   * does not compete with the title, full contrast on hover.
+   */
+  runButton: {
+    flexShrink: 0,
+    minWidth: '20px',
+    maxWidth: '20px',
+    height: '20px',
+    padding: 0,
+    color: tokens.colorNeutralForeground3,
+    ':hover': { color: tokens.colorNeutralForeground1 },
+  },
+  /** The card's one status line — see `cardParts.CardStatusLine`. */
+  statusLine: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  runRow: { display: 'flex', alignItems: 'center', gap: '6px' },
+  runDot: {
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    flexShrink: 0,
+    backgroundColor: FLUO_VAR.cyan,
     animationName: {
       '0%, 100%': { backgroundColor: FLUO_VAR.cyanDeep },
       '50%': { backgroundColor: FLUO_VAR.cyan },
@@ -443,297 +233,34 @@ const useStyles = makeStyles({
       backgroundColor: FLUO_VAR.cyan,
     },
   },
-  stepTitle: {
+  runText: {
+    color: FLUO_VAR.cyan,
     flex: 1,
     minWidth: 0,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
-    color: tokens.colorNeutralForeground2,
   },
-  stepDone: { color: tokens.colorNeutralForeground4, textDecoration: 'line-through' },
-  progress: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
-  /**
-   * The "×N" a leader wears once it has started variants (F10.5) — monochrome, same
-   * treatment as the step counter beside it: how many rows exist is a standing fact about
-   * the card, not something in motion, so it spends none of the board's colour budget. The
-   * strip right below it (`variantStrip`) is where the motion actually is.
-   */
-  variantBadge: {
-    color: tokens.colorNeutralForeground3,
-    fontSize: '11px',
-    fontWeight: 600,
-    flexShrink: 0,
-  },
-  /**
-   * The leader's status strip (F10.5) — one thin segment per variant row, in label order,
-   * sitting directly under the title row. A band rather than a row of badges: it has to read
-   * at a glance across a column of other cards, the same way the running band and the step
-   * dots do.
-   */
-  variantStrip: { display: 'flex', gap: '3px' },
-  variantSegment: { flex: 1, minWidth: '12px', height: '4px', borderRadius: '2px' },
-  /** A stopped chain reads in the frame's colour, so the two say one thing. */
-  progressStopped: { color: ACCENT.unread },
-  /**
-   * What the card is doing, in words, next to the spinner. The spinner alone says
-   * "something is happening"; this says WHICH something, which is the difference
-   * between a card you trust and one you keep clicking to check.
-   */
-  runLabel: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
-  /**
-   * The button that starts or ends a run on the card — Stop while it works, Resume once it
-   * has stopped. Icon only, the height of the title line, and no wider than its glyph.
-   * Subtle by default so it does not compete with the title — a card has one loud thing at
-   * a time and that is the ring — and it comes up to full contrast on hover, which is where
-   * a button that moves a run ought to look like one.
-   *
-   * One class for both because the two are mutually exclusive (`canResumeWork` is never
-   * true where `canStopWork` is): the slot in the title row holds one of them or neither,
-   * and never changes size when the run does.
-   */
-  runButton: {
-    flexShrink: 0,
-    minWidth: '20px',
-    maxWidth: '20px',
-    height: '20px',
-    padding: 0,
-    color: tokens.colorNeutralForeground3,
-    ':hover': { color: tokens.colorNeutralForeground1 },
-  },
-  /**
-   * **"Wants you" is a ring; "is selected" is a brighter card.**
-   *
-   * The ring is `box-shadow`, not `border`: a border is part of the box, so adding one
-   * would reflow the card's own text by a pixel — a visible twitch every time a card
-   * started shouting. A shadow costs no layout at all. 3px, because the orange is painted
-   * OUTSIDE the card against a dark column, where a good half of its apparent weight is
-   * lost to the contrast; at 2px it read as a hairline.
-   *
-   * Selection used to be a second, blue ring inside it, and that was two problems. Every
-   * card on the board is a rectangle with an outline, so a *third* outline state had almost
-   * nowhere left to be read; and both states wrote `boxShadow`, so they could not simply be
-   * composed — Griffel lets the later class REPLACE the property, which would have deleted
-   * the orange from the very card that was shouting. A whole extra `cardUnreadSelected`
-   * class existed only to stack the two by hand.
-   *
-   * Lifting the fill instead separates the two channels completely: the ring says *this one
-   * wants you*, the brightness says *this is the one you are reading*. They are now
-   * different CSS properties, so they compose by themselves and the third class is gone.
-   */
-  cardUnread: { boxShadow: `0 0 0 ${RING.attention}px ${ACCENT.unread}` },
-  /**
-   * One step up the neutral ladder from the card's own fill. Deliberately slight: it has to
-   * be unmistakable when you scan the column for the card the pane is showing, and invisible
-   * as a *distraction* on the thirty cards around it.
-   *
-   * This is the whole card, not just the body — the step and merge-request rows are
-   * transparent (see `step`) precisely so the lift runs to the card's edges rather than
-   * stopping at a seam halfway down.
-   */
-  cardSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
-  /**
-   * **The link handle** — a dot on the card's right edge, which is where the arrows leave.
-   *
-   * Hidden until you hover the card or tab to it, so a board of forty cards is not a board
-   * of forty dots. `pointerEvents: none` while hidden matters as much as the opacity does:
-   * a transparent 10px target sitting on every card's right edge would quietly eat clicks
-   * meant for the card underneath it, and "the card sometimes doesn't select" is a far
-   * worse bug than a missing affordance.
-   *
-   * A real `<button>`, so it is reachable by keyboard and announces itself. Enter or Space
-   * ARMS the link (the next card you pick becomes the successor) — a focusable control that
-   * only worked with a mouse would be a trap rather than an affordance, and the armed path
-   * reuses the drag's own states, so the two cannot disagree about what is a valid target.
-   */
-  linkHandle: {
-    position: 'absolute',
-    right: '3px',
-    // Level with where the arrows themselves leave and land — the card's vertical middle.
-    top: '50%',
-    transform: 'translateY(-50%)',
-    width: '10px',
-    height: '10px',
-    padding: 0,
-    borderRadius: '50%',
-    border: `1px solid ${tokens.colorNeutralStroke1}`,
-    backgroundColor: tokens.colorNeutralBackground3,
-    cursor: 'grab',
-    opacity: 0,
-    pointerEvents: 'none',
-    // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
-    ':hover': {
-      backgroundColor: tokens.colorBrandStroke1,
-      border: `1px solid ${tokens.colorBrandStroke1}`,
-    },
-    ':focus-visible': { opacity: 1, pointerEvents: 'auto' },
-  },
-  /** The handle of the card the link is being drawn FROM: filled, and it stays put. */
-  linkHandleActive: {
-    backgroundColor: tokens.colorBrandStroke1,
-    border: `1px solid ${tokens.colorBrandStroke1}`,
-  },
-  /**
-   * A card the drop would land on. An `outline`, not the `boxShadow` the attention ring
-   * uses: Griffel would have the later class REPLACE `boxShadow`, so a card that both wants
-   * you and is a valid target would lose its orange ring at exactly the wrong moment. Two
-   * different properties compose by themselves.
-   */
-  linkValid: { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: '2px' },
-  /** Already joined — dashed and neutral, because nothing is wrong, it is simply already said. */
-  linkExisting: {
-    outline: `2px dashed ${tokens.colorNeutralStroke1}`,
-    outlineOffset: '2px',
-  },
-  /** A step, or a loop. Dimmed, and the drop bounces — see `dropEffectFor`. */
-  linkRefused: { opacity: 0.35 },
-  /**
-   * The automation-origin glyph: a neutral token, no new colour. Colour budget (memory
-   * *board-colour-budget*) — colour is for things that MOVE, and "an automation started
-   * this" is a standing fact about the card, not an event in progress, so it stays
-   * monochrome like the type icon beside it.
-   */
-  originIcon: {
-    fontSize: AGENT_ICON_SIZE,
-    flexShrink: 0,
-    display: 'flex',
-    color: tokens.colorNeutralForeground3,
-  },
-  dragging: { opacity: 0.5 },
-  /**
-   * Focus mode's "non-neighbour" cards (`linkMode.linkView`'s `dimmedTaskIds`) — neither the
-   * selected card nor one of its direct links. Opacity alone, no token: this is not a status
-   * or a state anything reads back, only how hard the eye has to work to find it.
-   */
-  dimmed: { opacity: 0.45 },
-  /**
-   * `flex-start`, not `center`: a two-line title would otherwise push the type glyph and the
-   * agent glyph down to its middle, so the same two icons sat at a different height on every
-   * card and the column lost the vertical rhythm you scan it by. Pinned to the top, they line
-   * up across the whole board however long the titles run — and everything else on the row
-   * (the step counter, the run label, the status badge) lines up with the title's FIRST line,
-   * which is the line they are about.
-   *
-   * It costs nothing on a one-line card: the glyph box is 18px and so is the title's
-   * `lineHeight`, so top-aligned and centre-aligned are the same pixel there.
-   */
-  titleRow: { display: 'flex', alignItems: 'flex-start', gap: '8px' },
-  /**
-   * "An agent is working on this card", as a slow fluo-cyan sweep behind the card's whole top
-   * section — title, chips, note, project, epic, and the ticket/priority footer. It sits on
-   * `body`, which already ends exactly where the Steps and Merge requests sections begin,
-   * so the band needs no wrapper and no negative margins: the sweep runs edge to edge and
-   * the card's own `overflow: hidden` + radius clip it into the corners.
-   *
-   * **It travels along the gradient's own axis**, not straight sideways. `RUN_BAND_DX/DY`
-   * are the angle resolved into a screen vector, so one cycle is a diagonal slide of exactly
-   * one `RUN_BAND_PERIOD` down-and-right — the direction the gradient points.
-   *
-   * **No tiling.** The earlier version repeated a fixed-width tile, which meant a tile
-   * boundary existed at all and only stayed invisible because the card was short enough to
-   * keep the seam inside the gradient's transparent ends. A `repeating-linear-gradient` has
-   * no boundary to hide: the stripes are absolute px along the gradient line, so the pattern
-   * is defined everywhere and its phase cannot depend on how tall the card grew. The image is
-   * simply oversized by the travel vector and slid back to `0 0`, so it always covers the
-   * card and the last frame is identical to the first.
-   *
-   * The peak is 45% cyan, which is what makes it read as fluo rather than as a grey-teal
-   * wash — 30% composited over the card's near-black fill lands on rgb(39,97,105), a colour
-   * with very little cyan left in it. **The text underneath is not rewritten to pay for
-   * that**: the band is what moves, so the band is what has to carry the change, and a card
-   * whose title turns white for the whole run is a permanent mark bought for a transient
-   * one. See `RUN_BAND_BELL` for the contrast the crest costs and which knob buys it back.
-   */
-  runningBand: {
-    backgroundImage: `repeating-linear-gradient(${RUN_BAND_ANGLE}deg, ${RUN_BAND_STOPS})`,
-    // Oversized by exactly the travel, so the image still covers the card at both ends of
-    // the slide and `no-repeat` is safe — which is what removes the tile seam entirely.
-    backgroundSize: `calc(100% + ${RUN_BAND_DX}px) calc(100% + ${RUN_BAND_DY}px)`,
-    backgroundRepeat: 'no-repeat',
-    animationName: {
-      from: { backgroundPosition: `${-Number(RUN_BAND_DX)}px ${-Number(RUN_BAND_DY)}px` },
-      to: { backgroundPosition: '0px 0px' },
-    },
-    // With PERIOD, this is the flash: ~404px/s, so the crest crosses in about 1.2s and the
-    // card then sits dark for 4. Faster AND rarer — see the geometry block for why those
-    // pull in opposite directions and which knob owns which.
-    animationDuration: '5.2s',
-    animationIterationCount: 'infinite',
-    animationTimingFunction: 'linear',
-    // The state still has to be visible without motion, so it becomes an even wash — at the
-    // bell's midpoint rather than its peak, since a still surface is read, not glanced at.
-    '@media (prefers-reduced-motion: reduce)': {
-      animationName: 'none',
-      backgroundImage: `linear-gradient(${runBandCyan(0.26)}, ${runBandCyan(0.26)})`,
-    },
-  },
-  // The same ink the card's own title wears — see `typeIcon` for why the type is no longer
-  // one of the things the board spends colour on. `colorNeutralForeground1`, not a literal
-  // white: a literal would read fine in dark (the card's near-black fill) and vanish in
-  // light, where the card's fill is near-white.
-  icon: { fontSize: '18px', flexShrink: 0, display: 'flex', color: tokens.colorNeutralForeground1 },
-  /**
-   * The card's headline. Sets no `color`, deliberately: it takes
-   * `colorNeutralForeground1` — the editor grey `main.tsx` picks over Fluent's white — and it
-   * takes it on EVERY card, whatever the card is doing. There used to be a `runningText`
-   * rule that lifted a running card's whole top section to #FFFFFF, and the result was a
-   * board where some titles were white and bold and some were not, with nothing on screen
-   * to say why for the four seconds in five the running band spends dark.
-   *
-   * Nothing here should ever say "this card is working": the band, the pulsing agent glyph,
-   * the step counter and the run label all say it already, and all four stop when it stops.
-   */
-  title: { lineHeight: '18px', flex: 1, minWidth: 0 },
-  project: { color: tokens.colorNeutralForeground3 },
-  /**
-   * The card's progress note: one line, clipped. One line on purpose — the point is
-   * that a column of cards can be read at a glance, and a card that grew to fit a
-   * paragraph would defeat that. The full text is in the tooltip and the pane.
-   */
-  statusNote: {
-    color: tokens.colorNeutralForeground2,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  chipRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
-  chip: {
-    backgroundColor: 'var(--tm-label-chip-bg)',
-    color: 'var(--tm-label-chip-ink)',
-    fontSize: '11px',
-    fontWeight: 600,
-    letterSpacing: '0.03em',
-    padding: '2px 8px',
-    borderRadius: '4px',
-  },
-  // Quieter than the label chip on purpose: the sprint is context, not the headline.
-  // The 1px padding offsets the border so both chips sit at the same height.
-  sprintChip: {
+  elapsed: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`, flexShrink: 0 },
+  /** The run row's progress track — 3px, `FLUO_VAR.cyan` fill over a faint rest. */
+  progressTrack: {
+    height: '3px',
+    borderRadius: '2px',
     backgroundColor: tokens.colorNeutralBackground4,
-    color: tokens.colorNeutralForeground2,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-    fontSize: '11px',
-    fontWeight: 600,
-    letterSpacing: '0.03em',
-    padding: '1px 7px',
-    borderRadius: '4px',
-    maxWidth: '100%',
+    overflow: 'hidden',
+  },
+  progressFill: { height: '100%', backgroundColor: FLUO_VAR.cyan, borderRadius: '2px' },
+  /** A non-running status line — one line, clipped; the ink comes from `INK_COLOR` inline,
+   *  since it varies per state rather than per class. */
+  statusText: {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  footer: { display: 'flex', alignItems: 'center', gap: '8px' },
   /**
-   * Where this card sits in its chain — "waiting on VIP-3", or "ready".
-   *
-   * **Monochrome, and that is the point.** Everything the board spends colour on is
-   * something in MOTION: the cyan band of a live run, the orange ring of a card that wants
-   * you, a red pipeline. A dependency is none of those — it is a standing fact about the
-   * card that will read the same tomorrow — so it takes the same neutral treatment as the
-   * sprint chip beside it and lets the moving things keep the eye.
-   *
-   * The icon carries the distinction the colour would otherwise have made: a chain link for
-   * blocked, a play mark for released-but-not-started.
+   * Where this card sits in its chain — "waiting on VIP-3", or "ready". Monochrome: a
+   * dependency is a standing fact, not something in motion (memory *board-colour-budget*).
+   * The icon carries the distinction the colour would otherwise have made.
    */
   chainChip: {
     display: 'inline-flex',
@@ -750,38 +277,19 @@ const useStyles = makeStyles({
     minWidth: 0,
     overflow: 'hidden',
   },
-  /** The names inside the chip — the chip's border stays put however long they run. */
   chainChipText: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  /**
-   * The "+2" tail. Outside the truncating span and unshrinkable on purpose: it is the only
-   * part of the chip that says the card waits on MORE than the one card it names, so it is
-   * the last thing that may be ellipsised away. Inside `chainChipText` a long first title
-   * ate it, and the chip then read as a single dependency — the exact lie the tooltip
-   * below exists to prevent.
-   */
+  /** The "+2" tail — outside the truncating span and unshrinkable, so a long first title
+   *  cannot eat the only part of the chip that says there is more than one dependency. */
   chainChipMore: { flexShrink: 0, whiteSpace: 'nowrap' },
-  /**
-   * The chip for a card whose turn has come and which the chain could not start — the one
-   * chain state that is asking the reader for something.
-   *
-   * Emphasis by WEIGHT rather than by hue, deliberately: the board's colour budget is spent
-   * on the things that move (step dots, the running band, the agent's pulse), and a chip
-   * that shouted in orange would compete with them from every card in To Do. Full-strength
-   * foreground and a real stroke are enough to pull it out of the row of grey chips beside
-   * it, which is all it has to do — the tooltip carries the instruction.
-   */
+  /** The chip for a card whose turn has come and which the chain could not start — emphasis
+   *  by WEIGHT rather than hue, so it does not compete with the things that move. */
   chainChipHeld: {
     color: tokens.colorNeutralForeground1,
-    // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
     border: `1px solid ${tokens.colorNeutralStroke1}`,
   },
   chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
-  /**
-   * The needs/unblocks row (F13.20) — what `chainChip` says with an arrow and a chip, said
-   * instead in plain words once Off has turned that arrow off. Same neutral treatment as
-   * every other standing-fact caption on the card (`chainPositionCaption`, the sprint chip):
-   * no border, no background, because this is text, not a control.
-   */
+  /** The needs/unblocks row (F13.20) — what `chainChip` says with an arrow and a chip, said
+   *  instead in plain words once Off has turned that arrow off. */
   linkChipsRow: {
     display: 'flex',
     alignItems: 'center',
@@ -790,96 +298,208 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
   },
   linkChipsIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
-  /**
-   * The one predecessor whose finishing releases this card right now — cyan, the overlay's
-   * own "starting next" (`ChainOverlay`'s `releasing` state), and the only colour this row
-   * spends: everything else here is a standing fact, not something moving.
-   */
+  /** The one predecessor whose finishing releases this card right now — cyan, the overlay's
+   *  own "starting next", and the only colour this row spends. */
   linkChipReleasing: { color: FLUO_VAR.cyan },
-  /**
-   * "Step n of m" (F3.5) — the compact board's stand-in for the wide board's arrows, which
-   * there is no column beside this one to draw them into. Same neutral treatment as the
-   * chain chip beside it: a standing fact about the card, not something in motion.
-   */
-  chainPositionCaption: { color: tokens.colorNeutralForeground3, flexShrink: 0 },
+  footer: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
-  ticketLink: { textDecoration: 'none' },
-  /** The ticket badge: the tracker's own mark, then the key. */
-  ticketBadge: {
+  /** The epic/feature chip — a flag glyph and a truncated label, monochrome like every other
+   *  standing fact on the footer. */
+  epicChip: {
     display: 'inline-flex',
     alignItems: 'center',
-    gap: '5px',
-    padding: '2px 7px',
-    borderRadius: '4px',
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-    color: tokens.colorNeutralForeground2,
-    fontSize: '11px',
-    fontWeight: 600,
+    gap: '4px',
+    minWidth: 0,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontSize: tokens.fontSizeBase200,
   },
-  /**
-   * The same badge, carrying the unread signal itself.
-   *
-   * The card's ring says "this wants you" but never why, so a new ticket comment and an
-   * agent's question looked identical. Tinting the badge that OWNS the reason is the
-   * same move the merge-request rows make, and it costs the card no extra furniture.
-   */
-  // The whole `border`, not `borderColor`: Griffel rejects the four-sided shorthand.
-  ticketBadgeUnread: {
-    backgroundColor: ACCENT.unread,
-    border: `1px solid ${ACCENT.unread}`,
-    color: ACCENT.unreadInk,
-  },
-  /**
-   * A native ticket's own key (Phase 24) — the same shape as `ticketBadge`, but never a
-   * link: unlike a JIRA or GitHub mirror, there is no tracker to send a click to, this app
-   * IS the tracker. Monospace so the key reads as a name rather than as prose, the same way
-   * a commit hash or a branch name does.
-   */
-  ticketKeyBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    padding: '2px 7px',
-    borderRadius: '4px',
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-    color: tokens.colorNeutralForeground2,
-    fontSize: '11px',
-    fontWeight: 600,
-    fontFamily: 'monospace',
-  },
-  /** Story points — the same quiet neutral chip the sprint wears; see `sprintChip`. */
-  pointsChip: {
-    backgroundColor: tokens.colorNeutralBackground4,
-    color: tokens.colorNeutralForeground2,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
-    fontSize: '11px',
-    fontWeight: 600,
-    padding: '1px 7px',
-    borderRadius: '4px',
+  epicIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
+  epicText: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  trailingMr: {
     flexShrink: 0,
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    textDecoration: 'none',
   },
+  trailingDue: {
+    flexShrink: 0,
+    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+  },
+  trailingDueFlagged: {
+    fontWeight: tokens.fontWeightSemibold,
+    color: `var(--tm-attention, ${tokens.colorPaletteDarkOrangeForeground1})`,
+  },
+  /**
+   * **"Wants you" is a ring; "is selected" is a brighter card.**
+   *
+   * The ring is `box-shadow`, not `border`: a border is part of the box, so adding one
+   * would reflow the card's own text by a pixel. 3px, because the orange is painted OUTSIDE
+   * the card against a dark column, where a good half of its apparent weight is lost to the
+   * contrast; at 2px it read as a hairline.
+   */
+  cardUnread: { boxShadow: `0 0 0 ${RING.attention}px ${ACCENT.unread}` },
+  /** One step up the neutral ladder from the card's own fill — the whole card, not just the
+   *  body, so the lift runs to the card's edges rather than stopping at a seam. */
+  cardSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  /**
+   * **The link handle** — a dot on the card's right edge, which is where the arrows leave.
+   * Hidden until you hover the card or tab to it; `pointerEvents: none` while hidden matters
+   * as much as the opacity does, or a transparent target on every card's edge would quietly
+   * eat clicks meant for the card underneath it.
+   */
+  linkHandle: {
+    position: 'absolute',
+    right: '3px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    width: '10px',
+    height: '10px',
+    padding: 0,
+    borderRadius: '50%',
+    border: `1px solid ${tokens.colorNeutralStroke1}`,
+    backgroundColor: tokens.colorNeutralBackground3,
+    cursor: 'grab',
+    opacity: 0,
+    pointerEvents: 'none',
+    ':hover': {
+      backgroundColor: tokens.colorBrandStroke1,
+      border: `1px solid ${tokens.colorBrandStroke1}`,
+    },
+    ':focus-visible': { opacity: 1, pointerEvents: 'auto' },
+  },
+  /** The handle of the card the link is being drawn FROM: filled, and it stays put. */
+  linkHandleActive: {
+    backgroundColor: tokens.colorBrandStroke1,
+    border: `1px solid ${tokens.colorBrandStroke1}`,
+  },
+  /** A card the drop would land on. An `outline`, not the `boxShadow` the attention ring
+   *  uses, so the two compose instead of one replacing the other. */
+  linkValid: { outline: `2px solid ${tokens.colorBrandStroke1}`, outlineOffset: '2px' },
+  /** Already joined — dashed and neutral, because nothing is wrong, it is simply already said. */
+  linkExisting: {
+    outline: `2px dashed ${tokens.colorNeutralStroke1}`,
+    outlineOffset: '2px',
+  },
+  /** A step, or a loop. Dimmed, and the drop bounces — see `dropEffectFor`. */
+  linkRefused: { opacity: 0.35 },
+  dragging: { opacity: 0.5 },
+  /** Focus mode's "non-neighbour" cards (`linkMode.linkView`'s `dimmedTaskIds`). */
+  dimmed: { opacity: 0.45 },
 });
 
-/**
- * Step-row dot color per status — the row's whole status display, since a badge per
- * row would drown the card. Deliberately the same vocabulary as `STATUS_COLOR`'s
- * badges: green done, red failed, brand while running, orange while it wants you.
- * `in-review` borrows the epic violet: it is the one column that is neither work in
- * flight nor work finished.
- */
+export interface TaskCardProps {
+  task: Task;
+  /**
+   * The parent epic's name, for the footer chip — a native ticket (Phase 24) carries only
+   * `epicTaskId`, a reference to another card, so the name is resolved by whoever holds the
+   * whole board and passed down. Falls back to `task.externalEpicName`/`externalParentKey`
+   * for a mirrored card — see `cardParts.epicLabel`.
+   */
+  epicName?: string;
+  /** The person this ticket is assigned to (Phase 24), for the header's owner glyph. */
+  assignee?: Pick<Person, 'name' | 'initials' | 'color'>;
+  /** Name of the agent project this card is delegated to, for the owner glyph's tooltip. */
+  agentName?: string;
+  /**
+   * What started this card, when `task.originAutomationId` names an automation. Nothing
+   * fills this until the automation list reaches the renderer (F1.11/F1.15); without it the
+   * glyph's tooltip falls back to the generic "Started by an automation".
+   */
+  originAutomation?: AutomationOrigin;
+  /** This card's steps in execution order — not rendered, but read for its run state,
+   *  progress fraction and the ring's `chainNeedsAttention`. */
+  subtasks?: Task[];
+  /** The merge requests filed under this card — read for the status line's verdict, the
+   *  footer's MR ref, and the ring. */
+  mergeRequests?: MergeRequest[];
+  /**
+   * This card's variant group (F10.5) — `{state: 'none', rows: []}` for every card that
+   * never started one. `state !== 'none'` draws the "×N" badge.
+   */
+  variants?: VariantGroupState;
+  /**
+   * The task ids the inbox is holding an item for — the AUTHORITATIVE "wants you" signal.
+   */
+  attentionTaskIds?: ReadonlySet<string>;
+  /** The task ids the engine currently has a run for, so a run that has spawned but is not
+   *  yet persisted as `running` still turns the owner glyph's pulse. */
+  liveRunTaskIds?: ReadonlySet<string>;
+  /** Why the engine has an agent working a task, when it is a remediation rather than the
+   *  card's own work (`ActiveRun.purpose`) — folded into the status line by `cardParts`. */
+  runPurposes?: ReadonlyMap<string, RunPurpose>;
+  /** When each live run started (epoch ms) — `ActiveRun.startedAt`, keyed by task id, for
+   *  the run row's elapsed-time chip. */
+  runStartedAt?: ReadonlyMap<string, number>;
+  /** The task ids whose branch is being merged, so the status line says "Merging branch…". */
+  mergingTaskIds?: ReadonlySet<string>;
+  selected: boolean;
+  /**
+   * The chain overlay's tap on this card's root element — a callback ref rather than a
+   * forwarded `ref` because the overlay keeps one per task id and needs the *unmount* call
+   * too; see `useCardAnchors`. Absent everywhere the board is not drawing a chain.
+   */
+  anchorRef?: (el: HTMLDivElement | null) => void;
+  /**
+   * What this card would do with the link currently being drawn, or undefined when no link
+   * gesture is in the air. Computed once per gesture for the whole board (`linkDropStates`).
+   */
+  linkState?: LinkDropState;
+  /** Called when a link drag starts from this card's handle. Absent on a board that is not
+   *  drawing chains, which is also what hides the handle. */
+  onLinkStart?: () => void;
+  /** The drag ended, however it ended — dropped, escaped, or dropped on nothing. */
+  onLinkEnd?: () => void;
+  /** A link was dropped ON this card: `fromTaskId` runs first, this card runs after. */
+  onLinkTo?: (fromTaskId: string) => void;
+  /** Enter/Space on the handle — arm a link from this card, for anyone not using a mouse. */
+  onLinkArm?: () => void;
+  /** The predecessors this card is still waiting on (`blockedBy`), for its chip. */
+  waitingOn?: readonly Task[];
+  /** The subset of {@link waitingOn} that is waiting on nothing but a **human** pressing
+   *  Merge (`awaitingMerge`), so the chip can say so. */
+  mergeHeld?: readonly Task[];
+  /** Every predecessor has finished and nothing has started yet. */
+  chainReady?: boolean;
+  /** Its turn has come and the engine would **not** start it, with the reason. */
+  chainBlocked?: ChainDecline | null;
+  /** Where this card sits in its chain — folded into the status line as the lowest-priority
+   *  fallback by `cardParts` when nothing else is worth a line. */
+  chainPosition?: ChainPosition;
+  /** Stop the agent working this card — absent on a board that does not offer it, which is
+   *  also what hides the button. */
+  onStop?: () => void;
+  /** Pick this card's stopped work back up — absent on a board that does not offer it, which
+   *  is also what hides the button. */
+  onResume?: () => void;
+  /** Whether this card is on the shelf rather than in a column. */
+  shelved?: boolean;
+  /** Move this card onto the shelf, or back off it. Absent hides the menu item entirely. */
+  onToggleShelved?: () => void;
+  /** Open the compact board's "Move to" sheet for this card (F3.6) — touch's stand-in for
+   *  dragging it to another column. */
+  onMoveTo?: () => void;
+  draggable: boolean;
+  onSelect: () => void;
+  onDragStart: (e: React.DragEvent) => void;
+  onDragEnd: (e: React.DragEvent) => void;
+  dragging: boolean;
+  /** Links Focus mode dims — the card is neither the selection nor one of its direct links. */
+  dimmed?: boolean;
+  /**
+   * Needs/unblocks, pre-computed (`linkChips.ts`) — the card's own stand-in for the gutter
+   * arrow while Off has turned the arrow off. Present (even with both lists empty)
+   * SUPPRESSES the ordinary `chainChip` — the two say the same thing about the same
+   * predecessor. Absent on every caller not in Off mode.
+   */
+  linkChips?: LinkChips;
+}
 
 /**
- * Pick a card icon for the task's type. Internal tasks use their user-chosen
- * `type` (bug/feature); a MIRRORED task maps its tracker's own type name onto the same
- * glyphs — JIRA's issue type, or the `bug`/`enhancement` label GitHub creates every
- * repository with. A typeless internal task (legacy) falls back to a neutral note.
- *
- * **Outline, and uncoloured.** These used to be solid and each in its own hue — a red bug,
- * a green story, a violet epic — which meant every card on the board opened with a saturated
- * shape whatever was happening to it. A card's type is the least urgent thing about it: it
- * never changes, and it is the same on the forty cards beside it. Colour is spent instead on
- * the things that MOVE — the step dots, the pipeline dots, the running band — and the type
- * reads as the same quiet white the agent glyph does. The colour is inherited from the
- * wrapping span, so the pane and the card cannot drift apart.
+ * Pick a card icon for the task's type — used by `TaskDetail`'s own title row; the v9 board
+ * card no longer draws a type glyph of its own (the mockup leaves type unmarked, matching
+ * the board's colour budget: type is a standing fact that never changes).
  */
 export function typeIcon(task: Task): JSX.Element {
   if (task.externalSource == null) {
@@ -893,9 +513,7 @@ export function typeIcon(task: Task): JSX.Element {
   if (t.includes('epic')) return <SparkleRegular />;
   // `enhancement` is GitHub's word, and its half of the only two type names that sync writes
   // (`githubIssueSync.issueTypeFrom`) — the other, `Bug`, JIRA's vocabulary already covered.
-  // The same ladder, in the same order, lives in `@tm/shared/tickets`'s `typeIconKeyFor`,
-  // which is the pure form of this and the one the tests cover: a word added to one belongs
-  // in the other.
+  // The same ladder, in the same order, lives in `@tm/shared/tickets`'s `typeIconKeyFor`.
   if (t.includes('feature') || t.includes('improvement') || t.includes('enhancement')) {
     return <BeakerRegular />;
   }
@@ -904,356 +522,21 @@ export function typeIcon(task: Task): JSX.Element {
   return <CircleRegular />;
 }
 
-/**
- * The glyph at the end of a merge-request row — the MR's **verdict**.
- *
- * The first two are outcomes and the rest are review states, which is why they share a slot:
- * once an MR has landed, "who approved it" is a question about a queue nobody is standing in
- * any more. A merged MR used to keep wearing its approval tick right up until the next sync
- * deleted the row out from under it; now it says `merged` and stays.
- *
- * FILLED green means a human approved it; the OUTLINE means nothing is blocking the merge but
- * nobody has actually looked — a project that requires zero approvals. The verdict comes from
- * `mrVerdict`, the same one the pane's badge reads.
- *
- * `blocked` is the newest and the one that had been missing: GitLab refusing the merge
- * outright — conflicts, a branch needing a rebase, another MR in the way. An approved MR in
- * that state used to wear the green tick, which is true about the review and badly
- * misleading about the merge.
- */
-export function verdictIcon(verdict: MrVerdict): JSX.Element {
-  switch (verdict) {
-    case 'merged':
-      return <MergeFilled style={{ color: FLUO_VAR.violet }} aria-label="Merged" />;
-    case 'blocked':
-      return (
-        <PresenceBlockedRegular style={{ color: FLUO_VAR.red }} aria-label="Cannot be merged" />
-      );
-    case 'closed':
-      return (
-        <BranchRequestClosedFilled
-          style={{ color: tokens.colorNeutralForeground4 }}
-          aria-label="Closed without merging"
-        />
-      );
-    case 'approved':
-      return <CheckmarkCircleFilled style={{ color: FLUO_VAR.green }} aria-label="Approved" />;
-    case 'unopposed':
-      return (
-        <CheckmarkCircleRegular
-          style={{ color: FLUO_VAR.green }}
-          aria-label="Nothing blocking the merge — but no approval was required, and none was given"
-        />
-      );
-    case 'changes-requested':
-      return <DismissCircleFilled style={{ color: FLUO_VAR.red }} aria-label="Changes requested" />;
-    case 'awaiting':
-      return (
-        <PersonFilled
-          style={{ color: tokens.colorNeutralForeground4 }}
-          aria-label="Awaiting approval"
-        />
-      );
-  }
-}
-
-export interface TaskCardProps {
-  task: Task;
-  /** The card's "Project:" label (the JIRA project name for JIRA tasks). */
-  projectName?: string;
-  /**
-   * The parent epic's name, for the "Epic:" line — a native ticket (Phase 24) carries only
-   * `epicTaskId`, a reference to another card, so the name is resolved by whoever holds the
-   * whole board (`tasksById.get(epicTaskId)?.title`) and passed down, the way `projectName`
-   * already is. Falls back to `task.externalEpicName`/`externalParentKey` for a mirrored
-   * card — see the render site.
-   */
-  epicName?: string;
-  /**
-   * The person this ticket is assigned to (Phase 24), for the avatar in its footer. Absent
-   * for every card with no `assigneeId` — most of them — which is what draws nothing.
-   */
-  assignee?: Pick<Person, 'name' | 'initials' | 'color'>;
-  /** Name of the agent project this card is delegated to, for the glyph's tooltip. */
-  agentName?: string;
-  /**
-   * What started this card, when `task.originAutomationId` names an automation. Nothing
-   * fills this until the automation list reaches the renderer (F1.11/F1.15); without it the
-   * glyph's tooltip falls back to the generic "Started by an automation".
-   */
-  originAutomation?: AutomationOrigin;
-  /** The card's project colour (`''`/undefined = no stripe). */
-  projectColor?: string;
-  /**
-   * Whether to show the sprint chip. False while the board is filtered to the current
-   * sprint: every card would carry the same word, so the name moves to the status bar
-   * and is said once. With the filter off the chip is back, because that is when it
-   * actually tells one card from another.
-   */
-  showSprint?: boolean;
-  /** This card's steps in execution order — rendered inside the card. */
-  subtasks?: Task[];
-  /**
-   * Whether the Steps section is folded away — the rows hidden, the heading and its counter
-   * kept. A card carrying a nine-step plan is most of a column on its own, and the steps are
-   * detail you have usually already read; the counter in the title row is what the fold
-   * leaves you with, and it is the part you actually scan for.
-   *
-   * Nothing here ever unfolds a card by itself, not even for a step that is running or one
-   * that has parked the chain: the card still rings, still counts and still says what it is
-   * doing, and a section that reopened on its own would be the app overruling a decision the
-   * human made about their own board.
-   */
-  stepsFolded?: boolean;
-  /**
-   * Fold or unfold this card's steps. **Absent means the section does not fold** — the
-   * heading stays a plain caption, which is what the web board (`@tm/ui` has no store of its
-   * own) still gets.
-   */
-  onToggleSteps?: () => void;
-  /**
-   * Whether the steps from **earlier planning rounds** are on screen. Default false, and that
-   * default is the feature: a card that has just been re-planned shows the bunch it was just
-   * given, with everything before it behind one quiet row.
-   */
-  earlierStepsShown?: boolean;
-  /**
-   * Show or hide those earlier rounds. **Absent means the card never hides them** — the whole
-   * chain renders, exactly as it did before there were rounds, which is what the web board
-   * (no store of its own to remember the answer) still gets.
-   */
-  onToggleEarlierSteps?: () => void;
-  /**
-   * Whether the steps from **phases after the current one** are on screen. Default false, and
-   * that default is the point: a phase nobody has started yet is the part of the card least
-   * worth spending its height on, so it stays behind one row until asked for — same shape as
-   * {@link earlierStepsShown}, mirrored to the other end of the chain.
-   */
-  laterStepsShown?: boolean;
-  /**
-   * Show or hide those later phases. **Absent means the card never hides them** — the whole
-   * chain renders, which is what the web board (no store of its own to remember the answer)
-   * still gets.
-   */
-  onToggleLaterSteps?: () => void;
-  /**
-   * The merge requests filed under this card. Rendered as rows beneath the steps, and
-   * folded into `chainNeedsAttention` — so the ring and the card ordering agree.
-   */
-  mergeRequests?: MergeRequest[];
-  /**
-   * This card's variant group (F10.5) — `{state: 'none', rows: []}` for every card that
-   * never started one, which is also what a caller with no store of its own (the web board)
-   * gets by leaving this absent. `state !== 'none'` draws the "×N" badge and the status strip.
-   */
-  variants?: VariantGroupState;
-  /** The user's status-note vocabulary, which colours the card's progress line. */
-  statusKeywords?: readonly StatusKeyword[];
-  /**
-   * The task ids the inbox is holding an item for. The AUTHORITATIVE "wants you" signal:
-   * without it the ring is inferred from status plus JIRA timestamps, so an item raised
-   * without the engine also flipping the task to `waiting-input` — or one restored from
-   * disk after a restart — left the card sitting there silently.
-   */
-  attentionTaskIds?: ReadonlySet<string>;
-  /**
-   * The task ids the engine currently has a run for, so a run that has spawned but is
-   * not yet persisted as `running` still turns a spinner.
-   */
-  liveRunTaskIds?: ReadonlySet<string>;
-  /**
-   * Why the engine has an agent working a task, when it is a remediation rather than the
-   * card's own work (`ActiveRun.purpose`) — so a spinner on a card whose work was already
-   * handed in says "resolving conflicts" or "fixing CI" instead of looking like a restart.
-   */
-  runPurposes?: ReadonlyMap<string, RunPurpose>;
-  /**
-   * The task ids whose branch is being merged, so the card says "Merging branch…" for the
-   * minute git takes. Nothing about the task itself moves in that window, so without this
-   * a card that had just been sent to merge looked identical to one nobody had touched.
-   */
-  mergingTaskIds?: ReadonlySet<string>;
-  /** Which optional context lines to draw. Defaults to the shipped defaults. */
-  display?: BoardDisplaySettings;
-  selected: boolean;
-  /** Id of the selected task, so a selected *step* row can highlight itself. */
-  selectedTaskId?: string | null;
-  /**
-   * The chain overlay's tap on this card's root element — it measures where the card is so
-   * the arrows in and out of it land on its edges. A callback ref rather than a forwarded
-   * `ref` because the overlay keeps one per task id and needs the *unmount* call too; see
-   * `useCardAnchors`. Absent everywhere the board is not drawing a chain.
-   */
-  anchorRef?: (el: HTMLDivElement | null) => void;
-  /**
-   * What this card would do with the link currently being drawn, or undefined when no link
-   * gesture is in the air. Computed once per gesture for the whole board (`linkDropStates`)
-   * rather than per card per `dragover`.
-   */
-  linkState?: LinkDropState;
-  /**
-   * Called when a link drag starts from this card's handle — the card has already put its
-   * own id on the `DataTransfer`; this is only so the board can light the targets up.
-   * Absent on a board that is not drawing chains, which is also what hides the handle.
-   */
-  onLinkStart?: () => void;
-  /** The drag ended, however it ended — dropped, escaped, or dropped on nothing. */
-  onLinkEnd?: () => void;
-  /** A link was dropped ON this card: `fromTaskId` runs first, this card runs after. */
-  onLinkTo?: (fromTaskId: string) => void;
-  /** Enter/Space on the handle — arm a link from this card, for anyone not using a mouse. */
-  onLinkArm?: () => void;
-  /**
-   * The predecessors this card is still waiting on (`blockedBy`), for its chip.
-   *
-   * The cards themselves rather than a count, because "waiting on VIP-3" sends you
-   * somewhere and "waiting on 1 card" sends you hunting for the arrow. Empty or absent for
-   * every card nobody has chained, which is most of them.
-   */
-  waitingOn?: readonly Task[];
-  /**
-   * The subset of {@link waitingOn} that is waiting on nothing but a **human** pressing
-   * Merge (`awaitingMerge`), so the chip can say so.
-   *
-   * Worth the extra word: "waiting on VIP-3" reads identically whether VIP-3 has not been
-   * started or finished days ago and is sitting in review, and only one of those is
-   * something the person reading the card can act on.
-   */
-  mergeHeld?: readonly Task[];
-  /**
-   * Every predecessor has finished and nothing has started yet — the window between the
-   * chain opening and the card actually moving. Worth saying out loud because it is exactly
-   * when a card looks abandoned: it sits in To Do like any other, and the only thing that
-   * distinguishes it is that its turn has come.
-   */
-  chainReady?: boolean;
-  /**
-   * Its turn has come and the engine would **not** start it, with the reason — the state
-   * that used to have nowhere to be said.
-   *
-   * A declined card shows no *waiting on* chip (its arrows are satisfied) and no *ready*
-   * one (the engine would refuse), so before this it showed nothing at all: a solid arrow
-   * arriving at a card that looked exactly as idle as every other card in To Do, with the
-   * engine's own explanation filed on a timeline nobody had a reason to open. Only the two
-   * a human can act on are drawn — `no-agent` and `resting` — which is the same split
-   * `ChainRunner.releaseNote` makes between "Ready to start" and "Not started": a card that
-   * has landed, settled or is already running wants nothing from anybody, and the card says
-   * so in its own badge already.
-   */
-  chainBlocked?: ChainDecline | null;
-  /**
-   * Where this card sits in its chain — "step n of m" (F3.5), the compact board's own
-   * caption in place of the wide board's arrows (`KanbanColumn`'s `chainPositionOf`). Absent
-   * for every card nobody has chained, and on every wide caller.
-   */
-  chainPosition?: ChainPosition;
-  /**
-   * Stop the agent working this card — absent on a board that does not offer it, which is
-   * also what hides the button.
-   *
-   * On the CARD and not only in the detail pane, because the card is where you watch the
-   * agent work: the pane's Stop was the only one there was, so stopping meant selecting the
-   * card first and finding a button in a panel — and for a card executing a plan there was
-   * no button at all (see `canStopWork`). One click, from the place you noticed.
-   */
-  onStop?: () => void;
-  /**
-   * Pick this card's stopped work back up — absent on a board that does not offer it, which
-   * is also what hides the button.
-   *
-   * Here for the same reason `onStop` is: the card is where you notice a run has stopped —
-   * the counter says "3/5 · stopped" from across the board — and until this existed the only
-   * way to act on that was to select the card and find a button in a panel. Stopping and
-   * restarting are one gesture apart, so they belong in one place.
-   */
-  onResume?: () => void;
-  /**
-   * Whether this card is on the shelf rather than in a column — `settings.features.shelf`'s
-   * whole reason to exist. Suppresses whatever this card would otherwise say about its
-   * COLUMN (there is nothing to say: the shelf is where a card goes to have no column), and
-   * flips the shelve menu item's label to "Return to board".
-   */
-  shelved?: boolean;
-  /**
-   * Move this card onto the shelf, or back off it — one menu item either way, since a click
-   * always means "the opposite of {@link shelved}." Absent hides the menu entirely, which is
-   * also what a board with `settings.features.shelf` off gets.
-   */
-  onToggleShelved?: () => void;
-  /**
-   * Open the compact board's "Move to" sheet for this card (F3.6) — touch's stand-in for
-   * dragging it to another column. Absent on the wide board, which keeps its drag; adding
-   * it is also what makes the "More actions" menu appear on a card with no shelf feature.
-   */
-  onMoveTo?: () => void;
-  /**
-   * `settings.features.afterMergePipeline` — whether a merged MR with no genuine pipeline
-   * reading draws no dot at all rather than the single grey "unknown"/"none" one. Defaults
-   * to on; off restores the old behaviour of always drawing a dot.
-   */
-  afterMergePipeline?: boolean;
-  /**
-   * `settings.features.mrRebaseButton` — whether an MR row the forge can rebase swaps its
-   * verdict glyph for a clickable rebase button. Defaults to on, matching the feature's own
-   * default; off restores the old behaviour of a static glyph nobody can act on from the card.
-   */
-  mrRebaseButton?: boolean;
-  /**
-   * `settings.features.mrMergeButton` — whether an MR row with nothing left to do swaps its
-   * "ready to merge" glyph for a clickable merge button (behind a confirmation). Defaults to
-   * on, matching the feature's own default; off restores the old behaviour of a static glyph.
-   */
-  mrMergeButton?: boolean;
-  draggable: boolean;
-  onSelect: () => void;
-  /** Open a step in the detail pane (the row never drags or moves the card). */
-  onSelectSubtask?: (taskId: string) => void;
-  onDragStart: (e: React.DragEvent) => void;
-  onDragEnd: (e: React.DragEvent) => void;
-  dragging: boolean;
-  /**
-   * Links Focus mode dims — the card is neither the selection nor one of its direct links
-   * (`linkMode.linkView`'s `dimmedTaskIds`). Absent or false everywhere else, which is every
-   * caller before this field existed.
-   */
-  dimmed?: boolean;
-  /**
-   * Needs/unblocks, pre-computed (`linkChips.ts`) — the card's own stand-in for the gutter
-   * arrow while Off has turned the arrow off. Present (even with both lists empty) SUPPRESSES
-   * the ordinary `chainChip` ("waiting on…"/"ready"/…): the two say the same thing about the
-   * same predecessor, and showing both would either repeat it or, worse, disagree about it if
-   * a caller ever let the two drift. Absent on every caller not in Off mode, which is also
-   * what keeps `chainChip` exactly as it always was there.
-   */
-  linkChips?: LinkChips;
-}
-
 export function TaskCard({
   task,
-  projectName,
   epicName,
   assignee,
   agentName,
   originAutomation,
-  projectColor,
-  showSprint = true,
   subtasks = [],
-  stepsFolded = false,
-  onToggleSteps,
-  earlierStepsShown = false,
-  onToggleEarlierSteps,
-  laterStepsShown = false,
-  onToggleLaterSteps,
   mergeRequests = [],
   variants = NO_VARIANTS,
-  statusKeywords,
   attentionTaskIds,
   liveRunTaskIds,
   runPurposes,
+  runStartedAt,
   mergingTaskIds,
-  display = DEFAULT_BOARD_DISPLAY,
   selected,
-  selectedTaskId,
   anchorRef,
   linkState,
   onLinkStart,
@@ -1270,12 +553,8 @@ export function TaskCard({
   shelved = false,
   onToggleShelved,
   onMoveTo,
-  afterMergePipeline = true,
-  mrRebaseButton = true,
-  mrMergeButton = true,
   draggable,
   onSelect,
-  onSelectSubtask,
   onDragStart,
   onDragEnd,
   dragging,
@@ -1283,59 +562,62 @@ export function TaskCard({
   linkChips,
 }: TaskCardProps): JSX.Element {
   const styles = useStyles();
-  const transport = useTransport();
-  // The MR a merge confirmation is open for, or null for none. One at a time, and keyed by
-  // the MR itself rather than just its id — see the dialog render below.
-  const [mergingMr, setMergingMr] = useState<MergeRequest | null>(null);
-  const sprintShown = showSprint;
   /**
-   * Whether this card is a MIRROR of something in a tracker — which is what the footer badge
-   * says, and it says it the same way for either one: the key, linked to the issue, wearing
-   * the unread ring when the thread has moved. `owner/repo#123` is longer than `PROJ-1` and
-   * that is the point of showing it — a cross-repository board needs to know which repo.
-   */
-  const isExternal = task.externalSource != null;
-  /**
-   * Whether the priority indicator will draw anything — asked here so the footer row is not
-   * created for a mark that turns out to be nothing. The same predicate `PriorityGlyph`
-   * itself asks, which is what keeps the row and its contents in step.
-   */
-  const showsPriority = priorityIndicatorShown(display.priorityDisplay, task.externalPriority);
-  /** A native ticket's own key (Phase 24) — see `styles.ticketKeyBadge`. Never set on a
-   *  mirrored card, so this and the tracker badge below never both draw. */
-  const showsTicketKey = Boolean(task.ticketKey);
-  /** Story points, gated the same way `showsPriority` gates the priority glyph. */
-  const showsPoints = display.showPoints && task.storyPoints != null;
-  /**
-   * The agent this card is delegated to, for the "Assigned to" corner — only for a native
-   * ticket (Phase 24). A mirrored card has no `assigneeId` either way, but `agentName` is
-   * resolved from `task.agentProjectId` alone (see `KanbanColumn`'s `agentNameOf`), so this
-   * is gated explicitly (`delegatedAgentName`) rather than trusted to come back empty on
-   * its own.
+   * Whether the agent assigned to this ticket is meaningful FOR this ticket — only a native
+   * ticket's own delegation counts (`task.agentProjectId`); a mirrored card's `agentName`
+   * would otherwise come back resolved from nothing. See `cardParts.owner`.
    */
   const assigneeAgentName = delegatedAgentName(task, agentName);
-  /** The assignee corner — nothing to draw without the switch and a person or an agent. */
-  const showsAssignee = display.showAssignee && Boolean(assignee || assigneeAgentName);
+  const run = runPhase(task, subtasks, liveRunTaskIds, mergingTaskIds);
+  const now = useElapsedClock(run.spinner);
+  const parts = cardParts(task, {
+    now,
+    subtasks,
+    liveRunTaskIds,
+    mergingTaskIds,
+    mergeRequests,
+    assignee,
+    agentName: assigneeAgentName,
+    runPurposes,
+    epicName,
+    chainPosition,
+  });
+  const elapsed = parts.statusLine?.kind === 'running' ? runStartedAt?.get(task.id) : undefined;
+  const elapsedLabel = elapsed != null ? formatElapsed(now - elapsed) : undefined;
   /**
-   * Where this card stands in its chain, as one chip — or null, which is the answer for
-   * every card nobody has drawn an arrow to.
-   *
-   * Waiting beats ready, because they cannot both be true and the blocked case is the one
-   * that explains why nothing is happening. The chip NAMES what it waits on; the tooltip
-   * spells the list out when there is more than one, since a diamond waits for all of them
-   * (`readyToRelease` is an AND-join) and a chip that showed only the first would be lying
-   * about how much is left.
-   *
-   * **`to merge`** is appended when the card it names has finished writing and is only
-   * waiting to be merged — one word, still monochrome, still the same link icon. That is
-   * the whole point of the treatment above: a dependency is a standing fact, and "not
-   * merged yet" is exactly that, however much you would like it pressed.
+   * Whether this card is a MIRROR of something in a tracker — the key stays plain text for a
+   * native ticket (this app IS the tracker, Phase 24), and becomes a link out for a mirrored
+   * one, wearing the unread tint when the thread has moved.
+   */
+  const isExternal = task.externalSource != null;
+  const ticketUnread = hasUnreadJira(task);
+  // An unread comment, the card's own agent asking, or a step that has parked the chain
+  // (question or failure) — all mean "this card wants you".
+  const wantsAttention = chainNeedsAttention(task, subtasks, mergeRequests, attentionTaskIds);
+  /**
+   * Whether this card has agent work a click could stop — the same predicate the detail
+   * pane asks, so the card and the pane can never disagree about whether there is anything
+   * to stop.
+   */
+  const stoppable = Boolean(onStop) && canStopWork(task, subtasks, liveRunTaskIds);
+  /** Whether that click reaches into the card's PLAN — one Stop covers the whole chain. */
+  const stopsChain = subtasks.some(
+    (s) => s.status === 'running' || s.status === 'waiting-input' || s.status === 'pending',
+  );
+  /** Whether this card has stopped work a click could pick back up — never true at the same
+   *  time as {@link stoppable}, which is what lets both share one slot. */
+  const resumable = Boolean(onResume) && canResumeWork(task, subtasks, liveRunTaskIds);
+  /** Whether that click also re-queues the card's PLAN, which the tooltip should say. */
+  const resumesChain = subtasks.some((s) => s.status === 'stopped');
+
+  /**
+   * Where this card stands in its chain, as one chip — or null, for every card nobody has
+   * drawn an arrow to. Waiting beats ready, because they cannot both be true and the blocked
+   * case is the one that explains why nothing is happening. Suppressed whenever `linkChips`
+   * is present — see that prop's doc.
    */
   const waitingNames = waitingOn.map((t) => t.externalKey || t.title);
-  // Only about the card the chip actually NAMES, so its noun and its verb agree; the
-  // tooltip is what covers the rest of a diamond.
   const namedIsMergeHeld = waitingOn.length > 0 && mergeHeld.some((t) => t.id === waitingOn[0].id);
-  // Suppressed whenever `linkChips` is present — see that prop's doc.
   const chainChip = linkChips ? null : waitingOn.length ? (
     <span
       className={styles.chainChip}
@@ -1390,8 +672,6 @@ export function TaskCard({
   ) : null;
   /**
    * The needs/unblocks row `linkChips` draws in place of `chainChip` — see that prop's doc.
-   * The arrow sits once, before "needs", the way the mockup draws it; "unblocks" names what
-   * this card itself releases and gets no arrow of its own, since nothing is pointing AT it.
    */
   const needsUnblocksRow =
     linkChips && (linkChips.needs.length > 0 || linkChips.unblocks.length > 0) ? (
@@ -1416,119 +696,50 @@ export function TaskCard({
         )}
       </Caption1>
     ) : null;
-  // Null when the note matched no keyword — the line then keeps the card's ordinary
-  // secondary text colour, so an uncoloured note reads as text rather than as a state.
-  const noteColor = statusNoteColor(task.statusNote, statusKeywords);
-  // An unread comment, the card's own agent asking, or a step that has parked the
-  // chain (question or failure) — all mean "this card wants you", and a step has no
-  // frame of its own to say it with.
-  const wantsAttention = chainNeedsAttention(task, subtasks, mergeRequests, attentionTaskIds);
-  const progress = subtaskProgress(subtasks);
-  // A parked chain looks exactly like one between steps unless the card says so.
-  const stopped = parkedStep(subtasks) !== null;
-  // The one answer to "what is this card doing", shared with the detail pane and the
-  // composer strip so the three can never disagree. It replaces a spinner derived from
-  // `status === 'running'`, which could not see a run that had spawned but not yet been
-  // persisted — the "it's clearly working but there's no spinner" complaint.
-  const run = runPhase(task, subtasks, liveRunTaskIds, mergingTaskIds);
-  // Why the agent is working, when the engine sent it on an errand rather than the card's own
-  // work — only while something is visibly running, so a stale snapshot never outlives it.
-  const purpose = run.spinner ? runPurposeOf(task, subtasks, runPurposes) : null;
-  const purposeChip = purpose ? (
-    <span className={styles.chainChip} title={RUN_PURPOSE_LABEL[purpose].title}>
-      {purpose === 'fix-pipeline' ? (
-        <BugRegular className={styles.chainChipIcon} />
-      ) : (
-        <BranchForkRegular className={styles.chainChipIcon} />
-      )}
-      <span className={styles.chainChipText}>{RUN_PURPOSE_LABEL[purpose].label}</span>
-    </span>
-  ) : null;
-  // The status worth badging, which needs the run: a card whose STEP is parked behind the
-  // usage-limit gate is an ordinary `in-progress` card in IN PROGRESS, so only the phase
-  // knows there is anything to say.
-  const badge = cardBadgeStatus(task, run);
-  // What is worth saying in WORDS, once the pulsing glyph and the step counter have had their
-  // say. Null while the agent is visibly working.
-  const cardLabel = cardRunLabel(run, isAgentAssigned(task));
-  /**
-   * Whether this card has agent work a click could stop — the same predicate the detail
-   * pane asks, so the card and the pane can never disagree about whether there is anything
-   * to stop. A merge is deliberately not one of them: `stopTask` kills sessions, and git is
-   * not a session — offering a Stop over a rebase would promise something it cannot do.
-   */
-  const stoppable = Boolean(onStop) && canStopWork(task, subtasks, liveRunTaskIds);
-  /** Whether that click reaches into the card's PLAN — one Stop covers the whole chain. */
-  const stopsChain = subtasks.some(
-    (s) => s.status === 'running' || s.status === 'waiting-input' || s.status === 'pending',
+
+  const keyLink = isExternal && task.externalUrl ? task.externalUrl : null;
+  const keyTitle = ticketUnread
+    ? `${parts.key} — new comments on the ticket`
+    : (ticketLinkTitle(task) ?? undefined);
+  const keyNode = keyLink ? (
+    <a
+      className={mergeClasses(styles.key, ticketUnread && styles.keyUnread)}
+      href={keyLink}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title={keyTitle}
+    >
+      {parts.key}
+    </a>
+  ) : (
+    <Text className={styles.key}>{parts.key}</Text>
   );
-  /**
-   * Whether this card has stopped work a click could pick back up — `canResumeWork`, the
-   * mirror of the call above and asked with the same three arguments, so the card and the
-   * detail pane can no more disagree about Resume than they can about Stop.
-   *
-   * Never true at the same time as {@link stoppable} (the predicate says so), which is what
-   * lets both share one slot in the title row.
-   */
-  const resumable = Boolean(onResume) && canResumeWork(task, subtasks, liveRunTaskIds);
-  /** Whether that click also re-queues the card's PLAN, which the tooltip should say. */
-  const resumesChain = subtasks.some((s) => s.status === 'stopped');
-  // Only the ticket badge carries the tracker's signal, so the ring's reason is legible.
-  const ticketUnread = hasUnreadJira(task);
-  /**
-   * Whether the Steps heading is a control — and, therefore, whether `stepsFolded` counts.
-   *
-   * A fold with no way back would be a section that had simply disappeared, so a card handed
-   * the flag but no handler (there is no such caller today; there could be tomorrow) draws its
-   * steps rather than hiding them behind a chevron that does nothing.
-   */
-  const stepsFoldable = Boolean(onToggleSteps);
-  const stepsHidden = stepsFoldable && stepsFolded;
-  /**
-   * The card's steps, cut at the newest planning round — and then the rows actually drawn.
-   *
-   * The **automatic** half of the fold: re-planning a card files its new steps under a round
-   * of their own, and everything before that round drops behind one row saying how much of it
-   * there is. It is a fold nobody had to press, because the moment new steps arrive is exactly
-   * the moment the old ones stop being what you are looking at. A step typed by hand joins the
-   * round in progress (`store.addSubtask`), so writing one never folds the bunch you wrote it
-   * into.
-   *
-   * Gated on the handler for the same reason the section fold is: a board with nowhere to
-   * remember the answer draws the whole chain rather than hiding half of it behind a control
-   * that cannot remember being pressed.
-   */
-  const { earlier, latest, later } = splitEarlierSteps(subtasks);
-  const earlierFoldable = Boolean(onToggleEarlierSteps) && earlier.length > 0;
-  const earlierHidden = earlierFoldable && !earlierStepsShown;
-  /**
-   * The later phases' own fold — same gating as the earlier one: a board with nowhere to
-   * remember the answer draws the whole chain rather than hiding a phase behind a control
-   * that cannot remember being pressed.
-   */
-  const laterFoldable = Boolean(onToggleLaterSteps) && later.length > 0;
-  const laterHidden = laterFoldable && !laterStepsShown;
-  const stepRows = [...(earlierHidden ? [] : earlier), ...latest, ...(laterHidden ? [] : later)];
-  const earlierDone = earlier.filter((s) => s.step.status === 'done').length;
-  /**
-   * What the folded row has to say on behalf of the rows behind it.
-   *
-   * A fold may hide detail; it may not hide a signal. Steps run in chain order, so an earlier
-   * round's unfinished step runs BEFORE the newest bunch — the row that is folded away can be
-   * the very one that is working, or the one that has parked the chain and is waiting for an
-   * answer. So the summary row takes the blinking dot and the attention tint itself, and
-   * opening it is one click from either.
-   */
-  const earlierRunning = earlier.some(
-    ({ step }) => runPhase(step, [], liveRunTaskIds, mergingTaskIds).spinner,
+
+  const ownerTooltip = parts.owner
+    ? needsAgentInput(task)
+      ? `Agent needs your input${agentName ? ` · ${agentName}` : ''}`
+      : run.spinner
+        ? `${run.label || 'The agent is working'}${agentName ? ` · ${agentName}` : ''}`
+        : parts.owner.avatar.title
+    : 'Unassigned';
+  const ownerNode = parts.owner ? (
+    parts.owner.avatar.agentName ? (
+      <Tooltip relationship="label" content={ownerTooltip}>
+        <span>
+          <AgentGlyph running={parts.owner.running} size={AGENT_ICON_SIZE} />
+        </span>
+      </Tooltip>
+    ) : (
+      <AssigneeDisplay
+        assignee={parts.owner.avatar.assignee}
+        title={parts.owner.avatar.title}
+        size={20}
+      />
+    )
+  ) : (
+    <span className={styles.ownerPlaceholder} title="Unassigned" />
   );
-  const earlierWants = earlier.some(({ step }) => attentionTaskIds?.has(step.id) ?? false);
-  /**
-   * The later row's own signal — the attention tint only, never a running dot: a phase after
-   * the current one cannot have a step running yet, chains being run in order, so there is
-   * nothing behind this row that could ever blink.
-   */
-  const laterWants = later.some(({ step }) => attentionTaskIds?.has(step.id) ?? false);
 
   return (
     <div
@@ -1537,8 +748,8 @@ export function TaskCard({
       {...{ [TASK_ID_ATTR]: task.id }}
       className={mergeClasses(
         styles.card,
-        // Composed, not chosen between: the ring and the fill are different properties now,
-        // so a card that both wants you and is selected simply gets both.
+        // Composed, not chosen between: the ring and the fill are different properties, so
+        // a card that both wants you and is selected simply gets both.
         wantsAttention && styles.cardUnread,
         selected && styles.cardSelected,
         dragging && styles.dragging,
@@ -1547,52 +758,54 @@ export function TaskCard({
         linkState === 'linked' && styles.linkExisting,
         linkState === 'refused' && styles.linkRefused,
       )}
+      // Keyboard-reachable for the same reason it is clickable — F13.13's "Space opens the
+      // peek" applies to a board card exactly as it does to an issue row, and a plain `div`
+      // gets neither focus nor a role for free.
+      tabIndex={0}
+      role="button"
+      aria-label={task.title}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       // A link being drawn, not a card being moved. Two gestures share one mechanism and
-      // are told apart by the `DataTransfer`'s TYPE — a card drag falls straight through
-      // to the column, which is the only thing that should ever act on it.
+      // are told apart by the TYPE on the `DataTransfer`, never by where the pointer is.
       onDragOver={(e) => {
         if (!isChainLinkDrag(e.dataTransfer.types)) return;
         e.preventDefault();
-        // `'none'` on an invalid target cancels the drop in the browser itself, so the
-        // refusal is in the cursor before you let go. No `stopPropagation`: the board
-        // above still needs this event to move the rubber band's loose end.
         e.dataTransfer.dropEffect = dropEffectFor(linkState);
       }}
       onDrop={(e) => {
         if (!isChainLinkDrag(e.dataTransfer.types)) return;
         e.preventDefault();
-        // Consumed here — the column below must not also read it as a card being moved.
         e.stopPropagation();
         const fromTaskId = e.dataTransfer.getData(CHAIN_LINK_MIME);
         if (fromTaskId) onLinkTo?.(fromTaskId);
       }}
       onClick={onSelect}
+      // Only when the CARD itself holds focus — a button inside it (Stop/Resume, the link
+      // handle) already answers Space on its own, and the keydown would otherwise bubble up
+      // here too and select the card a second time.
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
     >
-      {projectColor && (
-        <div className={styles.projectNotch} style={{ backgroundColor: projectColor }} />
-      )}
       {onLinkStart && (
         <button
           type="button"
-          // What the card's `:hover` rule reaches for. A data attribute rather than the
-          // generated class name, which Griffel does not let a sibling rule name.
           data-chain-handle=""
           className={mergeClasses(
             styles.linkHandle,
             linkState === 'source' && styles.linkHandleActive,
           )}
-          // The source card's handle has to stay put for the whole gesture, and an inline
-          // style is the one thing that outranks the card's hover rule either way.
           style={linkState === 'source' ? { opacity: 1, pointerEvents: 'auto' } : undefined}
           draggable
           aria-label={`Chain from ${task.title} — drag onto another card to run that card after this one`}
           title="Drag onto another card to run that card after this one"
           onDragStart={(e) => {
-            // The card's own `onDragStart` is an ancestor handler and would otherwise ALSO
-            // fire, putting this id on `text/plain` and turning the gesture into a move.
             e.stopPropagation();
             e.dataTransfer.setData(CHAIN_LINK_MIME, task.id);
             e.dataTransfer.effectAllowed = 'link';
@@ -1602,33 +815,22 @@ export function TaskCard({
             e.stopPropagation();
             onLinkEnd?.();
           }}
-          // A button's Enter and Space arrive here as a click, so the keyboard path costs
-          // no handler of its own.
           onClick={(e) => {
             e.stopPropagation();
             onLinkArm?.();
           }}
         />
       )}
-      <div className={mergeClasses(styles.body, run.spinner && styles.runningBand)}>
+      <div className={styles.body}>
+        <div className={styles.header}>
+          {keyNode}
+          {ownerNode}
+        </div>
+
         <div className={styles.titleRow}>
-          <span className={styles.icon}>{typeIcon(task)}</span>
           <Text weight="semibold" className={styles.title}>
             {task.title}
           </Text>
-          {progress.total > 0 && (
-            <Caption1
-              className={mergeClasses(styles.progress, stopped && styles.progressStopped)}
-              title={
-                stopped
-                  ? `${progress.done} of ${progress.total} steps done — the chain has stopped at a step that needs you`
-                  : `${progress.done} of ${progress.total} steps done`
-              }
-            >
-              {progress.done}/{progress.total}
-              {stopped && ' · stopped'}
-            </Caption1>
-          )}
           {variants.state !== 'none' && (
             <Caption1
               className={styles.variantBadge}
@@ -1644,40 +846,6 @@ export function TaskCard({
               </span>
             </Tooltip>
           )}
-          {/* The glyph pulses while the agent works — it replaced a spinner that sat right
-              here saying the same thing the words and the counter beside it already said.
-              The tooltip still spells the state out for anyone who hovers. */}
-          {isAgentAssigned(task) && (
-            <Tooltip
-              relationship="label"
-              content={
-                needsAgentInput(task)
-                  ? `Agent needs your input${agentName ? ` · ${agentName}` : ''}`
-                  : run.spinner
-                    ? `${run.label || 'The agent is working'}${agentName ? ` · ${agentName}` : ''}`
-                    : `Assigned to an agent${agentName ? ` · ${agentName}` : ''}`
-              }
-            >
-              <AgentGlyph running={run.spinner} size={AGENT_ICON_SIZE} />
-            </Tooltip>
-          )}
-          {/* Only the states the pulse cannot express — see `cardRunLabel`. */}
-          {cardLabel && (
-            <Caption1 className={styles.runLabel} title={cardLabel}>
-              {cardLabel}
-            </Caption1>
-          )}
-          {/* A running card's badge would only repeat what the label just said. */}
-          {badge && !run.spinner && (
-            <Badge appearance="tint" color={STATUS_COLOR[badge]}>
-              {STATUS_LABEL[badge]}
-            </Badge>
-          )}
-          {/* Stop, on the card that is working — the click the board had nowhere to put.
-              Drawn only while there IS something to stop, so it is not one more control
-              every card carries; on the few cards that have one it is always visible
-              rather than hidden behind a hover, since a button you cannot find is the
-              complaint this exists to answer. */}
           {stoppable && (
             <Tooltip
               relationship="label"
@@ -1692,9 +860,6 @@ export function TaskCard({
                 size="small"
                 appearance="subtle"
                 icon={<RecordStopRegular />}
-                // The card is a drop target and a click target; this button is neither.
-                // Without this the click selects the card as well, and dragging from it
-                // would try to move the card it is stopping.
                 draggable={false}
                 onDragStart={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -1704,13 +869,6 @@ export function TaskCard({
               />
             </Tooltip>
           )}
-          {/* Stop's inverse, in Stop's place. A stopped card is the one the board is worst
-              at: nothing is happening, nothing is going to happen, and the card looks like
-              any other in its column apart from a word beside its counter. This is the
-              click that answers it, from the place you read it.
-
-              The tooltip says what "Resume" cannot: the agent rejoins the conversation it
-              was in rather than starting over. */}
           {resumable && (
             <Tooltip
               relationship="label"
@@ -1725,8 +883,6 @@ export function TaskCard({
                 size="small"
                 appearance="subtle"
                 icon={<PlayCircleRegular />}
-                // Same two guards as Stop, for the same two reasons: the card underneath is
-                // a click target and a drag source, and this button is neither.
                 draggable={false}
                 onDragStart={(e) => e.stopPropagation()}
                 onClick={(e) => {
@@ -1736,10 +892,6 @@ export function TaskCard({
               />
             </Tooltip>
           )}
-          {/* The "More actions" menu — "Move to…" first (F3.6, touch's stand-in for the
-              drag the compact board has no gesture for), then the shelf's own item, one
-              since {@link shelved} already says which direction the click goes. The menu
-              itself is absent only when neither control has anything to offer. */}
           {(onToggleShelved || onMoveTo) && (
             <Menu>
               <MenuTrigger disableButtonEnhancement>
@@ -1782,532 +934,76 @@ export function TaskCard({
           )}
         </div>
 
-        {variants.state !== 'none' && (
-          <div className={styles.variantStrip}>
-            {variants.rows.map((row) => (
-              <Tooltip
-                key={row.id}
-                relationship="label"
-                content={`${row.label ?? '?'} · ${STATUS_LABEL[row.status]}`}
-              >
-                <span
-                  className={styles.variantSegment}
-                  style={{ backgroundColor: variantStripTone(row.status) }}
-                />
-              </Tooltip>
-            ))}
-          </div>
-        )}
-
-        {((display.showLabels && (task.externalLabel || task.labels?.length)) ||
-          (sprintShown && task.externalSprint)) && (
-          <div className={styles.chipRow}>
-            {display.showLabels && task.externalLabel && (
-              <span className={styles.chip}>{task.externalLabel}</span>
-            )}
-            {/* A native ticket's own labels (Phase 24) — by name, same chip as a mirrored
-                card's single `externalLabel`, and the two never coexist (only one of
-                `externalLabel`/`labels` is ever set, depending on `task.source`). */}
-            {display.showLabels &&
-              task.labels?.map((label) => (
-                <span key={label} className={styles.chip}>
-                  {label}
-                </span>
-              ))}
-            {sprintShown && task.externalSprint && (
-              <span className={styles.sprintChip} title={`Sprint: ${task.externalSprint}`}>
-                {task.externalSprint}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Where the card actually is, in your words. Above the "Project:" line
-            because it is the thing that changes, and the thing you scan for. */}
-        {task.statusNote && (
-          <Caption1
-            className={styles.statusNote}
-            // A note with a status colour keeps it: the inline style outranks the class, and
-            // that colour is the note's meaning rather than its styling.
-            style={noteColor ? { color: noteColor } : undefined}
-            title={task.statusNote}
-          >
-            {task.statusNote}
-          </Caption1>
-        )}
-
-        {display.showProjectName && projectName && (
-          <Caption1 className={styles.project}>Project: {projectName}</Caption1>
-        )}
-
-        {/* The name when the sync has it, the key until then — a key is still an answer
-            to "which epic", where an empty line looks like the toggle is broken. `epicName`
-            is a native ticket's own epic (Phase 24), resolved by whoever holds the board and
-            passed down — see the prop's doc; it never coexists with a mirrored card's
-            `externalEpicName`/`externalParentKey`, since those come from `task.source`. */}
-        {display.showEpicName && (epicName || task.externalEpicName || task.externalParentKey) && (
-          <Caption1
-            className={styles.project}
-            title={`Epic: ${epicName ?? task.externalEpicName ?? task.externalParentKey}`}
-          >
-            Epic: {epicName ?? task.externalEpicName ?? task.externalParentKey}
-          </Caption1>
-        )}
-
-        {needsUnblocksRow}
-
-        {(isExternal ||
-          showsTicketKey ||
-          showsPriority ||
-          showsPoints ||
-          showsAssignee ||
-          chainChip !== null ||
-          purposeChip !== null ||
-          chainPosition != null) && (
-          <div className={styles.footer}>
-            {/* What the agent is doing, when it is not the card's own work — ahead of
-                everything, since it is the one thing here that is moving. */}
-            {purposeChip}
-            {/* First in the row, ahead of the ticket badge: it is the reason this card is
-                not moving, and that outranks where it came from. */}
-            {chainChip}
-            {chainPosition && (
+        {parts.statusLine && (
+          <div className={styles.statusLine}>
+            {parts.statusLine.kind === 'running' ? (
+              <>
+                <div className={styles.runRow}>
+                  <span className={styles.runDot} />
+                  <Caption1 className={styles.runText} title={parts.statusLine.label}>
+                    {parts.statusLine.label}
+                  </Caption1>
+                  {elapsedLabel && <Caption1 className={styles.elapsed}>{elapsedLabel}</Caption1>}
+                </div>
+                {parts.progress && (
+                  <div
+                    className={styles.progressTrack}
+                    title={`${parts.progress.done} of ${parts.progress.total} steps done`}
+                  >
+                    <div
+                      className={styles.progressFill}
+                      style={{ width: `${(parts.progress.done / parts.progress.total) * 100}%` }}
+                    />
+                  </div>
+                )}
+              </>
+            ) : (
               <Caption1
-                className={styles.chainPositionCaption}
-                title={`Step ${chainPosition.n} of ${chainPosition.m} in its chain`}
+                className={styles.statusText}
+                style={{ color: INK_COLOR[parts.statusLine.ink] }}
+                title={parts.statusLine.label}
               >
-                step {chainPosition.n} of {chainPosition.m}
+                {parts.statusLine.label}
               </Caption1>
             )}
-            {/* A native ticket's own key (Phase 24) — monospace, and never a link: unlike
-                the tracker badge below, there is nowhere to go, this app IS the tracker. */}
-            {showsTicketKey && <span className={styles.ticketKeyBadge}>{task.ticketKey}</span>}
-            {isExternal && task.externalKey && (
-              <a
-                className={styles.ticketLink}
-                href={task.externalUrl ?? undefined}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                // Always the FULL key here, whatever the badge prints: the tooltip is where a
-                // GitHub card says which repository it came from (see `shortTicketKey`).
-                title={
-                  ticketUnread
-                    ? `${task.externalKey} — new comments on the ticket`
-                    : (task.externalKey ?? undefined)
-                }
-              >
-                <span
-                  className={mergeClasses(
-                    styles.ticketBadge,
-                    ticketUnread && styles.ticketBadgeUnread,
-                  )}
-                >
-                  {/* This card's tracker, in that tracker's own mark. `currentColor` when
-                      tinted, so JIRA's flips to near-black with the badge's text instead of
-                      sitting brand-blue on orange; GitHub's is monochrome to begin with and
-                      reads the same either way. */}
-                  <TrackerMark
-                    task={task}
-                    size={12}
-                    color={ticketUnread ? 'currentColor' : undefined}
-                  />
-                  {shortTicketKey(task)}
-                </span>
-              </a>
-            )}
-            <span className={styles.grow} />
-            {/* Story points (Phase 24) — a quiet chip, the same treatment the sprint chip
-                gets above: a standing fact about the card, not something in motion. */}
-            {showsPoints && (
-              <span className={styles.pointsChip} title={`${task.storyPoints} points`}>
-                {task.storyPoints} pts
+          </div>
+        )}
+
+        {(chainChip || needsUnblocksRow) && <div>{chainChip ?? needsUnblocksRow}</div>}
+
+        {(parts.epic || parts.trailing) && (
+          <div className={styles.footer}>
+            {parts.epic && (
+              <span className={styles.epicChip} title={`Epic: ${parts.epic}`}>
+                <FlagRegular className={styles.epicIcon} />
+                <span className={styles.epicText}>{parts.epic}</span>
               </span>
             )}
-            {/* The assignee's avatar, and the agent it is delegated to (Phase 24 / "Assigned
-                to AI Agent") — last before priority, the corner a card's owner conventionally
-                sits in. The pulse glyph up in the title row is a different signal (it also
-                carries run state); this is the standing "who owns this" fact. */}
-            {showsAssignee && (
-              <AssigneeDisplay
-                assignee={assignee}
-                agentName={assigneeAgentName}
-                size={20}
-                title={
-                  assignee && assigneeAgentName
-                    ? `Assigned to ${assignee.name} · delegated to ${assigneeAgentName}`
-                    : assignee
-                      ? `Assigned to ${assignee.name}`
-                      : `Assigned to an agent · ${assigneeAgentName}`
-                }
-              />
-            )}
-            {/* Square, chevron or nothing — whichever this board is set to. */}
-            <PriorityGlyph
-              mode={display.priorityDisplay}
-              priority={task.externalPriority}
-              size={18}
-            />
+            <span className={styles.grow} />
+            {parts.trailing &&
+              (parts.trailing.kind === 'mr' ? (
+                <a
+                  className={styles.trailingMr}
+                  href={parts.trailing.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {parts.trailing.ref}
+                </a>
+              ) : (
+                <Caption1
+                  className={mergeClasses(
+                    styles.trailingDue,
+                    parts.trailing.flagged && styles.trailingDueFlagged,
+                  )}
+                >
+                  {parts.trailing.label}
+                </Caption1>
+              ))}
           </div>
         )}
       </div>
-
-      {subtasks.length > 0 && (
-        <div className={styles.section}>
-          {/* The heading, which is also the fold — see `sectionToggle`. It keeps the counter
-              whichever way it is pointing: the whole bargain of a fold is that the header
-              still tells you what is behind it, and `2/9` is exactly that. Rendered as a
-              plain caption where nothing can fold it, so a board without somewhere to save
-              the fold (the web one) is unchanged rather than wearing a dead chevron. */}
-          {stepsFoldable ? (
-            <button
-              type="button"
-              className={mergeClasses(
-                styles.sectionHead,
-                styles.sectionToggle,
-                stepsHidden && styles.sectionHeadAlone,
-              )}
-              aria-expanded={!stepsHidden}
-              title={
-                stepsHidden
-                  ? `Show this card's steps (${progress.done}/${progress.total} done)`
-                  : 'Fold the steps away — the card keeps its counter'
-              }
-              // The card is a drag source and a click target; its heading is neither. Without
-              // this, folding also selects the card, and a drag begun on the heading would
-              // move a card you were only trying to tidy.
-              draggable={false}
-              onDragStart={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleSteps?.();
-              }}
-            >
-              <span className={styles.sectionChevron}>
-                {stepsHidden ? <ChevronRightRegular /> : <ChevronDownRegular />}
-              </span>
-              <span>Steps</span>
-              <span className={styles.grow} />
-              <span>
-                {progress.done}/{progress.total}
-              </span>
-            </button>
-          ) : (
-            <div className={styles.sectionHead}>
-              <span>Steps</span>
-              <span className={styles.grow} />
-              <span>
-                {progress.done}/{progress.total}
-              </span>
-            </div>
-          )}
-          {/* The rounds before the newest, as one row. It reads as a step row on purpose —
-              same slot, same rhythm — because that is what is behind it, and it carries its
-              own `4/4` so a folded round still says whether it finished. Drawn above the
-              rows, which is where those steps actually are in the chain. */}
-          {!stepsHidden && earlierFoldable && (
-            <button
-              type="button"
-              className={mergeClasses(
-                styles.step,
-                styles.earlierRow,
-                earlierHidden && earlierWants && styles.stepLoud,
-              )}
-              aria-expanded={!earlierHidden}
-              title={
-                !earlierHidden
-                  ? 'Fold the earlier phases away again'
-                  : earlierWants
-                    ? `One of the ${earlier.length} steps planned before this phase needs you`
-                    : earlierRunning
-                      ? `One of the ${earlier.length} steps planned before this phase is running`
-                      : `Show the ${earlier.length} steps planned before this phase`
-              }
-              draggable={false}
-              onDragStart={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleEarlierSteps?.();
-              }}
-            >
-              <span className={styles.stepSlot}>
-                {earlierHidden ? <ChevronRightRegular /> : <ChevronDownRegular />}
-              </span>
-              <Caption1 className={styles.stepTitle}>
-                {earlier.length} earlier step{earlier.length === 1 ? '' : 's'}
-              </Caption1>
-              {/* The same blinking dot a running step row wears, because that is exactly what
-                  is behind this row when it blinks — the chain runs in order, so an unfinished
-                  earlier step runs before the newest bunch does. */}
-              {earlierHidden && earlierRunning && (
-                <span className={mergeClasses(styles.stepDot, styles.dotRunning)} />
-              )}
-              <Caption1 className={styles.progress}>
-                {earlierDone}/{earlier.length}
-              </Caption1>
-            </button>
-          )}
-          {!stepsHidden &&
-            stepRows.map(({ step }) => {
-              const stepRun = runPhase(step, [], liveRunTaskIds, mergingTaskIds);
-              const stepWants = attentionTaskIds?.has(step.id) ?? false;
-              return (
-                <div
-                  key={step.id}
-                  className={mergeClasses(
-                    styles.step,
-                    stepWants && styles.stepLoud,
-                    step.id === selectedTaskId && styles.stepSelected,
-                  )}
-                  title={`${step.title} · ${stepRun.label || STATUS_LABEL[step.status]}`}
-                  // A step never travels on its own: a drag started on a row is cancelled
-                  // rather than dragging the parent out from under the pointer.
-                  onDragStart={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelectSubtask?.(step.id);
-                  }}
-                >
-                  {/* One dot, whatever the step is doing — it just blinks while the step is
-                    live. The slot keeps its fixed width so every row's title starts at the
-                    same x. This used to be a spinner, which meant a card said "working" with
-                    a turning arc here and with a blinking dot on the merge-request rows
-                    below: two shapes for one fact, on one card. */}
-                  <span className={styles.stepSlot}>
-                    <span
-                      className={mergeClasses(styles.stepDot, stepRun.spinner && styles.dotRunning)}
-                      // The keyframes own the colour while it blinks, so setting it here too
-                      // would only be the value they immediately override.
-                      style={
-                        stepRun.spinner
-                          ? undefined
-                          : { backgroundColor: STATUS_INDICATOR_VAR[step.status] }
-                      }
-                    />
-                  </span>
-                  <Caption1
-                    className={mergeClasses(
-                      styles.stepTitle,
-                      step.status === 'done' && styles.stepDone,
-                    )}
-                  >
-                    {step.title}
-                  </Caption1>
-                </div>
-              );
-            })}
-          {/* The phases after the current one, mirroring the earlier row above it — same
-              slot, same rhythm, drawn below the rows because that is where those steps
-              actually sit in the chain. No running dot: a phase that has not been reached
-              yet cannot have a step live in it, chains being run in order — but it still
-              wears the attention tint, because a step can be handed a question before its
-              own phase starts (a re-plan brief, say). */}
-          {!stepsHidden && laterFoldable && (
-            <button
-              type="button"
-              className={mergeClasses(
-                styles.step,
-                styles.earlierRow,
-                laterHidden && laterWants && styles.stepLoud,
-              )}
-              aria-expanded={!laterHidden}
-              title={
-                !laterHidden
-                  ? 'Fold the later phases away again'
-                  : laterWants
-                    ? `One of the ${later.length} steps planned after this phase needs you`
-                    : `Show the ${later.length} steps planned after this phase`
-              }
-              draggable={false}
-              onDragStart={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleLaterSteps?.();
-              }}
-            >
-              <span className={styles.stepSlot}>
-                {laterHidden ? <ChevronRightRegular /> : <ChevronDownRegular />}
-              </span>
-              <Caption1 className={styles.stepTitle}>
-                {later.length} upcoming step{later.length === 1 ? '' : 's'}
-              </Caption1>
-              <Caption1 className={styles.progress}>0/{later.length}</Caption1>
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Merge requests, in the same row vocabulary as the steps. Pipeline and approval
-          are now SEPARATE glyphs: one dot conflated "the build is green" with "a human
-          said yes", which are the two different things you actually wait on. */}
-      {mergeRequests.length > 0 && (
-        <div className={styles.section}>
-          <div className={styles.sectionHead}>
-            {/* Named after the forge the rows actually came from — "Pull requests" over
-                GitHub's — by the same function the detail pane's list head uses. */}
-            <span>{mrHeading(mergeRequests)}</span>
-          </div>
-          {mergeRequests.map((mr) => {
-            const reason = mrAttentionReason(mr);
-            const verdict = mrVerdict(mr);
-            // Off, a merged MR with nothing genuine to report still draws the single grey
-            // dot — the pre-feature behaviour, restored by the setting.
-            const pipelineShown = !afterMergePipeline || showPipeline(mr);
-            // Only when the forge can actually act on it — see `MergeRequests.tsx`'s own
-            // `canRebase`, which this mirrors so the two surfaces never disagree.
-            const canRebase = mrRebaseButton && mrNeedsRebase(mr);
-            // Nothing left to do but merge it — see `MergeRequests.tsx`'s own `canMerge`,
-            // which this mirrors for the same reason `canRebase` does.
-            const canMerge = mrMergeButton && mrReadyToMerge(mr);
-            return (
-              <a
-                key={mr.id}
-                href={mr.webUrl}
-                target="_blank"
-                rel="noreferrer"
-                className={mergeClasses(
-                  styles.step,
-                  styles.mrRow,
-                  reason !== null && styles.stepLoud,
-                )}
-                title={reason ?? `${mrRef(mr)} ${mr.title} · ${verdictSummary(mr)}`}
-                onDragStart={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-                // The shell's window-open handler sends target=_blank to the real browser;
-                // stopPropagation keeps the click from also selecting the card behind it.
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* One dot per pipeline STAGE, in pipeline order — the same reading the
-                    detail pane gives, at the size a card row can afford. A single dot said
-                    whether CI was green; these say how far it got and which part broke,
-                    which is the question you have while an MR sits there. Names don't fit
-                    on this row, so they live in the tooltip.
-
-                    Falls back to the one overall dot when the stages are empty — that means
-                    the jobs endpoint was permission-gated, NOT that a pipeline has no
-                    stages, so inventing dots from the overall status would be a claim we
-                    cannot make.
-
-                    A merged MR with no genuine reading (`showPipeline`) draws an EMPTY slot
-                    rather than nothing at all — dropping the slot would shift its title out
-                    of alignment with every step row above it, and "no pipeline"/"pipeline
-                    unknown" is not worth a dot on a row that has otherwise finished. */}
-                {!pipelineShown ? (
-                  <span className={styles.stepSlot} />
-                ) : mr.pipelineStages.length > 0 ? (
-                  <span
-                    className={styles.stageDots}
-                    title={mr.pipelineStages.map((s) => `${s.name}: ${s.status}`).join('\n')}
-                  >
-                    {mr.pipelineStages.map((stage) => (
-                      <span
-                        key={stage.name}
-                        className={mergeClasses(
-                          styles.stageDot,
-                          stage.status === 'running' && styles.dotRunning,
-                        )}
-                        // The keyframes own the colour while running, so setting it here
-                        // too would only be the value they immediately override.
-                        style={
-                          stage.status === 'running'
-                            ? undefined
-                            : { backgroundColor: PIPELINE_VAR[stage.status] }
-                        }
-                      />
-                    ))}
-                  </span>
-                ) : (
-                  <span className={styles.stepSlot} title={`Pipeline: ${mr.pipelineStatus}`}>
-                    <span
-                      className={styles.stepDot}
-                      style={{ backgroundColor: PIPELINE_VAR[mr.pipelineStatus] }}
-                    />
-                  </span>
-                )}
-                {/* The MR's own name, clipped by `stepTitle`'s ellipsis — what it IS. The
-                    source branch used to sit here, which answers where it lives instead.
-                    `mrLabel` prefers the local rename when there is one; the tooltip always
-                    carries the upstream title and the branch. */}
-                <Caption1
-                  className={styles.stepTitle}
-                  title={`${mrRef(mr)} ${mr.title}\n${mr.sourceBranch} → ${mr.targetBranch}`}
-                >
-                  {`${mrRef(mr)} ${mrLabel(mr)}`}
-                </Caption1>
-                {mr.draft && <Caption1 className={styles.progress}>draft</Caption1>}
-                {/* The row's verdict — see `verdictIcon`. Swapped for a rebase button when
-                    the forge is refusing the merge only because the branch has diverged: the
-                    one blocker this app can actually fix rather than merely report. A ready
-                    row gets the merge button instead — the one state where nothing is left
-                    to fix, only to confirm. */}
-                {canMerge ? (
-                  <Button
-                    size="small"
-                    appearance="transparent"
-                    className={styles.approval}
-                    icon={<MergeRegular style={{ color: FLUO_VAR.green }} />}
-                    title={`Merge this ${mrNoun(mr.provider)}`}
-                    aria-label={`Merge this ${mrNoun(mr.provider)}`}
-                    onClick={(e) => {
-                      // Same reason as the rebase button below: act, don't navigate, and
-                      // don't also select the card underneath it.
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setMergingMr(mr);
-                    }}
-                  />
-                ) : canRebase ? (
-                  <Button
-                    size="small"
-                    appearance="transparent"
-                    className={styles.approval}
-                    icon={<ArrowSyncRegular style={{ color: FLUO_VAR.red }} />}
-                    title={`Ask ${forgeName(mr.provider)} to rebase this branch`}
-                    aria-label={`Rebase this ${mrNoun(mr.provider)}`}
-                    onClick={(e) => {
-                      // The row is a link to the MR itself; this must act instead of
-                      // navigating, and must not also select the card underneath it.
-                      e.preventDefault();
-                      e.stopPropagation();
-                      void transport.invoke('mr:rebase', mr.id);
-                    }}
-                  />
-                ) : (
-                  <span className={styles.approval} title={verdictSummary(mr)}>
-                    {verdictIcon(verdict)}
-                  </span>
-                )}
-              </a>
-            );
-          })}
-        </div>
-      )}
-      {/* Outside the row entirely — a merge dialog is not part of the link the row IS, and
-          one per card (keyed by the MR so a different row's confirmation starts clean) is
-          plenty: a card only ever has one merge in flight. */}
-      {mergingMr && (
-        <ConfirmMergeDialog
-          key={mergingMr.id}
-          mr={mergingMr}
-          loadProposal={() => transport.invoke('mr:mergeProposal', mergingMr.id)}
-          onConfirm={(message) => transport.invoke('mr:merge', mergingMr.id, { message })}
-          onClose={() => setMergingMr(null)}
-        />
-      )}
     </div>
   );
 }

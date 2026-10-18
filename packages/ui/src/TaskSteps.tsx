@@ -41,6 +41,7 @@ import { useGateTrustHost } from './gateTrustHost';
 import { splitStepPhases, subtaskProgress } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { SkillPicker } from './SkillPicker';
+import type { SkillOption } from './skillPickerState';
 import { canReplan, REFUSAL_HINT } from './taskChat';
 import { STATUS_LABEL } from './taskStatus';
 import { FLUO_VAR, STATUS_INDICATOR_VAR } from './tokens';
@@ -70,6 +71,12 @@ const useStyles = makeStyles({
   },
   /** The step the runner is on — the one row worth picking out of the list. */
   rowLive: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  /**
+   * A step the inbox is holding something for — the same tint the card's own step rows used
+   * to wear (`var(--tm-attention-tint)`), so a step that wants you says so here exactly as it
+   * did on the card before F13.24 moved the list into the peek.
+   */
+  rowLoud: { backgroundColor: 'var(--tm-attention-tint)' },
   index: { color: tokens.colorNeutralForeground4, minWidth: '18px' },
   title: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' },
   form: { display: 'flex', flexDirection: 'column', gap: '6px' },
@@ -504,51 +511,18 @@ export function TaskSteps({
                         onOpen={onOpen}
                       />
                     ) : (
-                      <div
+                      <StepRow
                         key={step.id}
-                        className={mergeClasses(styles.row, isLive(step) && styles.rowLive)}
-                        onClick={() => onOpen(step.id)}
-                      >
-                        {/* The step's place in the WHOLE chain, so the numbers never restart
-                          and never contradict the card's own counter. */}
-                        <Caption1 className={styles.index}>{index + 1}.</Caption1>
-                        <Text className={styles.title}>{step.title}</Text>
-                        <SkillPicker
-                          options={skillOptionsState.options}
-                          own={step.skillRefs ?? []}
-                          inherited={task.skillRefs ?? undefined}
-                          onChange={(next) => void saveStepSkillRefs(step.id, next)}
-                          disabled={busy}
-                          loading={skillOptionsState.loading}
-                        />
-                        {/* A running step wears a blinking cyan dot, exactly as a running
-                          pipeline stage does two sections below it — the app says "this is
-                          moving" with one shape everywhere, and this row used to say it with
-                          a turning spinner instead. The word stays: the rows around it carry
-                          a status word, and a bare dot here would be the only row saying
-                          nothing. */}
-                        {isAgentRunning(step) ? (
-                          <span className={styles.running}>
-                            <span className={mergeClasses(styles.dot, styles.dotRunning)} />
-                            <Caption1>Running</Caption1>
-                          </span>
-                        ) : (
-                          /* Outline + the shared indicator colour rather than Fluent's `color`
-                           prop: its named palette bottoms out at mid-dark fills, so "done"
-                           and "pending" were two shades of the same grey-green at this size.
-                           Same colour as the card's step dot, so one step never looks like
-                           two states. */
-                          <Badge
-                            appearance="outline"
-                            style={{
-                              color: STATUS_INDICATOR_VAR[step.status],
-                              borderColor: STATUS_INDICATOR_VAR[step.status],
-                            }}
-                          >
-                            {STATUS_LABEL[step.status]}
-                          </Badge>
-                        )}
-                      </div>
+                        step={step}
+                        index={index}
+                        wantsAttention={attention?.taskIds.has(step.id) ?? false}
+                        skillOptions={skillOptionsState.options}
+                        skillOptionsLoading={skillOptionsState.loading}
+                        inheritedSkillRefs={task.skillRefs ?? undefined}
+                        busy={busy}
+                        onSaveSkillRefs={(next) => void saveStepSkillRefs(step.id, next)}
+                        onOpen={onOpen}
+                      />
                     ),
                   )}
                 </div>
@@ -607,7 +581,91 @@ export function TaskSteps({
   );
 }
 
-interface GateRowProps {
+export interface StepRowProps {
+  step: Task;
+  /** The step's place in the whole chain. */
+  index: number;
+  /** Whether the inbox is holding an item for this step — the row's attention tint. */
+  wantsAttention: boolean;
+  skillOptions: SkillOption[];
+  skillOptionsLoading: boolean;
+  /** The parent card's own `skillRefs`, shown checked and captioned "from card". */
+  inheritedSkillRefs?: string[];
+  busy: boolean;
+  onSaveSkillRefs: (next: string[]) => void;
+  onOpen: (taskId: string) => void;
+}
+
+/**
+ * An ordinary agent step's row: its place in the chain, title, skill picker, and either the
+ * blinking "Running" dot or its status badge. Pulled out of `TaskSteps`' own render — same
+ * split `GateRow` below already makes — so the attention tint and the running dot (F13.24,
+ * carried over from the board card's own step rows) are testable without going through the
+ * section's fold.
+ */
+export function StepRow({
+  step,
+  index,
+  wantsAttention,
+  skillOptions,
+  skillOptionsLoading,
+  inheritedSkillRefs,
+  busy,
+  onSaveSkillRefs,
+  onOpen,
+}: StepRowProps): JSX.Element {
+  const styles = useStyles();
+  return (
+    <div
+      className={mergeClasses(
+        styles.row,
+        isLive(step) && styles.rowLive,
+        wantsAttention && styles.rowLoud,
+      )}
+      onClick={() => onOpen(step.id)}
+    >
+      {/* The step's place in the WHOLE chain, so the numbers never restart and never
+          contradict the card's own counter. */}
+      <Caption1 className={styles.index}>{index + 1}.</Caption1>
+      <Text className={styles.title}>{step.title}</Text>
+      <SkillPicker
+        options={skillOptions}
+        own={step.skillRefs ?? []}
+        inherited={inheritedSkillRefs}
+        onChange={onSaveSkillRefs}
+        disabled={busy}
+        loading={skillOptionsLoading}
+      />
+      {/* A running step wears a blinking cyan dot, exactly as a running pipeline stage does
+          two sections below it — the app says "this is moving" with one shape everywhere,
+          and this row used to say it with a turning spinner instead. The word stays: the
+          rows around it carry a status word, and a bare dot here would be the only row
+          saying nothing. */}
+      {isAgentRunning(step) ? (
+        <span className={styles.running}>
+          <span className={mergeClasses(styles.dot, styles.dotRunning)} />
+          <Caption1>Running</Caption1>
+        </span>
+      ) : (
+        /* Outline + the shared indicator colour rather than Fluent's `color` prop: its named
+         palette bottoms out at mid-dark fills, so "done" and "pending" were two shades of
+         the same grey-green at this size. Same colour as the card's step dot, so one step
+         never looks like two states. */
+        <Badge
+          appearance="outline"
+          style={{
+            color: STATUS_INDICATOR_VAR[step.status],
+            borderColor: STATUS_INDICATOR_VAR[step.status],
+          }}
+        >
+          {STATUS_LABEL[step.status]}
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+export interface GateRowProps {
   step: Task;
   /** The step's place in the whole chain. */
   index: number;
@@ -622,7 +680,7 @@ interface GateRowProps {
  * the engine recorded. Everything but the status badge is monochrome — the badge is the
  * only part of a gate that moves. What it says comes from `gateStepView`, never from here.
  */
-function GateRow({ step, index, attention, onOpen }: GateRowProps): JSX.Element | null {
+export function GateRow({ step, index, attention, onOpen }: GateRowProps): JSX.Element | null {
   const transport = useTransport();
   const trustHost = useGateTrustHost();
   const styles = useStyles();
@@ -654,7 +712,11 @@ function GateRow({ step, index, attention, onOpen }: GateRowProps): JSX.Element 
   return (
     <div>
       <div
-        className={mergeClasses(styles.row, isLive(step) && styles.rowLive)}
+        className={mergeClasses(
+          styles.row,
+          isLive(step) && styles.rowLive,
+          attention.length > 0 && styles.rowLoud,
+        )}
         onClick={() => onOpen(step.id)}
       >
         <Caption1 className={styles.index}>{index + 1}.</Caption1>
