@@ -843,6 +843,7 @@ export function Settings({
     <div className={styles.row}>
       <TabList
         vertical
+        aria-label="Settings sections"
         selectedValue={section}
         onTabSelect={(_e, d) => setSection(d.value as SettingsSection)}
         className={styles.nav}

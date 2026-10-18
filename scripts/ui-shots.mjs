@@ -10,15 +10,24 @@
  *
  * `--out` defaults to `.vipper/shots` (see `.gitignore`'s own comment on `.vipper/`) and holds,
  * per row: `<name>.png` (the real screenshot), `<name>-mockup.png` (the mockup rasterized at the
- * same size, when `mockup` is set), `<name>.html` (the two side by side), plus one `index.html`
- * contact sheet linking all of them. `--only` restricts the run to a comma-separated subset of
- * `SCREENS`' own `name`s — and skips building whichever `app` no selected row needs. `--attach`
- * additionally copies the whole `--out` directory into `<cwd>/.vipper/attach/` — the outbox the
- * plan's step 5 ingests once a run settles.
+ * same size, when `mockup` is set), `<name>.html` (the two side by side), one `shots.json`
+ * (every row's status plus whatever `shotChecks.mjs`'s `shotProblems` found), and one
+ * `index.html` contact sheet linking all of them. `--only` restricts the run to a comma-
+ * separated subset of `SCREENS`' own `name`s — and skips building whichever `app` no selected
+ * row needs. `--attach` additionally copies the whole `--out` directory into
+ * `<cwd>/.vipper/attach/` — the outbox the plan's step 5 ingests once a run settles.
  *
  * Exits 1 if any row threw (a failed build, a setup step that never found its target, a timed-
  * out wait) or logged an uncaught page exception — never silently drops a row and calls the run
- * green.
+ * green. A row may also carry `expect`, a CSS selector proving its `setup` actually landed
+ * where it claims (a click that silently missed leaves the previous screen's shot behind under
+ * a new name); unlike a `setup` step itself, a missed `expect` does not throw — it is recorded
+ * as `selectorMissed` so the sheet still renders, and surfaces as a problem below. Every shot
+ * is also hashed (`node:crypto`'s `createHash('sha256')`) once the loop ends, and any two
+ * differently-named shots sharing a hash are flagged as duplicates — almost always the same
+ * "the click silently missed" bug, caught after the fact instead of by a selector nobody wrote.
+ * `--attach` refuses to copy anything, and exits 1, if `shotProblems` found a single problem —
+ * a run with a duplicate or a missed selector is not safe to hand to a human as "the real UI".
  *
  * Adding a screen is adding a row to `SCREENS` — nothing else here should need to change for
  * that.
@@ -81,8 +90,9 @@
  * split (`TaskCard.tsx`) at both 1440 and 1100, with the detail pane closed and open.
  * `board-light` above already covers 1440/closed, so it is not repeated among them.
  */
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -107,6 +117,7 @@ import {
 } from './lib/cdp.mjs';
 import { startFakeRelay } from './lib/fakeRelay.mjs';
 import * as uiShotsFixture from './fixtures/uiShotsFixture.mjs';
+import { shotProblems } from './lib/shotChecks.mjs';
 
 export const SCREENS = [
   {
@@ -201,6 +212,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }],
+    expect: '[role="option"]',
     mockup: 'v9-1-issues-list-light.svg',
   },
   {
@@ -209,6 +221,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'dark',
     setup: [{ click: 'Tickets' }],
+    expect: '[role="option"]',
     mockup: 'v9-3-issues-list-dark.svg',
   },
   {
@@ -220,6 +233,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
+    expect: 'button[aria-label="Open full screen"]',
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {
@@ -238,6 +252,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Settings' }],
+    expect: '[aria-label="Settings sections"]',
     mockup: 'v10-19-settings-light.svg',
   },
   {
@@ -274,6 +289,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'board-card:1' }, { key: 'mod+k' }],
+    expect: '[role="dialog"]',
     mockup: 'v10-20-palette-light.svg',
   },
   {
@@ -313,6 +329,7 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }],
+    expect: '[role="option"]',
     mockup: 'v9-1-issues-list-light.svg',
   },
   {
@@ -689,25 +706,53 @@ function writeSideBySideHtml(outDir, row, mockupFile) {
   return htmlPath;
 }
 
-function writeContactSheet(outDir, results) {
+/** One clear sentence per `shotProblems` entry — used both for `writeContactSheet`'s status
+ *  column and for `--attach`'s refusal-to-copy console output. */
+function describeProblem(problem) {
+  switch (problem.kind) {
+    case 'failed':
+      return `${problem.name} failed: ${problem.message}`;
+    case 'selectorMissed':
+      return `${problem.name}: selector "${problem.selector}" never matched`;
+    case 'duplicate':
+      return `${problem.name} is a DUPLICATE of ${problem.otherName} (identical bytes)`;
+    default:
+      return JSON.stringify(problem);
+  }
+}
+
+function writeContactSheet(outDir, results, problems) {
+  const duplicateOf = new Map(
+    problems.filter((p) => p.kind === 'duplicate').map((p) => [p.name, p.otherName]),
+  );
   const rows = results
-    .map(({ row, ok, exceptionCount, error, sideBySidePath, shotPath }) => {
+    .map(({ row, ok, exceptionCount, error, sideBySidePath, shotPath, selectorMissed }) => {
       const thumbHref = sideBySidePath ? basename(sideBySidePath) : basename(shotPath ?? '');
       const thumbImg = shotPath
         ? `<a href="${thumbHref}"><img src="${basename(shotPath)}" style="max-width:220px;display:block"></a>`
         : '(no screenshot — the row failed before one was taken)';
-      const status =
+      const statusParts = [
         ok && exceptionCount === 0
           ? 'ok'
-          : `FAILED${exceptionCount > 0 ? ` — ${exceptionCount} page exception(s)` : ''}${error ? `: ${escapeHtml(String(error.message ?? error))}` : ''}`;
+          : `FAILED${exceptionCount > 0 ? ` — ${exceptionCount} page exception(s)` : ''}${error ? `: ${escapeHtml(String(error.message ?? error))}` : ''}`,
+      ];
+      if (selectorMissed)
+        statusParts.push(`selector "${escapeHtml(selectorMissed)}" never matched`);
+      if (duplicateOf.has(row.name)) {
+        statusParts.push(`DUPLICATE of ${escapeHtml(duplicateOf.get(row.name))}`);
+      }
       return `<tr>
         <td>${thumbImg}</td>
         <td>${escapeHtml(row.name)}</td>
         <td>${row.mockup ? escapeHtml(row.mockup) : '(none)'}</td>
-        <td>${status}</td>
+        <td>${statusParts.join(' — ')}</td>
       </tr>`;
     })
     .join('\n');
+  const banner =
+    problems.length > 0
+      ? `<p style="background:#5a2d2d;padding:8px 12px;border-radius:4px">${problems.length} problem(s) found — see the status column.</p>`
+      : '';
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"><title>ui-shots</title>
 <style>
@@ -718,6 +763,7 @@ function writeContactSheet(outDir, results) {
 </style></head>
 <body>
   <h1>ui-shots</h1>
+  ${banner}
   <table>
     <tr><th>shot</th><th>name</th><th>mockup</th><th>status</th></tr>
     ${rows}
@@ -826,6 +872,8 @@ async function main() {
         shotPath: null,
         mockupPath: null,
         sideBySidePath: null,
+        selectorMissed: null,
+        hash: null,
       };
       try {
         exceptions.count = 0;
@@ -847,6 +895,21 @@ async function main() {
           await runSetupStep(cdp, step);
         }
         await waitForIdle(cdp, { allowSpinner: row.allowPersistentSpinner === true });
+
+        if (row.expect) {
+          try {
+            await waitFor(
+              async () =>
+                (await evaluate(
+                  cdp,
+                  `document.querySelector(${JSON.stringify(row.expect)}) !== null`,
+                )) === true,
+              { timeoutMs: 5000, label: `"${row.expect}" to appear` },
+            );
+          } catch {
+            result.selectorMissed = row.expect;
+          }
+        }
 
         const shotPath = join(outDir, `${row.name}.png`);
         const clip = row.clip === 'sidebar' ? await sidebarClipRect(cdp) : undefined;
@@ -877,15 +940,48 @@ async function main() {
       results.push(result);
     }
 
-    const sheetPath = writeContactSheet(outDir, results);
+    for (const result of results) {
+      if (result.shotPath) {
+        result.hash = createHash('sha256').update(readFileSync(result.shotPath)).digest('hex');
+      }
+    }
+
+    const problems = shotProblems(results);
+    const sheetPath = writeContactSheet(outDir, results, problems);
     console.log(`\ncontact sheet: ${sheetPath}`);
 
+    // `[{ name, mockup, ok, problems[] }]` — the manifest `attachOutbox.ts`'s ingest reads
+    // (see the plan's own Decisions on "replace, don't pile up") to know exactly which files
+    // this run owns, so it is ingested like any other outbox file, not skipped the way
+    // `verdicts.txt` is.
+    writeFileSync(
+      join(outDir, 'shots.json'),
+      JSON.stringify(
+        results.map((r) => ({
+          name: r.row.name,
+          mockup: r.row.mockup ?? null,
+          ok: r.ok,
+          problems: problems
+            .filter((p) => p.name === r.row.name)
+            .map(({ name: _name, ...rest }) => rest),
+        })),
+        null,
+        2,
+      ),
+    );
+
     if (opts.attach) {
-      const attachDir = join(process.cwd(), '.vipper', 'attach');
-      rmSync(attachDir, { recursive: true, force: true });
-      mkdirSync(dirname(attachDir), { recursive: true });
-      cpSync(outDir, attachDir, { recursive: true });
-      console.log(`attached: ${attachDir}`);
+      if (problems.length > 0) {
+        console.error(`\n${problems.length} problem(s) found — refusing to attach:`);
+        for (const problem of problems) console.error(`  - ${describeProblem(problem)}`);
+        process.exitCode = 1;
+      } else {
+        const attachDir = join(process.cwd(), '.vipper', 'attach');
+        rmSync(attachDir, { recursive: true, force: true });
+        mkdirSync(dirname(attachDir), { recursive: true });
+        cpSync(outDir, attachDir, { recursive: true });
+        console.log(`attached: ${attachDir}`);
+      }
     }
 
     const failed = results.filter((r) => !r.ok);
