@@ -210,8 +210,13 @@ export async function evaluate(cdp, expression) {
   return result.result.value;
 }
 
-export async function screenshot(cdp, filePath) {
-  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
+/** `clip`, when given, is a CSS-px `{ x, y, width, height }` rect (a `DOMRect`-shaped object
+ *  works as is) — `scale: 1` is always added, cropping the capture to that rect instead of the
+ *  whole viewport. */
+export async function screenshot(cdp, filePath, clip) {
+  const params = { format: 'png' };
+  if (clip) params.clip = { x: clip.x, y: clip.y, width: clip.width, height: clip.height, scale: 1 };
+  const { data } = await cdp.send('Page.captureScreenshot', params);
   writeFileSync(filePath, Buffer.from(data, 'base64'));
 }
 

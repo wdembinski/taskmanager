@@ -141,7 +141,7 @@ describe('buildSidebar No milestone / No epic buckets', () => {
     expect(tree[0].count).toBe(1);
   });
 
-  it('puts a ticket whose epic is missing, or unknown, into No epic', () => {
+  it('treats a missing/unknown/non-epic epicTaskId as an orphan, listed directly when the milestone heads no real epic group', () => {
     const m = milestone({ id: 'm1', name: 'M1' });
     const missingEpic = ticket({ milestoneId: 'm1', epicTaskId: 'does-not-exist' });
     const noEpic = ticket({ milestoneId: 'm1', epicTaskId: null });
@@ -151,12 +151,24 @@ describe('buildSidebar No milestone / No epic buckets', () => {
       baseInput({ milestones: [m], tickets: [missingEpic, noEpic, notAnEpic, pointsAtNonEpic] }),
     );
     const tree = teamTree(sections);
-    const noEpicGroup = tree[0].children.find((n) => n.label === NO_EPIC_GROUP);
-    expect(noEpicGroup).toBeDefined();
-    // notAnEpic is itself a plain ticket with no epic — it lands in the bucket too.
-    expect(noEpicGroup?.children.map((n) => n.taskId)).toEqual(
+    // This milestone heads no real epic group at all, so there is nothing for a "No epic"
+    // level to distinguish itself from — every one of these orphans is a direct child.
+    expect(tree[0].children.every((n) => n.kind === 'ticket')).toBe(true);
+    expect(tree[0].children.map((n) => n.taskId)).toEqual(
       expect.arrayContaining([missingEpic.id, noEpic.id, notAnEpic.id, pointsAtNonEpic.id]),
     );
+  });
+
+  it('keeps the No epic bucket when a real epic group shares the milestone with orphans', () => {
+    const m = milestone({ id: 'm1', name: 'M1' });
+    const epic = ticket({ id: 'e1', issueType: 'epic', title: 'Epic one', milestoneId: 'm1' });
+    const child = ticket({ epicTaskId: 'e1', milestoneId: 'm1' });
+    const orphan = ticket({ milestoneId: 'm1', epicTaskId: null });
+    const sections = buildSidebar(baseInput({ milestones: [m], tickets: [epic, child, orphan] }));
+    const tree = teamTree(sections);
+    expect(tree[0].children.map((n) => n.label)).toEqual(['Epic one', NO_EPIC_GROUP]);
+    const noEpicGroup = tree[0].children.find((n) => n.label === NO_EPIC_GROUP)!;
+    expect(noEpicGroup.children.map((n) => n.taskId)).toEqual([orphan.id]);
   });
 });
 
@@ -272,8 +284,17 @@ describe('buildSidebar ticket ordering', () => {
     const t2 = ticket({ milestoneId: 'm1', ticketKey: 'TM-2' });
     const sections = buildSidebar(baseInput({ milestones: [m1], tickets: [t10, t9, t2] }));
     const tree = teamTree(sections);
-    const noEpicGroup = tree[0].children.find((n) => n.label === NO_EPIC_GROUP)!;
-    expect(noEpicGroup.children.map((n) => n.ticketKey)).toEqual(['TM-2', 'TM-9', 'TM-10']);
+    // No epics in this milestone — tickets are direct children, not wrapped in No epic.
+    expect(tree[0].children.map((n) => n.ticketKey)).toEqual(['TM-2', 'TM-9', 'TM-10']);
+  });
+});
+
+describe('buildSidebar ticket keys', () => {
+  it("falls back to a mirrored ticket's externalKey when it has no native ticketKey", () => {
+    const mirrored = ticket({ ticketKey: undefined, externalKey: 'LIN-203' });
+    const sections = buildSidebar(baseInput({ tickets: [mirrored] }));
+    const tree = teamTree(sections);
+    expect(tree[0].children.map((n) => n.ticketKey)).toEqual(['LIN-203']);
   });
 });
 
@@ -352,14 +373,20 @@ describe("buildSidebar owner's shape", () => {
     const tree = teamTree(buildSidebar(baseInput({ milestones, tickets })));
     const m5Node = tree.find((n) => n.label === 'M5')!;
     expect(m5Node.count).toBe(4);
-    const noEpicGroup = m5Node.children.find((n) => n.label === NO_EPIC_GROUP)!;
-    expect(noEpicGroup.children.map((n) => n.ticketKey)).toEqual(['TM-2', 'TM-9', 'TM-3', 'TM-10']);
+    // M5 has no epics — its tickets are direct children, not wrapped in No epic.
+    expect(m5Node.children.map((n) => n.ticketKey)).toEqual(['TM-2', 'TM-9', 'TM-3', 'TM-10']);
   });
 
   it('carries status onto ticket nodes', () => {
     const tree = teamTree(buildSidebar(baseInput({ milestones, tickets })));
     const m6Node = tree.find((n) => n.label === 'M6')!;
-    const noEpicGroup = m6Node.children.find((n) => n.label === NO_EPIC_GROUP)!;
-    expect(noEpicGroup.children.every((n) => n.status === 'pending')).toBe(true);
+    expect(m6Node.children.every((n) => n.status === 'pending')).toBe(true);
+  });
+
+  it("reports M1's milestone count as open/total", () => {
+    const tree = teamTree(buildSidebar(baseInput({ milestones, tickets })));
+    expect(tree.find((n) => n.label === 'M1')!.openCount).toBe(0);
+    expect(tree.find((n) => n.label === 'M5')!.openCount).toBe(2);
+    expect(tree.find((n) => n.label === 'M6')!.openCount).toBe(2);
   });
 });

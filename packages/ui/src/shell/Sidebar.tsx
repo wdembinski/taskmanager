@@ -510,7 +510,9 @@ export function Sidebar({
                     selectedView?.kind === 'ticket' &&
                     selectedView.taskId === node.taskId;
                   const done =
-                    node.kind === 'ticket' && columnForStatus(node.status ?? 'pending') === 'done';
+                    node.kind === 'ticket'
+                      ? columnForStatus(node.status ?? 'pending') === 'done'
+                      : !!node.finished;
                   return (
                     <div
                       key={row.id}
@@ -539,7 +541,11 @@ export function Sidebar({
                         {node.label}
                       </span>
                       {node.kind !== 'ticket' && (
-                        <Caption1 className={styles.rowCount}>{node.count}</Caption1>
+                        <Caption1 className={styles.rowCount}>
+                          {node.kind === 'milestone' && node.openCount !== undefined
+                            ? `${node.openCount}/${node.count}`
+                            : node.count}
+                        </Caption1>
                       )}
                     </div>
                   );

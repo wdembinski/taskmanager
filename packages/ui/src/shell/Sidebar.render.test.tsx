@@ -127,4 +127,51 @@ describe('Sidebar', () => {
     expect(markup).toContain('Mid-flight');
     expect(markup).toContain('aria-label="Running"');
   });
+
+  it("dims a finished epic/milestone header's title the same way a done ticket's is", () => {
+    const doneEpic: SidebarTreeNode = {
+      id: 'epic:m1:e1',
+      kind: 'epic',
+      label: 'Finished epic',
+      count: 1,
+      finished: true,
+      defaultFolded: true,
+      folded: true,
+      children: [ticketNode({ label: 'Already done', status: 'done' })],
+    };
+    const openEpic: SidebarTreeNode = {
+      ...doneEpic,
+      id: 'epic:m1:e2',
+      label: 'Open epic',
+      finished: false,
+      defaultFolded: false,
+      folded: false,
+    };
+    const markup = renderToStaticMarkup(
+      <Sidebar {...baseProps} sections={[teamSection({ tree: [doneEpic, openEpic] })]} />,
+    );
+    const doneClass = /class="([^"]*)">Finished epic</.exec(markup)?.[1];
+    const openClass = /class="([^"]*)">Open epic</.exec(markup)?.[1];
+    expect(doneClass).toBeTruthy();
+    expect(openClass).toBeTruthy();
+    expect(doneClass).not.toBe(openClass);
+  });
+
+  it("shows a milestone's count as open/total, not a bare total", () => {
+    const milestoneNode: SidebarTreeNode = {
+      id: 'milestone:m1',
+      kind: 'milestone',
+      label: 'Mixed milestone',
+      count: 2,
+      openCount: 1,
+      finished: false,
+      defaultFolded: false,
+      folded: false,
+      children: [],
+    };
+    const markup = renderToStaticMarkup(
+      <Sidebar {...baseProps} sections={[teamSection({ tree: [milestoneNode] })]} />,
+    );
+    expect(markup).toContain('>1/2<');
+  });
 });

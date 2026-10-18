@@ -58,6 +58,9 @@ export interface SidebarTreeNode {
   finished?: boolean;
   defaultFolded?: boolean;
   count: number;
+  /** Milestone nodes only: how many of `count`'s tickets are still open — lets the renderer
+   *  show "open/total" instead of a bare total. */
+  openCount?: number;
   folded: boolean;
   children: SidebarTreeNode[];
 }
@@ -112,7 +115,10 @@ function ticketNode(ticket: Task, foldSet: ReadonlySet<string>): SidebarTreeNode
     id,
     kind: 'ticket',
     label: ticket.title,
-    ticketKey: ticket.ticketKey ?? undefined,
+    // `ticketKey` is a native ticket's own key; a mirrored tracker row (jira/github/linear)
+    // carries its key as `externalKey` instead — same fallback `cardParts.ts`/`issueRowParts.ts`
+    // already use, so a row like LIN-203 shows its key here too.
+    ticketKey: ticket.ticketKey ?? ticket.externalKey ?? undefined,
     taskId: ticket.id,
     status: ticket.status,
     count: 0,
@@ -154,6 +160,12 @@ function orderByOpenFirst(tickets: readonly Task[]): Task[] {
  *
  * Groups with open work sort before finished groups (key order preserved within each band);
  * the `No epic` bucket is always appended last regardless of its own finished state.
+ *
+ * When this milestone bucket heads no real epic group at all (no epic ticket placed here, and
+ * no ticket here names an epic placed elsewhere either), there is nothing for a `No epic` label
+ * to distinguish itself from — every ticket returned is a leaf, not a group, so the milestone
+ * lists them directly instead of adding an empty indirection level under every epic-less
+ * milestone.
  */
 function buildEpicGroups(
   milestoneKey: string,
@@ -182,6 +194,11 @@ function buildEpicGroups(
     [...childrenByEpicId.keys()].map((id) => epicsById.get(id)!),
     'key',
   );
+
+  if (epicsHere.length === 0) {
+    return orderByOpenFirst(orphans).map((t) => ticketNode(t, foldSet));
+  }
+
   const openEpics = epicsHere.filter((epic) => !isGroupFinished(childrenByEpicId.get(epic.id)!));
   const finishedEpics = epicsHere.filter((epic) => isGroupFinished(childrenByEpicId.get(epic.id)!));
 
@@ -246,6 +263,7 @@ function buildMilestoneNode(
     milestoneId: milestoneId ?? undefined,
     closed,
     count: nonEpics.length,
+    openCount: nonEpics.filter((t) => !isFinishedTicket(t)).length,
     finished,
     defaultFolded: finished,
     folded: isFolded(foldSet, id, finished),
