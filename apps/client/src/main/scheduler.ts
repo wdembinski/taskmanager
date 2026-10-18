@@ -4862,13 +4862,23 @@ export class Scheduler {
           );
           // A run that actually did something, in its own worktree, may have dropped files
           // in its attach outbox (`scripts/ui-shots.mjs --attach` is the first producer) —
-          // see `attachOutbox.ts`. Attached to the run's OWN task id: a step's files show on
-          // the step, exactly as a step's other attachments already do via
-          // `attachmentsInScope`. Skipped for `empty`/failed runs and for the shared-project
-          // mode (`run.worktree` unset), where there is no outbox to ingest.
+          // see `attachOutbox.ts`. Attached to the run's OWNER, not the run's own task id: a
+          // step's shots are about the CARD's UI, so they must show up where a human looking
+          // for "did this change" would check, not hidden on whichever step happened to run
+          // `ui-shots.mjs` this time. Skipped for `empty`/failed runs and for the
+          // shared-project mode (`run.worktree` unset), where there is no outbox to ingest.
           if (!empty && event.success && run.worktree && this.attachmentRoot) {
-            await ingestAttachOutbox(this.store, this.attachmentRoot, run.taskId, run.worktree);
-            this.onAttachmentsChanged?.();
+            const finished = this.store.getTask(run.taskId);
+            const owner = finished?.parentTaskId
+              ? (this.store.getTask(finished.parentTaskId) ?? finished)
+              : finished;
+            if (owner) {
+              await ingestAttachOutbox(this.store, this.attachmentRoot, owner.id, run.worktree, {
+                projectId: owner.projectId,
+                stepTitle: finished?.title ?? '',
+              });
+              this.onAttachmentsChanged?.();
+            }
           }
         }
         // stdin is held open in Phase 4, so the process won't exit by itself —
