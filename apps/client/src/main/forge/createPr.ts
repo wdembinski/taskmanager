@@ -40,10 +40,18 @@
  *      itself — a local `base` that has diverged from origin (a squash merge, a local merge)
  *      can no longer be fast-forwarded to match it, so everything read AFTER the sync (the
  *      re-check below, and the pull request's own body) reads against `remoteBase` instead.
- *   4. Push the branch, failing fast rather than prompting (`git.pushBranch`) — leased
- *      (`--force-with-lease`) whenever step 3 actually rebased: the branch's commits now have
- *      different SHAs than whatever was pushed under this name before, and an ordinary push
- *      would be rejected as non-fast-forward the moment it already exists on the far side.
+ *   4. Push the branch, failing fast rather than prompting (`git.pushBranch`). What this push
+ *      is ALLOWED to do is worked out fresh by `planBranchPush`, never by step 3's status
+ *      alone: a branch this worktree had already rebased onto its own copy of `base` before
+ *      step 3 ever ran reports `sync.status === 'up-to-date'` (there was nothing NEW to
+ *      fetch), yet its SHAs still differ from whatever was pushed under this name before — an
+ *      ordinary push there is rejected as non-fast-forward with no lease ever considered. So
+ *      every push fetches the remote branch's current tip and plans against it: a tip that is
+ *      an ancestor of `HEAD` gets an ordinary push; a tip this branch's own history can fully
+ *      account for (it is an ancestor of the fresh remote-base ref, or every commit it has
+ *      that `HEAD` doesn't has a patch-id twin in `HEAD`) gets a lease
+ *      (`--force-with-lease`) pinned to that tip; anything else — a commit genuinely foreign
+ *      to this branch — refuses outright, naming the wall, rather than overwriting it.
  *   5. POST the create, treating "one already exists" as success — and when it was, or
  *      already was before the POST, PATCH/PUT its description to match the branch's current
  *      commits ({@link refreshDescription}), since the push just pushed.
@@ -76,9 +84,11 @@ import {
 } from '@shared/commitMessage';
 import {
   branchCommitMessages,
+  cherryUnmatched,
   commitAll,
   commitsAhead,
   hasCommits,
+  isAncestor,
   pushBranch,
   rebaseInProgress,
   remoteBranchSha,
@@ -90,6 +100,7 @@ import { GitHubClient } from '../github/githubClient';
 import { pullRequestId } from '../github/githubPrSync';
 import { GitLabClient } from '../gitlab/gitlabClient';
 import { mergeRequestId } from '../gitlab/gitlabSync';
+import { REMOTE_BASE_REF } from '../worktreeManager';
 import { forgeBaseUrl } from './baseUrl';
 import { parseRemoteUrl, pickForge } from './remoteUrl';
 
@@ -193,6 +204,76 @@ function visualSignOffFor(
             : undefined;
       return { name: p.name, verdict };
     }),
+  };
+}
+
+/**
+ * What {@link openPullRequest} should do about pushing `branch`, worked out BEFORE the push
+ * runs rather than guessed from `sync`'s status alone — see this file's own notes on why
+ * `sync.status === 'synced'` used to be the only case that took a lease, and why a branch
+ * rebased onto a base this worktree already had (so `sync` reports `up-to-date`) still needs
+ * one.
+ *
+ * - `new` — the remote has no such branch yet. An ordinary push creates it.
+ * - `fast-forward` — the remote's tip is an ancestor of `HEAD`. An ordinary push lands it;
+ *   there is nothing here a lease would protect that a ff-only push doesn't already refuse.
+ * - `lease` — the remote's tip is NOT an ancestor of `HEAD`, but every commit it has that
+ *   `HEAD` does not is accounted for (see the two-part test below) — the local branch was
+ *   rebased, not raced. `expected` is the remote SHA to lease the push against.
+ * - `refuse` — the remote has at least one commit `HEAD` cannot account for: somebody else
+ *   pushed to this branch. `reason` names what was found, for the caller's own wall-naming
+ *   refusal.
+ */
+export type BranchPushPlan =
+  | { kind: 'new' }
+  | { kind: 'fast-forward' }
+  | { kind: 'lease'; expected: string }
+  | { kind: 'refuse'; reason: string };
+
+/**
+ * Decide how {@link openPullRequest} may push `branch`, given the remote's current tip
+ * (`remoteSha`, freshly fetched — `null` when the remote has no such branch) and the refs the
+ * local HEAD was (or wasn't) just rebased onto (`baseRefs` — the fresh `refs/orch/remote-base`
+ * and/or `compareBase`; see {@link openPullRequest}'s own comment for why both are offered).
+ *
+ * A branch counts as "locally rebased, safe to overwrite" when the remote tip is not an
+ * ancestor of `HEAD` but either:
+ *
+ *  1. the remote tip is itself an ancestor of one of `baseRefs` — it never carried any work
+ *     of its own beyond the base, so replacing it loses nothing, or
+ *  2. every commit the remote has that `HEAD` does not already has a patch-id twin
+ *     somewhere in `HEAD` ({@link cherryUnmatched} reports none) — the rebase replayed them
+ *     under new SHAs.
+ *
+ * Anything else means a commit exists on the remote that this branch's own history cannot
+ * account for — somebody else pushed here — and that is refused rather than overwritten.
+ */
+export async function planBranchPush(opts: {
+  cwd: string;
+  branch: string;
+  remoteSha: string | null;
+  baseRefs: readonly string[];
+  host?: ExecHost;
+}): Promise<BranchPushPlan> {
+  const { cwd, branch, remoteSha, baseRefs, host } = opts;
+  if (remoteSha === null) return { kind: 'new' };
+  if (await isAncestor(cwd, remoteSha, 'HEAD', host)) return { kind: 'fast-forward' };
+
+  for (const baseRef of baseRefs) {
+    if (baseRef && (await isAncestor(cwd, remoteSha, baseRef, host))) {
+      return { kind: 'lease', expected: remoteSha };
+    }
+  }
+
+  const unmatched = await cherryUnmatched(cwd, 'HEAD', remoteSha, host);
+  if (unmatched.length === 0) return { kind: 'lease', expected: remoteSha };
+
+  const n = unmatched.length;
+  return {
+    kind: 'refuse',
+    reason:
+      `${n} commit${n === 1 ? '' : 's'} on the remote (${unmatched.map((s) => s.slice(0, 7)).join(', ')}) ` +
+      `${n === 1 ? 'has' : 'have'} no match in "${branch}"`,
   };
 }
 
@@ -377,31 +458,56 @@ export async function openPullRequest(
   // signed off since.
   const signOff = visualSignOffFor(deps, owner);
 
-  // Leased whenever the sync above actually rebased the branch: its commits now have SHAs
-  // that nothing pushed under this name before would recognise, so an ordinary push is
-  // rejected as non-fast-forward the moment the branch already exists on the far side. The
-  // lease is fetched fresh, moments before the push, rather than reused from `sync` — which
-  // never looked at the BRANCH's own remote ref, only `base`'s.
-  const lease =
-    sync.status === 'synced'
-      ? await remoteBranchSha(live.cwd, 'origin', live.branch, {
-          url: target.url,
-          secrets: [target.token],
-          host,
-        })
-      : undefined;
+  // Fetched fresh, moments before the push, rather than reused from `sync` — which never
+  // looked at the BRANCH's own remote ref, only `base`'s. `null` means the remote has no such
+  // branch yet.
+  const remoteSha = await remoteBranchSha(live.cwd, 'origin', live.branch, {
+    url: target.url,
+    secrets: [target.token],
+    host,
+  });
+
+  // Worked out before the push rather than guessed from `sync`'s status: a branch this
+  // worktree had already rebased onto its own copy of `base` reports `sync.status ===
+  // 'up-to-date'` (nothing NEW to fetch), yet its SHAs still differ from whatever was pushed
+  // under this name before — exactly the "Could not push … non-fast-forward" wall this ticket
+  // exists to close. `baseRefs` offers both the fresh remote-base ref `syncOntoRemoteBase`
+  // fetches on every call (even when it reports `up-to-date`) and `compareBase` itself, which
+  // is the same ref in the `synced` case and `live.base` otherwise.
+  const plan = await planBranchPush({
+    cwd: live.cwd,
+    branch: live.branch,
+    remoteSha,
+    baseRefs: [REMOTE_BASE_REF, compareBase],
+    host,
+  });
+  if (plan.kind === 'refuse') {
+    throw new Error(
+      `"${live.branch}" has commits on ${target.host} this branch does not — ${plan.reason}. ` +
+        `Left alone rather than overwrite them.`,
+    );
+  }
 
   // The push. `target.url` is a tokenized URL only when the remote is https — an ssh remote
   // authenticates with a key and there is nothing to inject — and it is passed as ARGV, never
   // written into `.git/config`, which is why `pushBranch` drops `--set-upstream` for it. The
   // remote check above fetched through the same URL.
+  //
+  // `new` on a branch the sync just rebased (`sync.status === 'synced'`) still leases against
+  // the remote's absence — see `PushOptions.forceWithLease` — the same `''` this already did
+  // before `planBranchPush` existed; any other `new` (nothing to rebase, nothing pushed before)
+  // is a plain push, exactly as it always was.
+  const forceWithLease =
+    plan.kind === 'lease'
+      ? { expected: plan.expected }
+      : plan.kind === 'new' && sync.status === 'synced'
+        ? { expected: '' }
+        : undefined;
   const pushed = await pushBranch(live.cwd, 'origin', live.branch, {
     url: target.url,
     secrets: [target.token],
     host,
-    // `null` (no such branch on the remote yet) leases against its absence — see
-    // `PushOptions.forceWithLease`.
-    ...(lease !== undefined ? { forceWithLease: { expected: lease ?? '' } } : {}),
+    ...(forceWithLease ? { forceWithLease } : {}),
   });
   if (pushed.code !== 0) {
     // Redacted by `pushBranch` before it got here: git quotes the URL it was given back in

@@ -109,7 +109,7 @@ const MAX_MECHANICAL_ROUNDS = 20;
  * a ref-only fast-forward relies on fails on it outright. Scratch space — force-updated on
  * every fetch, and only ever read inside the same per-project queue slot that wrote it.
  */
-const REMOTE_BASE_REF = 'refs/orch/remote-base';
+export const REMOTE_BASE_REF = 'refs/orch/remote-base';
 
 /**
  * How long to wait before retrying a worktree removal that git refused. Long enough for an

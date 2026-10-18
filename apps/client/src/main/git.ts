@@ -1200,6 +1200,37 @@ export async function isAncestor(
 }
 
 /**
+ * The SHAs `git cherry <head> <upstream>` marks `+` — commits reachable from `upstream`
+ * that have no patch-id twin among the commits reachable from `head`. `[]` on a failed
+ * call, the same "don't know" shape {@link branchCommitMessages} uses, since this file's
+ * one caller ({@link planBranchPush} in `forge/createPr.ts`) already has its own fallback
+ * for that case and must never read an empty array as "every commit matched".
+ *
+ * Git's own argument order is `git cherry [<upstream> [<head>]]`: commits are walked from
+ * `<head>` and each is checked for a patch-id match against `<upstream>`. Passing `head`
+ * into that first slot and `upstream` into the second therefore answers a different
+ * question than the names suggest — it walks commits reachable from THIS function's
+ * `upstream` argument and checks each against THIS function's `head` argument. That is
+ * deliberate: the one caller wants to know whether a remote branch's own tip (its
+ * `upstream` here) was already rebased into the local branch (`head`) — i.e. whether
+ * `git cherry HEAD <remote-sha>` prints no `+` lines — and that is exactly what this
+ * parameter order spells.
+ */
+export async function cherryUnmatched(
+  cwd: string,
+  head: string,
+  upstream: string,
+  host?: ExecHost,
+): Promise<string[]> {
+  const res = await git(cwd, ['cherry', head, upstream], host);
+  if (res.code !== 0) return [];
+  return res.stdout
+    .split('\n')
+    .filter((line) => line.startsWith('+ '))
+    .map((line) => line.slice(2).trim());
+}
+
+/**
  * The best common ancestor of `a` and `b` — `git merge-base`. `''` when they share no
  * history (or the call fails), which every caller here must read as "don't know" rather
  * than as a ref name; this is a SHA, never a ref itself, so it is safe to pass on as a

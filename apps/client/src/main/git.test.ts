@@ -15,6 +15,7 @@ import {
   addWorktree,
   branchCommitMessages,
   changedInBranch,
+  cherryUnmatched,
   commitAll,
   createRootCommit,
   currentBranch,
@@ -591,6 +592,43 @@ describe('git helpers — reading a remote and pushing to it', () => {
       await git(repo, ['rm', '-rf', '--cached', '.']);
       await commitFile(repo, 'orphan.txt', 'orphan\n', 'orphan commit');
       expect(await mergeBase(repo, 'feat/orphan', 'feat/left')).toBe('');
+    });
+  });
+
+  describe('cherryUnmatched', () => {
+    it('reports no unmatched commits once a rebase gave the same change a new SHA', async () => {
+      await git(repo, ['checkout', '-b', 'feat/mine']);
+      await commitFile(repo, 'mine.txt', 'mine\n', 'my work');
+      const origSha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+      // Advance `base`, then rebase `feat/mine` onto it — the same content, a new SHA.
+      await git(repo, ['checkout', base]);
+      await commitFile(repo, 'advance.txt', 'advance\n', 'advance the base');
+      await git(repo, ['checkout', 'feat/mine']);
+      expect((await git(repo, ['rebase', base])).code).toBe(0);
+      const rebasedSha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+      expect(rebasedSha).not.toBe(origSha);
+
+      // `origSha` (the pre-rebase tip, standing in for a stale remote) has no patch-id twin
+      // missing from HEAD — the rebase just gave its own content a new SHA.
+      expect(await cherryUnmatched(repo, 'HEAD', origSha)).toEqual([]);
+    });
+
+    it('names a genuinely foreign commit that HEAD has no patch-id twin for', async () => {
+      await git(repo, ['checkout', '-b', 'feat/mine']);
+      await commitFile(repo, 'mine.txt', 'mine\n', 'my work');
+      const mineSha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+      await git(repo, ['checkout', base]);
+      await git(repo, ['checkout', '-b', 'feat/foreign']);
+      await commitFile(repo, 'foreign.txt', 'foreign\n', 'someone else entirely');
+      const foreignSha = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+
+      expect(await cherryUnmatched(repo, mineSha, foreignSha)).toEqual([foreignSha]);
+    });
+
+    it('returns an empty list rather than throwing when the call fails', async () => {
+      expect(await cherryUnmatched(repo, 'HEAD', 'not-a-real-ref')).toEqual([]);
     });
   });
 });

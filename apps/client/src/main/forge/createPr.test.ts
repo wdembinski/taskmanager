@@ -2,10 +2,23 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+// Several `describe` blocks below spawn a dozen-plus real `git` processes (including a
+// second clone) against real temp repos and a bare origin, so their duration is a function
+// of how loaded the machine is rather than of anything under test — `git.test.ts` carries
+// the same line for the same reason.
+vi.setConfig({ testTimeout: 30_000 });
 import type { Project, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
-import { openPullRequest, prBody, prTitle, rowFor, type CreatePrDeps } from './createPr';
+import { pushBranch } from '../git';
+import {
+  openPullRequest,
+  planBranchPush,
+  prBody,
+  prTitle,
+  rowFor,
+  type CreatePrDeps,
+} from './createPr';
 
 /** What both forges' creates boil down to — the shape `rowFor` reads from. */
 const created = (over: Record<string, unknown> = {}) => ({
@@ -554,6 +567,349 @@ describe('openPullRequest — routed through a variant pick (F10.6)', () => {
       // already follows for its parent.
       expect(upserts[0]?.taskId).toBe(row.id);
       expect(upserts[0]?.sourceBranch).toBe(ROW_BRANCH);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * "Could not push … non-fast-forward": the agent rebases its own branch onto a base this
+ * worktree already had, so `syncOntoRemoteBase` reports `up-to-date` (there was nothing NEW
+ * to fetch) — and the old lease, taken only on `sync.status === 'synced'`, never fires. The
+ * branch's own SHAs have still changed, so the plain push that followed was rejected the
+ * moment it already existed on the far side. `planBranchPush` is asked fresh on every push,
+ * never inferred from `sync`'s status alone, to close exactly this gap.
+ */
+describe('openPullRequest — lease-pushing a branch rebased locally onto an advanced base', () => {
+  const originalFetch = globalThis.fetch;
+  const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = originalGitConfig;
+  });
+
+  const git = (cwd: string, ...args: string[]) => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    return { code: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  };
+
+  it('pushes the rebased HEAD, leased against the stale remote tip, instead of refusing as non-fast-forward', async () => {
+    const BRANCH = 'feat/rebased-locally';
+    const work = mkdtempSync(join(tmpdir(), 'tm-createpr-stale-'));
+    try {
+      const bare = join(work, 'origin.git');
+      const repo = join(work, 'repo');
+      git(work, 'init', '--bare', bare);
+      git(work, 'init', repo);
+      git(repo, 'config', 'user.email', 'verify@example.com');
+      git(repo, 'config', 'user.name', 'Verify');
+      git(repo, 'config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'README.md'), '# demo\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'initial');
+      const base = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+      git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/checkout.git');
+
+      // Redirect the tokenized URL to the bare repo, same trick the variant test above uses —
+      // never the user's own global config.
+      const TOKEN = 'ghp_staleRebase0000';
+      const gitConfig = join(work, 'harness.gitconfig');
+      writeFileSync(
+        gitConfig,
+        `[url "file://${bare.replace(/\\/g, '/')}"]\n` +
+          `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/checkout.git\n`,
+        'utf8',
+      );
+      process.env.GIT_CONFIG_GLOBAL = gitConfig;
+
+      // Build the branch and seed the bare remote with it directly (a path push, no network,
+      // no token needed) — a prior "Create PR" run that already pushed this branch once.
+      git(repo, 'checkout', '-b', BRANCH);
+      writeFileSync(join(repo, 'feature.ts'), 'export const x = 1;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'feature work');
+      expect(git(repo, 'push', bare, BRANCH).code).toBe(0);
+      const remoteTipBefore = git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim();
+
+      // The base advances LOCALLY — this worktree's own base ref, independent of whatever
+      // `syncOntoRemoteBase` would have fetched, which this test stubs out entirely.
+      git(repo, 'checkout', base);
+      writeFileSync(join(repo, 'other.ts'), 'export const y = 2;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'someone else landed first');
+
+      // The agent rebases its own branch onto the advanced base — same content, new SHA.
+      git(repo, 'checkout', BRANCH);
+      expect(git(repo, 'rebase', base).code).toBe(0);
+      const headAfterRebase = git(repo, 'rev-parse', 'HEAD').stdout.trim();
+      expect(headAfterRebase).not.toBe(remoteTipBefore);
+
+      const task = {
+        id: 'card-1',
+        projectId: 'personal',
+        title: 'Add the feature',
+        type: null,
+        issueType: null,
+        externalType: null,
+        description: null,
+        externalDescription: null,
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+        agentProjectId: 'agent-1',
+        agentBranch: BRANCH,
+        parentTaskId: null,
+        pickedVariantId: null,
+      } as unknown as Task;
+      const project = { id: 'agent-1', path: repo, baseBranch: base } as unknown as Project;
+
+      globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+        const sent = JSON.parse(init?.body ?? '{}');
+        const body = {
+          id: 901,
+          number: 21,
+          title: sent.title,
+          state: 'open',
+          draft: false,
+          html_url: 'https://github.com/acme/checkout/pull/21',
+          head: { ref: sent.head, repo: { id: 556 } },
+          base: { ref: sent.base },
+        };
+        return {
+          ok: true,
+          status: 201,
+          statusText: 'Created',
+          json: async () => body,
+          text: async () => JSON.stringify(body),
+          headers: { get: () => null },
+        };
+      }) as unknown as typeof fetch;
+
+      const deps: CreatePrDeps = {
+        getTask: (id) => (id === task.id ? task : undefined),
+        getProject: (id) => (id === 'agent-1' ? project : undefined),
+        getSettings: () =>
+          ({
+            github: { enabled: true, baseUrl: 'https://api.github.com' },
+          }) as unknown as AppSettings,
+        listMergeRequests: () => [],
+        upsertMergeRequest: () => undefined,
+        listVariantRows: () => [],
+        listAttachments: () => [],
+        listActivity: () => [],
+        inspect: async (_p, _ownerTaskId, branch) => ({
+          cwd: repo,
+          branch: branch ?? BRANCH,
+          base,
+        }),
+        // Exactly what `syncOntoRemoteBase` answers when nothing NEW was fetched — the branch
+        // here was rebased onto a base this worktree already had, not one the remote had
+        // moved further on.
+        syncOntoRemoteBase: async () => ({ status: 'up-to-date' }),
+        tokenFor: () => TOKEN,
+        note: () => undefined,
+        now: () => 1_760_000_000_000,
+      };
+
+      const opened = await openPullRequest(deps, task.id);
+
+      expect(opened.existed).toBe(false);
+      const landed = git(bare, 'rev-parse', `refs/heads/${BRANCH}`);
+      expect(landed.code).toBe(0);
+      expect(landed.stdout.trim()).toBe(headAfterRebase);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses outright, pushing nothing, when the remote carries a commit this branch never produced', async () => {
+    const BRANCH = 'feat/foreign';
+    const work = mkdtempSync(join(tmpdir(), 'tm-createpr-foreign-'));
+    try {
+      const bare = join(work, 'origin.git');
+      const repo = join(work, 'repo');
+      git(work, 'init', '--bare', bare);
+      git(work, 'init', repo);
+      git(repo, 'config', 'user.email', 'verify@example.com');
+      git(repo, 'config', 'user.name', 'Verify');
+      git(repo, 'config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'README.md'), '# demo\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'initial');
+      const base = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+      git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/checkout.git');
+
+      const TOKEN = 'ghp_foreignCommit0000';
+      const gitConfig = join(work, 'harness.gitconfig');
+      writeFileSync(
+        gitConfig,
+        `[url "file://${bare.replace(/\\/g, '/')}"]\n` +
+          `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/checkout.git\n`,
+        'utf8',
+      );
+      process.env.GIT_CONFIG_GLOBAL = gitConfig;
+
+      git(repo, 'checkout', '-b', BRANCH);
+      writeFileSync(join(repo, 'mine.ts'), 'export const mine = true;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'my work');
+      expect(git(repo, 'push', bare, BRANCH).code).toBe(0);
+
+      // A second clone pushes a commit of its OWN to the same branch — content this worktree
+      // never produced and has no patch-id twin for.
+      const clone = mkdtempSync(join(tmpdir(), 'tm-createpr-foreign-clone-'));
+      try {
+        git(clone, 'clone', bare, '.');
+        git(clone, 'config', 'user.email', 'other@example.com');
+        git(clone, 'config', 'user.name', 'Other');
+        git(clone, 'config', 'commit.gpgsign', 'false');
+        git(clone, 'checkout', BRANCH);
+        writeFileSync(join(clone, 'foreign.ts'), 'export const foreign = true;\n');
+        git(clone, 'add', '-A');
+        git(clone, 'commit', '--no-verify', '-m', 'someone else entirely');
+        expect(git(clone, 'push', 'origin', BRANCH).code).toBe(0);
+      } finally {
+        rmSync(clone, { recursive: true, force: true });
+      }
+      const foreignTip = git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim();
+
+      const task = {
+        id: 'card-2',
+        projectId: 'personal',
+        title: 'My own work',
+        type: null,
+        issueType: null,
+        externalType: null,
+        description: null,
+        externalDescription: null,
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+        agentProjectId: 'agent-1',
+        agentBranch: BRANCH,
+        parentTaskId: null,
+        pickedVariantId: null,
+      } as unknown as Task;
+      const project = { id: 'agent-1', path: repo, baseBranch: base } as unknown as Project;
+
+      const deps: CreatePrDeps = {
+        getTask: (id) => (id === task.id ? task : undefined),
+        getProject: (id) => (id === 'agent-1' ? project : undefined),
+        getSettings: () =>
+          ({
+            github: { enabled: true, baseUrl: 'https://api.github.com' },
+          }) as unknown as AppSettings,
+        listMergeRequests: () => [],
+        upsertMergeRequest: () => undefined,
+        listVariantRows: () => [],
+        listAttachments: () => [],
+        listActivity: () => [],
+        inspect: async (_p, _ownerTaskId, branch) => ({
+          cwd: repo,
+          branch: branch ?? BRANCH,
+          base,
+        }),
+        syncOntoRemoteBase: async () => ({ status: 'up-to-date' }),
+        tokenFor: () => TOKEN,
+        note: () => undefined,
+        now: () => 1_760_000_000_000,
+      };
+
+      await expect(openPullRequest(deps, task.id)).rejects.toThrow(
+        /has commits on .* this branch does not/i,
+      );
+
+      // Nothing pushed — the remote is exactly as the foreign commit left it.
+      expect(git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim()).toBe(foreignTip);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * `planBranchPush`'s lease is only as sound as the moment it was computed — exactly what
+ * `--force-with-lease` exists to protect against: a human, or another run, pushing to the
+ * SAME branch in the gap between `openPullRequest` planning the push and actually sending it.
+ */
+describe('planBranchPush — a lease that goes stale before the push runs', () => {
+  const git = (cwd: string, ...args: string[]) => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    return { code: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  };
+
+  it('does not overwrite a commit that landed on the remote after the plan was made', async () => {
+    const BRANCH = 'feat/race';
+    const work = mkdtempSync(join(tmpdir(), 'tm-createpr-lease-race-'));
+    try {
+      const bare = join(work, 'origin.git');
+      const repo = join(work, 'repo');
+      git(work, 'init', '--bare', bare);
+      git(work, 'init', repo);
+      git(repo, 'config', 'user.email', 'verify@example.com');
+      git(repo, 'config', 'user.name', 'Verify');
+      git(repo, 'config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'README.md'), '# demo\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'initial');
+      const base = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+      git(repo, 'remote', 'add', 'origin', bare);
+
+      git(repo, 'checkout', '-b', BRANCH);
+      writeFileSync(join(repo, 'feature.ts'), 'export const x = 1;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'feature work');
+      expect(git(repo, 'push', 'origin', BRANCH).code).toBe(0);
+      const remoteTip = git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim();
+
+      // Rebase locally onto an advanced base — same content, new SHA — so the plan reads
+      // this as a branch that was rebased, not raced, and plans a lease.
+      git(repo, 'checkout', base);
+      writeFileSync(join(repo, 'other.ts'), 'export const y = 2;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'someone landed first');
+      git(repo, 'checkout', BRANCH);
+      expect(git(repo, 'rebase', base).code).toBe(0);
+
+      const plan = await planBranchPush({
+        cwd: repo,
+        branch: BRANCH,
+        remoteSha: remoteTip,
+        baseRefs: [],
+      });
+      expect(plan.kind).toBe('lease');
+      if (plan.kind !== 'lease') throw new Error('expected a lease plan');
+
+      // The race: a second clone pushes a genuinely new commit to the SAME branch, on the
+      // remote, after the plan above was computed but before the push below runs.
+      const clone = mkdtempSync(join(tmpdir(), 'tm-createpr-lease-race-clone-'));
+      try {
+        git(clone, 'clone', bare, '.');
+        git(clone, 'config', 'user.email', 'other@example.com');
+        git(clone, 'config', 'user.name', 'Other');
+        git(clone, 'config', 'commit.gpgsign', 'false');
+        git(clone, 'checkout', BRANCH);
+        writeFileSync(join(clone, 'foreign.ts'), 'export const z = 3;\n');
+        git(clone, 'add', '-A');
+        git(clone, 'commit', '--no-verify', '-m', 'a human pushed here meanwhile');
+        expect(git(clone, 'push', 'origin', BRANCH).code).toBe(0);
+      } finally {
+        rmSync(clone, { recursive: true, force: true });
+      }
+      const foreignTip = git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim();
+      expect(foreignTip).not.toBe(remoteTip);
+
+      const pushed = await pushBranch(repo, 'origin', BRANCH, {
+        forceWithLease: { expected: plan.expected },
+      });
+
+      expect(pushed.code).not.toBe(0);
+      // The remote still holds the commit the race put there — the stale lease refused to
+      // overwrite it.
+      expect(git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim()).toBe(foreignTip);
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
