@@ -19,7 +19,19 @@
  * `onOpenTicket` instead — it is a card, not a screen.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { Body1, Caption1, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
+import {
+  Body1,
+  Caption1,
+  Menu,
+  MenuButton,
+  MenuItemRadio,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
+  makeStyles,
+  mergeClasses,
+  tokens,
+} from '@fluentui/react-components';
 import {
   AddRegular,
   ArchiveRegular,
@@ -40,6 +52,7 @@ import { shortcutLabel } from '../palette/shortcutLabel';
 import { issueTypeGlyph } from '../projects/issueTypeGlyph';
 import type { SidebarSection, SidebarTreeNode, SidebarView as ViewRow } from './sidebarModel';
 import { flattenVisible, treeKeyReducer, type TreeKeyState } from './sidebarTree';
+import type { TrackerProjectOption } from './useTrackerProject';
 
 /** Everywhere `onNavigate` can send a host — every destination `shellNav.ts`'s now-deleted
  *  `interim` group used to carry a rail tile for, reached from the sidebar instead. */
@@ -69,6 +82,17 @@ export interface SidebarProps {
   /** The web's cross-project destination the desktop does not have at all (`shellNav.ts`'s
    *  own F13.8 header) — off by default, so the desktop need not pass anything to hide it. */
   showFleet?: boolean;
+  /** The ticket projects a switcher can offer in place of the team header's plain caption —
+   *  `useTrackerProject`'s own `projectOptions`. */
+  projectOptions?: TrackerProjectOption[];
+  /** Which of `projectOptions` is checked in the switcher. */
+  selectedProjectId?: string | null;
+  /** Switches the tracker project; the switcher only renders once this is passed AND
+   *  `projectOptions` is non-empty — otherwise the team header keeps its plain caption. */
+  onSelectProject?: (id: string) => void;
+  /** True while the project list has not loaded yet — holds off the "no tickets" empty
+   *  state so a still-loading tree does not flash it first. */
+  loading?: boolean;
 }
 
 const useStyles = makeStyles({
@@ -130,6 +154,14 @@ const useStyles = makeStyles({
     padding: '10px 8px 4px',
   },
   teamName: { color: 'var(--tm-text-muted)', textTransform: 'uppercase', fontSize: '11px' },
+  teamSwitcher: {
+    minWidth: 0,
+    color: 'var(--tm-text-muted)',
+    textTransform: 'uppercase',
+    fontSize: '11px',
+    padding: 0,
+  },
+  emptyTree: { padding: '6px 8px', color: 'var(--tm-text-muted)' },
   teamLinks: { display: 'flex', gap: '2px' },
   linkButton: {
     display: 'flex',
@@ -220,6 +252,10 @@ export function Sidebar({
   folds,
   onToggleFold,
   showFleet = false,
+  projectOptions,
+  selectedProjectId,
+  onSelectProject,
+  loading = false,
 }: SidebarProps): JSX.Element {
   const styles = useStyles();
 
@@ -342,7 +378,37 @@ export function Sidebar({
         {team?.kind === 'team' && (
           <div className={styles.section}>
             <div className={styles.teamHeader}>
-              <Caption1 className={styles.teamName}>{team.name ?? 'Team'}</Caption1>
+              {onSelectProject && projectOptions && projectOptions.length > 0 ? (
+                <Menu>
+                  <MenuTrigger disableButtonEnhancement>
+                    <MenuButton
+                      appearance="subtle"
+                      size="small"
+                      className={styles.teamSwitcher}
+                      aria-label="Switch ticket project"
+                    >
+                      {team.name ?? 'Team'}
+                    </MenuButton>
+                  </MenuTrigger>
+                  <MenuPopover>
+                    <MenuList
+                      checkedValues={{ project: selectedProjectId ? [selectedProjectId] : [] }}
+                      onCheckedValueChange={(_e, { checkedItems }) => {
+                        const next = checkedItems.find((id) => id !== selectedProjectId);
+                        if (next) onSelectProject(next);
+                      }}
+                    >
+                      {projectOptions.map((project) => (
+                        <MenuItemRadio key={project.id} name="project" value={project.id}>
+                          {project.name}
+                        </MenuItemRadio>
+                      ))}
+                    </MenuList>
+                  </MenuPopover>
+                </Menu>
+              ) : (
+                <Caption1 className={styles.teamName}>{team.name ?? 'Team'}</Caption1>
+              )}
               <div className={styles.teamLinks}>
                 <button
                   type="button"
@@ -376,54 +442,60 @@ export function Sidebar({
               </div>
             </div>
 
-            <div
-              role="tree"
-              aria-label={team.name ?? 'Team'}
-              className={styles.tree}
-              tabIndex={0}
-              onKeyDown={onTreeKeyDown}
-            >
-              {rows.map((row) => {
-                const node = nodesById.get(row.id);
-                if (!node) return null;
-                const focused = row.id === keyState.focusId;
-                const selected =
-                  node.kind === 'ticket' &&
-                  node.taskId !== undefined &&
-                  selectedView?.kind === 'ticket' &&
-                  selectedView.taskId === node.taskId;
-                return (
-                  <div
-                    key={row.id}
-                    role="treeitem"
-                    id={`sidebar-tree-${row.id}`}
-                    aria-level={row.depth + 1}
-                    aria-expanded={row.hasChildren ? row.expanded : undefined}
-                    aria-selected={selected || undefined}
-                    tabIndex={focused ? 0 : -1}
-                    className={mergeClasses(styles.row, selected && styles.rowSelected)}
-                    style={{ paddingLeft: `${8 + row.depth * 16}px` }}
-                    onClick={() => onRowClick(row.id)}
-                  >
-                    {row.hasChildren ? (
-                      <span className={styles.chevronSlot}>
-                        {row.expanded ? <ChevronDownRegular /> : <ChevronRightRegular />}
-                      </span>
-                    ) : (
-                      <span className={styles.chevronPlaceholder} />
-                    )}
-                    {treeIcon(node)}
-                    {node.ticketKey && (
-                      <Caption1 className={styles.rowCount}>{node.ticketKey}</Caption1>
-                    )}
-                    <span className={styles.rowLabel}>{node.label}</span>
-                    {node.kind !== 'ticket' && (
-                      <Caption1 className={styles.rowCount}>{node.count}</Caption1>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            {treeNodes.length === 0 && !loading ? (
+              <Caption1 className={styles.emptyTree}>
+                {team.name ? `${team.name} has no tickets yet` : 'No ticket project yet'}
+              </Caption1>
+            ) : (
+              <div
+                role="tree"
+                aria-label={team.name ?? 'Team'}
+                className={styles.tree}
+                tabIndex={0}
+                onKeyDown={onTreeKeyDown}
+              >
+                {rows.map((row) => {
+                  const node = nodesById.get(row.id);
+                  if (!node) return null;
+                  const focused = row.id === keyState.focusId;
+                  const selected =
+                    node.kind === 'ticket' &&
+                    node.taskId !== undefined &&
+                    selectedView?.kind === 'ticket' &&
+                    selectedView.taskId === node.taskId;
+                  return (
+                    <div
+                      key={row.id}
+                      role="treeitem"
+                      id={`sidebar-tree-${row.id}`}
+                      aria-level={row.depth + 1}
+                      aria-expanded={row.hasChildren ? row.expanded : undefined}
+                      aria-selected={selected || undefined}
+                      tabIndex={focused ? 0 : -1}
+                      className={mergeClasses(styles.row, selected && styles.rowSelected)}
+                      style={{ paddingLeft: `${8 + row.depth * 16}px` }}
+                      onClick={() => onRowClick(row.id)}
+                    >
+                      {row.hasChildren ? (
+                        <span className={styles.chevronSlot}>
+                          {row.expanded ? <ChevronDownRegular /> : <ChevronRightRegular />}
+                        </span>
+                      ) : (
+                        <span className={styles.chevronPlaceholder} />
+                      )}
+                      {treeIcon(node)}
+                      {node.ticketKey && (
+                        <Caption1 className={styles.rowCount}>{node.ticketKey}</Caption1>
+                      )}
+                      <span className={styles.rowLabel}>{node.label}</span>
+                      {node.kind !== 'ticket' && (
+                        <Caption1 className={styles.rowCount}>{node.count}</Caption1>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
