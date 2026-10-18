@@ -135,7 +135,17 @@ const useStyles = makeStyles({
     scrollMarginTop: '36px',
   },
   body: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '12px' },
-  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' },
+  header: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '8px',
+    // A crushed column leaves no room for the key and the trailing glyphs on one line —
+    // wrapping to a second row (with a little vertical breathing room) beats clipping
+    // either one, or forcing the whole card wider than the column.
+    flexWrap: 'wrap',
+    rowGap: '4px',
+  },
   key: {
     flexShrink: 0,
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
@@ -163,22 +173,42 @@ const useStyles = makeStyles({
     borderRadius: '50%',
     border: `1px dashed ${tokens.colorNeutralStroke2}`,
   },
+  /** The `Tooltip`'s wrapper span around the owner glyph — a plain `<span>` is inline and
+   *  has no box of its own, so in a wrapping `headerTrail` it could not hold `flexShrink`
+   *  or sit as its own flex item. */
+  agentGlyphWrap: { display: 'inline-flex', flexShrink: 0 },
   /**
-   * `flex-start`, not `center`: a two-line title would otherwise push the trailing glyphs
-   * down to its middle, so the same icons sat at a different height on every card and the
-   * column lost the vertical rhythm you scan it by.
+   * Everything the header carries besides the key and the title: the variant badge, the
+   * automation-origin glyph, Stop/Resume, the More menu, and finally the owner glyph itself
+   * (right-most, matching the mockup). Pulled out of `titleRow` so the title can wrap to two
+   * lines without dragging these down with it, and `flexWrap` here lets them spill onto the
+   * header's second row rather than clipping or widening the card.
    */
-  titleRow: { display: 'flex', alignItems: 'flex-start', gap: '6px' },
+  headerTrail: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    marginLeft: 'auto',
+    minWidth: 0,
+  },
+  /** The title alone now — the variant badge, origin glyph, Stop/Resume and More menu moved
+   *  to `headerTrail` so a crushed column's title can wrap without dragging them down with
+   *  it. */
+  titleRow: { display: 'flex' },
   /** Clamped to two lines — the point of a column you can scan at a glance is that no card
-   *  grows to fit a whole sentence; the full title is in the tooltip and the peek. */
+   *  grows to fit a whole sentence; the full title is in the tooltip and the peek.
+   *  `overflowWrap: 'anywhere'` so a long key-like token with no spaces (a ticket id pasted
+   *  into the title) breaks instead of overflowing a crushed column. */
   title: {
-    flex: 1,
     minWidth: 0,
     lineHeight: '18px',
     display: '-webkit-box',
     WebkitLineClamp: 2,
     WebkitBoxOrient: 'vertical',
     overflow: 'hidden',
+    overflowWrap: 'anywhere',
   },
   /** The "×N" a leader wears once it has started variants (F10.5) — monochrome: how many
    *  rows exist is a standing fact about the card, not something in motion. */
@@ -726,7 +756,7 @@ export function TaskCard({
   const ownerNode = parts.owner ? (
     parts.owner.avatar.agentName ? (
       <Tooltip relationship="label" content={ownerTooltip}>
-        <span>
+        <span className={styles.agentGlyphWrap}>
           <AgentGlyph running={parts.owner.running} size={AGENT_ICON_SIZE} />
         </span>
       </Tooltip>
@@ -824,114 +854,116 @@ export function TaskCard({
       <div className={styles.body}>
         <div className={styles.header}>
           {keyNode}
-          {ownerNode}
+          <div className={styles.headerTrail}>
+            {variants.state !== 'none' && (
+              <Caption1
+                className={styles.variantBadge}
+                title={`${variants.rows.length} variants started`}
+              >
+                ×{variants.rows.length}
+              </Caption1>
+            )}
+            {task.originAutomationId && (
+              <Tooltip relationship="label" content={automationOriginTitle(originAutomation)}>
+                <span className={styles.originIcon}>
+                  <FlashRegular />
+                </span>
+              </Tooltip>
+            )}
+            {stoppable && (
+              <Tooltip
+                relationship="label"
+                content={
+                  stopsChain
+                    ? "Stop the agent: the step that is running is stopped and the steps queued behind it are cancelled. The card's branch and worktree are kept."
+                    : 'Stop the agent working on this card. Its branch and worktree are kept, so the work can be picked up again.'
+                }
+              >
+                <Button
+                  className={styles.runButton}
+                  size="small"
+                  appearance="subtle"
+                  icon={<RecordStopRegular />}
+                  draggable={false}
+                  onDragStart={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onStop?.();
+                  }}
+                />
+              </Tooltip>
+            )}
+            {resumable && (
+              <Tooltip
+                relationship="label"
+                content={
+                  resumesChain
+                    ? "Pick the work up in the same conversation: the agent carries on from where it stopped, in this card's worktree, and the steps queued behind it are queued again."
+                    : "Pick the work up in the same conversation: the agent carries on from where it stopped, in this card's worktree."
+                }
+              >
+                <Button
+                  className={styles.runButton}
+                  size="small"
+                  appearance="subtle"
+                  icon={<PlayCircleRegular />}
+                  draggable={false}
+                  onDragStart={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onResume?.();
+                  }}
+                />
+              </Tooltip>
+            )}
+            {(onToggleShelved || onMoveTo) && (
+              <Menu>
+                <MenuTrigger disableButtonEnhancement>
+                  <Button
+                    className={styles.runButton}
+                    size="small"
+                    appearance="subtle"
+                    icon={<MoreHorizontalRegular />}
+                    title="More actions"
+                    draggable={false}
+                    onDragStart={(e) => e.stopPropagation()}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </MenuTrigger>
+                <MenuPopover>
+                  <MenuList>
+                    {onMoveTo && (
+                      <MenuItem
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMoveTo();
+                        }}
+                      >
+                        Move to…
+                      </MenuItem>
+                    )}
+                    {onToggleShelved && (
+                      <MenuItem
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleShelved();
+                        }}
+                      >
+                        {shelved ? 'Return to board' : 'Move to shelf'}
+                      </MenuItem>
+                    )}
+                  </MenuList>
+                </MenuPopover>
+              </Menu>
+            )}
+            {ownerNode}
+          </div>
         </div>
 
         <div className={styles.titleRow}>
           <Text weight="semibold" className={styles.title}>
             {task.title}
           </Text>
-          {variants.state !== 'none' && (
-            <Caption1
-              className={styles.variantBadge}
-              title={`${variants.rows.length} variants started`}
-            >
-              ×{variants.rows.length}
-            </Caption1>
-          )}
-          {task.originAutomationId && (
-            <Tooltip relationship="label" content={automationOriginTitle(originAutomation)}>
-              <span className={styles.originIcon}>
-                <FlashRegular />
-              </span>
-            </Tooltip>
-          )}
-          {stoppable && (
-            <Tooltip
-              relationship="label"
-              content={
-                stopsChain
-                  ? "Stop the agent: the step that is running is stopped and the steps queued behind it are cancelled. The card's branch and worktree are kept."
-                  : 'Stop the agent working on this card. Its branch and worktree are kept, so the work can be picked up again.'
-              }
-            >
-              <Button
-                className={styles.runButton}
-                size="small"
-                appearance="subtle"
-                icon={<RecordStopRegular />}
-                draggable={false}
-                onDragStart={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onStop?.();
-                }}
-              />
-            </Tooltip>
-          )}
-          {resumable && (
-            <Tooltip
-              relationship="label"
-              content={
-                resumesChain
-                  ? "Pick the work up in the same conversation: the agent carries on from where it stopped, in this card's worktree, and the steps queued behind it are queued again."
-                  : "Pick the work up in the same conversation: the agent carries on from where it stopped, in this card's worktree."
-              }
-            >
-              <Button
-                className={styles.runButton}
-                size="small"
-                appearance="subtle"
-                icon={<PlayCircleRegular />}
-                draggable={false}
-                onDragStart={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onResume?.();
-                }}
-              />
-            </Tooltip>
-          )}
-          {(onToggleShelved || onMoveTo) && (
-            <Menu>
-              <MenuTrigger disableButtonEnhancement>
-                <Button
-                  className={styles.runButton}
-                  size="small"
-                  appearance="subtle"
-                  icon={<MoreHorizontalRegular />}
-                  title="More actions"
-                  draggable={false}
-                  onDragStart={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                />
-              </MenuTrigger>
-              <MenuPopover>
-                <MenuList>
-                  {onMoveTo && (
-                    <MenuItem
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onMoveTo();
-                      }}
-                    >
-                      Move to…
-                    </MenuItem>
-                  )}
-                  {onToggleShelved && (
-                    <MenuItem
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleShelved();
-                      }}
-                    >
-                      {shelved ? 'Return to board' : 'Move to shelf'}
-                    </MenuItem>
-                  )}
-                </MenuList>
-              </MenuPopover>
-            </Menu>
-          )}
         </div>
 
         {parts.statusLine && (

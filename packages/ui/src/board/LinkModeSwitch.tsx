@@ -7,7 +7,13 @@
  * Shared by both hosts (`MyTasks.tsx`'s toolbar, the web's `BoardToolbar.tsx`), tokens only —
  * the desktop and the browser must agree pixel-for-pixel on what each mode looks like, same
  * bargain `BoardDisplayMenu` makes.
+ *
+ * Both hosts also wrap this whole group in an `OverflowItem` (`ToolbarOverflow.tsx`'s own
+ * toolbar) — which clones its single child and attaches a ref to measure and hide it. A plain
+ * function component cannot accept that ref (React silently drops it, and the item never
+ * registers with the overflow manager), so this is `forwardRef`'d to the root `<div>`.
  */
+import { forwardRef } from 'react';
 import { Caption1, ToggleButton, makeStyles, tokens } from '@fluentui/react-components';
 import { LinkMultipleRegular } from '@fluentui/react-icons';
 import { LINK_MODES, type LinkMode } from './linkMode';
@@ -30,28 +36,30 @@ export interface LinkModeSwitchProps {
   onChange: (mode: LinkMode) => void;
 }
 
-export function LinkModeSwitch({ mode, onChange }: LinkModeSwitchProps): JSX.Element {
-  const styles = useStyles();
-  return (
-    <div className={styles.group} role="group" aria-label="Chain links">
-      <span className={styles.icon} aria-hidden="true">
-        <LinkMultipleRegular />
-      </span>
-      {LINK_MODES.map((m) => (
-        <ToggleButton
-          key={m}
-          size="small"
-          appearance="subtle"
-          checked={mode === m}
-          title={`${TITLE[m]} (L)`}
-          onClick={() => onChange(m)}
-        >
-          {LABEL[m]}
-        </ToggleButton>
-      ))}
-      <Caption1 className={styles.hint} aria-hidden="true" title="Press L to cycle">
-        L
-      </Caption1>
-    </div>
-  );
-}
+export const LinkModeSwitch = forwardRef<HTMLDivElement, LinkModeSwitchProps>(
+  function LinkModeSwitch({ mode, onChange }, ref) {
+    const styles = useStyles();
+    return (
+      <div ref={ref} className={styles.group} role="group" aria-label="Chain links">
+        <span className={styles.icon} aria-hidden="true">
+          <LinkMultipleRegular />
+        </span>
+        {LINK_MODES.map((m) => (
+          <ToggleButton
+            key={m}
+            size="small"
+            appearance="subtle"
+            checked={mode === m}
+            title={`${TITLE[m]} (L)`}
+            onClick={() => onChange(m)}
+          >
+            {LABEL[m]}
+          </ToggleButton>
+        ))}
+        <Caption1 className={styles.hint} aria-hidden="true" title="Press L to cycle">
+          L
+        </Caption1>
+      </div>
+    );
+  },
+);

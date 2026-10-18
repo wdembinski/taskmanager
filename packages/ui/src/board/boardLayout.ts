@@ -15,6 +15,11 @@
  */
 import { makeStyles, tokens } from '@fluentui/react-components';
 
+/** A column's floor — below it a card's header has nowhere left to give, and its title
+ *  wraps one word per line instead of two. Shared with `PaneLoading`'s skeleton track so
+ *  the loading state does not promise a width the real board would refuse to hold. */
+export const BOARD_COLUMN_MIN_WIDTH = '260px';
+
 export const useBoardLayoutStyles = makeStyles({
   // No gap: the detail pane's own surface runs to the board's edge, and the change of
   // shade is the seam.
@@ -33,9 +38,40 @@ export const useBoardLayoutStyles = makeStyles({
     gap: '12px',
     minHeight: 0,
     minWidth: 0,
+    // The containing block for `chainLegend` below — an overlay anchored to the BOARD, not
+    // to the scrolling columns grid, so it can never become a grid track of its own again.
+    position: 'relative',
   },
-  toolbar: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+  // One row, never two or three: a toolbar that wraps hides its own trailing buttons behind
+  // whatever the viewport clips rather than behind a menu it offers. `minWidth: 0` lets the
+  // row shrink below its children's natural width so `Overflow` (the Fluent primitive each
+  // host wraps this in) has something to measure against; `Overflow` itself only ever hides
+  // the items that do not fit (`[data-overflowing]`), it does not touch the row's own CSS.
+  toolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    flexWrap: 'nowrap',
+    overflow: 'hidden',
+    minWidth: 0,
+  },
   grow: { flex: 1 },
+  /**
+   * The chain legend (`ChainLegend`), anchored to the board itself rather than drawn inside
+   * `columns` — see `ChainOverlay.tsx`'s own `legend` style comment for the bug this replaces
+   * (a `gridColumn: '1 / -1'` that, against an implicit grid, became a sixth ~260px column
+   * instead of spanning the row). `position: absolute` against `board`'s own `position:
+   * relative`, so it floats over the columns without ever being one of their flex/grid
+   * children, and `pointerEvents: 'none'` here too so it never steals a drag over the
+   * corner it sits in — `ChainLegend`'s own pill already clears pointer events for itself.
+   */
+  chainLegend: {
+    position: 'absolute',
+    insetBlockEnd: '10px',
+    insetInlineEnd: '16px',
+    zIndex: 1,
+    pointerEvents: 'none',
+  },
   // The whole board scrolls as one — not each column on its own — so the columns stay
   // aligned with each other while you scroll. A grid (rather than a flex row) is what
   // makes that work: the single auto row sizes to the *tallest* column, every column
@@ -44,11 +80,17 @@ export const useBoardLayoutStyles = makeStyles({
   columns: {
     display: 'grid',
     gridAutoFlow: 'column',
-    gridAutoColumns: 'minmax(0, 1fr)',
+    // A floor on each track, not `minmax(0, 1fr)`: with enough columns to crush a track
+    // below ~160px a card's header has nowhere left to give and its title wraps one word
+    // per line — the grid should scroll sideways before it does that to a column.
+    gridAutoColumns: `minmax(${BOARD_COLUMN_MIN_WIDTH}, 1fr)`,
     gap: '12px',
     flex: 1,
     minHeight: 0,
-    overflowY: 'auto',
+    // Both axes: once the floor above is reached, more columns than fit make the grid
+    // wider than the pane, and `auto` is what lets it scroll sideways for that instead of
+    // only ever vertically.
+    overflow: 'auto',
     // The containing block for the chain overlay (`ChainOverlay`), which is one `<svg>`
     // laid over the whole board. It had none, and this is exactly why one overlay is
     // possible at all: this is the ONLY scrolling element, so an absolutely-positioned

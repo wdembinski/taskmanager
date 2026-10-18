@@ -45,7 +45,7 @@ import { columnSwitcherItems } from '@tm/ui/board/compactColumns';
 import { chainPosition } from '@tm/ui/board/chainPosition';
 import { MoveToSheet } from '@tm/ui/board/MoveToSheet';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
-import { ChainOverlay } from '@tm/ui/board/ChainOverlay';
+import { ChainLegend, ChainOverlay } from '@tm/ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@tm/ui/board/ChainLinkPopover';
 import { useCardAnchors } from '@tm/ui/board/useCardAnchors';
 import { buildChainDrawing, linkMidpoint } from '@tm/ui/board/chainArrows';
@@ -943,6 +943,14 @@ export function BoardScreen({
             )}
           </div>
         )}
+        {/* Anchored to the BOARD (`layout.chainLegend`), never a child of the columns grid —
+            see `ChainLegend`'s own comment for the bug a grid child used to cause. Absent on
+            the compact board, same as the overlay itself above. */}
+        {!compact && linksDrawn && (
+          <div className={layout.chainLegend}>
+            <ChainLegend />
+          </div>
+        )}
         {settings.features.shelf && (
           <ShelfStrip
             cards={shelvedCards}
@@ -989,8 +997,10 @@ export function BoardScreen({
       {/* The desktop's own pane, the same component — and now with the same props, so it
           draws the same sections rather than degrading to a card and a timeline. Never on
           the compact board: there is no room for it, and no gesture here opens it anyway
-          (`compact.onOpenCard` leaves the board for the card screen instead). */}
-      {!compact && showDetail && (
+          (`compact.onOpenCard` leaves the board for the card screen instead). Also never
+          with nothing selected — the empty-state placeholder used to hold the pane's full
+          width for nothing (the 2026-10-18 screenshot review); see `MyTasks.tsx`'s own fix. */}
+      {!compact && showDetail && selectedTask && (
         <div className={layout.right}>
           <TaskDetailHost
             taskId={selectedTask?.id ?? null}
