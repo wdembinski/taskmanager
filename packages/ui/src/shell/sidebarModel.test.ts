@@ -276,3 +276,90 @@ describe('buildSidebar ticket ordering', () => {
     expect(noEpicGroup.children.map((n) => n.ticketKey)).toEqual(['TM-2', 'TM-9', 'TM-10']);
   });
 });
+
+describe("buildSidebar owner's shape", () => {
+  function walk(nodes: SidebarTreeNode[]): SidebarTreeNode[] {
+    return nodes.flatMap((n) => [n, ...walk(n.children)]);
+  }
+
+  // M1: only done tickets — fully finished, folds by default.
+  const m1 = milestone({ id: 'm1', name: 'M1', createdAt: 1 });
+  const m1Ticket = ticket({ milestoneId: 'm1', ticketKey: 'TM-1', status: 'done' });
+
+  // M5: a mix of pending and done tickets, plus a step under one of them — open work.
+  const m5 = milestone({ id: 'm5', name: 'M5', createdAt: 2 });
+  const m5PendingA = ticket({ milestoneId: 'm5', ticketKey: 'TM-9', status: 'pending' });
+  const m5PendingB = ticket({ milestoneId: 'm5', ticketKey: 'TM-2', status: 'pending' });
+  const m5DoneA = ticket({ milestoneId: 'm5', ticketKey: 'TM-10', status: 'done' });
+  const m5DoneB = ticket({ milestoneId: 'm5', ticketKey: 'TM-3', status: 'done' });
+  const m5Step = ticket({
+    parentTaskId: m5PendingA.id,
+    milestoneId: null,
+    ticketKey: 'TM-11',
+    status: 'done',
+  });
+
+  // M6: only pending tickets — open work.
+  const m6 = milestone({ id: 'm6', name: 'M6', createdAt: 3 });
+  const m6TicketA = ticket({ milestoneId: 'm6', ticketKey: 'TM-7', status: 'pending' });
+  const m6TicketB = ticket({ milestoneId: 'm6', ticketKey: 'TM-8', status: 'pending' });
+
+  const tickets = [
+    m1Ticket,
+    m5PendingA,
+    m5PendingB,
+    m5DoneA,
+    m5DoneB,
+    m5Step,
+    m6TicketA,
+    m6TicketB,
+  ];
+  const milestones = [m1, m5, m6];
+
+  it('never shows a step, anywhere, and leaves No milestone absent', () => {
+    const sections = buildSidebar(baseInput({ milestones, tickets }));
+    const tree = teamTree(sections);
+    const allNodes = walk(tree);
+    expect(allNodes.some((n) => n.taskId === m5Step.id)).toBe(false);
+    expect(allNodes.some((n) => n.label === NO_MILESTONE_GROUP)).toBe(false);
+  });
+
+  it('folds a fully-done milestone by default and leaves mixed/open ones unfolded', () => {
+    const tree = teamTree(buildSidebar(baseInput({ milestones, tickets, folds: [] })));
+    expect(tree.find((n) => n.label === 'M1')!.folded).toBe(true);
+    expect(tree.find((n) => n.label === 'M5')!.folded).toBe(false);
+    expect(tree.find((n) => n.label === 'M6')!.folded).toBe(false);
+  });
+
+  it('lets an explicit fold entry override the default either way', () => {
+    const unfoldedM1 = teamTree(
+      buildSidebar(baseInput({ milestones, tickets, folds: ['!milestone:m1'] })),
+    );
+    expect(unfoldedM1.find((n) => n.label === 'M1')!.folded).toBe(false);
+
+    const foldedM5 = teamTree(
+      buildSidebar(baseInput({ milestones, tickets, folds: ['milestone:m5'] })),
+    );
+    expect(foldedM5.find((n) => n.label === 'M5')!.folded).toBe(true);
+  });
+
+  it('orders open-work milestones before a fully-done one', () => {
+    const tree = teamTree(buildSidebar(baseInput({ milestones, tickets })));
+    expect(tree.map((n) => n.label)).toEqual(['M5', 'M6', 'M1']);
+  });
+
+  it("orders M5's tickets pending-first, each half in key order, and excludes the step from count", () => {
+    const tree = teamTree(buildSidebar(baseInput({ milestones, tickets })));
+    const m5Node = tree.find((n) => n.label === 'M5')!;
+    expect(m5Node.count).toBe(4);
+    const noEpicGroup = m5Node.children.find((n) => n.label === NO_EPIC_GROUP)!;
+    expect(noEpicGroup.children.map((n) => n.ticketKey)).toEqual(['TM-2', 'TM-9', 'TM-3', 'TM-10']);
+  });
+
+  it('carries status onto ticket nodes', () => {
+    const tree = teamTree(buildSidebar(baseInput({ milestones, tickets })));
+    const m6Node = tree.find((n) => n.label === 'M6')!;
+    const noEpicGroup = m6Node.children.find((n) => n.label === NO_EPIC_GROUP)!;
+    expect(noEpicGroup.children.every((n) => n.status === 'pending')).toBe(true);
+  });
+});

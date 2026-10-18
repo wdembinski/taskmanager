@@ -28,12 +28,42 @@ export function serializeFolds(folds: readonly string[]): string {
 }
 
 /**
+ * Whether `id` is folded, given a node that may default to folded or unfolded on its own
+ * (a finished milestone, say). An explicit `id` entry overrides the default to folded, an
+ * explicit `!id` entry overrides it to unfolded; with neither present, `defaultFolded` wins.
+ */
+export function isFolded(stored: ReadonlySet<string>, id: string, defaultFolded: boolean): boolean {
+  if (stored.has(id)) return true;
+  if (stored.has(`!${id}`)) return false;
+  return defaultFolded;
+}
+
+/**
+ * `stored` with `id`'s fold toggled, against a node whose own default may already be folded
+ * or unfolded. Drops whatever `id`/`!id` entry was already there, then adds back only the one
+ * that makes the new state differ from `defaultFolded` — so a toggle that lands back on the
+ * default leaves no trace, and the stored list never grows past what overrides the default.
+ */
+export function toggleStoredFold(
+  stored: readonly string[],
+  id: string,
+  defaultFolded: boolean,
+): string[] {
+  const wasFolded = isFolded(new Set(stored), id, defaultFolded);
+  const next = stored.filter((entry) => entry !== id && entry !== `!${id}`);
+  const nowFolded = !wasFolded;
+  if (nowFolded !== defaultFolded) next.push(nowFolded ? id : `!${id}`);
+  return next;
+}
+
+/**
  * This device's folded tree-node ids under `storageKey`, plus a toggle that flips one id's
- * membership and persists the result. Reads `localStorage` once, through {@link parseFolds}.
+ * state (against its own `defaultFolded`, default `false`) and persists the result. Reads
+ * `localStorage` once, through {@link parseFolds}.
  */
 export function useDeviceFolds(
   storageKey: string,
-): [folds: string[], toggleFold: (id: string) => void] {
+): [folds: string[], toggleFold: (id: string, defaultFolded?: boolean) => void] {
   const [folds, setFolds] = useState<string[]>(() => {
     try {
       return parseFolds(localStorage.getItem(storageKey));
@@ -42,9 +72,9 @@ export function useDeviceFolds(
     }
   });
 
-  function toggleFold(id: string): void {
+  function toggleFold(id: string, defaultFolded = false): void {
     setFolds((was) => {
-      const next = was.includes(id) ? was.filter((existing) => existing !== id) : [...was, id];
+      const next = toggleStoredFold(was, id, defaultFolded);
       try {
         localStorage.setItem(storageKey, serializeFolds(next));
       } catch {
