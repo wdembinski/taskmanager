@@ -49,6 +49,48 @@ describe('detectQuestion — the @@NEEDS_INPUT@@ contract', () => {
       options: [],
     });
   });
+
+  it('does NOT fire when the sentinel appears mid-line, negated in prose', () => {
+    expect(
+      detectQuestion(`No \`${NEEDS_INPUT_SENTINEL}\` needed; everything passed without ambiguity.`),
+    ).toBeNull();
+  });
+
+  it('does NOT fire when prose explains the convention mid-line, even across lines', () => {
+    expect(
+      detectQuestion(
+        `If I had a question I would write ${NEEDS_INPUT_SENTINEL} at the start of a line.`,
+      ),
+    ).toBeNull();
+    expect(
+      detectQuestion(
+        `If I had a question I would\nwrite ${NEEDS_INPUT_SENTINEL} at the start\nof a line.`,
+      ),
+    ).toBeNull();
+  });
+
+  it('skips a mid-line mention and parses a real sentinel line that follows', () => {
+    const text = [
+      `If I had a question I would write ${NEEDS_INPUT_SENTINEL} at the start of a line.`,
+      'Actually, here goes:',
+      `${NEEDS_INPUT_SENTINEL} Which backend?`,
+      '- SQLite',
+      '- Postgres',
+    ].join('\n');
+    expect(detectQuestion(text)).toEqual({
+      kind: 'question',
+      prompt: 'Which backend?',
+      options: ['SQLite', 'Postgres'],
+    });
+  });
+
+  it('parses an indented sentinel line (trim-then-startsWith)', () => {
+    expect(detectQuestion(`   ${NEEDS_INPUT_SENTINEL} Which one?`)).toEqual({
+      kind: 'question',
+      prompt: 'Which one?',
+      options: [],
+    });
+  });
 });
 
 describe('detectAttention', () => {
