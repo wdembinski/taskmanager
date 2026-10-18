@@ -20,8 +20,26 @@ const useStyles = makeStyles({
     overflow: 'hidden',
     backgroundColor: tokens.colorNeutralBackground2,
   },
-  /** Nav rail + content, side by side under the title bar. */
-  main: { display: 'flex', flex: 1, minHeight: 0 },
+  /** Nav rail + content, side by side under the title bar. `position: relative` so
+   *  `scrim` can cover exactly this band — never the title bar or status bar above/below it. */
+  main: { display: 'flex', flex: 1, minHeight: 0, position: 'relative' },
+  /**
+   * The command palette's backdrop, drawn here rather than by Fluent's own `Dialog` so it
+   * never covers the title bar or status bar (the mockup dims the sidebar too, which is
+   * inside this band). `zIndex` only needs to clear this shell's own content — Fluent's
+   * dialog portal mounts at `document.body`, above everything in this tree regardless of
+   * what z-index it is given here.
+   */
+  scrim: {
+    position: 'absolute',
+    inset: 0,
+    backgroundColor: 'var(--tm-scrim)',
+    zIndex: 1,
+    animationName: { from: { opacity: 0 }, to: { opacity: 1 } },
+    animationDuration: tokens.durationFaster,
+    animationTimingFunction: 'ease-out',
+    '@media (prefers-reduced-motion: reduce)': { animationName: 'none' },
+  },
   /** No padding: each screen owns its own insets, so a pane can run to the window edge. */
   content: {
     display: 'flex',
@@ -66,6 +84,9 @@ export interface AppShellProps {
   status: ReactNode;
   /** See `bodyPadded` — off for a workspace screen that lays out its own insets. */
   padded?: boolean;
+  /** Draws the content-only scrim over `main` (rail + sidebar + content) — on while the
+   *  command palette is open, so it dims everything but the title bar and status bar. */
+  dimmed?: boolean;
 }
 
 export function AppShell({
@@ -76,6 +97,7 @@ export function AppShell({
   children,
   status,
   padded,
+  dimmed,
 }: AppShellProps): JSX.Element {
   const styles = useStyles();
   return (
@@ -93,6 +115,8 @@ export function AppShell({
             {children}
           </div>
         </div>
+
+        {dimmed && <div aria-hidden className={styles.scrim} />}
       </div>
 
       {status}

@@ -459,6 +459,7 @@ function SignedInBoardView({
         }}
       >
         <AppShell
+          dimmed={paletteOpen}
           nav={
             // Sign out lives in the rail's own Account dropdown rather than the status bar —
             // this is the only host with an account to sign back out of, so it is also the

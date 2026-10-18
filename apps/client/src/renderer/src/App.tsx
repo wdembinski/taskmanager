@@ -498,6 +498,7 @@ export function App(): JSX.Element {
         onClose={() => setNewIssueDialogOpen(false)}
       />
       <AppShell
+        dimmed={paletteOpen}
         titleBar={<TitleBar />}
         nav={
           <NavRail
