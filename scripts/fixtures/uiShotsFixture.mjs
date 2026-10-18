@@ -372,6 +372,57 @@ export const VISUAL_SIGNOFF_ATTACHMENTS = [
 ];
 
 /**
+ * A step under the same owner card (`13a`) `VISUAL_SIGNOFF_ATTACHMENTS` hangs off — exists only
+ * so `files-section-grouped`'s own `channelOverrides` (`ui-shots.mjs`) can prove `FilesSection`
+ * actually groups by step, not just by card. `sidebarTicket`'s shape (source `'ticket'` despite
+ * being a step) is the same one `sidebarMixedStep` above already proves stays off every
+ * ticket/board listing once its `parentTaskId` names a task also in the list (`isBoardCard`,
+ * `packages/shared/src/board.ts`) — so adding it only for that one row's own `board:tasks`
+ * override cannot shift `issue-row:first`'s position for anyone else.
+ */
+export const VISUAL_SIGNOFF_STEP_TASK = sidebarTicket({
+  id: 'vso-step-1',
+  title: 'Shoot the dashboard retry UI',
+  status: 'done',
+  parentTaskId: '13a',
+  milestoneId: null,
+});
+
+/** The step's own file — a plain image, not a `name`/`name-mockup` pair, so
+ *  `groupAttachmentsForDisplay` draws it from `AttachmentGallery`'s `images` bucket rather
+ *  than `pairs`, proving `FilesSection` carries more than just visual-sign-off shots. */
+export const VISUAL_SIGNOFF_STEP_ATTACHMENT = {
+  id: 'vso-step-shot',
+  taskId: VISUAL_SIGNOFF_STEP_TASK.id,
+  name: 'retry-ui.png',
+  fileName: 'retry-ui.png',
+  mimeType: 'image/png',
+  size: 32_000,
+  createdAt: now - 30_000,
+};
+
+/**
+ * One inbox item — an agent question parked on the same owner card `VISUAL_SIGNOFF_ATTACHMENTS`
+ * already hangs off (`13a`) — proving `InboxItem` (`Attention.tsx`) shows a run's own files
+ * inline, not just the card panel's `VisualSignOff`/`FilesSection`. Every row but
+ * `inbox-item-attachments` leaves `attention:list` at the shared fixture's empty `'list'`
+ * fallback below; only that row's own `channelOverrides` supplies this.
+ */
+export const INBOX_QUESTION_ITEM = {
+  id: 'att-vso-1',
+  runId: 'run-vso-1',
+  taskId: '13a',
+  projectId: PROJECT_ID,
+  taskTitle: 'Wire the retry queue to the dashboard',
+  kind: 'question',
+  prompt: 'Screenshots attached — does the dashboard layout match the mockup?',
+  options: [],
+  toolName: null,
+  reason: null,
+  createdAt: now - 120_000,
+};
+
+/**
  * The three archived milestones `archived-light`'s own screen seeds (F14.8 step 4) — named
  * after the mockup's own rows (`v10-21-archived-light.svg`) so the shot reads the same way the
  * mockup does, on the fixture's one ticket project (`boardShotsFixture.mjs`'s `PROJECT_ID`).

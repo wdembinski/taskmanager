@@ -69,6 +69,9 @@
  *     - `{ scroll: 'sidebar-bottom' }` — scrolls the sidebar's own scrollable region (the one
  *       `overflowY: auto` child of `nav[aria-label="Sidebar"]`) to its bottom, so a folded tail
  *       below the fold (a fully-done milestone sorted last) is actually in frame for the shot.
+ *     - `{ scrollToSelector: selector }` — waits for `selector` to appear, then
+ *       `scrollIntoView({ block: 'start' })`s it — for a section proven to render (by its own
+ *       `expect`) but not necessarily in frame at the top of a long, scrollable detail pane.
  * - `mockup` — a filename under `docs/plan/feature-roadmap/mockups/`, or `null` where no mockup
  *   draws this exact state (an approximate stand-in mockup is noted per row below instead).
  * - `clip` — `'sidebar'` crops the capture to `nav[aria-label="Sidebar"]`'s own bounding rect
@@ -262,6 +265,56 @@ export const SCREENS = [
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
     expect: '[data-visual-signoff]',
     mockup: null,
+  },
+  {
+    // Proves the Inbox (`Attention.tsx`'s `InboxItem`) shows an agent question's own files
+    // inline, not just the card panel's own sections. `attachment:list` is already globally
+    // `VISUAL_SIGNOFF_ATTACHMENTS` (hung off task `13a` — see `visual-signoff-dark`'s own
+    // comment), so the one thing missing is a real `attention:list` item for that same task;
+    // this row's `channelOverrides` supplies it (`uiShotsFixture.INBOX_QUESTION_ITEM`).
+    // Every other row leaves that channel at the shared fixture's empty `'list'` fallback, so
+    // nothing elsewhere grows an inbox item it was not asked to.
+    name: 'inbox-item-attachments',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ click: 'Inbox' }],
+    expect: '[data-attachment-gallery]',
+    mockup: null,
+    channelOverrides: {
+      'attention:list': [uiShotsFixture.INBOX_QUESTION_ITEM],
+    },
+  },
+  {
+    // Proves `FilesSection` actually groups a card's files by step, not just by the card
+    // itself. Same setup as `issue-full-screen`/`visual-signoff-dark` (`'Tickets'`,
+    // `'issue-row:first'`, `'Open full screen'`), but `channelOverrides` additionally gives
+    // 13a one step of its own (`VISUAL_SIGNOFF_STEP_TASK`) carrying a file of its own
+    // (`VISUAL_SIGNOFF_STEP_ATTACHMENT`) — scoped to this row alone so `issue-row:first`'s
+    // position cannot shift for either of those other two rows (see that task's own doc
+    // comment on why it never counts as a ticket/board row of its own). The extra
+    // `scrollToSelector` step is what actually brings `[data-files-section]` into frame —
+    // `issue-full-screen`/`visual-signoff-dark` never scroll past it, so neither has proven
+    // this section renders at all, only that it does not crash.
+    name: 'files-section-grouped',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [
+      { click: 'Tickets' },
+      { click: 'issue-row:first' },
+      { click: 'Open full screen' },
+      { scrollToSelector: '[data-files-section]' },
+    ],
+    expect: '[data-files-section]',
+    mockup: null,
+    channelOverrides: {
+      'board:tasks': [...uiShotsFixture.BOOT_CHANNELS['board:tasks'], uiShotsFixture.VISUAL_SIGNOFF_STEP_TASK],
+      'attachment:list': [
+        ...uiShotsFixture.VISUAL_SIGNOFF_ATTACHMENTS,
+        uiShotsFixture.VISUAL_SIGNOFF_STEP_ATTACHMENT,
+      ],
+    },
   },
   {
     // The "Settings" tab is NavRail's foot group (apps/client/src/renderer/src/App.tsx).
@@ -465,8 +518,12 @@ window.__tm = {
  * `BOOT_CHANNELS` — for the one screen that needs to see a state the other rows must NOT
  * (e.g. the updater's `auto` mode, to show the private-feed token field), rather than mutating
  * the fixture module's exports for every row that happens to run afterward.
+ *
+ * `attachmentUrls` is `buildFixtureAttachmentUrls`'s own table (`main`, below) — real, fetchable
+ * URLs for the handful of fixture attachment ids a row actually draws as `<img>`, threaded
+ * straight through to `buildApiStub`.
  */
-function clientInitScript(defaultSettings, row) {
+function clientInitScript(defaultSettings, row, attachmentUrls) {
   const fixture = row.channelOverrides
     ? {
         ...uiShotsFixture,
@@ -477,6 +534,7 @@ function clientInitScript(defaultSettings, row) {
     defaultSettings,
     fixture,
     settingsOverrides: { appearance: row.scheme, transparency: 'reduced', fontSizePx: 14 },
+    attachmentUrls,
   });
   return `${PAGE_HELPERS_SRC}\n${stub}`;
 }
@@ -606,6 +664,21 @@ async function runSetupStep(cdp, step) {
     if (!scrolled) throw new Error("could not find the sidebar's own scroll region");
     return;
   }
+  if (step.scrollToSelector !== undefined) {
+    // Unlike `{ scroll: 'sidebar-bottom' }`'s one fixed region, this brings an arbitrary
+    // element into frame — for a row proving a section renders at all, not just that it is
+    // somewhere in a scrollable pane past the viewport's own height.
+    const selector = JSON.stringify(step.scrollToSelector);
+    await waitFor(
+      async () => (await evaluate(cdp, `!!document.querySelector(${selector})`)) === true,
+      { timeoutMs: 10000, label: `"${step.scrollToSelector}" to appear before scrolling to it` },
+    );
+    await evaluate(
+      cdp,
+      `document.querySelector(${selector}).scrollIntoView({ block: 'start' })`,
+    );
+    return;
+  }
   throw new Error(`unknown setup step: ${JSON.stringify(step)}`);
 }
 
@@ -665,6 +738,45 @@ function buildClientRenderer(requireFromClient, outDir) {
     stdio: 'inherit',
   });
   if (res.status !== 0) throw new Error('electron-vite build failed for @tm/client');
+}
+
+/**
+ * Real, decodable PNGs for the handful of `VISUAL_SIGNOFF_*` fixture attachment ids the
+ * `visual-signoff-dark`/`inbox-item-attachments`/`files-section-grouped` rows draw as `<img>` —
+ * rasterized with `renderSvgToPng`, the same headless-Chrome-screenshots-an-SVG-file approach
+ * every mockup row already uses, rather than hand-rolling a PNG encoder. A real Electron main
+ * process would answer these through `vipper-attachment://` (`registerAttachmentProtocol`),
+ * which this harness's plain Chrome tab can never resolve (see `apiStub.mjs`'s own doc on
+ * `attachmentUrls`) — these are what `window.api.attachmentUrl` points at instead.
+ *
+ * Written under the client renderer's own served output directory so `startStaticServer`
+ * answers them for free; the scratch SVGs are removed immediately, since only the PNGs are
+ * ever fetched.
+ */
+function buildFixtureAttachmentUrls(browserPath, clientRendererOutDir, clientOrigin) {
+  const dir = join(clientRendererOutDir, 'fixture-attachments');
+  mkdirSync(dir, { recursive: true });
+  const swatches = {
+    'vso-real': { color: '#0F6CBD', label: 'REAL' },
+    'vso-mockup': { color: '#616161', label: 'MOCKUP' },
+    'vso-step-shot': { color: '#107C10', label: 'STEP' },
+  };
+  const urls = {};
+  for (const [id, { color, label }] of Object.entries(swatches)) {
+    const svgPath = join(dir, `${id}.svg`);
+    const pngPath = join(dir, `${id}.png`);
+    writeFileSync(
+      svgPath,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200">` +
+        `<rect width="320" height="200" fill="${color}"/>` +
+        `<text x="160" y="104" font-family="sans-serif" font-size="22" fill="white" ` +
+        `text-anchor="middle">${label}</text></svg>`,
+    );
+    renderSvgToPng(browserPath, svgPath, pngPath, 320, 200);
+    rmSync(svgPath);
+    urls[id] = `${clientOrigin}/fixture-attachments/${id}.png`;
+  }
+  return urls;
 }
 
 /** `verify-mobile.mjs`'s own `buildWeb`, generalized to a caller-supplied `outDir`. */
@@ -816,6 +928,7 @@ async function main() {
 
   let clientServerHandle;
   let clientOrigin;
+  let clientRendererOutDir;
   let clientDefaultSettings;
   let relayHandle;
   let relayOrigin;
@@ -830,7 +943,8 @@ async function main() {
       const clientOutDir = join(scratch, 'client-out');
       mkdirSync(clientOutDir, { recursive: true });
       buildClientRenderer(requireFromClient, clientOutDir);
-      const client = await startStaticServer(join(clientOutDir, 'renderer'));
+      clientRendererOutDir = join(clientOutDir, 'renderer');
+      const client = await startStaticServer(clientRendererOutDir);
       clientServerHandle = client.server;
       clientOrigin = `http://127.0.0.1:${client.port}`;
     }
@@ -855,6 +969,13 @@ async function main() {
 
     const browserPath = findBrowser();
     console.log(`using browser: ${browserPath}`);
+
+    // Real bytes for the `VISUAL_SIGNOFF_*` fixture's attachment ids — see
+    // `buildFixtureAttachmentUrls`'s own doc for why a plain Chrome tab needs this at all.
+    const attachmentUrls = needsClient
+      ? buildFixtureAttachmentUrls(browserPath, clientRendererOutDir, clientOrigin)
+      : {};
+
     const rdpPort = await getFreePort();
     chromeProc = launchChrome(browserPath, rdpPort, {
       profileDir: chromeProfileDir,
@@ -900,7 +1021,7 @@ async function main() {
 
         let initScript;
         if (row.app === 'client') {
-          initScript = clientInitScript(clientDefaultSettings, row);
+          initScript = clientInitScript(clientDefaultSettings, row, attachmentUrls);
           await freshLoad(cdp, clientOrigin, initScript);
         } else {
           relayHandle.state.settings.appearance = row.scheme;
