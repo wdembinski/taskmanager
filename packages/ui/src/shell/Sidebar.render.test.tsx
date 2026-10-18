@@ -10,7 +10,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { Sidebar, type SidebarProps } from './Sidebar';
-import type { SidebarSection } from './sidebarModel';
+import type { SidebarSection, SidebarTreeNode } from './sidebarModel';
 
 const teamSection = (
   over: Partial<Extract<SidebarSection, { kind: 'team' }>> = {},
@@ -23,13 +23,24 @@ const teamSection = (
 
 const archivedSection = (count = 3): SidebarSection => ({ kind: 'archived', count });
 
+const ticketNode = (over: Partial<SidebarTreeNode> = {}): SidebarTreeNode => ({
+  id: 'ticket:t1',
+  kind: 'ticket',
+  label: 'Fix the thing',
+  taskId: 't1',
+  status: 'pending',
+  count: 0,
+  folded: false,
+  children: [],
+  ...over,
+});
+
 const baseProps: SidebarProps = {
   sections: [teamSection()],
   selectedView: null,
   onNavigate: () => {},
   onOpenTicket: () => {},
   onNewIssue: () => {},
-  folds: [],
   onToggleFold: () => {},
 };
 
@@ -88,5 +99,79 @@ describe('Sidebar', () => {
       <Sidebar {...baseProps} sections={sections} selectedView={{ kind: 'archived' }} />,
     );
     expect(selected).toContain('aria-current="true"');
+  });
+
+  it("hides a finished milestone's tickets by default, folded like the model resolved it", () => {
+    const finishedMilestone: SidebarTreeNode = {
+      id: 'milestone:m1',
+      kind: 'milestone',
+      label: 'Shipped milestone',
+      count: 1,
+      finished: true,
+      defaultFolded: true,
+      folded: true,
+      children: [ticketNode({ label: 'Already done', status: 'done' })],
+    };
+    const markup = renderToStaticMarkup(
+      <Sidebar {...baseProps} sections={[teamSection({ tree: [finishedMilestone] })]} />,
+    );
+    expect(markup).toContain('Shipped milestone');
+    expect(markup).not.toContain('Already done');
+  });
+
+  it("gives a running ticket's glyph the Running label, not a colour-only cue", () => {
+    const runningTicket = ticketNode({ label: 'Mid-flight', status: 'running' });
+    const markup = renderToStaticMarkup(
+      <Sidebar {...baseProps} sections={[teamSection({ tree: [runningTicket] })]} />,
+    );
+    expect(markup).toContain('Mid-flight');
+    expect(markup).toContain('aria-label="Running"');
+  });
+
+  it("dims a finished epic/milestone header's title the same way a done ticket's is", () => {
+    const doneEpic: SidebarTreeNode = {
+      id: 'epic:m1:e1',
+      kind: 'epic',
+      label: 'Finished epic',
+      count: 1,
+      finished: true,
+      defaultFolded: true,
+      folded: true,
+      children: [ticketNode({ label: 'Already done', status: 'done' })],
+    };
+    const openEpic: SidebarTreeNode = {
+      ...doneEpic,
+      id: 'epic:m1:e2',
+      label: 'Open epic',
+      finished: false,
+      defaultFolded: false,
+      folded: false,
+    };
+    const markup = renderToStaticMarkup(
+      <Sidebar {...baseProps} sections={[teamSection({ tree: [doneEpic, openEpic] })]} />,
+    );
+    const doneClass = /class="([^"]*)">Finished epic</.exec(markup)?.[1];
+    const openClass = /class="([^"]*)">Open epic</.exec(markup)?.[1];
+    expect(doneClass).toBeTruthy();
+    expect(openClass).toBeTruthy();
+    expect(doneClass).not.toBe(openClass);
+  });
+
+  it("shows a milestone's count as open/total, not a bare total", () => {
+    const milestoneNode: SidebarTreeNode = {
+      id: 'milestone:m1',
+      kind: 'milestone',
+      label: 'Mixed milestone',
+      count: 2,
+      openCount: 1,
+      finished: false,
+      defaultFolded: false,
+      folded: false,
+      children: [],
+    };
+    const markup = renderToStaticMarkup(
+      <Sidebar {...baseProps} sections={[teamSection({ tree: [milestoneNode] })]} />,
+    );
+    expect(markup).toContain('>1/2<');
   });
 });

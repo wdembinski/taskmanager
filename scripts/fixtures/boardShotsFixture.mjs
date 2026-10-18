@@ -104,7 +104,13 @@ const trackerUnread = task({
   latestCommentAt: now - 60_000,
   lastReadCommentAt: now - 2 * DAY,
 });
-const epicCard = task({ id: 'epic', title: 'M4 · Reach', order: 4, status: 'in-review' });
+const epicCard = task({
+  id: 'epic',
+  title: 'M4 · Reach',
+  order: 4,
+  status: 'in-review',
+  issueType: 'epic',
+});
 const epicChild = task({
   id: '11',
   title: 'Nordic theme tokens',

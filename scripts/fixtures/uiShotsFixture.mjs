@@ -33,6 +33,188 @@ import {
 const now = Date.UTC(2026, 0, 15, 12, 0, 0);
 const DAY = 24 * 60 * 60 * 1000;
 
+/** A milestone-tracker ticket, the same minimal `Task` fields `boardShotsFixture.mjs`'s own
+ *  private `task()` helper settles on (not reused directly — it is not exported). */
+function sidebarTicket(over) {
+  return {
+    id: over.id,
+    projectId: PROJECT_ID,
+    phase: '',
+    title: over.title ?? 'Untitled',
+    status: 'pending',
+    sessionId: null,
+    order: 0,
+    dependsOn: [],
+    source: 'ticket',
+    isContract: false,
+    isScaffold: false,
+    ticketKey: `FX-${over.id}`,
+    ...over,
+  };
+}
+
+/** A milestone fixture, the same minimal `Milestone` fields `sidebarModel.test.ts`'s own
+ *  `milestone()` helper settles on. */
+function sidebarMilestone(over) {
+  return {
+    id: over.id,
+    projectId: PROJECT_ID,
+    name: over.name,
+    description: '',
+    dueAt: null,
+    color: '',
+    closed: false,
+    archivedAt: null,
+    createdAt: now,
+    ...over,
+  };
+}
+
+/**
+ * The sidebar tree's own "owner's shape" (`sidebarModel.test.ts`'s own describe block, mirrored
+ * here): a fully-done milestone that folds by default, a mixed milestone with both open and
+ * finished tickets (plus a step under one of them, proving steps never reach the tree, and an
+ * epic whose own tickets are all done, proving an epic group folds on its own even while its
+ * milestone still has open work) and a running ticket (proving the brand-coloured glyph), a
+ * milestone with only open work (plus a needs-input ticket, proving the colour cue), and a
+ * milestone whose only content is a fully-done epic (proving "no open work" folds a milestone
+ * even when nothing but an epic group drives that, with no loose tickets of its own).
+ */
+const shippedMilestone = sidebarMilestone({
+  id: 'ms-shipped',
+  name: 'Nordic rollout',
+  createdAt: now - 3 * DAY,
+});
+const mixedMilestone = sidebarMilestone({
+  id: 'ms-mixed',
+  name: 'Reach the mobile build',
+  createdAt: now - 2 * DAY,
+});
+const pendingMilestone = sidebarMilestone({
+  id: 'ms-pending',
+  name: 'Early access',
+  createdAt: now - DAY,
+});
+const epicDoneMilestone = sidebarMilestone({
+  id: 'ms-epic-done',
+  name: 'Platform hardening',
+  createdAt: now - 4 * DAY,
+});
+export const MILESTONES = [shippedMilestone, mixedMilestone, pendingMilestone, epicDoneMilestone];
+
+const sidebarShippedTicket = sidebarTicket({
+  id: 'sb-1',
+  title: 'Ship the Nordic locale pack',
+  status: 'done',
+  milestoneId: shippedMilestone.id,
+});
+const sidebarMixedPending = sidebarTicket({
+  id: 'sb-2',
+  title: 'Wire the mobile build pipeline',
+  status: 'pending',
+  milestoneId: mixedMilestone.id,
+});
+const sidebarMixedDone = sidebarTicket({
+  id: 'sb-3',
+  title: 'Audit the mobile bundle size',
+  status: 'done',
+  milestoneId: mixedMilestone.id,
+});
+const sidebarMixedRunning = sidebarTicket({
+  id: 'sb-4',
+  title: 'Localize the onboarding tour',
+  status: 'running',
+  agentProjectId: PROJECT_ID,
+  workedAt: now - 2 * 60_000,
+  milestoneId: mixedMilestone.id,
+});
+const sidebarMixedStep = sidebarTicket({
+  id: 'sb-2-s1',
+  title: 'Draft the pipeline config',
+  status: 'done',
+  parentTaskId: sidebarMixedPending.id,
+  milestoneId: null,
+});
+const sidebarMixedEpic = sidebarTicket({
+  id: 'sb-7',
+  title: 'Nordic theming epic',
+  status: 'in-review',
+  issueType: 'epic',
+  milestoneId: mixedMilestone.id,
+});
+const sidebarMixedEpicChildA = sidebarTicket({
+  id: 'sb-7-a',
+  title: 'Ship the dark palette',
+  status: 'done',
+  epicTaskId: sidebarMixedEpic.id,
+  milestoneId: mixedMilestone.id,
+});
+const sidebarMixedEpicChildB = sidebarTicket({
+  id: 'sb-7-b',
+  title: 'Retire the legacy tokens',
+  status: 'done',
+  epicTaskId: sidebarMixedEpic.id,
+  milestoneId: mixedMilestone.id,
+});
+const sidebarPendingA = sidebarTicket({
+  id: 'sb-5',
+  title: 'Draft the early-access invite flow',
+  status: 'pending',
+  milestoneId: pendingMilestone.id,
+});
+const sidebarPendingB = sidebarTicket({
+  id: 'sb-6',
+  title: 'Spec the invite quota limits',
+  status: 'pending',
+  milestoneId: pendingMilestone.id,
+});
+const sidebarPendingNeedsInput = sidebarTicket({
+  id: 'sb-9',
+  title: 'Resolve the invite-quota ambiguity',
+  status: 'waiting-input',
+  agentProjectId: PROJECT_ID,
+  workedAt: now - 10 * 60_000,
+  milestoneId: pendingMilestone.id,
+});
+const sidebarEpicDoneEpic = sidebarTicket({
+  id: 'sb-8',
+  title: 'Harden the sync protocol',
+  status: 'done',
+  issueType: 'epic',
+  milestoneId: epicDoneMilestone.id,
+});
+const sidebarEpicDoneChildA = sidebarTicket({
+  id: 'sb-8-a',
+  title: 'Encrypt the sync payload',
+  status: 'done',
+  epicTaskId: sidebarEpicDoneEpic.id,
+  milestoneId: epicDoneMilestone.id,
+});
+const sidebarEpicDoneChildB = sidebarTicket({
+  id: 'sb-8-b',
+  title: 'Rotate the sync keys automatically',
+  status: 'done',
+  epicTaskId: sidebarEpicDoneEpic.id,
+  milestoneId: epicDoneMilestone.id,
+});
+
+export const SIDEBAR_TICKETS = [
+  sidebarShippedTicket,
+  sidebarMixedPending,
+  sidebarMixedDone,
+  sidebarMixedRunning,
+  sidebarMixedStep,
+  sidebarMixedEpic,
+  sidebarMixedEpicChildA,
+  sidebarMixedEpicChildB,
+  sidebarPendingA,
+  sidebarPendingB,
+  sidebarPendingNeedsInput,
+  sidebarEpicDoneEpic,
+  sidebarEpicDoneChildA,
+  sidebarEpicDoneChildB,
+];
+
 export const APP_INFO = {
   version: '0.0.0',
   electron: 'headless',
@@ -256,8 +438,10 @@ export const BOOT_CHANNELS = {
   // Includes `ARCHIVED_MILESTONE_TICKETS` alongside the board's own `TASKS` — `archived-light`
   // (and any other screen that reaches `board:tasks`) needs to resolve them by id, and
   // `milestone:list` below marks their milestone archived so `visibleTickets` keeps them off
-  // every ordinary board/backlog/timeline screen's own shot.
-  'board:tasks': [...TASKS, ...ARCHIVED_MILESTONE_TICKETS],
+  // every ordinary board/backlog/timeline screen's own shot. `SIDEBAR_TICKETS`/`MILESTONES`
+  // are the tree's own owner's-shape fixture (see their own comment above), folded into the
+  // same answer since `ui-shots.mjs` drives every row off this one shared table.
+  'board:tasks': [...TASKS, ...ARCHIVED_MILESTONE_TICKETS, ...SIDEBAR_TICKETS],
   'board:archived': 'list',
   'project:list': PROJECTS,
   'mr:mergeRequests': MERGE_REQUESTS,
@@ -273,11 +457,11 @@ export const BOOT_CHANNELS = {
   // mismatch is exactly the gap this step's plan calls out: an unlisted channel reads as an
   // empty listing instead of failing loudly).
   'archive:list': { projects: [], milestones: ARCHIVED_MILESTONES, epics: [] },
-  // `ARCHIVED_MILESTONES` only — `sidebarModel.ts`'s `buildSidebar` already drops an archived
-  // milestone from the tree, and `visibleTickets`/`pickableMilestones` drop them (and their
-  // tickets) from every other screen the same way, so listing them here does not leak into
-  // `board-light`/`issue-list-light`/etc.'s own shots.
-  'milestone:list': ARCHIVED_MILESTONES,
+  // The sidebar's own `MILESTONES` plus `ARCHIVED_MILESTONES` — `sidebarModel.ts`'s
+  // `buildSidebar` already drops an archived milestone from the tree, and
+  // `visibleTickets`/`pickableMilestones` drop them (and their tickets) from every other screen
+  // the same way, so listing them here does not leak into `board-light`/`issue-list-light`/etc.
+  'milestone:list': [...MILESTONES, ...ARCHIVED_MILESTONES],
   // `useTicketRegistries.ts` (`Projects.tsx`'s own registries hook, reached once `ui-shots.mjs`
   // clicks "Tickets") fetches these two alongside `person:list`/`milestone:list` above — found
   // missing the first time this fixture drove the web target through `fakeRelay.mjs`, whose

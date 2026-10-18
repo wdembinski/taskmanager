@@ -484,7 +484,6 @@ function SignedInBoardView({
               onNewIssue={() => {
                 if (tracker.projectId) setNewIssueDialogOpen(true);
               }}
-              folds={sidebarFolds}
               onToggleFold={toggleSidebarFold}
               showFleet
               projectOptions={tracker.projectOptions}

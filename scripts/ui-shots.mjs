@@ -52,8 +52,14 @@
  *       one element's own React `onKeyDown` (e.g. `Projects.tsx`'s Space-for-peek) only fires if
  *       that element already has focus — true after a real click, not guaranteed after this
  *       driver's own synthetic `.click()`. No row below needs the latter yet.
+ *     - `{ scroll: 'sidebar-bottom' }` — scrolls the sidebar's own scrollable region (the one
+ *       `overflowY: auto` child of `nav[aria-label="Sidebar"]`) to its bottom, so a folded tail
+ *       below the fold (a fully-done milestone sorted last) is actually in frame for the shot.
  * - `mockup` — a filename under `docs/plan/feature-roadmap/mockups/`, or `null` where no mockup
  *   draws this exact state (an approximate stand-in mockup is noted per row below instead).
+ * - `clip` — `'sidebar'` crops the capture to `nav[aria-label="Sidebar"]`'s own bounding rect
+ *   instead of the whole viewport, so the row shoots the tree on its own rather than whatever
+ *   else happens to share the window. Omit it to capture the full viewport, same as before.
  *
  * ## Known gap
  *
@@ -106,6 +112,31 @@ export const SCREENS = [
     viewport: { width: 1440, height: 900 },
     scheme: 'dark',
     setup: null,
+    mockup: 'v9-7b-board-dark.svg',
+  },
+  {
+    // Frames the milestone/epic/ticket tree on its own (`clip: 'sidebar'`), scrolled to its
+    // bottom so the folded-by-default tail (a fully-done milestone, an epic whose tickets are
+    // all done, a milestone with no open work of its own) is actually in frame rather than
+    // scrolled past — `board-light`/`-dark` happen to show the same sidebar unscrolled, which
+    // is why these two used to come out byte-identical to them before this row had its own
+    // `setup`/`clip`. No mockup draws the tree's folded/status-glyph states on their own, so
+    // `board-light`'s own reference is the nearest available.
+    name: 'sidebar-tree-light',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ scroll: 'sidebar-bottom' }],
+    clip: 'sidebar',
+    mockup: 'v9-7-board-light.svg',
+  },
+  {
+    name: 'sidebar-tree-dark',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'dark',
+    setup: [{ scroll: 'sidebar-bottom' }],
+    clip: 'sidebar',
     mockup: 'v9-7b-board-dark.svg',
   },
   {
@@ -439,7 +470,45 @@ async function runSetupStep(cdp, step) {
     );
     return;
   }
+  if (step.scroll === 'sidebar-bottom') {
+    // The sidebar (`Sidebar.tsx`) has no stable hook of its own for the one div that actually
+    // scrolls (`styles.scroll` — Griffel hashes the class) — found instead by its own computed
+    // style, the same way the tree's own scrollable region is the only `overflowY: auto` child
+    // of `nav[aria-label="Sidebar"]`.
+    const scrolled = await evaluate(
+      cdp,
+      `(() => {
+        const nav = document.querySelector('nav[aria-label="Sidebar"]');
+        if (!nav) return false;
+        const scroller = Array.from(nav.children).find(
+          (el) => getComputedStyle(el).overflowY === 'auto',
+        );
+        if (!scroller) return false;
+        scroller.scrollTop = scroller.scrollHeight;
+        return true;
+      })()`,
+    );
+    if (!scrolled) throw new Error('could not find the sidebar\'s own scroll region');
+    return;
+  }
   throw new Error(`unknown setup step: ${JSON.stringify(step)}`);
+}
+
+/** `nav[aria-label="Sidebar"]`'s own bounding rect, in CSS px — `screenshot`'s `clip` crops to
+ *  exactly this when a row's `clip` is `'sidebar'`, so the shot is the tree on its own rather
+ *  than the whole viewport the sidebar happens to sit in. */
+async function sidebarClipRect(cdp) {
+  const rect = await evaluate(
+    cdp,
+    `(() => {
+      const nav = document.querySelector('nav[aria-label="Sidebar"]');
+      if (!nav) return null;
+      const r = nav.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height };
+    })()`,
+  );
+  if (!rect) throw new Error('could not find nav[aria-label="Sidebar"] to clip the shot to');
+  return rect;
 }
 
 /** Fluent's `Skeleton`/`Spinner` are the only loading affordance anything in `packages/ui/src`
@@ -693,7 +762,8 @@ async function main() {
         await waitForIdle(cdp);
 
         const shotPath = join(outDir, `${row.name}.png`);
-        await screenshot(cdp, shotPath);
+        const clip = row.clip === 'sidebar' ? await sidebarClipRect(cdp) : undefined;
+        await screenshot(cdp, shotPath, clip);
         result.shotPath = shotPath;
 
         if (row.mockup) {

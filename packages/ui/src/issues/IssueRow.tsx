@@ -27,8 +27,9 @@ import { AssigneeDisplay } from '../projects/AssigneeDisplay';
 import { issueRowParts, type IssueRowContext } from './issueRowParts';
 
 /** One icon per column, every one in `textMuted` — the glyph's SHAPE carries the state,
- *  not a second colour spent on something that isn't moving. */
-const STATUS_GLYPH: Record<BoardColumn, JSX.Element> = {
+ *  not a second colour spent on something that isn't moving. Exported so `Sidebar.tsx`'s own
+ *  ticket rows draw the exact same shapes, rather than a second lookup table that could drift. */
+export const STATUS_GLYPH: Record<BoardColumn, JSX.Element> = {
   todo: <CircleRegular />,
   'in-progress': <CircleHalfFillRegular />,
   'in-review': <CircleHintRegular />,
