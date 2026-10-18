@@ -57,7 +57,7 @@ import {
 import { currentSprintName } from '@ui/board/currentSprint';
 // The ticket WORKSPACE (backlog table + Gantt over one ticket project's own tickets),
 // distinct from the admin `Projects` screen below — see the TabId doc above.
-import { Projects as TicketWorkspace } from '@ui/projects/Projects';
+import { Projects as TicketWorkspace, type ProjectView } from '@ui/projects/Projects';
 import { SyncRing } from './SyncRing';
 import type { SyncState } from '@shared/sync';
 import { Performance } from '@ui/Performance';
@@ -227,6 +227,10 @@ export function App(): JSX.Element {
   const tracker = useTrackerProject(trackerProjects, openCounts);
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
   const sidebarData = useSidebarData(tracker.projectId, { attentionCount, folds: sidebarFolds });
+  // The Tickets workspace's own Backlog/Timeline/Graph/Archived view (F14.8) — lifted here so
+  // the sidebar's "Archived" row can land on it directly, the same `tab`-lifting reason
+  // `tracker.projectId` is lifted rather than left to `TicketWorkspace`'s own default.
+  const [ticketsView, setTicketsView] = useState<ProjectView>('backlog');
   const [newIssueDialogOpen, setNewIssueDialogOpen] = useState(false);
   /**
    * The Activity tab's persisted unread baseline (F2.13) — read once at boot, and advanced
@@ -449,6 +453,10 @@ export function App(): JSX.Element {
       case 'machineProject':
         setTab('projects');
         return;
+      case 'archived':
+        setTicketsView('archived');
+        setTab('tickets');
+        return;
     }
   };
 
@@ -466,7 +474,9 @@ export function App(): JSX.Element {
           ? { kind: 'issues' }
           : tab === 'projects'
             ? { kind: 'projects' }
-            : null;
+            : tab === 'tickets' && ticketsView === 'archived'
+              ? { kind: 'archived' }
+              : null;
 
   return (
     <>
@@ -652,6 +662,8 @@ export function App(): JSX.Element {
             onShowOnBoard={openTaskOnBoard}
             selectedProjectId={tracker.projectId}
             onSelectProject={tracker.selectProject}
+            view={ticketsView}
+            onViewChange={setTicketsView}
           />
         ) : tab === 'issues' ? (
           <IssuesScreen onOpenTask={openTaskOnBoard} />

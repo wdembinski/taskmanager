@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Milestone, Project, Task } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID, hasRepo, isPersonalBoard } from '@tm/shared/model';
+import { archivedViewModel } from '../projects/archivedView';
 import { useTransport } from '../transport';
 import { useInitialLoad, type InitialLoad } from '../useInitialLoad';
 import { buildSidebar, type SidebarInput, type SidebarSection } from './sidebarModel';
@@ -24,6 +25,15 @@ function machineProjectsOf(projects: readonly Project[]): Array<Pick<Project, 'i
   const personal = projects.find((p) => isPersonalBoard(p.id));
   const repos = projects.filter((p) => !isPersonalBoard(p.id) && hasRepo(p));
   return [...(personal ? [personal] : []), ...repos].map((p) => ({ id: p.id, name: p.name }));
+}
+
+/** `milestone:list`'s own rows carry archived ones too (the store does not filter them, see
+ *  `ipc.ts`'s `listMilestones`) — without this, `buildTree` reads every one of them as live,
+ *  contradicting the Archived view's own "hidden from the tree" copy (`ArchivedPane.tsx`). A
+ *  stable module-level reference, not an inline closure, so it never busts `sections`' own
+ *  `useMemo` on its own. */
+function isMilestoneArchived(milestone: Milestone): boolean {
+  return milestone.archivedAt != null;
 }
 
 export interface UseSidebarDataOptions {
@@ -57,34 +67,46 @@ export function useSidebarData(
   const [archivedCount, setArchivedCount] = useState(0);
   const [loaded, setLoaded] = useState(false);
 
+  /** The Archived row's own count (F14.8) — `archive:list()` unscoped (its `projects` are
+   *  never narrowed by a project id, see `ArchivedView.tsx`'s own header), read through
+   *  `archivedViewModel` purely for its `.total`; `tickets: []` since a count needs none of
+   *  the per-row tallying `archivedTicketSummary` does with them. */
+  const loadArchivedCount = useCallback(async () => {
+    const listing = await transport.invoke('archive:list');
+    setArchivedCount(archivedViewModel(listing, [], projectId).total);
+  }, [transport, projectId]);
+
   const seed = useCallback(async () => {
-    const [allProjects, projectMilestones, projectTickets, archived] = await Promise.all([
+    const [allProjects, projectMilestones, projectTickets] = await Promise.all([
       transport.invoke('project:list'),
       transport.invoke('milestone:list', projectId ?? undefined),
       projectId ? transport.invoke('board:tasks', projectId) : Promise.resolve<Task[]>([]),
-      projectId ? transport.invoke('board:archived', projectId) : Promise.resolve<Task[]>([]),
+      loadArchivedCount(),
     ]);
     const projectList = allProjects.map((p) => p.project);
     setTeamName(projectList.find((p) => p.id === projectId)?.name);
     setMachineProjects(machineProjectsOf(projectList));
     setMilestones(projectMilestones);
     setTickets(projectTickets);
-    setArchivedCount(archived.length);
     setLoaded(true);
-  }, [transport, projectId]);
+  }, [transport, projectId, loadArchivedCount]);
   const initial = useInitialLoad(seed);
 
   useEffect(() => {
     const offTasks = transport.on('project:tasksChanged', ({ projectId: changed, tasks }) => {
       if (changed !== projectId) return;
       setTickets(tasks);
+      void loadArchivedCount();
     });
-    const offMilestones = transport.on('milestone:changed', setMilestones);
+    const offMilestones = transport.on('milestone:changed', (ms) => {
+      setMilestones(ms);
+      void loadArchivedCount();
+    });
     return () => {
       offTasks();
       offMilestones();
     };
-  }, [transport, projectId]);
+  }, [transport, projectId, loadArchivedCount]);
 
   const sections = useMemo(() => {
     const input: SidebarInput = {
@@ -98,6 +120,7 @@ export function useSidebarData(
       archivedCount,
       folds: options.folds,
       reviewsEnabled: options.reviewsEnabled,
+      isMilestoneArchived,
     };
     return buildSidebar(input);
   }, [

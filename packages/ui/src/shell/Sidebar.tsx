@@ -63,6 +63,7 @@ export type SidebarNavTarget =
   | { kind: 'issues' }
   | { kind: 'fleet' }
   | { kind: 'projects' }
+  | { kind: 'archived' }
   | { kind: 'machineProject'; projectId: string };
 
 /** `onNavigate`'s targets, plus the one more thing a row can be selected FOR that is not a
@@ -147,6 +148,9 @@ const useStyles = makeStyles({
     whiteSpace: 'nowrap',
   },
   rowCount: { color: 'var(--tm-text-muted)' },
+  /** The Archived row's own label — muted throughout, mockup-kept, unlike the other fixed
+   *  view rows above it which read in the ordinary (darker) row text colour. */
+  rowLabelMuted: { color: 'var(--tm-text-muted)' },
   teamHeader: {
     display: 'flex',
     alignItems: 'center',
@@ -501,11 +505,19 @@ export function Sidebar({
 
         {archived?.kind === 'archived' && (
           <div className={styles.section}>
-            <div className={styles.row}>
+            <button
+              type="button"
+              className={mergeClasses(
+                styles.row,
+                sameSelection(selectedView, { kind: 'archived' }) && styles.rowSelected,
+              )}
+              aria-current={sameSelection(selectedView, { kind: 'archived' }) || undefined}
+              onClick={() => onNavigate({ kind: 'archived' })}
+            >
               <ArchiveRegular />
-              <span className={styles.rowLabel}>Archived</span>
+              <span className={mergeClasses(styles.rowLabel, styles.rowLabelMuted)}>Archived</span>
               <Caption1 className={styles.rowCount}>{archived.count}</Caption1>
-            </div>
+            </button>
           </div>
         )}
 

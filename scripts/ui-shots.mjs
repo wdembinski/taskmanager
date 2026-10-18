@@ -188,6 +188,18 @@ export const SCREENS = [
     mockup: 'v10-20-palette-light.svg',
   },
   {
+    // Sidebar's own "Archived" row (`Sidebar.tsx`) lands directly on the Archived view
+    // (F14.8) from wherever the app was — `App.tsx`'s own `handleSidebarNavigate` sets both
+    // the tab and `ticketsView` together, so this needs no separate "Tickets" click first,
+    // unlike `issue-list-light`'s own `'Tickets'` setup.
+    name: 'archived-light',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ click: 'Archived' }],
+    mockup: 'v10-21-archived-light.svg',
+  },
+  {
     // The web mirrors the desktop's own Tickets screen (see `web-mirrors-the-desktop` plan
     // notes) — same mockup as `issue-list-light`, no separate "web board" mockup exists. Both
     // hosts default to the Board (`apps/web/src/App.tsx`'s `useState<Screen>('mytasks')`,
@@ -199,6 +211,17 @@ export const SCREENS = [
     scheme: 'light',
     setup: [{ click: 'Tickets' }],
     mockup: 'v9-1-issues-list-light.svg',
+  },
+  {
+    // The web shell wires the same sidebar "Archived" row onto the same `ArchivedPane`
+    // (`apps/web/src/App.tsx`'s own `handleSidebarNavigate`'s `'archived'` case) — no separate
+    // mockup of its own, reusing `archived-light`'s.
+    name: 'web-archived',
+    app: 'web',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ click: 'Archived' }],
+    mockup: 'v10-21-archived-light.svg',
   },
   {
     // 390x844 matches the phone frame drawn inside v9-4-mobile-light.svg/v9-5-mobile-dark.svg,

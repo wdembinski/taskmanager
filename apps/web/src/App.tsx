@@ -27,7 +27,7 @@ import { GateTrustHostProvider } from '@tm/ui/gateTrustHost';
 import { Performance } from '@tm/ui/Performance';
 import { NewTicketDialog } from '@tm/ui/projects/NewTicketDialog';
 import { ProjectAdmin } from '@tm/ui/projects/ProjectAdmin';
-import { Projects } from '@tm/ui/projects/Projects';
+import { Projects, type ProjectView } from '@tm/ui/projects/Projects';
 import { NavRail } from '@tm/ui/shell/NavRail';
 import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@tm/ui/shell/Sidebar';
 import { useDeviceFolds } from '@tm/ui/shell/sidebarFolds';
@@ -319,6 +319,10 @@ function SignedInBoardView({
   );
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
   const sidebarData = useSidebarData(tracker.projectId, { attentionCount, folds: sidebarFolds });
+  // The Tickets workspace's own Backlog/Timeline/Graph/Archived view (F14.8) — lifted here,
+  // the same `tracker.projectId`-lifting reason, so the sidebar's "Archived" row can land on
+  // it directly rather than only on whichever view `Projects` happened to default to.
+  const [ticketsView, setTicketsView] = useState<ProjectView>('backlog');
   const [newIssueDialogOpen, setNewIssueDialogOpen] = useState(false);
 
   /** The sidebar's own navigation targets (F13.11), mapped onto this host's `screen` — the
@@ -349,6 +353,10 @@ function SignedInBoardView({
       case 'machineProject':
         setScreen('tickets');
         return;
+      case 'archived':
+        setTicketsView('archived');
+        setScreen('tickets');
+        return;
     }
   };
 
@@ -367,7 +375,9 @@ function SignedInBoardView({
             ? { kind: 'fleet' }
             : screen === 'projects'
               ? { kind: 'projects' }
-              : null;
+              : screen === 'tickets' && ticketsView === 'archived'
+                ? { kind: 'archived' }
+                : null;
 
   // The command palette (F9.5) — wide layout only for now, since Ctrl+K has no equivalent on
   // a phone keyboard and "/" would fight the on-screen keyboard's own search affordances.
@@ -585,6 +595,8 @@ function SignedInBoardView({
             <Projects
               selectedProjectId={tracker.projectId}
               onSelectProject={tracker.selectProject}
+              view={ticketsView}
+              onViewChange={setTicketsView}
             />
           )}
           {screen === 'issues' && (
