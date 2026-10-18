@@ -1,14 +1,18 @@
 /**
  * The Links section of `TaskDetail`'s band — every ticket link and chain link that touches
- * one ticket (`linkedTicketRows`), grouped the way `linksFor()` already phrases them. Absent
- * entirely when the ticket has neither kind of link, so an unchained, unlinked card — most
- * of them — grows no empty section.
+ * one ticket (`linkedTicketRows`), grouped the way `linksFor()` already phrases them.
  *
  * The chain pointer row only POINTS at `TaskChain` ("Runs after TM-31 — see Chain"); it never
  * repeats what that section already draws, because chain arrows are an engine fact kept in
  * one place. Clicking it scrolls `chainRef` into view, when there is one mounted to scroll
  * to — on the compact phone layout, Chain lives on a different tab, so the ref stays null and
  * the row is shown but inert; switching tabs there is not this section's job.
+ *
+ * Always renders the "Links" heading, even with nothing to show — an unlinked ticket gets an
+ * empty-state line and the add row instead of the section vanishing outright. A host whose
+ * own query came back empty (over a flaky relay, say) and a ticket that genuinely has no
+ * links must look the same: something the reader can trust, not a heading that is there some
+ * of the time.
  *
  * Monochrome on purpose, the same rule `TaskChain` states for its own gate row: a link is a
  * standing fact about the card, and colour on this board is for things that MOVE. The one
@@ -93,14 +97,13 @@ export function TaskLinksSection({
   onOpenTask,
   chainRef,
   readOnly = false,
-}: TaskLinksSectionProps): JSX.Element | null {
+}: TaskLinksSectionProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
   const links = useTicketLinks(ticketLinks);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const section = linkedTicketRows(task, links, tasksById, chainLinks);
-  if (!section) return null;
 
   async function remove(linkId: string): Promise<void> {
     setBusyId(linkId);
@@ -154,22 +157,28 @@ export function TaskLinksSection({
   return (
     <div className={styles.box}>
       <Text weight="semibold">Links</Text>
-      {section.groups.map((group) => (
-        <div key={group.phrase} className={styles.group}>
-          <Caption1 className={styles.hint}>{group.phrase}</Caption1>
-          {group.rows.map(row)}
-        </div>
-      ))}
-      {section.chain && (
-        <button
-          type="button"
-          className={styles.chainPointer}
-          onClick={() =>
-            chainRef?.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-          }
-        >
-          <Caption1>{chainPointerText(section.chain)} — see Chain</Caption1>
-        </button>
+      {section ? (
+        <>
+          {section.groups.map((group) => (
+            <div key={group.phrase} className={styles.group}>
+              <Caption1 className={styles.hint}>{group.phrase}</Caption1>
+              {group.rows.map(row)}
+            </div>
+          ))}
+          {section.chain && (
+            <button
+              type="button"
+              className={styles.chainPointer}
+              onClick={() =>
+                chainRef?.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+              }
+            >
+              <Caption1>{chainPointerText(section.chain)} — see Chain</Caption1>
+            </button>
+          )}
+        </>
+      ) : (
+        <Caption1 className={styles.hint}>No linked tickets.</Caption1>
       )}
       <TicketLinkAddRow ticket={task} candidates={candidates} disabled={readOnly} />
     </div>

@@ -301,6 +301,16 @@ export const SCREENS = [
     mockup: 'v10-21-archived-light.svg',
   },
   {
+    // Same Tickets screen as `web-desktop`, one issue row deeper — the Projects pane's web
+    // notice (F12.10) lives on this peek, not on the bare list.
+    name: 'web-issue-peek',
+    app: 'web',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
+    mockup: 'v9-2-issue-detail-light.svg',
+  },
+  {
     // 390x844 matches the phone frame drawn inside v9-4-mobile-light.svg/v9-5-mobile-dark.svg,
     // not that SVG's own 1330x940 canvas — see verify-mobile.mjs's own SIZES for the closest
     // real device sizes this repo already drives (375x667, 414x896); 390x844 is the mockup's.

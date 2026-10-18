@@ -80,6 +80,13 @@ function connectionBanner(connection: ConnectionState | null): JSX.Element | nul
   }
 }
 
+/**
+ * The Tickets tab's `readOnlyNotice` (F12.10) — only shown once `hostUnreachable` is set,
+ * since a ticket's edits already apply straight through the relay the rest of the time.
+ */
+const TICKETS_READ_ONLY_NOTICE =
+  'Ticket edits are carried out by your desktop app and are paused until one is reachable.';
+
 const useStyles = makeStyles({
   /**
    * The Client picker's own link styling, in the status bar. Same treatment as the
@@ -113,7 +120,10 @@ const useStyles = makeStyles({
  * target, models, permission mode) stays desktop-only, because that is a fact about a machine
  * only the desktop client sees (`shell-parity.test.ts`, "the web configures a project's
  * identity, never its repo"). Tickets renders the same ticket-project workspace the desktop
- * does — a picker plus its backlog/Gantt, no folder or native picker either. Automations
+ * does — a picker plus its backlog/Gantt, no folder or native picker either — fronted by this
+ * app's own `hostUnreachable`/`readOnlyNotice` (F12.10), the same `activityGate` read Issues
+ * and Activity already share, and jumping a ticket's "Show on board" to the Board tab the same
+ * way those two screens' own `onOpenTask` does. Automations
  * renders the same `AutomationsView` the desktop does, fronted by a web-only owner-desktop
  * banner (`AutomationsScreen`) — an automation fires on the one desktop that created it, never
  * on the cloud service, and this tab is the only host that needs telling so. Fleet is a
@@ -493,6 +503,12 @@ function SignedInBoardView({
               loading={!sidebarData.loaded}
             />
           }
+          // Every screen but My Tasks is a document and wants a margin — the same rule the
+          // desktop shell applies (`apps/client/src/renderer/src/App.tsx`'s own `padded`).
+          // Left unset here, every one of them (Projects' tabs, the Archived title, Settings,
+          // …) sat flush against the rail and the top edge instead of getting the inset the
+          // desktop and the mockups both draw.
+          padded={screen !== 'mytasks'}
           banners={
             // The shell's own banner strip, which is where the desktop's outage bars go too —
             // above the screen rather than inside it, so the board below is the board and
@@ -597,6 +613,12 @@ function SignedInBoardView({
               onSelectProject={tracker.selectProject}
               view={ticketsView}
               onViewChange={setTicketsView}
+              hostUnreachable={hostUnreachable}
+              readOnlyNotice={hostUnreachable ? TICKETS_READ_ONLY_NOTICE : undefined}
+              onShowOnBoard={(taskId) => {
+                setScreen('mytasks');
+                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+              }}
             />
           )}
           {screen === 'issues' && (

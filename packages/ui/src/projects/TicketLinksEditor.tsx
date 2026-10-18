@@ -5,9 +5,8 @@
  * module's header for why it is pure and shared rather than reimplemented here.
  *
  * `TicketLinkAddRow` owns drawing a new link on its own — the type/ticket pickers, the busy
- * flag and the refusal message — so `TaskLinksSection` and a native ticket's empty Ticket
- * section (`TaskTicketSection`) can mount the same controls without going through this
- * drawer-only editor at all.
+ * flag and the refusal message — so `TaskLinksSection` can mount the same controls without
+ * going through this drawer-only editor at all.
  */
 import { useEffect, useState } from 'react';
 import {

@@ -64,7 +64,7 @@ function compareKeys(a: LinkedTicketRow, b: LinkedTicketRow): number {
 /**
  * Every ticket link and chain link that touches `ticket`, read into the shape the Links
  * section renders. `null` when there is nothing to show — the ticket has neither kind of
- * link — so the caller can skip the section entirely rather than render an empty one.
+ * link — so the caller can swap in an empty state rather than render empty groups.
  */
 export function linkedTicketRows(
   ticket: Pick<Task, 'id' | 'projectId'>,

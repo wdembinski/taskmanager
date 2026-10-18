@@ -6,9 +6,11 @@
  *
  *  - **The band** (top, fixed): the ticket's identity — type glyph, title, key, priority
  *    — then the agent controls, the details (status + a foldable, editable description)
- *    and the steps. On the pane's own surface and nothing else — no box, no radius,
- *    no rules. Capped at 50% height with its own scroll, so a long chain can never
- *    crowd out the conversation.
+ *    and, for a native ticket, its open Type/Epic/Milestone/… fields. On the pane's own
+ *    surface and nothing else — no box, no radius, no rules. Capped at 55vh with its OWN
+ *    scroll, the largest share of the pane: a reader opened it to see exactly this. Links,
+ *    Steps and Chain sit in a second strip right below it, capped at 20vh with its own
+ *    scroll in turn, so a long chain can never crowd the conversation out entirely.
  *  - **The conversation** (middle): the only thing that scrolls, unframed — a box around
  *    a chat is a box around the whole pane, which says nothing.
  *  - **The bottom band** (fixed): the live-run rows and the composer, on the same surface
@@ -77,7 +79,6 @@ import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { TaskAgentPanel } from './TaskAgentPanel';
 import { TaskDetailsCell } from './TaskDetailsCell';
-import { linkedTicketRows } from './projects/linkedTickets';
 import { TaskLinksSection } from './projects/TaskLinksSection';
 import { TaskTicketSection } from './projects/TaskTicketSection';
 import { useTicketLinks } from './projects/useTicketLinks';
@@ -141,20 +142,71 @@ const useStyles = makeStyles({
     flexShrink: 0,
   },
   /**
-   * Everything the card *is* — its identity, the agent controls, the details, the
-   * steps — in ONE band. No borders, no radius, no rules between the sections, and no
-   * shaded box under them either: the pane's own surface runs underneath the whole
-   * sidebar, and spacing alone carries the grouping.
+   * The card's own identity: title, agent controls, details and (for a native ticket) the
+   * open Ticket fields. Capped generously (55vh, against `cell`'s 20vh) and scrolled on its
+   * OWN. A ticket's type, epic and milestone are what a reader opened the pane to check, so
+   * this band gets the LARGER share; `cell` below it, further down the list of things a
+   * reader wants first, gets what is left. `vh` rather than `%`, since a flex item's
+   * percentage height only resolves against a DEFINITE container height, which two
+   * percentage-capped siblings in a row (this one and `cell`) are not guaranteed to leave
+   * it; `vh` is definite against the viewport regardless.
+   *
+   * `minHeight: 0` is the second load-bearing line, the same one `scrollWrap` below
+   * already has: a flex item's default `min-height` is `auto`, which in a flex context
+   * resolves to its CONTENT's own min-content size — not 0 — and min-height outranks
+   * max-height when the two conflict. Without it, `maxHeight` was a cap in appearance
+   * only: a ticket's twelve fields kept the box growing to fit regardless.
+   *
+   * `boxSizing: 'border-box'` is the third: this element's own default `content-box`
+   * sizing applies `maxHeight` to the CONTENT box alone, with `padding` added on top of
+   * it — 24px of this element's own top+bottom padding past a `maxHeight` that was
+   * supposed to be the hard cap, every time. That 24px is exactly what let the box still
+   * grow past its cap even with `minHeight: 0` already fixed: the Milestone dropdown cut
+   * in half, with the conversation's empty state's text literally superimposed over the
+   * Chain section's own last row, reading as one garbled line. No borders, no radius, no
+   * shaded box: the pane's own surface runs underneath, and spacing alone carries the
+   * grouping.
+   */
+  headBand: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    padding: '12px',
+    boxSizing: 'border-box',
+    flexShrink: 0,
+    minHeight: 0,
+    maxHeight: '55vh',
+    overflowY: 'auto',
+  },
+  /**
+   * Everything else the band shows — Links, Steps, Chain, Releases — in ONE scrollable
+   * strip beneath `headBand`. Capped (in `vh` — see `headBand`'s own docstring on why not
+   * `%`) so a long chain can never crowd the conversation out entirely. `minHeight: 0` and
+   * `boxSizing: 'border-box'` for the same two reasons `headBand` has them — see its
+   * docstring.
+   *
+   * `marginBottom`: `root` itself carries no gap between its own children on purpose (see
+   * its own comment) — every OTHER pair of sections already keeps its distance with its
+   * own padding, flush by design. This pair cannot: once this box's content genuinely
+   * overflows its cap, what is visible stops wherever the cap happens to land (mid-row, as
+   * often as not — there is no guarantee the cut lines up with this box's own bottom
+   * padding, which only ever applies once scrolled all the way down), one pixel above
+   * `scrollWrap`'s own first line starting right where the clip did. A whole row's worth
+   * of margin here is what keeps a clipped last row and the conversation's own empty state
+   * from reading as one garbled line of text.
    */
   cell: {
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
     padding: '12px',
+    boxSizing: 'border-box',
+    marginBottom: '8px',
     // Fixed while the conversation scrolls: this half never moves, and only overflows
     // into its own scroll when a card really has that much to say.
     flexShrink: 0,
-    maxHeight: '50%',
+    minHeight: 0,
+    maxHeight: '20vh',
     overflowY: 'auto',
   },
   /**
@@ -845,13 +897,6 @@ export function TaskDetail({
   // second subscription for the same list; it just receives this array back as its own
   // `ticketLinks` prop.
   const resolvedTicketLinks = useTicketLinks(ticketLinks);
-  // Whether the Links section will have anything to show, decided the same way it decides
-  // internally — so the Ticket section below knows to offer the add row itself instead,
-  // for a native ticket with neither a ticket link nor a chain link.
-  const linksSection = useMemo(
-    () => (task ? linkedTicketRows(task, resolvedTicketLinks, chainTasksById, chainLinks) : null),
-    [task, resolvedTicketLinks, chainTasksById, chainLinks],
-  );
   // Every ticket write goes through the same relay `hostUnreachable` already names as down
   // — so the Ticket and Links sections pause for exactly the reason `readOnlyNotice`'s bar
   // above them already states, and need no notice of their own.
@@ -1083,13 +1128,16 @@ export function TaskDetail({
   const agentProject = agentProjects.find((p) => p.id === task.agentProjectId) ?? null;
 
   /**
-   * The band's own content, split into the three slices the compact card screen's tabs
-   * show one at a time (`section`'s doc above) — in the SAME order the wide pane has
-   * always drawn them (`detailsContent` then `stepsContent` then `changesContent`), so
-   * rendering all three back to back when `section` is absent reproduces the wide pane
-   * exactly. `stepsContent`/`changesContent` are `null` for a step: its brief (inside
-   * `detailsContent`) already replaces the card's details, steps and chain, and a step
-   * carries no merge requests of its own either.
+   * The band's own content, split into the slices the compact card screen's tabs show one
+   * at a time (`section`'s doc above) — in the SAME order the wide pane has always drawn
+   * them (`detailsContent` then `linksContent` then `stepsContent` then `changesContent`),
+   * so rendering all four back to back when `section` is absent reproduces the wide pane
+   * exactly. The compact `details` tab draws `detailsContent` and `linksContent` together
+   * (there is no tab of its own for Links); the wide pane below draws them in two
+   * different bands instead — see `headBand`'s own docstring on why. `linksContent`/
+   * `stepsContent`/`changesContent` are `null` for a step: its brief (inside
+   * `detailsContent`) already replaces the card's details, links, steps and chain, and a
+   * step carries no merge requests of its own either.
    */
   const detailsContent = (
     <>
@@ -1289,24 +1337,31 @@ export function TaskDetail({
               labels={labels}
               milestones={milestones}
               projects={ticketProjects}
-              addLink={linksSection === null ? { candidates: projectTickets } : undefined}
               readOnly={ticketReadOnly}
               fold={ticketFold}
             />
           )}
-          <TaskLinksSection
-            task={task}
-            ticketLinks={resolvedTicketLinks}
-            chainLinks={chainLinks}
-            tasksById={chainTasksById}
-            candidates={projectTickets}
-            onOpenTask={onOpenTask}
-            chainRef={chainSectionRef}
-            readOnly={ticketReadOnly}
-          />
         </>
       )}
     </>
+  );
+
+  // Pulled out of `detailsContent` so the wide pane's own layout (below) can put it in the
+  // scrollable `cell` alongside Steps/Chain/Releases rather than the uncapped `headBand` —
+  // the compact tab layout still shows it as part of the same `details` tab, right after
+  // `detailsContent`, so this split is invisible there. `null` for a step: it cannot be
+  // chained or linked at either end.
+  const linksContent = !isStep && (
+    <TaskLinksSection
+      task={task}
+      ticketLinks={resolvedTicketLinks}
+      chainLinks={chainLinks}
+      tasksById={chainTasksById}
+      candidates={projectTickets}
+      onOpenTask={onOpenTask}
+      chainRef={chainSectionRef}
+      readOnly={ticketReadOnly}
+    />
   );
 
   const stepsContent = !isStep && (
@@ -1362,7 +1417,16 @@ export function TaskDetail({
   // wide pane's own scroller-plus-composer shape (below), just without the band above it.
   if (section !== undefined && section !== 'chat') {
     const content =
-      section === 'details' ? detailsContent : section === 'steps' ? stepsContent : changesContent;
+      section === 'details' ? (
+        <>
+          {detailsContent}
+          {linksContent}
+        </>
+      ) : section === 'steps' ? (
+        stepsContent
+      ) : (
+        changesContent
+      );
     return (
       <div className={styles.root}>
         {readOnlyNotice && (
@@ -1395,15 +1459,20 @@ export function TaskDetail({
           </MessageBar>
         </div>
       )}
-      {/* The band: identity, agent controls, details/steps/chain/merge-requests — all of
-          `section`'s own content, back to back, exactly as before `section` existed. Never
-          drawn for the `chat` section: that tab is the conversation alone. */}
+      {/* The band, split into two: `headBand` (identity, agent controls, details, the
+          open Ticket fields) never scrolls on its own and always lays out in full, then
+          `cell` (Links, Steps, Chain, merge requests) takes whatever room is left and
+          scrolls internally once a card has that much to say. Never drawn for the `chat`
+          section: that tab is the conversation alone. */}
       {section === undefined && (
-        <div className={styles.cell}>
-          {detailsContent}
-          {stepsContent}
-          {changesContent}
-        </div>
+        <>
+          <div className={styles.headBand}>{detailsContent}</div>
+          <div className={styles.cell}>
+            {linksContent}
+            {stepsContent}
+            {changesContent}
+          </div>
+        </>
       )}
 
       {error && (
