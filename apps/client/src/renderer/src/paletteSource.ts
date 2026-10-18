@@ -13,12 +13,24 @@
  * Start/Stop for whichever card is currently selected on the board — gated by
  * {@link canStartWork}/{@link canStopWork} (`@shared/board`), never re-derived here, so the
  * palette can never offer a button `TaskAgentPanel` itself would refuse.
+ *
+ * Since the v10 mockup (TM-458), every command also carries an `icon`: a nav row's own
+ * `SHELL_NAV` entry, `SettingsRegular` for a Settings section, and a per-action icon below. A
+ * card row additionally carries a `prefix` — its tracker key — shown ahead of its title.
  */
 import { canStartWork, canStopWork, isBoardCard } from '@shared/board';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import type { Project, Task } from '@shared/model';
 import type { PaletteCommand } from '@ui/palette/paletteModel';
 import { SHELL_NAV, type ShellNavId } from '@ui/shell/shellNav';
+import {
+  AddRegular,
+  BeakerRegular,
+  PlayRegular,
+  SettingsRegular,
+  StopRegular,
+  type FluentIcon,
+} from '@fluentui/react-icons';
 import type { SettingsSection } from './Settings';
 
 /** Every destination the desktop can route `tab` to (`App.tsx`'s `TabId`) — every `ShellNavId`
@@ -35,8 +47,15 @@ export type DesktopPaletteTab = Exclude<ShellNavId, 'fleet'>;
  *  `SHELL_NAV` entry is a desktop tab (fleet is the only `ShellNavId` the rail could ever carry
  *  that this host does not have, and F13.11 already dropped it from `SHELL_NAV` itself), so no
  *  filter is needed here any more. */
-export const DESKTOP_SCREENS: ReadonlyArray<{ id: DesktopPaletteTab; title: string }> =
-  SHELL_NAV.map((entry) => ({ id: entry.id as DesktopPaletteTab, title: entry.label }));
+export const DESKTOP_SCREENS: ReadonlyArray<{
+  id: DesktopPaletteTab;
+  title: string;
+  icon: FluentIcon;
+}> = SHELL_NAV.map((entry) => ({
+  id: entry.id as DesktopPaletteTab,
+  title: entry.label,
+  icon: entry.icon,
+}));
 
 /** `Settings.tsx`'s own tabs, in the order its `TabList` renders them — the single source
  *  it reads its `<Tab>` list from, so a section added here is a section Settings already
@@ -102,6 +121,12 @@ function cardKeywords(task: Task): string[] {
   );
 }
 
+/** The short label shown ahead of a card row's title — its tracker key, or `undefined` for a
+ *  card with neither. */
+function cardPrefix(task: Task): string | undefined {
+  return task.ticketKey ?? task.externalKey ?? undefined;
+}
+
 /** The `navigate` group: one row per rail screen, Scratch run (F13.11 — the one destination
  *  the sidebar does not carry a row for, see this module's header), plus one per Settings
  *  section. */
@@ -110,12 +135,14 @@ function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
     id: `nav:${tab.id}`,
     group: 'navigate',
     title: tab.title,
+    icon: tab.icon,
     run: () => snapshot.onNavigate(tab.id),
   }));
   const scratchRun: PaletteCommand = {
     id: 'nav:scratch',
     group: 'navigate',
     title: 'Scratch run',
+    icon: BeakerRegular,
     run: () => snapshot.onNavigate('scratch'),
   };
   const settingsSections = SETTINGS_SECTIONS.map((section): PaletteCommand => ({
@@ -123,6 +150,7 @@ function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
     group: 'navigate',
     title: `Settings: ${section.title}`,
     keywords: ['Settings'],
+    icon: SettingsRegular,
     run: () => snapshot.onOpenSettingsSection(section.id),
   }));
   return [...screens, scratchRun, ...settingsSections];
@@ -136,6 +164,7 @@ function cardCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
     group: 'cards',
     title: task.title,
     keywords: cardKeywords(task),
+    prefix: cardPrefix(task),
     projectId: task.projectId,
     run: () => {
       resolveTask(task.id, snapshot.getTask);
@@ -169,6 +198,7 @@ function actionCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
       id: 'add-task',
       group: 'actions',
       title: 'Add task',
+      icon: AddRegular,
       run: () => snapshot.onAddTask(),
     },
   ];
@@ -184,6 +214,7 @@ function actionCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
       group: 'actions',
       title: 'Start selected card',
       subtitle: selected.title,
+      icon: PlayRegular,
       run: async () => {
         const task = resolveTask(selected.id, snapshot.getTask);
         await snapshot.runTask(task.id);
@@ -197,6 +228,7 @@ function actionCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
       group: 'actions',
       title: 'Stop selected card',
       subtitle: selected.title,
+      icon: StopRegular,
       run: async () => {
         const task = resolveTask(selected.id, snapshot.getTask);
         await snapshot.stopTask(task.id);

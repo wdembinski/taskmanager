@@ -1,13 +1,16 @@
 /**
  * `paletteModel.ts`'s pure logic: `paletteScore`'s all-tokens-required, order-independent,
- * boundary-beats-mid-word scoring; `rankCommands`'s group-then-score-then-locality ordering;
- * and `paletteReduce`'s open/close/query/move/select/failed transitions, including the
- * closed-state no-op rule, `move`'s wraparound, `select`'s secondary/index/no-double-select
- * rules and `failed`'s error state. Acceptance cases named in the design: `"fix bug"` hides
- * "fix login" but matches "fix the bug" in either token order; `"log"` ranks "Open log" (a
- * boundary hit) over "Catalog" (mid-word); and a numeric query ranks a title containing it
- * above a row whose id merely contains it. Also covers the pure helpers the component holds no
- * logic of its own for: `groupRows`, `paletteKeyEvent` and `runSelected`.
+ * boundary-beats-mid-word scoring (now including a command's `prefix` among its keywords);
+ * `rankCommands`'s group-then-score-then-locality ordering, grouped `actions, cards, navigate,
+ * projects` per the v10 mockup; and `paletteReduce`'s open/close/query/move/select/refine/failed
+ * transitions, including the closed-state no-op rule, `move`'s wraparound, `select`'s
+ * secondary/index/no-double-select rules, `refine`'s active-row-to-query no-op-when-empty rule
+ * and `failed`'s error state. Acceptance cases named in the design: `"fix bug"` hides "fix
+ * login" but matches "fix the bug" in either token order; `"log"` ranks "Open log" (a boundary
+ * hit) over "Catalog" (mid-word); and a numeric query ranks a title containing it above a row
+ * whose id merely contains it. Also covers the pure helpers the component holds no logic of its
+ * own for: `groupRows`, `paletteKeyEvent` (including its `Tab` → `refine` mapping, and why
+ * Shift/Ctrl/⌘+Tab map to `null` instead) and `runSelected`.
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -109,17 +112,24 @@ describe('rankCommands', () => {
       command({ id: 'proj1', group: 'projects' }),
       command({ id: 'act1', group: 'actions' }),
     ];
-    const ctx: PaletteContext = { currentProjectId: 'p1' };
+    const ctx: PaletteContext = { currentProjectId: 'p1', subjectLabel: null };
 
     expect(rankCommands(commands, '', ctx).map((c) => c.id)).toEqual([
-      'nav1',
+      'act1',
       'cardA',
       'cardB',
       'cardC',
+      'nav1',
       'proj1',
-      'act1',
     ]);
-    expect(PALETTE_GROUP_ORDER).toEqual(['navigate', 'cards', 'projects', 'actions']);
+    expect(PALETTE_GROUP_ORDER).toEqual(['actions', 'cards', 'navigate', 'projects']);
+  });
+
+  it('matches a query against prefix the same way it does subtitle', () => {
+    const commands = [command({ id: 'a', title: 'Fix the thing', prefix: 'PROJ-767' })];
+    const ctx: PaletteContext = { currentProjectId: null, subjectLabel: null };
+
+    expect(rankCommands(commands, 'PROJ-767', ctx).map((c) => c.id)).toEqual(['a']);
   });
 });
 
@@ -168,6 +178,31 @@ describe('paletteReduce: select', () => {
     const selected = paletteReduce(moved, { type: 'select' });
     expect(selected.selected).toBe(selected.rows[1]);
     expect(selected.selected?.id).toBe('b');
+  });
+});
+
+describe('paletteReduce: refine', () => {
+  const commands = [
+    command({ id: 'a', title: 'Alpha task' }),
+    command({ id: 'b', title: 'Beta task' }),
+  ];
+  const ctx: PaletteContext = { currentProjectId: null };
+
+  it('sets the query to the active row title and re-ranks', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands, ctx });
+    const moved = paletteReduce(opened, { type: 'move', delta: 1 });
+    expect(moved.rows[moved.activeIndex]?.id).toBe('b');
+
+    const refined = paletteReduce(moved, { type: 'refine' });
+    expect(refined.query).toBe('Beta task');
+    expect(refined.rows.map((c) => c.id)).toEqual(['b']);
+    expect(refined.activeIndex).toBe(0);
+    expect(refined.selected).toBeNull();
+  });
+
+  it('is a no-op when there are no rows', () => {
+    const opened = paletteReduce(initialPaletteState, { type: 'open', commands: [], ctx });
+    expect(paletteReduce(opened, { type: 'refine' })).toBe(opened);
   });
 });
 
@@ -359,6 +394,22 @@ describe('paletteKeyEvent', () => {
     expect(paletteKeyEvent({ ...base, key: 'Escape' })).toEqual({ type: 'close' });
   });
 
+  it('maps a plain Tab to refine', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Tab' })).toEqual({ type: 'refine' });
+  });
+
+  it('returns null for Shift+Tab', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Tab', shiftKey: true })).toBeNull();
+  });
+
+  it('returns null for Ctrl+Tab', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Tab', ctrlKey: true })).toBeNull();
+  });
+
+  it('returns null for Meta+Tab', () => {
+    expect(paletteKeyEvent({ ...base, key: 'Tab', metaKey: true })).toBeNull();
+  });
+
   it('returns null while composing', () => {
     expect(paletteKeyEvent({ ...base, key: 'Enter', isComposing: true })).toBeNull();
   });
@@ -379,11 +430,11 @@ describe('groupRows', () => {
 
     const grouped = groupRows(rows);
 
-    expect(grouped.map((g) => g.group)).toEqual(['navigate', 'cards', 'actions']);
+    expect(grouped.map((g) => g.group)).toEqual(['actions', 'cards', 'navigate']);
     expect(grouped.map((g) => g.label)).toEqual([
-      PALETTE_GROUP_LABELS.navigate,
-      PALETTE_GROUP_LABELS.cards,
       PALETTE_GROUP_LABELS.actions,
+      PALETTE_GROUP_LABELS.cards,
+      PALETTE_GROUP_LABELS.navigate,
     ]);
 
     const cardsGroup = grouped.find((g) => g.group === 'cards');

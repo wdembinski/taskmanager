@@ -189,6 +189,11 @@ export function App(): JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false);
   useGlobalShortcut('mod+k', () => setPaletteOpen(true));
   const { ids: liveRunTaskIds } = useActiveRuns();
+  // The v10 mockup's palette context chip ("on TM-71") — the selected card's own tracker key,
+  // or `null` for a card with neither (or no card selected at all).
+  const selectedPaletteTask = paletteTasks.find((t) => t.id === selectedTaskId);
+  const paletteSubjectLabel =
+    selectedPaletteTask?.ticketKey ?? selectedPaletteTask?.externalKey ?? null;
   const paletteSnapshot: DesktopPaletteSnapshot = {
     tasks: paletteTasks,
     agentProjects,
@@ -484,7 +489,7 @@ export function App(): JSX.Element {
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         sources={[() => buildDesktopCommands(paletteSnapshot)]}
-        context={{ currentProjectId: null }}
+        context={{ currentProjectId: null, subjectLabel: paletteSubjectLabel }}
       />
       <NewTicketDialog
         open={newIssueDialogOpen}

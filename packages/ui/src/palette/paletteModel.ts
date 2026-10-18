@@ -4,20 +4,25 @@
  * (`PaletteSource`) is a function that produces a fresh list of commands for the current
  * `PaletteContext`, so the host can mix together e.g. a static navigate list with a dynamic
  * per-card list without the model knowing where any of it came from. A command may also carry
- * a `secondary` action (e.g. "open in new tab") that the same row can run on Ctrl/⌘+Enter.
+ * a `secondary` action (e.g. "open in new tab") that the same row can run on Ctrl/⌘+Enter, an
+ * `icon` and `shortcut` the v10 mockup renders, and a `prefix` (e.g. a tracker key) shown ahead
+ * of the title and searchable the same way `subtitle`/`keywords` are.
  *
  * `paletteScore` and `rankCommands` decide what a query shows and in what order; `paletteReduce`
  * is the `useReducer` transition function the palette component (F9.3) drives. Beyond
  * open/close/query/move, `select` can target a row directly by `index` (a mouse click) and can
  * ask for the row's `secondary` action instead of its primary one — either is a no-op when the
  * target doesn't exist or doesn't have that action, and a second `select` while one is already
- * pending (`selected` set) is ignored so a slow command can't be run twice. `failed` reports a
- * run that threw, surfacing `error` without closing the palette. `groupRows`, `paletteKeyEvent`
- * and `runSelected` are pure helpers so the component itself holds no logic.
+ * pending (`selected` set) is ignored so a slow command can't be run twice. `refine` narrows the
+ * query to the active row's own title — a no-op with no rows — for `Tab`'s own "keep digging
+ * into this result" gesture. `failed` reports a run that threw, surfacing `error` without
+ * closing the palette. `groupRows`, `paletteKeyEvent` and `runSelected` are pure helpers so the
+ * component itself holds no logic.
  */
+import type { FluentIcon } from '@fluentui/react-icons';
 
 /** Fixed section order the palette always renders in, independent of source order. */
-export const PALETTE_GROUP_ORDER = ['navigate', 'cards', 'projects', 'actions'] as const;
+export const PALETTE_GROUP_ORDER = ['actions', 'cards', 'navigate', 'projects'] as const;
 
 export type PaletteGroup = (typeof PALETTE_GROUP_ORDER)[number];
 
@@ -26,7 +31,10 @@ export type PaletteGroup = (typeof PALETTE_GROUP_ORDER)[number];
  * belongs to a card or project names it so {@link rankCommands} can surface the current
  * project's own commands first. `hostOnly` is carried through untouched; the host-vs-web split
  * (F9.5) is the only thing that reads it. `secondary` is an alternate action the same row offers
- * (e.g. "open in new tab"), run instead of `run` when the `select` event asks for it.
+ * (e.g. "open in new tab"), run instead of `run` when the `select` event asks for it. `icon` and
+ * `shortcut` are display-only, for the v10 mockup's row to render. `prefix` is a short label
+ * (e.g. a tracker key) shown ahead of the title, and — like `subtitle` — searchable via
+ * {@link rankCommands}'s keywords.
  */
 export interface PaletteCommand {
   id: string;
@@ -38,11 +46,19 @@ export interface PaletteCommand {
   run: () => void | Promise<void>;
   hostOnly?: boolean;
   secondary?: { title: string; run: () => void | Promise<void> };
+  icon?: FluentIcon;
+  shortcut?: string;
+  prefix?: string;
 }
 
-/** What a source needs to decide which commands it offers — just the current project for now. */
+/** What a source needs to decide which commands it offers — the current project, and (since the
+ *  v10 mockup) a human-readable label for whatever subject the palette opened on top of, e.g.
+ *  the card selected on the board. `undefined`/`null` both mean there isn't one — the web has
+ *  no app-level selection to read and passes `null` outright; the desktop omits it when the
+ *  selected card has neither a `ticketKey` nor an `externalKey`. */
 export interface PaletteContext {
   currentProjectId: string | null;
+  subjectLabel?: string | null;
 }
 
 /** Produces a fresh command list for `ctx`, called every time the palette opens. */
@@ -144,9 +160,12 @@ export function rankCommands(
 ): PaletteCommand[] {
   const scored = commands
     .map((command, index) => {
-      const keywords = [command.subtitle, ...(command.keywords ?? []), command.id].filter(
-        (keyword): keyword is string => keyword !== undefined,
-      );
+      const keywords = [
+        command.subtitle,
+        command.prefix,
+        ...(command.keywords ?? []),
+        command.id,
+      ].filter((keyword): keyword is string => keyword !== undefined);
       return { command, index, score: paletteScore(command.title, query, keywords) };
     })
     .filter((entry) => entry.score > 0);
@@ -187,7 +206,7 @@ export const initialPaletteState: PaletteState = {
   open: false,
   query: '',
   commands: [],
-  ctx: { currentProjectId: null },
+  ctx: { currentProjectId: null, subjectLabel: null },
   rows: [],
   activeIndex: -1,
   selected: null,
@@ -201,6 +220,7 @@ export type PaletteEvent =
   | { type: 'query'; query: string }
   | { type: 'move'; delta: number }
   | { type: 'select'; index?: number; secondary?: boolean }
+  | { type: 'refine' }
   | { type: 'failed'; message: string };
 
 /** First row's index, or `-1` when `rows` is empty — shared by `open` and `query`. */
@@ -265,6 +285,22 @@ export function paletteReduce(state: PaletteState, event: PaletteEvent): Palette
       return { ...state, activeIndex: index, selected: row, secondary: !!event.secondary };
     }
 
+    case 'refine': {
+      const active = state.rows[state.activeIndex];
+      if (active === undefined) return state;
+
+      const rows = rankCommands(state.commands, active.title, state.ctx);
+      return {
+        ...state,
+        query: active.title,
+        rows,
+        activeIndex: firstActiveIndex(rows),
+        selected: null,
+        secondary: false,
+        error: null,
+      };
+    }
+
     case 'failed':
       return { ...state, selected: null, error: event.message };
   }
@@ -273,10 +309,10 @@ export function paletteReduce(state: PaletteState, event: PaletteEvent): Palette
 /** Display label for each {@link PaletteGroup}, in no particular order (use {@link groupRows} or
  *  {@link PALETTE_GROUP_ORDER} for render order). */
 export const PALETTE_GROUP_LABELS: Record<PaletteGroup, string> = {
-  navigate: 'Navigate',
-  cards: 'Cards',
-  projects: 'Projects',
   actions: 'Actions',
+  cards: 'Issues',
+  navigate: 'Go to',
+  projects: 'Projects',
 };
 
 /** One row the palette renders, with the flat index into `rows` it came from — the index
@@ -312,14 +348,16 @@ export interface PaletteKeyEventLike {
   key: string;
   ctrlKey: boolean;
   metaKey: boolean;
+  shiftKey?: boolean;
   isComposing?: boolean;
 }
 
 /**
  * Maps a keydown to the {@link PaletteEvent} it should dispatch, or `null` when the key means
  * nothing to the palette (including while composing, e.g. IME input): ArrowDown/ArrowUp to
- * `move`, Enter to `select`, Ctrl/⌘+Enter to `select` with `secondary: true`, and Escape to
- * `close`.
+ * `move`, Enter to `select`, Ctrl/⌘+Enter to `select` with `secondary: true`, Escape to `close`,
+ * and a plain Tab to `refine` — Tab held with Shift, Ctrl or ⌘ returns `null` instead, since
+ * those are the browser's own focus-movement and tab-switching gestures, not this one.
  */
 export function paletteKeyEvent(evt: PaletteKeyEventLike): PaletteEvent | null {
   if (evt.isComposing) return null;
@@ -331,6 +369,8 @@ export function paletteKeyEvent(evt: PaletteKeyEventLike): PaletteEvent | null {
       return { type: 'move', delta: -1 };
     case 'Enter':
       return evt.ctrlKey || evt.metaKey ? { type: 'select', secondary: true } : { type: 'select' };
+    case 'Tab':
+      return evt.shiftKey || evt.ctrlKey || evt.metaKey ? null : { type: 'refine' };
     case 'Escape':
       return { type: 'close' };
     default:

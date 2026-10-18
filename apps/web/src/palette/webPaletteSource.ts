@@ -14,12 +14,17 @@
  * Scratch run — the one rail destination the web never offers — needs no exception here at
  * all: `goTo`'s parameter is `Screen`, which has no `'scratch'` member, so there is no way to
  * even construct a command that targets it.
+ *
+ * Since the v10 mockup (TM-458), every command also carries an `icon` — a nav row's own
+ * `SHELL_NAV` entry, `SignOutRegular` for Sign out — and a card row carries a `prefix` (its
+ * tracker key) in place of the old key `subtitle`, so the key is not shown twice.
  */
 import type { IpcApi } from '@tm/shared/ipc';
 import { RELAY_POLICY, type RelayPolicy } from '@tm/shared/ipcRelay';
 import type { Project, Task } from '@tm/shared/model';
 import type { PaletteCommand, PaletteSource } from '@tm/ui/palette/paletteModel';
 import { SHELL_NAV } from '@tm/ui/shell/shellNav';
+import { AddRegular, SignOutRegular, type FluentIcon } from '@fluentui/react-icons';
 import type { Screen } from '../App';
 
 /** A `PaletteCommand` that also names the IPC channels its `run` calls — the web-only extra
@@ -44,10 +49,9 @@ export interface WebPaletteActions {
 /** Every rail destination `goTo` can reach — `SHELL_NAV` (F13.8), which since F13.11 no
  *  longer carries Scratch run at all (desktop-only, a palette command there with no rail
  *  tile — see `shellNav.ts`'s own header), so no filter is needed here any more. */
-const NAV_SCREENS: readonly { id: Screen; title: string }[] = SHELL_NAV.map((entry) => ({
-  id: entry.id as Screen,
-  title: entry.label,
-}));
+const NAV_SCREENS: readonly { id: Screen; title: string; icon: FluentIcon }[] = SHELL_NAV.map(
+  (entry) => ({ id: entry.id as Screen, title: entry.label, icon: entry.icon }),
+);
 
 /** `keywords` a card command is searchable by, beyond its title — its tracker key under
  *  whichever name it carries, and its id for the uuid-paste case `paletteModel.ts` already
@@ -56,6 +60,12 @@ function cardKeywords(task: Task): string[] {
   return [task.ticketKey, task.externalKey, task.id].filter(
     (keyword): keyword is string => !!keyword,
   );
+}
+
+/** The short label shown ahead of a card row's title — its tracker key, or `undefined` for a
+ *  card with neither. */
+function cardPrefix(task: Task): string | undefined {
+  return task.ticketKey ?? task.externalKey ?? undefined;
 }
 
 /**
@@ -67,10 +77,11 @@ export function buildWebCommands(
   snapshot: WebPaletteSnapshot,
   actions: WebPaletteActions,
 ): WebCommand[] {
-  const navigate: WebCommand[] = NAV_SCREENS.map(({ id, title }) => ({
+  const navigate: WebCommand[] = NAV_SCREENS.map(({ id, title, icon }) => ({
     id: `nav:${id}`,
     group: 'navigate',
     title,
+    icon,
     channels: [],
     run: () => actions.goTo(id),
   }));
@@ -81,7 +92,7 @@ export function buildWebCommands(
       id: `card:${task.id}`,
       group: 'cards',
       title: task.title,
-      subtitle: task.ticketKey ?? task.externalKey ?? undefined,
+      prefix: cardPrefix(task),
       keywords: cardKeywords(task),
       projectId: task.projectId,
       channels: [],
@@ -102,6 +113,7 @@ export function buildWebCommands(
       id: 'action:add-task',
       group: 'actions',
       title: 'Add task',
+      icon: AddRegular,
       channels: ['task:create', 'ticket:create'],
       run: () => actions.addTask(),
     },
@@ -109,6 +121,7 @@ export function buildWebCommands(
       id: 'action:sign-out',
       group: 'actions',
       title: 'Sign out',
+      icon: SignOutRegular,
       channels: [],
       run: () => actions.signOut(),
     },

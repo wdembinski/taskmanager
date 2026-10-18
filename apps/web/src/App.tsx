@@ -643,7 +643,7 @@ function SignedInBoardView({
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           sources={[webSource]}
-          context={{ currentProjectId: null }}
+          context={{ currentProjectId: null, subjectLabel: null }}
         />
         <NewTicketDialog
           open={newIssueDialogOpen}
