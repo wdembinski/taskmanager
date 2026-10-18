@@ -107,6 +107,7 @@ import {
   type AgentPromptComment,
 } from './agentTaskPrompt';
 import { attachmentFile } from './attachmentPaths';
+import { ingestAttachOutbox } from './attachOutbox';
 import {
   NOTES_CHAR_BUDGET,
   TICKET_COMMENT_CHAR_BUDGET,
@@ -1403,6 +1404,13 @@ export class Scheduler {
    */
   private attachmentRoot: string | null = null;
   /**
+   * Tell the UI the attachment list changed — see {@link setAttachmentsChanged}. A no-op
+   * until `ipc.ts` wires it, same pattern as {@link Scheduler.openPullRequest}: unwired, a
+   * run's own outbox is still ingested, it just never pushes a `attachment:changed` the
+   * board would otherwise sit without until its next unrelated refresh.
+   */
+  private onAttachmentsChanged: (() => void) | null = null;
+  /**
    * Push a card's branch and open a pull request for it — see {@link setPullRequestOpener}.
    * Null until `ipc.ts` wires it, which is also how the unit tests run without one.
    */
@@ -1681,6 +1689,16 @@ export class Scheduler {
    */
   setAttachmentRoot(root: string): void {
     this.attachmentRoot = root;
+  }
+
+  /**
+   * Wire the push that tells the UI the attachment list changed, so a run's own outbox
+   * (see {@link ingestAttachOutbox}) refreshes the board's chips the same way a human's own
+   * `attachment:add` does. `ipc.ts` passes its `pushAttachments`, which both sends
+   * `attachment:changed` and re-scans the cloud preview cache.
+   */
+  setAttachmentsChanged(onChanged: () => void): void {
+    this.onAttachmentsChanged = onChanged;
   }
 
   /** The tasks whose branch is being merged right now — seeds the UI on mount. */
@@ -4719,6 +4737,16 @@ export class Scheduler {
             empty ? 'empty' : event.success ? 'done' : 'failed',
             event.costUsd,
           );
+          // A run that actually did something, in its own worktree, may have dropped files
+          // in its attach outbox (`scripts/ui-shots.mjs --attach` is the first producer) —
+          // see `attachOutbox.ts`. Attached to the run's OWN task id: a step's files show on
+          // the step, exactly as a step's other attachments already do via
+          // `attachmentsInScope`. Skipped for `empty`/failed runs and for the shared-project
+          // mode (`run.worktree` unset), where there is no outbox to ingest.
+          if (!empty && event.success && run.worktree && this.attachmentRoot) {
+            await ingestAttachOutbox(this.store, this.attachmentRoot, run.taskId, run.worktree);
+            this.onAttachmentsChanged?.();
+          }
         }
         // stdin is held open in Phase 4, so the process won't exit by itself —
         // end it explicitly now that the task is done.
