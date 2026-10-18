@@ -57,6 +57,7 @@ import {
 import { BacklogTable } from './BacklogTable';
 import { GraphPane } from './GraphPane';
 import { EMPTY_HISTORY, backHistory, pushHistory, type PanelHistory } from './panelHistory';
+import { ArchivedPane } from './ArchivedPane';
 import { ProjectPicker } from './ProjectPicker';
 import { TimelinePane } from './TimelinePane';
 import { useProjectTickets } from './useProjectTickets';
@@ -70,8 +71,10 @@ const useStyles = makeStyles({
   viewSwitchSpacer: { flex: 1 },
 });
 
-/** The Projects screen's own views of one project's tickets. */
-type ProjectView = 'backlog' | 'timeline' | 'graph';
+/** The Projects screen's own views of one project's tickets — `'archived'` (F14.8) is the one
+ *  member with no `ProjectPicker` column alongside it (see the root `return` below) and no
+ *  tickets of its own feeding it: it reads `archive:list()`/`board:tasks('all')` itself. */
+export type ProjectView = 'backlog' | 'timeline' | 'graph' | 'archived';
 
 export interface ProjectsProps {
   /** Jump to a ticket's card on the board (F12.9) — forwarded straight through to the
@@ -87,12 +90,20 @@ export interface ProjectsProps {
   /** Reports a `ProjectPicker` pick back up to the controlling host — only read while
    *  `selectedProjectId` is passed. */
   onSelectProject?: (id: string) => void;
+  /** Hands the active Backlog/Timeline/Graph/Archived view to this screen — same optional-
+   *  controlled shape as `selectedProjectId`/`onSelectProject`, so the sidebar's own "Archived"
+   *  row (F14.8) can land a host straight on it. Passing `undefined` (the default) keeps this
+   *  screen's own view state instead; a controlling host must pass `onViewChange` alongside it. */
+  view?: ProjectView;
+  onViewChange?: (view: ProjectView) => void;
 }
 
 export function Projects({
   onShowOnBoard,
   selectedProjectId: controlledProjectId,
   onSelectProject,
+  view: controlledView,
+  onViewChange,
 }: ProjectsProps = {}): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -115,7 +126,21 @@ export function Projects({
     },
     [controlled, onSelectProject],
   );
-  const [view, setView] = useState<ProjectView>('backlog');
+  /** This screen's own view default (:118) — ignored once a host controls it via `view`,
+   *  the same `controlled`/`setSelectedProjectId` shape just above. */
+  const [internalView, setInternalView] = useState<ProjectView>('backlog');
+  const viewControlled = controlledView !== undefined;
+  const view = viewControlled ? controlledView : internalView;
+  const setView = useCallback(
+    (next: ProjectView) => {
+      if (viewControlled) {
+        onViewChange?.(next);
+      } else {
+        setInternalView(next);
+      }
+    },
+    [viewControlled, onViewChange],
+  );
   const [settings, setSettings] = useState<AppSettings | null>(null);
   /** Whether the selected ticket is closed, a peek beside the list, or a full-screen page —
    *  cleared on every project switch, the same way the board clears its own selection when
@@ -320,13 +345,18 @@ export function Projects({
 
   return (
     <div className={styles.root} onKeyDown={onKeyDown}>
-      <div className={styles.admin}>
-        <ProjectPicker
-          projects={projects}
-          selectedProjectId={selectedProjectId}
-          onSelect={setSelectedProjectId}
-        />
-      </div>
+      {/* No picker alongside the Archived view (F14.8) — it is not scoped to picking a
+          project to browse the way Backlog/Timeline/Graph are; its own Projects tab lists
+          every archived ticket project regardless of which one is open here. */}
+      {view !== 'archived' && (
+        <div className={styles.admin}>
+          <ProjectPicker
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+            onSelect={setSelectedProjectId}
+          />
+        </div>
+      )}
       <div className={styles.backlog}>
         {viewState.notice && (
           <MessageBar intent="info">
@@ -438,6 +468,15 @@ export function Projects({
                 projects={projects}
                 includeArchived={includeArchived}
                 onIncludeArchivedChange={setIncludeArchived}
+              />
+            )}
+            {view === 'archived' && (
+              <ArchivedPane
+                key={selectedProject.id}
+                projectId={selectedProject.id}
+                selectedTicketId={viewState.selectedId}
+                onSelectTicket={selectTicket}
+                onProjectsChanged={initial.retry}
               />
             )}
           </>

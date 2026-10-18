@@ -4,13 +4,13 @@
 > Only the `- [ ]` checkboxes under **Tasks** become cards when this file is imported as a plan; everything else is context.
 >
 > **Layout rule for this file:** every task's description bullets sit after a **blank line**. The plan
-> parser folds any indented line that directly follows a checkbox into that task's *title*
+> parser folds any indented line that directly follows a checkbox into that task's _title_
 > (`apps/client/src/main/planParser.ts:173-177`); the blank line is what keeps descriptions out of it.
 
 ## Why
 
 The built-in tracker keeps everything it has ever planned in view. The roadmap import alone
-put 138 tickets and four milestones on one project (memory *roadmap-imported-as-tickets*), and
+put 138 tickets and four milestones on one project (memory _roadmap-imported-as-tickets_), and
 each finished milestone stays in the Backlog's epic groups, on the Timeline, in the milestone
 picker and in every filter. A milestone can be marked **closed** today, which only drops it
 from one picker; its tickets stay everywhere.
@@ -41,8 +41,8 @@ This ships early, on today's local tracker (Track 1), because the problem exists
   picker on it (`packages/ui/src/projects/Projects.tsx:68`). `Project` has no archived or hidden
   field.
 - **A different "archive" already exists, and must not be reused.** `tasks.archivedAt` /
-  `archivedReason` (`store.ts:184-187`, `TaskArchiveReason` in `model.ts:669`) mean *taken off
-  the board*: set by the JIRA / GitHub reconcilers and by variant discard, excluded from
+  `archivedReason` (`store.ts:184-187`, `TaskArchiveReason` in `model.ts:669`) mean _taken off
+  the board_: set by the JIRA / GitHub reconcilers and by variant discard, excluded from
   `board:tasks` in SQL (`selectBoardTasks`, `store.ts:2663`), listed in the Removed-cards dialog
   (`board/ArchivedCardsDialog.tsx`), and **destroyed** after `ARCHIVE_RETENTION_DAYS` by
   `pruneArchivedBefore` at boot (`apps/client/src/main/ipc.ts:524`). A tracker-archived ticket must
@@ -76,7 +76,7 @@ This ships early, on today's local tracker (Track 1), because the problem exists
 - **No store tests.** Nothing calls `createStore` under vitest (better-sqlite3 is built for
   Electron's ABI); migrations are verified by bundling `store.ts` and running it with
   `ELECTRON_RUN_AS_NODE=1`, faking the old schema with `ALTER TABLE … DROP COLUMN`
-  (memory *the-store-has-no-tests*; worked example `scripts/verify-resume-migration.mjs`).
+  (memory _the-store-has-no-tests_; worked example `scripts/verify-resume-migration.mjs`).
 
 ## Design
 
@@ -101,9 +101,9 @@ operation so the move and the archive commit together:
 
 ```ts
 type OpenTicketsChoice =
-  | { kind: 'backlog' }                    // milestoneId := null
+  | { kind: 'backlog' } // milestoneId := null
   | { kind: 'milestone'; milestoneId: string } // move to another, non-archived milestone
-  | { kind: 'archive' };                   // archive them too: trackerArchivedAt := now
+  | { kind: 'archive' }; // archive them too: trackerArchivedAt := now
 ```
 
 "Open" means any status that is not `done` or `cancelled`. Done tickets stay on the milestone
@@ -177,8 +177,8 @@ from disagreeing — the same reason F12 made one panel.
   ships), on an epic's panel (F12) and on a ticket project in `ProjectAdmin`. Each is one click
   with an undo toast — except a milestone with open tickets, which opens the dialog below.
 - **Open-tickets dialog** (`ArchiveMilestoneDialog`): "M2 · Review has 4 open tickets." Three
-  choices — *Move them to the Backlog*, *Move them to another milestone* (a picker of
-  non-archived milestones in the same project), *Archive them too* — with the count and the first
+  choices — _Move them to the Backlog_, _Move them to another milestone_ (a picker of
+  non-archived milestones in the same project), _Archive them too_ — with the count and the first
   few keys listed.
 - **Hidden everywhere** via the predicate: board (ticket-project scope), Backlog groups, the
   Timeline's bars, markers and window (an archived milestone no longer stretches the date
@@ -191,10 +191,10 @@ from disagreeing — the same reason F12 made one panel.
   **Restore**; expanding one shows its tickets as ordinary rows that open the panel. Without
   F13 it is an "Archived" view beside Backlog / Timeline / Graph in `Projects.tsx`.
 - **Direct links and the panel** — opening an archived ticket shows a banner "Archived with
-  M2 · Review — Restore", and every field stays editable. F12's *Show on board* names the
+  M2 · Review — Restore", and every field stays editable. F12's _Show on board_ names the
   archive as the filter that hides it (`hiddenBy` gains `'archived'`).
 - Colour: none. Archived things are monochrome, a muted glyph and the word "Archived"
-  (memory *board-colour-budget*).
+  (memory _board-colour-budget_).
 
 ### UI — web
 
@@ -213,7 +213,7 @@ from disagreeing — the same reason F12 made one panel.
   epic. The epic's archive is the stronger statement; the milestone shows "3 hidden by an
   archived epic" in the Archived view.
 - **A chain or a running agent on an archived ticket**: archiving never stops or blocks a run
-  (memory *card-state-is-the-humans*: an agent run never moves a card); the run's card stays
+  (memory _card-state-is-the-humans_: an agent run never moves a card); the run's card stays
   visible in Attention and on the activity feed while it needs a human, through the attention
   index, which does not go through the predicate.
 - **`@needs` and chains**: an archived prerequisite still counts as what it is (done or not);
@@ -232,16 +232,16 @@ from disagreeing — the same reason F12 made one panel.
 
 ## Open questions
 
-1. **Auto-archive setting: global or per project?** *Recommended default:* one global
+1. **Auto-archive setting: global or per project?** _Recommended default:_ one global
    `ticketAutoArchiveWeeks` in `GLOBAL_SETTINGS_KEYS` (the cloud web edits it), off by default;
    per-project override arrives with F19's workspace settings.
-2. **Should a closed milestone be offered for archiving automatically?** *Recommended default:*
+2. **Should a closed milestone be offered for archiving automatically?** _Recommended default:_
    no prompt; closing and archiving stay separate, and the Archive action sits next to the
    Closed checkbox.
-3. **Mirror milestones now or wait for F19?** *Recommended default:* now (F14.11). Without it
+3. **Mirror milestones now or wait for F19?** _Recommended default:_ now (F14.11). Without it
    the web cannot hide archived milestones when no desktop is reachable, and F19 needs the
    server table anyway.
-4. **What counts as "closes" for auto-archive?** *Recommended default:* `done` or `cancelled`,
+4. **What counts as "closes" for auto-archive?** _Recommended default:_ `done` or `cancelled`,
    timed by the activity log; a ticket with no log row uses `updatedAt`, which can only make
    the archive later, never earlier.
 
@@ -256,8 +256,8 @@ from disagreeing — the same reason F12 made one panel.
     mappers read them as `number | null`. The `tasks` triggers keep firing once per write (no
     new trigger on `tasks`).
   - Acceptance: `scripts/verify-archive-migration.mjs` (pattern of
-    `verify-resume-migration.mjs`, memory *the-store-has-no-tests*): create a store, `DROP
-    COLUMN` the three columns, reopen, and check they come back `NULL` with every row intact;
+    `verify-resume-migration.mjs`, memory _the-store-has-no-tests_): create a store, `DROP
+COLUMN` the three columns, reopen, and check they come back `NULL` with every row intact;
     the script fails when the migration entry is removed (proven once). `pnpm typecheck`,
     `pnpm test`, `pnpm build` green.
 
@@ -267,16 +267,16 @@ from disagreeing — the same reason F12 made one panel.
     `Milestone` / `Project` / `Task` themselves (`packages/shared/src/model.ts:1320`, `:201`,
     `:692`): `ArchivableMilestone = Pick<Milestone, 'id'> & { archivedAt?: number | null }`,
     likewise `ArchivableProject`, and `ArchivableTicket = Pick<Task, 'id' | 'projectId' |
-    'source' | 'milestoneId' | 'epicTaskId'> & { trackerArchivedAt?: number | null }`
+'source' | 'milestoneId' | 'epicTaskId'> & { trackerArchivedAt?: number | null }`
     (`Task.source` is `model.ts:816`, `.epicTaskId` and `.milestoneId` are `:1204` and
     `:1206`). This ships before F14.1 adds the real `archivedAt` / `trackerArchivedAt`
     columns, and must not touch `model.ts` itself or it collides with that task's edit; once
     F14.1 lands, the real types satisfy these with no change here. `ArchiveIndex<TMilestone,
-    TEpic, TProject>` (each defaulting to its `Archivable*` type) is `{ milestones:
-    Map<string, TMilestone>; epics: Map<string, TEpic>; projects: Map<string, TProject> }`,
+TEpic, TProject>` (each defaulting to its `Archivable*` type) is `{ milestones:
+Map<string, TMilestone>; epics: Map<string, TEpic>; projects: Map<string, TProject> }`,
     generic so a caller holding real `Milestone`/`Task`/`Project` maps can pass them as-is.
   - `archivedBy(ticket, index): { by: 'project' | 'milestone' | 'epic' | 'self'; id: string }
-    | null` returns `null` outright for a non-native ticket (`isNativeTicket`,
+| null` returns `null` outright for a non-native ticket (`isNativeTicket`,
     `packages/shared/src/tickets.ts:44`, tests `source === 'ticket'`) — a JIRA/GitHub/Linear
     row's lifecycle is the tracker's, not ours. Otherwise it checks, in order, the ticket's
     project, its milestone, its epic, then itself, and returns the first that is archived. A
@@ -303,7 +303,7 @@ from disagreeing — the same reason F12 made one panel.
     caller in F14.4 onward does not hand-roll `new Map(x.map((v) => [v.id, v]))` three times
     over.
   - File header and JSDoc match `tickets.ts`'s: the header spells out that this is the
-    *tracker's* archive, not `Task.archivedAt` (set by the JIRA/GitHub reconcilers and by
+    _tracker's_ archive, not `Task.archivedAt` (set by the JIRA/GitHub reconcilers and by
     variant discard, and destroyed by `pruneArchivedBefore` — the opposite lifecycle, see
     "What we have today" above), and that no SQL `WHERE` or per-screen filter may ever decide
     hiding on its own.
@@ -398,7 +398,7 @@ from disagreeing — the same reason F12 made one panel.
       F14.8's Archived view (Restore per row) is the fallback once F14.7 ships — until
       then, with toasts off, a one-click archive has no Undo path at all.
 
-- [ ] F14.8 Add the Archived view with one-click restore @needs: F14.6 Hide archived work in the Backlog, Timeline and Graph, F14.7 Build the archive actions and the open-tickets dialog
+- [x] F14.8 Add the Archived view with one-click restore @needs: F14.6 Hide archived work in the Backlog, Timeline and Graph, F14.7 Build the archive actions and the open-tickets dialog
 
   - The sidebar's "Archived" entry with a count (F13's `sidebarModel` gains the count from
     `archive:list`), or an "Archived" view in `Projects.tsx` when F13 has not shipped. Lists
@@ -407,11 +407,42 @@ from disagreeing — the same reason F12 made one panel.
   - Acceptance: a pure `archivedViewModel(listArchived, tickets)` with tests (grouping,
     counts, an open ticket on an archived milestone flagged); restore from the view brings the
     milestone back to the Timeline without reload (`milestone:changed`). Gates green.
+  - **Decisions taken without asking:**
+    - **The component is `ArchivedPane.tsx`, not the `ArchivedView.tsx` the ticket names.**
+      `packages/ui/src/projects/archivedView.ts` already owns that name (step 1, the pure
+      model this file reads), and the pair collides on any case-insensitive filesystem — `tsc`
+      refuses them outright on Windows ("differs... only in casing"). `Pane` matches the same
+      suffix `BacklogTable.tsx`/`TimelinePane.tsx` already carry beside their own
+      `backlogView.ts`-shaped modules; the exported component is `ArchivedPane`, its props
+      `ArchivedPaneProps`.
+    - **`archive:list()` is read unscoped, always** — `ArchivedPane` never passes a
+      `projectId` to it, even when scoped to one ticket project. The store's own
+      `selectArchivedProjects` filters by `id = projectId` when given one, which would leave
+      the Projects tab showing at most the single project already open; `archivedViewModel`'s
+      own "archived projects are never scoped" rule only holds if the listing it is handed
+      was never scoped in the first place. `projectId` still narrows the Milestones/Epics
+      tabs, through the model's own second argument.
+    - **A milestone's "Dates" column is its own `dueAt` alone, not a range.** The mockup draws
+      a start–end span; `Milestone` carries only `dueAt` (no start date exists anywhere in the
+      model), so the column reads a single formatted date (or an em dash with none) rather
+      than inventing a start.
+    - **No "Restored/archived by" name.** The mockup's "Oct 2 by Wojciech D." has no backing
+      field — archiving records only `archivedAt`, nobody's id — so the Archived column shows
+      the date alone.
+    - **The row component (`ArchivedRowView`) is split out hook-free**, the same shape
+      `TaskSteps.tsx`'s `StepRow`/`GateRow` already use, so `ArchivedPane.render.test.tsx` can
+      drive `expanded`/`busy`/`refusalMessage` directly in `renderToStaticMarkup` rather than
+      simulating a click this package has no DOM testing library to fire (`TaskSteps.render.
+      test.tsx`'s own header) — `ArchivedPane` itself can't be rendered this way at all, since
+      its `useInitialLoad` seed never resolves inside one synchronous pass.
+    - **Tickets inside an expanded row render through the real `IssueRow`**, not a bespoke
+      row, for the same key/title/status-glyph shape `BacklogTable` already draws and per
+      `mock-the-real-components`'s own rule against redrawing a row from memory.
 
 - [ ] F14.9 Show archived tickets by direct link with a restore banner and keep them editable @needs: F14.8 Add the Archived view with one-click restore
 
   - The F12 panel shows "Archived with <milestone|epic|project> — Restore" from `archivedBy`;
-    every field still saves; F12's `hiddenBy` names `'archived'` so *Show on board* explains
+    every field still saves; F12's `hiddenBy` names `'archived'` so _Show on board_ explains
     itself.
   - Acceptance: `hiddenBy` tests gain the archived case; a ticket on an archived milestone
     edits through `ticket:update` and stays archived. Gates green.
@@ -451,7 +482,7 @@ from disagreeing — the same reason F12 made one panel.
 - [ ] F14.13 Verify archiving end to end and document it @needs: F14.9 Show archived tickets by direct link with a restore banner and keep them editable, F14.10 Add the optional auto-archive sweep, F14.12 Bring archiving to the web
 
   - `scripts/verify-archive.mjs` on a temp DB (outside the repo, memory
-    *headless-scenario-harness-traps*): archive a milestone with each choice through the IPC
+    _headless-scenario-harness-traps_): archive a milestone with each choice through the IPC
     layer, read back the board / backlog inputs through the predicate, restore, run the sweep
     with a faked clock. `docs/12-the-ticket-model.md` gains an "Archiving" section (the two
     archives side by side, the predicate, the relay classification); `docs/05-glossary.md`
