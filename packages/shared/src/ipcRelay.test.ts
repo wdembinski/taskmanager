@@ -41,6 +41,8 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['linear:clearCredentials', 'credential-write'],
   ['cloud:setCredentials', 'credential-write'],
   ['cloud:clearCredentials', 'credential-write'],
+  ['update:setToken', 'credential-write'],
+  ['update:clearToken', 'credential-write'],
   ['session:start', 'live-session'],
   ['session:stop', 'live-session'],
   ['session:answer', 'live-session'],

@@ -61,6 +61,7 @@ import type {
   LinearSettings,
   LinearStateType,
   PriorityDisplay,
+  UpdateSettings,
 } from '@shared/settings';
 import { nativeStatusesByColumn, statusesByColumn } from '@shared/columnStatuses';
 
@@ -82,6 +83,7 @@ import type {
   JiraTestResult,
   LinearStateList,
   LinearTeamList,
+  UpdateTokenStatus,
 } from '@shared/ipc';
 import { cloudAuthHint, cloudTokenPlaceholder } from './cloudAuthHint';
 import { SETTINGS_SECTIONS } from './paletteSource';
@@ -338,6 +340,12 @@ export function Settings({
   // engine's live state, seeded once and then pushed.
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  // The private feed's own token — the same write-only-field-plus-status pattern as every
+  // other credential pane, kept apart from `update` since that one is pushed live and this
+  // one is only re-read after a save/clear.
+  const [updateTokenStatus, setUpdateTokenStatus] = useState<UpdateTokenStatus | null>(null);
+  const [updateToken, setUpdateToken] = useState('');
+  const [updateTokenMsg, setUpdateTokenMsg] = useState<string | null>(null);
   // GitLab: the same three pieces the JIRA pane keeps — config status, a write-only
   // token field, and the last test result.
   const [gitlabStatus, setGitlabStatus] = useState<JiraConfigStatus | null>(null);
@@ -387,6 +395,7 @@ export function Settings({
 
   useEffect(() => {
     void window.api.invoke('update:get').then(setUpdate);
+    void window.api.invoke('update:getTokenStatus').then(setUpdateTokenStatus);
     return window.api.on('update:changed', setUpdate);
   }, []);
 
@@ -440,6 +449,11 @@ export function Settings({
 
   function patchCloud(change: Partial<CloudSettings>): void {
     setSettings((prev) => (prev ? { ...prev, cloud: { ...prev.cloud, ...change } } : prev));
+    setSaved(false);
+  }
+
+  function patchUpdates(change: Partial<UpdateSettings>): void {
+    setSettings((prev) => (prev ? { ...prev, updates: { ...prev.updates, ...change } } : prev));
     setSaved(false);
   }
 
@@ -502,6 +516,19 @@ export function Settings({
   async function testGitHub(): Promise<void> {
     setGithubTest(null);
     setGithubTest(await window.api.invoke('github:testConnection'));
+  }
+
+  async function saveUpdateToken(): Promise<void> {
+    const res = await window.api.invoke('update:setToken', updateToken);
+    setUpdateTokenMsg(res.message);
+    setUpdateToken('');
+    setUpdateTokenStatus(await window.api.invoke('update:getTokenStatus'));
+  }
+
+  async function clearUpdateToken(): Promise<void> {
+    await window.api.invoke('update:clearToken');
+    setUpdateTokenMsg('Token cleared.');
+    setUpdateTokenStatus(await window.api.invoke('update:getTokenStatus'));
   }
 
   async function saveLinearKey(): Promise<void> {
@@ -790,6 +817,7 @@ export function Settings({
   const github = settings.github;
   const linear = settings.linear;
   const cloud = settings.cloud;
+  const updates = settings.updates;
   // An *.atlassian.net site configured as Server/DC is the one misconfiguration we can
   // spot for certain, and it fails as a bare 401 that reads like a bad token. Warn on
   // the field rather than silently overriding the dropdown — a vanity-domain Cloud site
@@ -1452,6 +1480,71 @@ export function Settings({
                 )}
               </div>
             </Field>
+
+            {/* The private feed's own credential — only meaningful for an install that
+                updates itself. A `manual`/`off` install never checks a feed, so there is
+                nothing here for a token to authenticate. */}
+            {update?.mode === 'auto' && (
+              <>
+                <Field
+                  label="Update token"
+                  hint={
+                    updateTokenStatus?.encryptionAvailable === false
+                      ? 'The OS secure store is unavailable, so a token cannot be saved on this machine.'
+                      : updateTokenStatus?.plainTextStorage
+                        ? 'No keyring on this machine, so the token is obfuscated on disk rather than kept secret.'
+                        : `A fine-grained GitHub token with read-only Contents on wdembinski/taskmanager only. Needed once the repo is private.${
+                            updateTokenStatus?.hasToken ? ' A token is stored.' : ''
+                          }`
+                  }
+                >
+                  <Input
+                    type="password"
+                    value={updateToken}
+                    placeholder={updateTokenStatus?.hasToken ? '•••••••• (stored)' : 'github_pat_…'}
+                    onChange={(_e, d) => setUpdateToken(d.value)}
+                  />
+                </Field>
+
+                <Caption1 className={styles.hint}>
+                  <Link
+                    href="https://github.com/settings/personal-access-tokens/new"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Create a fine-grained token
+                  </Link>
+                </Caption1>
+
+                <div className={styles.actions}>
+                  <Button
+                    appearance="secondary"
+                    disabled={
+                      !updateToken.trim() || updateTokenStatus?.encryptionAvailable === false
+                    }
+                    onClick={() => void saveUpdateToken()}
+                  >
+                    Save token
+                  </Button>
+                  <Button
+                    appearance="secondary"
+                    disabled={!updateTokenStatus?.hasToken}
+                    onClick={() => void clearUpdateToken()}
+                  >
+                    Clear token
+                  </Button>
+                  {updateTokenMsg && <Caption1 className={styles.saved}>{updateTokenMsg}</Caption1>}
+                </div>
+
+                <Field label="Use the GitHub CLI's token too">
+                  <Switch
+                    checked={updates.useGhCliToken}
+                    onChange={(_e, d) => patchUpdates({ useGhCliToken: d.checked })}
+                    label="Fall back to gh auth token when the GitHub CLI is signed in (broader scopes)"
+                  />
+                </Field>
+              </>
+            )}
           </div>
         </div>
       ) : section === 'appearance' ? (

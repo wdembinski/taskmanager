@@ -117,6 +117,8 @@ const HOST_ONLY_REASONS = {
   'linear:clearCredentials': 'credential-write',
   'cloud:setCredentials': 'credential-write',
   'cloud:clearCredentials': 'credential-write',
+  'update:setToken': 'credential-write',
+  'update:clearToken': 'credential-write',
 
   'session:start': 'live-session',
   'session:stop': 'live-session',
@@ -430,6 +432,9 @@ export const RELAY_POLICY: {
   'update:get': 'relay',
   'update:check': 'relay',
   'update:install': 'host-only',
+  'update:getTokenStatus': 'relay',
+  'update:setToken': 'host-only',
+  'update:clearToken': 'host-only',
 
   // The web reaches the desktop's tracker credentials over `ipc-invoke`; the token never
   // leaves it — same reasoning as `github:sync`.

@@ -737,6 +737,24 @@ export const DEFAULT_GANTT_SETTINGS: GanttSettings = {
   collapsedEpicIds: [],
 };
 
+/**
+ * The private-repo updater's own config — a per-install token lets `electron-updater` read
+ * this app's own (private) release feed; see `apps/client/src/main/updateFeed.ts`.
+ */
+export interface UpdateSettings {
+  /**
+   * Fall back to `gh auth token` when no token has been saved in Settings. Off by default:
+   * shelling out to `gh` on every feed check is a surprise an install should opt into, not
+   * one it wakes up to because a maintainer happened to have the CLI signed in.
+   */
+  useGhCliToken: boolean;
+}
+
+/** `gh` fallback off out of the box — see {@link UpdateSettings.useGhCliToken}. */
+export const DEFAULT_UPDATE_SETTINGS: UpdateSettings = {
+  useGhCliToken: false,
+};
+
 export interface AppSettings {
   /** Model applied to a newly added project (its tasks run with this unless changed). */
   defaultModel: ClaudeModel;
@@ -955,6 +973,8 @@ export interface AppSettings {
   cloud: CloudSettings;
   /** The Projects screen's Gantt timeline — see {@link GanttSettings}. */
   gantt: GanttSettings;
+  /** The private-repo updater's own config — see {@link UpdateSettings}. */
+  updates: UpdateSettings;
   /** The feature on/off switches later phases read — see {@link FeatureSettings}. */
   features: FeatureSettings;
   /**
@@ -1057,6 +1077,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   linear: DEFAULT_LINEAR_SETTINGS,
   cloud: DEFAULT_CLOUD_SETTINGS,
   gantt: DEFAULT_GANTT_SETTINGS,
+  updates: DEFAULT_UPDATE_SETTINGS,
   features: DEFAULT_FEATURE_SETTINGS,
   shelvedCardIds: [],
   shelfFolded: false,

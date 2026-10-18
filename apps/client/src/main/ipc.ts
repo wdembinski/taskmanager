@@ -17,11 +17,13 @@
  * it. What is meant to be left in a handler is a call, a `send` and a patch; a handler
  * growing a rule it alone knows is the signal to extract, not to build the harness.
  */
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   app,
   dialog,
@@ -287,6 +289,7 @@ import { LIMIT_PROBE_TIMEOUT_MS, Scheduler } from './scheduler';
 import { SessionManager } from './sessionManager';
 import { createStore, type Store } from './store';
 import { Updater } from './updater';
+import { pickUpdateToken } from './updateFeed';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
 import { createDiffGit, createReviewRefGit, DiffService } from './review/diffService';
@@ -393,6 +396,8 @@ function looksLikePat(bearer: string): boolean {
  * bound stated in one place and enforced in another drifts.
  */
 const ARCHIVE_RETENTION_MS = ARCHIVE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+const execFileAsync = promisify(execFile);
 
 /** What registerIpcHandlers hands back so the app can shut resources down cleanly. */
 export interface Engine {
@@ -888,11 +893,38 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     }
   }
 
+  /**
+   * The token the private update feed checks with — a stored one always wins; `gh`'s own
+   * token (`gh auth token`) is only read when nothing is stored AND the setting opts in,
+   * since shelling out on every feed check is not a thing an install should pay for by
+   * default. `decryptSecret` is declared further down this function; referencing it here is
+   * safe because this closure is only ever invoked by the updater, after this whole function
+   * has finished running once.
+   */
+  const resolveUpdateToken = async () => {
+    const cipher = store.loadUpdateToken();
+    const stored = cipher ? decryptSecret(cipher, 'update') : null;
+    const { updates } = store.getSettings();
+    if (stored || !updates.useGhCliToken) {
+      return pickUpdateToken({ stored, ghCli: null, useGhCli: updates.useGhCliToken });
+    }
+    const ghCli = await (async () => {
+      try {
+        // Never log stdout: it is the token itself.
+        const { stdout } = await execFileAsync('gh', ['auth', 'token'], { timeout: 5000 });
+        return stdout.trim() || null;
+      } catch {
+        return null;
+      }
+    })();
+    return pickUpdateToken({ stored, ghCli, useGhCli: updates.useGhCliToken });
+  };
+
   // Auto-update. Constructed here rather than with the poller below because it is inert
   // until `start()` — the constructor only reads the platform and `app.isPackaged` — and
   // the handlers below need something to talk to. Everything that touches the network
   // happens in `start()`, which is called last, with the poller.
-  const updater = new Updater((state) => send('update:changed', state));
+  const updater = new Updater((state) => send('update:changed', state), resolveUpdateToken);
 
   handle('app:getInfo', async () => ({
     version: app.getVersion(),
@@ -5787,6 +5819,47 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('update:get', async () => updater.current());
   handle('update:check', () => updater.checkNow());
   handle('update:install', async () => updater.install());
+
+  handle('update:getTokenStatus', async () => {
+    const { source } = await resolveUpdateToken();
+    return {
+      hasToken: store.loadUpdateToken() !== null,
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      plainTextStorage: usesPlainTextStorage(),
+      source,
+    };
+  });
+
+  handle('update:setToken', async (token) => {
+    if (!token.trim()) {
+      store.clearUpdateToken();
+      updater.tokenChanged();
+      return { ok: true, message: 'Token cleared.' };
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+      return {
+        ok: false,
+        message: 'OS secure storage is unavailable, so the token was not saved.',
+      };
+    }
+    // Same paste hygiene as the JIRA/GitLab/GitHub tokens above.
+    const noise = tokenHadNoise(token);
+    store.saveUpdateToken(safeStorage.encryptString(sanitizeToken(token)).toString('base64'));
+    updater.tokenChanged();
+    return {
+      ok: true,
+      message: usesPlainTextStorage()
+        ? 'Token saved — but this machine has no keyring, so it is only obfuscated on disk.'
+        : noise
+          ? 'Token saved — whitespace came with the paste and was stripped.'
+          : 'Token saved.',
+    };
+  });
+
+  handle('update:clearToken', async () => {
+    store.clearUpdateToken();
+    updater.tokenChanged();
+  });
 
   // Background poll: keep the Personal board fresh on the user's configured cadence
   // (`syncIntervalMinutes`; 0 = off). Re-armed whenever settings change.

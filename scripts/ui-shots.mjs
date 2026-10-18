@@ -179,6 +179,30 @@ export const SCREENS = [
     mockup: 'v10-19-settings-light.svg',
   },
   {
+    // The General pane's Updates block, scrolled to the private-feed token field added on top
+    // of it — no mockup draws this state yet, so this reuses the General mockup only for size
+    // and chrome, same as the `board-sidebar-folded-*` rows above do with theirs. The fixture's
+    // shared `UPDATE_STATE` is `mode: 'off'` (no other row wants an updater to look live), so
+    // this row overrides it to `auto` on its own via `channelOverrides` instead. "Clear token"
+    // is a disabled button once the token field renders, but `clickText` still scrolls it into
+    // view before the (no-op) click, which is all this row needs from it.
+    name: 'settings-updates-token',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [{ click: 'Settings' }, { click: 'Clear token' }],
+    mockup: 'v10-19-settings-light.svg',
+    channelOverrides: {
+      'update:get': { status: 'idle', mode: 'auto', version: '1.40.0' },
+      'update:getTokenStatus': {
+        hasToken: false,
+        encryptionAvailable: true,
+        plainTextStorage: false,
+        source: 'none',
+      },
+    },
+  },
+  {
     // `useGlobalShortcut('mod+k', ...)` in App.tsx opens CommandPalette.
     name: 'palette',
     app: 'client',
@@ -312,11 +336,19 @@ window.__tm = {
  * (`apiStub.mjs`'s own job) — `settingsOverrides.appearance` is `row.scheme` so the resolved
  * theme does not depend on `emulateScheme` racing React's first paint, same as
  * `shots-board.mjs`'s own `clientInitScript({ appearance, … })`.
+ *
+ * `row.channelOverrides` layers a few per-row answers over the shared fixture's own
+ * `BOOT_CHANNELS` — for the one screen that needs to see a state the other rows must NOT
+ * (e.g. the updater's `auto` mode, to show the private-feed token field), rather than mutating
+ * the fixture module's exports for every row that happens to run afterward.
  */
 function clientInitScript(defaultSettings, row) {
+  const fixture = row.channelOverrides
+    ? { ...uiShotsFixture, BOOT_CHANNELS: { ...uiShotsFixture.BOOT_CHANNELS, ...row.channelOverrides } }
+    : uiShotsFixture;
   const stub = buildApiStub({
     defaultSettings,
-    fixture: uiShotsFixture,
+    fixture,
     settingsOverrides: { appearance: row.scheme, transparency: 'reduced', fontSizePx: 14 },
   });
   return `${PAGE_HELPERS_SRC}\n${stub}`;

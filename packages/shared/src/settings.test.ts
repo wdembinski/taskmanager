@@ -259,6 +259,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
   'runInBackground',
   'trustedGateCommands',
   'monochromeCode',
+  'updates',
 ];
 
 // The Features group — every later phase reads its own switch out of here, and a blob

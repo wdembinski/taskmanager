@@ -48,6 +48,12 @@ export interface UpdateState {
    * verbatim because these names are searchable in a way the prose message is not.
    */
   code?: string;
+  /**
+   * Why a feed error happened, when the failure can be traced to the per-install GitHub
+   * token rather than the network or the release itself. Set, `describeUpdate` names the
+   * token rather than the generic "update check failed".
+   */
+  reason?: 'needs-token' | 'token-rejected' | 'token-blind';
 }
 
 /**
@@ -74,6 +80,16 @@ export function describeUpdate(state: UpdateState): string {
     case 'downloaded':
       return `Update${version} ready — restart to install`;
     case 'error': {
+      switch (state.reason) {
+        case 'needs-token':
+          return 'Updates need a GitHub token';
+        case 'token-rejected':
+          return 'Update token rejected or expired — replace it in Settings';
+        case 'token-blind':
+          return 'Token cannot see wdembinski/taskmanager';
+        default:
+          break;
+      }
       // A known version means the feed was read and the download had already started, so
       // this is a failed *install*, not a failed check. Saying "check failed" there sent
       // three releases' worth of ERR_UPDATER_INVALID_SIGNATURE looking like flaky network.
