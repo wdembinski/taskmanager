@@ -8161,6 +8161,9 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
     fetchResult?: (branch: string) => { ok: true; sha: string } | { ok: false; message: string };
     pushResult?: { ok: true } | { ok: false; message: string };
     inspectResult?: { cwd: string; branch: string; base: string } | null;
+    /** Extra subtasks of `t1` (Phase: never auto-rebase a worktree a step is still using). */
+    steps?: Array<{ id: string; status: Task['status'] }>;
+    dirty?: boolean;
   }) {
     const project = {
       id: 'agent-1',
@@ -8190,20 +8193,39 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
       agentMode: 'acceptEdits',
       parentTaskId: null,
     } as unknown as Task;
+    const steps: Task[] = (opts?.steps ?? []).map(
+      (s) =>
+        ({
+          id: s.id,
+          projectId: 'personal',
+          phase: '',
+          title: `Step ${s.id}`,
+          status: s.status,
+          order: 0,
+          source: 'adhoc',
+          dependsOn: [],
+          isContract: false,
+          isScaffold: false,
+          agentProjectId: 'agent-1',
+          parentTaskId: 't1',
+        }) as unknown as Task,
+    );
+    const tasks = [card, ...steps];
     const notes: string[] = [];
     const store = {
-      getTask: (id: string) => (id === 't1' ? card : undefined),
+      getTask: (id: string) => tasks.find((t) => t.id === id),
       getProject: (id: string) => (id === 'agent-1' ? project : undefined),
       listProjects: () => [project],
-      getTasks: () => [card],
-      getSubtasks: () => [],
+      getTasks: () => tasks,
+      getSubtasks: (parentId: string) => tasks.filter((t) => t.parentTaskId === parentId),
       getTaskActivity: () => [],
       addComment: (_p: string, _t: string, body: string) => notes.push(body),
       listTaskLinks: () => [],
       listMergeRequests: () => [],
       updateTask: (id: string, patch: Partial<Task>) => {
-        if (id === 't1') Object.assign(card, patch);
-        return card;
+        const t = tasks.find((x) => x.id === id);
+        if (t) Object.assign(t, patch);
+        return t;
       },
       appendTaskEvent: vi.fn((_p: string, _t: string, _r: string, e: { text?: string }) => {
         if (e?.text) notes.push(e.text);
@@ -8236,6 +8258,7 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
       ),
       listConflicts: vi.fn(async () => ['src/app.ts']),
       isAncestor: vi.fn(async () => opts?.isAncestorResult ?? true),
+      hasUncommittedWork: vi.fn(async () => opts?.dirty ?? false),
       rebaseForPullRequest: vi.fn(async (_p: Project, branch: string, target: string) => {
         rebaseCalls.push({ branch, target });
         return (
@@ -8248,6 +8271,7 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
           opts?.finishResult ?? { status: 'rebased', branch, base: target, worktree: 'C:/wt/t1' }
         );
       }),
+      integrate: vi.fn(),
       cleanup: vi.fn(),
     } as unknown as WorktreeManager;
 
@@ -8303,9 +8327,21 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
         event,
       );
 
+    /** Seed a live run for a step, as the scheduler would have after launching it. */
+    const seedRun = (runId: string, taskId: string): void => {
+      (scheduler as unknown as { runs: Map<string, unknown> }).runs.set(runId, {
+        taskId,
+        projectId: 'agent-1',
+        runId,
+        settled: false,
+      });
+      (scheduler as unknown as { inFlight: Set<string> }).inFlight.add(taskId);
+    };
+
     return {
       scheduler,
       card,
+      steps,
       store,
       worktrees,
       forgeGit,
@@ -8318,6 +8354,7 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
       pushCalls,
       marked,
       fire,
+      seedRun,
     };
   }
 
@@ -8552,8 +8589,8 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
   });
 
   it('an in-flight task is skipped', async () => {
-    const { scheduler, fetchCalls, rebaseCalls } = setup();
-    (scheduler as unknown as { inFlight: Set<string> }).inFlight.add('t1');
+    const { scheduler, seedRun, fetchCalls, rebaseCalls } = setup();
+    seedRun('r-t1', 't1');
     scheduler.resolveForgeConflict('t1', mergeRequest());
     await flush();
 
@@ -8581,6 +8618,73 @@ describe('Scheduler — the PR/MR conflict ladder (resolveForgeConflict)', () =>
 
     expect(fetchCalls).toEqual([]);
     expect(rebaseCalls).toEqual([]);
+  });
+
+  // Never auto-rebase a PR's worktree while one of the card's own STEPS is running in it
+  // (TM-460): the MR's `taskId` is the CARD, which reads idle while a step's live run is
+  // the thing actually using the directory `driveForgeConflict` is about to rebase.
+  it(
+    'a card whose step is inFlight gets its conflict deferred — nothing is fetched or ' +
+      'rebased — and driving it is picked back up once the step settles',
+    async () => {
+      const { scheduler, seedRun, fire, fetchCalls, rebaseCalls, pushCalls } = setup({
+        steps: [{ id: 's1', status: 'running' }],
+      });
+      seedRun('r-step', 's1');
+
+      scheduler.resolveForgeConflict('t1', mergeRequest({ headSha: 'sha-head-1' }));
+      await flush();
+
+      expect(fetchCalls).toEqual([]);
+      expect(rebaseCalls).toEqual([]);
+
+      await fire('r-step', { kind: 'exited', code: 0 });
+      await flush();
+
+      expect(rebaseCalls).toEqual([{ branch: 'orch/t1', target: 'refs/remotes/origin/main' }]);
+      expect(pushCalls).toHaveLength(1);
+    },
+  );
+
+  it('a pending step after a done one — the chain mid-advance between steps — defers too', async () => {
+    const { scheduler, fetchCalls, rebaseCalls } = setup({
+      steps: [
+        { id: 's0', status: 'done' },
+        { id: 's1', status: 'pending' },
+      ],
+    });
+
+    scheduler.resolveForgeConflict('t1', mergeRequest());
+    await flush();
+
+    expect(fetchCalls).toEqual([]);
+    expect(rebaseCalls).toEqual([]);
+  });
+
+  it('a dirty worktree is left alone, not stamped, and noted only once across repeat calls', async () => {
+    const { scheduler, notes, rebaseCalls, marked } = setup({ dirty: true });
+    const mr = mergeRequest({ headSha: 'sha-head-1' });
+
+    scheduler.resolveForgeConflict('t1', mr);
+    await flush();
+    scheduler.resolveForgeConflict('t1', mr);
+    await flush();
+
+    expect(rebaseCalls).toEqual([]);
+    expect(marked).toEqual([]);
+    expect(notes.filter((n) => n.includes('uncommitted changes'))).toHaveLength(1);
+  });
+
+  it("integrateNow refuses while a step is live in the card's worktree, without integrating", async () => {
+    const { scheduler, seedRun, worktrees } = setup({
+      steps: [{ id: 's1', status: 'running' }],
+    });
+    seedRun('r-step', 's1');
+
+    const result = await scheduler.integrateNow('t1');
+
+    expect(result).toMatch(/still running/);
+    expect(worktrees.integrate).not.toHaveBeenCalled();
   });
 });
 

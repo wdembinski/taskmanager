@@ -1676,6 +1676,20 @@ export class WorktreeManager {
   }
 
   /**
+   * Whether this worktree has local changes a rebase must not silently run under —
+   * `rebaseForPullRequest` (and `integrate`) `commitAll` whatever is sitting uncommitted
+   * before rebasing, which is fine for a run's own leftovers but not for a push nobody has
+   * reviewed. A rebase git has already paused HERE, though, is a different and
+   * already-handled state — unmerged markers and a staged resolution read as "dirty" too,
+   * and refusing on them would block the very call meant to continue that exact rebase.
+   */
+  async hasUncommittedWork(project: Project, worktree: string): Promise<boolean> {
+    const { host } = await this.workspaceFor(project);
+    if (await rebaseInProgress(worktree, host)) return false;
+    return !(await isClean(worktree, host));
+  }
+
+  /**
    * Rung 1.5: resolve the conflicts a rebase is stopped on WITHOUT an agent, or touch nothing.
    *
    * Returns the paths it resolved and staged, or `null` — and `null` means the work tree is

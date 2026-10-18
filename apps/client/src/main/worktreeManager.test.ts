@@ -572,6 +572,35 @@ describe('WorktreeManager.rebaseForPullRequest', () => {
   });
 });
 
+describe('WorktreeManager.hasUncommittedWork', () => {
+  it('reads a dirty tracked file as true, a clean tree as false, and a paused rebase as false', async () => {
+    writeFileSync(join(repo, 'src.txt'), 'original\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'seed src']);
+
+    const wtm = new WorktreeManager(root);
+    const wt = join(root, 'wt-dirty');
+    await git(repo, ['worktree', 'add', '-b', 'orch/dirty', wt, base]);
+
+    expect(await wtm.hasUncommittedWork(project(), wt)).toBe(false);
+
+    writeFileSync(join(wt, 'src.txt'), 'edited locally\n');
+    expect(await wtm.hasUncommittedWork(project(), wt)).toBe(true);
+    await git(wt, ['checkout', '--', 'src.txt']); // back to clean before pausing a rebase
+
+    writeFileSync(join(wt, 'src.txt'), 'BRANCH-EDIT\n');
+    await git(wt, ['commit', '--no-verify', '-am', 'branch edits src']);
+    writeFileSync(join(repo, 'src.txt'), 'BASE-EDIT\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'base edits src']);
+
+    const res = await rebaseOnto(wt, base);
+    expect(res.code).not.toBe(0); // the rebase is now paused, mid-conflict
+    expect(await hasConflicts(wt)).toBe(true);
+    expect(await wtm.hasUncommittedWork(project(), wt)).toBe(false);
+  });
+});
+
 describe('resolveVersionOnlyConflict', () => {
   const conflicted = (ours: string, theirs: string, extra = ''): string =>
     `{\n  "name": "x",\n<<<<<<< HEAD\n  "version": "${ours}",\n=======\n  "version": ` +

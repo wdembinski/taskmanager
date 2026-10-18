@@ -204,6 +204,15 @@ const PLAN_REJECTED_MESSAGE =
   'into steps — then call ExitPlanMode again with the new plan.';
 
 /**
+ * Said wherever a merge is refused because {@link Scheduler.worktreeBusy} found one of
+ * this card's own STEPS still using its worktree — the Merge button's own refusal
+ * (`integrateNow`) and the note an automatic landing leaves behind it (`integrateWorktree`)
+ * both read the same wall, so the human hears the same sentence either way.
+ */
+const WORKTREE_BUSY_MESSAGE =
+  'A step of this card is still running in its worktree — try again once it settles.';
+
+/**
  * No ticket thread at all — a step of a plan, an internal card, a tracker that was down.
  * Distinct from "a thread we trimmed": `omitted` is 0, so no prompt claims history it never
  * had. Frozen because it is shared by every such run.
@@ -1280,6 +1289,15 @@ export class Scheduler {
    */
   private readonly forgeConflictHandled = new Map<string, string>();
   /**
+   * The remote source-branch SHA each conflicted PR/MR last got a "worktree has
+   * uncommitted changes" note at, keyed by MR id — same once-per-episode shape as
+   * {@link Scheduler.forgeConflictHandled}, kept separate because a dirty worktree must
+   * NOT stamp that map: doing so would stop the next poll from ever retrying the rebase
+   * once the worktree is clean again. Cleared alongside it by
+   * {@link Scheduler.noteForgeConflictCleared}.
+   */
+  private readonly forgeDirtyNoted = new Map<string, string>();
+  /**
    * Branches that are finished and waiting for a human to merge them (Phase 17), keyed by
    * task id. Populated when a worktree run settles and auto-merge is off FOR THAT CARD
    * (`@shared/integrate` — the card's answer, else its project's, else the app's), and
@@ -1314,6 +1332,14 @@ export class Scheduler {
    * a restart correctly forgets it rather than leaving a card spinning forever.
    */
   private readonly integrating = new Set<string>();
+  /**
+   * Owner card ids whose finished branch is being pushed and opened as a pull request
+   * **right now** (`openPullRequestFor`). Same shape as `integrating`, and the same
+   * reason it needs one: that call pushes commits into the owner's worktree (a settling
+   * run's own leftovers, `commitAll`-ed on the way), so a PR/MR conflict drive racing it
+   * in the same directory is exactly the hazard `worktreeBusy` exists to rule out.
+   */
+  private readonly openingPullRequest = new Set<string>();
   /**
    * Non-task sessions started for a project — currently the AI "Align plan" run,
    * which is launched outside the task queue. Tracked as runId → projectId so
@@ -1580,7 +1606,12 @@ export class Scheduler {
       raiseTrust: (task, command) => this.raiseGateTrust(task, command),
       raiseFailure: (info) => this.raiseGateFailure(info),
       advance: (parentId) => this.advanceSubtasks(parentId),
-      finishStep: (task, landing) => this.finishStep(task, landing),
+      finishStep: (task, landing) => {
+        this.finishStep(task, landing);
+        // A gate step owns no `Run`, so its own exit never reaches `onRunEvent`'s
+        // `exited` case — this is that same release for the worktree it just gave up.
+        this.redriveForgeConflicts(task.parentTaskId ?? task.id);
+      },
     });
   }
 
@@ -2769,6 +2800,10 @@ export class Scheduler {
    * `integrating`, mid conflict-fix, or sitting behind an open `merge-conflict` item already
    * owns the branch or the worktree, and a repeat call must be a no-op rather than a second
    * attempt racing the first.
+   *
+   * A busy call is not dropped, only deferred: `this.forgeConflicts` keeps the row, and
+   * {@link Scheduler.redriveForgeConflicts} re-offers it the moment whatever was holding
+   * the worktree — most often one of the card's own STEPS still running — lets go.
    */
   resolveForgeConflict(taskId: string, mr: MergeRequest): void {
     if (this.disposed) return;
@@ -2787,23 +2822,86 @@ export class Scheduler {
     if (this.disposed) return;
     this.forgeConflicts.delete(mrId);
     this.forgeConflictHandled.delete(mrId);
+    this.forgeDirtyNoted.delete(mrId);
   }
 
   /**
    * Whether something already owns this card's branch or worktree, per
-   * `FeatureSettings.prAutoResolve`'s own list of disqualifiers: in flight, mid an
-   * ordinary integration, already running (or about to run) a Rung 2 fix, or parked behind
-   * an open `merge-conflict` item — any of which means a second drive would race the first
-   * rather than help it.
+   * `FeatureSettings.prAutoResolve`'s own list of disqualifiers: `worktreeBusy`'s own
+   * list, plus a Rung 2 fix already running (or about to) and an open `merge-conflict`
+   * item — any of which means a second drive would race the first rather than help it.
+   * Resolved through the OWNER: `taskId` here is usually already the card, but is
+   * resolved through its parent anyway so a step id handed in by mistake does not read
+   * as idle.
    */
   private forgeConflictBusy(taskId: string): boolean {
-    if (this.inFlight.has(taskId)) return true;
-    if (this.integrating.has(taskId)) return true;
-    if (this.pendingConflictFix.has(taskId)) return true;
+    const owner = this.store.getTask(taskId)?.parentTaskId ?? taskId;
+    if (this.worktreeBusy(owner)) return true;
+    const ids = new Set([owner, ...this.store.getSubtasks(owner).map((s) => s.id)]);
+    if ([...ids].some((id) => this.pendingConflictFix.has(id))) return true;
     for (const item of this.attention.values()) {
-      if (item.kind === 'merge-conflict' && item.taskId === taskId) return true;
+      if (item.kind === 'merge-conflict' && ids.has(item.taskId)) return true;
     }
     return false;
+  }
+
+  /**
+   * Whether something is already using the WORKTREE a card's branch lives in — its own
+   * (or a step's) live run, a running gate step, an ordinary integration, a pull request
+   * being opened, a chain still moving between its own steps, or a planner/re-plan that
+   * has claimed the directory for its own exit. Takes the OWNER id: a plan's steps share
+   * their parent's worktree one at a time, and a run belongs to the STEP (`run.taskId`),
+   * not the card that is merely resting in IN PROGRESS above it — the gap a PR/MR rebase
+   * fell through once already (TM-460), the same card-vs-step mistake `planOwnerOf`
+   * exists to avoid elsewhere.
+   *
+   * `hasLiveRunFor` alone is not quite "is a step running": the moment a step's run
+   * exits and the NEXT one has not started yet, every step reads `pending` or `done` and
+   * no run exists for any of them, yet the chain is plainly still moving — a card between
+   * steps, not an idle one. That gap is rule 6 below.
+   *
+   * `excludeTaskId`: leave this one id out of every check. Only
+   * {@link Scheduler.integrateWorktree} passes it, with the id that is ITSELF finishing
+   * and asking the question (`ctx.taskId` — the owner on a plain card, a step on a
+   * chain's last one): its own `integrating` flag may already be set by the very call
+   * chain asking (`integrateNow` → `beginIntegration` → `startIntegration`), and its own
+   * status is still whatever it was before this exact landing, not yet `done` — neither
+   * says anything about anyone ELSE using the worktree. `integrateNow`'s own up-front
+   * refusal asks the ordinary way, before it ever touches `beginIntegration`.
+   */
+  private worktreeBusy(ownerId: string, excludeTaskId?: string): boolean {
+    const owner = this.store.getTask(ownerId);
+    const subtasks = this.store.getSubtasks(ownerId).filter((s) => s.id !== excludeTaskId);
+    const tasks = owner && owner.id !== excludeTaskId ? [owner, ...subtasks] : subtasks;
+    if (this.hasLiveRunFor(tasks)) return true;
+    const ids = new Set([ownerId, ...subtasks.map((s) => s.id)]);
+    if (excludeTaskId) ids.delete(excludeTaskId);
+    if ([...ids].some((id) => this.integrating.has(id))) return true;
+    if (this.openingPullRequest.has(ownerId)) return true;
+    if (this.chainStarts.has(ownerId) || this.pendingReplans.has(ownerId)) return true;
+    // Between steps: the previous one just finished and the next is queued but has not
+    // launched yet (no `Run` exists for it either way) — only meaningful once the chain
+    // has actually started, which is what the `done` half of this rules out a brand-new
+    // plan where every step merely sits `pending` because nothing has run yet.
+    if (subtasks.some((s) => s.status === 'pending') && subtasks.some((s) => s.status === 'done')) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Re-offer every PR/MR conflict this card's worktree was too busy for, now that
+   * whatever was using it may have let go — a run exited, a plan finished opening its
+   * pull request. `resolveForgeConflict` re-checks every guard of its own (`worktreeBusy`
+   * first among them), so calling it again here is harmless whether or not anything was
+   * actually deferred: if the next step has already started, the worktree reads busy
+   * again and nothing happens.
+   */
+  private redriveForgeConflicts(ownerId: string): void {
+    for (const { taskId, mr } of [...this.forgeConflicts.values()]) {
+      const owner = this.store.getTask(taskId)?.parentTaskId ?? taskId;
+      if (owner === ownerId) this.resolveForgeConflict(taskId, mr);
+    }
   }
 
   /** The human notation ("!12" / "#12") for a forge ctx's MR, or its raw id if the row is gone. */
@@ -2840,6 +2938,11 @@ export class Scheduler {
       if (mr.headSha) this.markMrActed?.(mr.id, mr.headSha, 'resolve-conflicts');
       return;
     }
+    // `inspect` just awaited, and the world may have moved while it did — a step can have
+    // started in this exact worktree between `resolveForgeConflict`'s own check and here.
+    // Silent, not noted: the conflict is still queued in `forgeConflicts`, and whatever just
+    // claimed the worktree will redrive it through `redriveForgeConflicts` on its way out.
+    if (this.worktreeBusy(owner)) return;
 
     const targetRef = `refs/remotes/origin/${mr.targetBranch}`;
     const fetchedTarget = await this.forgeGit.fetch(project, live.cwd, mr.targetBranch, targetRef);
@@ -2876,6 +2979,26 @@ export class Scheduler {
           `than risk overwriting that push; pull it into the worktree and resolve by hand.`,
       );
       if (mr.headSha) this.markMrActed?.(mr.id, mr.headSha, 'resolve-conflicts');
+      return;
+    }
+
+    // A rebase here would silently `commitAll` whatever is sitting uncommitted in the
+    // worktree and carry it along onto the target. Left alone instead — NOT stamped into
+    // `forgeConflictHandled` (so a later poll, once it is clean, still drives this exact
+    // SHA) and NOT marked acted on the forge (nothing about the MR was actually examined).
+    // `forgeDirtyNoted` only gates the NOTE, so a dirty worktree that stays dirty across
+    // ten polls says so once rather than ten times.
+    if (await this.worktrees.hasUncommittedWork(project, live.cwd)) {
+      if (this.forgeDirtyNoted.get(mr.id) !== leaseSha) {
+        this.forgeDirtyNoted.set(mr.id, leaseSha);
+        this.noteCard(
+          project.id,
+          taskId,
+          `${mrRef(mr)} conflicts with \`${mr.targetBranch}\`, but this card's worktree ` +
+            `(${live.cwd}) has uncommitted changes — left alone rather than rebase under ` +
+            `them. Commit or discard them there; the next sync retries.`,
+        );
+      }
       return;
     }
 
@@ -4793,6 +4916,10 @@ export class Scheduler {
         // `heldLandings` is keyed by the PARENT — so this is a no-op for one.)
         if (exitedTask && !exitedTask.parentTaskId) this.landHeld(run.taskId);
         this.pumpAllActive(); // a slot freed up — advance every queue, not just this one
+        // This run may have been what a PR/MR conflict drive was waiting on — the worktree
+        // may be free now, or (a chain between steps) about to be claimed by the next one
+        // regardless; either way `redriveForgeConflicts` re-asks `worktreeBusy` itself.
+        this.redriveForgeConflicts(chainOwner);
         // An auto-retry of a task whose project queue is idle (e.g. an ad-hoc run):
         // `pump` won't touch an inactive project, so relaunch it directly.
         // `!this.workIsHeld`: this branch reaches `startTask` directly, and `startTask` has
@@ -6088,6 +6215,22 @@ export class Scheduler {
     ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
   ): Promise<void> {
     const task = this.store.getTask(ctx.taskId);
+    // The settling run that got here is already `settled` by the time it is — `worktreeBusy`
+    // only ever sees runs that are NOT, so this is never the run's own landing racing
+    // itself. It is everything else: a human's Merge, a PR being opened, another step
+    // starting beside this one in the gap between settling and reaching here.
+    const owner = task?.parentTaskId ?? ctx.taskId;
+    if (this.worktreeBusy(owner, ctx.taskId)) {
+      this.readyToIntegrate.set(ctx.taskId, { projectId: project.id, ...ctx });
+      this.noteRun(
+        project.id,
+        ctx.taskId,
+        ctx.runId,
+        `Finished on branch "${ctx.branch}". ${WORKTREE_BUSY_MESSAGE} Not merged yet — ` +
+          `Merge it from the card once it is free.`,
+      );
+      return;
+    }
     const message = `orchestrator: ${task?.title ?? ctx.taskId}`;
     // Both halves of "say what is happening": the set drives the live spinner, and the note
     // is what the timeline still shows tomorrow — a merge that took a minute and then failed
@@ -6334,6 +6477,11 @@ export class Scheduler {
     // worktree. The UI disables the button while this is true, but the guard belongs here —
     // the set is the engine's fact, not the renderer's.
     if (this.integrating.has(taskId)) return null;
+    // `task.status === 'running'` above only ever sees the CARD's own run — a plan's step
+    // shares its parent's worktree and runs under its OWN id, so the card can read
+    // perfectly idle while a step is still working in the exact directory Merge is about
+    // to touch.
+    if (this.worktreeBusy(task.parentTaskId ?? taskId)) return WORKTREE_BUSY_MESSAGE;
 
     // From here on the answer takes real time — `prepare` below shells out to git — and
     // every path out of it either starts the merge or explains itself, so the card can say
@@ -7592,6 +7740,10 @@ export class Scheduler {
       );
       return;
     }
+    // Marked for the whole call: `openPullRequest` commits and pushes whatever is sitting
+    // in the owner's worktree, which a PR/MR conflict drive racing it in the same
+    // directory would be exactly the hazard `worktreeBusy` exists to rule out.
+    this.openingPullRequest.add(ownerId);
     try {
       const opened = await this.openPullRequest(ownerId);
       if (this.disposed) return;
@@ -7623,6 +7775,9 @@ export class Scheduler {
         base: ctx.base,
         worktree: ctx.worktree,
       });
+    } finally {
+      this.openingPullRequest.delete(ownerId);
+      this.redriveForgeConflicts(ownerId);
     }
   }
 
