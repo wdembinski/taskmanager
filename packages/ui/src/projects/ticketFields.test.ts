@@ -188,4 +188,27 @@ describe('ticketPatchFor', () => {
       dueAt: new Date(2024, 2, 15).getTime(),
     });
   });
+
+  it('F14.9: every non-milestone field patch carries neither milestoneId nor trackerArchivedAt', () => {
+    // A ticket archived through its milestone must stay that way no matter which OTHER
+    // field a human edits — `TaskTicketSection`'s one-field-at-a-time save has no other
+    // guard against it, so this diffing rule is the whole protection.
+    const t = ticket({ milestoneId: 'mile1' });
+    const patches = [
+      ticketPatchFor('issueType', 'story', t),
+      ticketPatchFor('epicTaskId', 'epic9', t),
+      ticketPatchFor('labelsText', 'infra, ui', t),
+      ticketPatchFor('storyPointsText', '8', t),
+      ticketPatchFor('estimateDaysText', '2.5', t),
+      ticketPatchFor('startAtInput', '2026-01-05', t),
+      ticketPatchFor('dueAtInput', '2026-01-20', t),
+      ticketPatchFor('assigneeId', 'person-9', t),
+      ticketPatchFor('reporterId', 'person-10', t),
+    ];
+    for (const patch of patches) {
+      expect(Object.keys(patch).length).toBeGreaterThan(0);
+      expect('milestoneId' in patch).toBe(false);
+      expect('trackerArchivedAt' in patch).toBe(false);
+    }
+  });
 });

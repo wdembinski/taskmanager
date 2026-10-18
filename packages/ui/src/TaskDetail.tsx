@@ -387,6 +387,14 @@ export interface TaskDetailProps {
   /** See {@link people}. */
   labels?: TicketLabel[];
   /**
+   * The tracker projects the Ticket section's restore banner reads (F14.9) — not the same
+   * list as {@link agentProjects} (repos a card can be delegated to); this is the ticket-
+   * owning projects `archivedBy`'s own project check needs. Absent — a host that hasn't
+   * wired one through yet — the banner still fires off a milestone or epic archive, just
+   * never a project one.
+   */
+  ticketProjects?: Project[];
+  /**
    * This card's ticket links, for the Links section (F12.5). Both boards pass them from
    * `useTicketRegistries` (F12.6). Absent — every other host, such as Projects before
    * F12.7 — the section loads and keeps its own copy live instead (`useTicketLinks`),
@@ -446,6 +454,7 @@ export function TaskDetail({
   labels = NO_LABELS,
   ticketLinks,
   ticketFold,
+  ticketProjects,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -1279,6 +1288,7 @@ export function TaskDetail({
               agentProjects={agentProjects}
               labels={labels}
               milestones={milestones}
+              projects={ticketProjects}
               addLink={linksSection === null ? { candidates: projectTickets } : undefined}
               readOnly={ticketReadOnly}
               fold={ticketFold}

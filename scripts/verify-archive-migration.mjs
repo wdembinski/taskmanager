@@ -20,8 +20,9 @@
  * the row counts and seeded field values are unchanged, and every dropped column reads back
  * `null` — not a backfilled guess, since nothing could have archived anything before the
  * columns existed. The trigger set is unchanged (still exactly the three `trg_tasks_*`
- * triggers, nothing on `milestones`), and a single `updateTask` still logs exactly one
- * `cloud_outbox` row. Finally, a value written to each column with raw SQL is read back
+ * triggers, and — since F14.11 — exactly three `trg_milestones_*` outbox triggers, same
+ * shape), and a single `updateTask` still logs exactly one `cloud_outbox` row. Finally, a
+ * value written to each column with raw SQL is read back
  * through the store's own mappers as a number — proof the column is actually READ, not just
  * present.
  *
@@ -44,6 +45,26 @@
  * `restoreMilestone`'s `selectCoArchivedTickets` and the "stays archived" / "is still
  * there" checks below fail; make `selectArchivedBefore` also read `trackerArchivedAt` and
  * the prune-guard section fails instead. Revert both and every check passes again.
+ *
+ * Still on that same database, F14.9 proves an archived ticket stays editable: a ticket
+ * left on a `backlog`-archived milestone (the only way one keeps its `milestoneId` through
+ * that choice — a DONE ticket, since an open one is moved off), one filed under an
+ * `archiveEpic`-archived epic, and one on an `archiveTicketProject`-archived project each
+ * have every other field — labels, story points, estimate, start/due, assignee, epic,
+ * issue type — written one at a time through the REAL `ticketPatchFor`
+ * (`packages/ui/src/projects/ticketFields.ts`), the same single-field diff
+ * `TicketFieldsSection` saves on every keystroke. After each write the ticket is re-read:
+ * the field actually changed, the patch itself never carried `milestoneId` or
+ * `trackerArchivedAt`, and the REAL `archivedBy` (`packages/shared/src/trackerArchive.ts`)
+ * still names the same milestone/epic/project archived it. The epic ticket's own `epic`
+ * field is left out of its edit list for the same reason `milestoneId` is left out of
+ * every list: it IS the thing keeping that ticket archived, so reassigning it would prove
+ * nothing about the other fields and would just un-archive the ticket by epic instead.
+ *
+ * Prove this section can fail too: in `ticketFields.ts`'s `epicTaskId` case, return
+ * `{ epicTaskId, milestoneId: null }` instead of `{ epicTaskId }` and the milestone
+ * ticket's "never carries milestoneId" check fails (so does the mirroring unit test in
+ * `ticketFields.test.ts`). Revert it and every check passes again.
  *
  * A third, fresh database then exercises F14.10's own two store reads —
  * `listMilestoneTickets` and `ticketDoneTimes` — the sweep's only way of seeing the world.
@@ -108,6 +129,35 @@ if (!process.versions.electron) {
     { stdio: 'inherit' },
   );
 
+  // F14.9: the real `archivedBy`/`archiveIndexOf` (packages/shared/src/trackerArchive.ts)
+  // and the real `ticketPatchFor` (packages/ui/src/projects/ticketFields.ts) — neither
+  // touches the DOM or Electron, so both bundle on their own exactly like `store.ts` does.
+  spawnSync(
+    esbuild,
+    [
+      join(root, 'packages/shared/src/trackerArchive.ts'),
+      '--bundle',
+      '--platform=node',
+      '--format=cjs',
+      `--outfile=${join(scratch, 'trackerArchive.cjs')}`,
+      '--log-level=error',
+    ],
+    { stdio: 'inherit' },
+  );
+  spawnSync(
+    esbuild,
+    [
+      join(root, 'packages/ui/src/projects/ticketFields.ts'),
+      '--bundle',
+      '--platform=node',
+      '--format=cjs',
+      `--alias:@tm/shared=${join(root, 'packages', 'shared', 'src')}`,
+      `--outfile=${join(scratch, 'ticketFields.cjs')}`,
+      '--log-level=error',
+    ],
+    { stdio: 'inherit' },
+  );
+
   const electron = join(
     clientModules,
     'electron',
@@ -133,6 +183,8 @@ if (!process.versions.electron) {
 const require = createRequire(import.meta.url);
 const work = process.argv[2];
 const { createStore } = require(join(work, 'store.cjs'));
+const { archivedBy, archiveIndexOf } = require(join(work, 'trackerArchive.cjs'));
+const { ticketPatchFor } = require(join(work, 'ticketFields.cjs'));
 const Database = require('better-sqlite3');
 
 let failures = 0;
@@ -303,14 +355,26 @@ const taskTriggers = rawTriggers
   .sort();
 const milestoneTriggers = rawTriggers
   .prepare(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'milestones'`)
-  .all();
+  .all()
+  .map((r) => r.name)
+  .sort();
 rawTriggers.close();
 check(
   'triggers: exactly the three trg_tasks_* triggers exist',
   JSON.stringify(taskTriggers) ===
     JSON.stringify(['trg_tasks_after_delete', 'trg_tasks_after_insert', 'trg_tasks_after_update']),
 );
-check('triggers: milestones has no trigger of its own', milestoneTriggers.length === 0);
+// F14.11 (landed since this check was written) gave `milestones` the same outbox-trigger
+// loop as `tasks`/`projects` — see `OUTBOX_TOUCH_TABLES` in `store.ts`.
+check(
+  'triggers: exactly the three trg_milestones_* outbox triggers exist',
+  JSON.stringify(milestoneTriggers) ===
+    JSON.stringify([
+      'trg_milestones_after_delete',
+      'trg_milestones_after_insert',
+      'trg_milestones_after_update',
+    ]),
+);
 
 const outboxBefore = outboxCountFor(dbPath, ticket.id);
 after.updateTask(ticket.id, { title: 'A seeded ticket, renamed' });
@@ -797,6 +861,143 @@ check('prune guard: the control task is gone', store.getTask(controlTask.id) ===
 check(
   'prune guard: the tracker-archived ticket survives pruning',
   store.getTask(o6.id)?.trackerArchivedAt === at4,
+);
+
+// ───────────────────────────── 7. F14.9: editing stays safe while archived ─────────────
+// `patch` is always built by the REAL `ticketPatchFor`, `by` is always read back through
+// the REAL `archivedBy`/`archiveIndexOf` — a reimplementation here would only prove this
+// script agrees with itself, not with the code the panel actually calls.
+function patchWasApplied(task, patch) {
+  return Object.entries(patch).every(([key, value]) =>
+    Array.isArray(value)
+      ? Array.isArray(task[key]) &&
+        task[key].length === value.length &&
+        task[key].every((v, i) => v === value[i])
+      : task[key] === value,
+  );
+}
+
+/**
+ * Runs one `[field, value]` edit at a time through the real `ticketPatchFor`, writes it
+ * through `updateTask`, re-reads, and asserts: the patch is a real one-field change that
+ * never names `milestoneId` or `trackerArchivedAt`, the written value round-trips, and
+ * `assertStillArchived` (given the fresh re-read) still holds.
+ */
+function exerciseFieldsWhileArchived(label, ticketId, edits, assertStillArchived) {
+  for (const [field, value] of edits) {
+    const before = store.getTask(ticketId);
+    const patch = ticketPatchFor(field, value, before);
+    check(`${label}: ${field} patch is a real one-field change`, Object.keys(patch).length > 0);
+    check(`${label}: ${field} patch never carries milestoneId`, !('milestoneId' in patch));
+    check(`${label}: ${field} patch never carries trackerArchivedAt`, !('trackerArchivedAt' in patch));
+    store.updateTask(ticketId, patch);
+    const after = store.getTask(ticketId);
+    check(`${label}: ${field} saved`, patchWasApplied(after, patch));
+    assertStillArchived(after);
+  }
+}
+
+const FIELD_EDITS_EXCEPT_EPIC = [
+  ['labelsText', 'infra, ui'],
+  ['storyPointsText', '8'],
+  ['estimateDaysText', '2.5'],
+  ['startAtInput', '2026-01-05'],
+  ['dueAtInput', '2026-01-20'],
+  ['assigneeId', 'person-9001'],
+  ['issueType', 'story'],
+];
+
+// 7a. A ticket left on a `backlog`-archived milestone. `backlog` nulls the `milestoneId`
+// of every OPEN ticket on the milestone — the only way a ticket keeps its `milestoneId`
+// through that choice is to already be done/cancelled, so `m6EditMe` is closed before the
+// archive, while `m6OpenTicket` stays open purely to make the choice non-optional
+// (`choice-required` otherwise).
+const m6 = store.addMilestone(projectA.id, { name: 'M6 - editable after archive' });
+const m6OpenTicket = store.createTicket(projectA.id, { title: 'M6 open ticket', milestoneId: m6.id });
+const m6EditMe = store.createTicket(projectA.id, { title: 'M6 edit-me', milestoneId: m6.id });
+store.updateTask(m6EditMe.id, { status: 'done' });
+const m6NeutralEpic = store.createTicket(projectA.id, { title: 'M6 neutral epic', issueType: 'epic' });
+const atM6 = nextAt();
+check(
+  'F14.9 milestone: archiveMilestone(M6, backlog) succeeds',
+  store.archiveMilestone(m6.id, { kind: 'backlog' }, atM6).ok === true,
+);
+check('F14.9 milestone: the open ticket was moved off', store.getTask(m6OpenTicket.id)?.milestoneId === null);
+check(
+  'F14.9 milestone: the closed edit-me ticket kept its milestoneId',
+  store.getTask(m6EditMe.id)?.milestoneId === m6.id,
+);
+
+function m6Index() {
+  return archiveIndexOf(store.listMilestones(projectA.id), [store.getTask(m6NeutralEpic.id)], [
+    store.getProject(projectA.id),
+  ]);
+}
+exerciseFieldsWhileArchived(
+  'F14.9 milestone',
+  m6EditMe.id,
+  [...FIELD_EDITS_EXCEPT_EPIC, ['epicTaskId', m6NeutralEpic.id]],
+  (ticket) => {
+    check('F14.9 milestone: milestoneId is still M6', ticket.milestoneId === m6.id);
+    check(
+      'F14.9 milestone: M6.archivedAt is still atM6',
+      store.listMilestones(projectA.id).find((m) => m.id === m6.id)?.archivedAt === atM6,
+    );
+    const by = archivedBy(ticket, m6Index());
+    check('F14.9 milestone: archivedBy is still {by: milestone, id: M6}', by?.by === 'milestone' && by.id === m6.id);
+  },
+);
+
+// 7b. A ticket filed under an `archiveEpic`-archived epic. `epicTaskId` is deliberately
+// left out of its edit list — reassigning it is exactly what would un-archive the ticket
+// by epic, the same reason `milestoneId` is left out of every list in this section.
+const epicEditMe = store.createTicket(projectA.id, { title: 'Epic parent (archived)', issueType: 'epic' });
+const epicTicket = store.createTicket(projectA.id, { title: 'Filed under the archived epic', epicTaskId: epicEditMe.id });
+const atEpicEditMe = nextAt();
+check('F14.9 epic: archiveEpic succeeds', store.archiveEpic(epicEditMe.id, atEpicEditMe).ok === true);
+
+function epicIndex() {
+  return archiveIndexOf([], [store.getTask(epicEditMe.id)], [store.getProject(projectA.id)]);
+}
+exerciseFieldsWhileArchived('F14.9 epic', epicTicket.id, FIELD_EDITS_EXCEPT_EPIC, (ticket) => {
+  check('F14.9 epic: epicTaskId is still the archived epic', ticket.epicTaskId === epicEditMe.id);
+  check(
+    'F14.9 epic: the epic\'s own trackerArchivedAt is still atEpicEditMe',
+    store.getTask(epicEditMe.id)?.trackerArchivedAt === atEpicEditMe,
+  );
+  const by = archivedBy(ticket, epicIndex());
+  check('F14.9 epic: archivedBy is still {by: epic, id: epicEditMe}', by?.by === 'epic' && by.id === epicEditMe.id);
+});
+
+// 7c. A ticket on an `archiveTicketProject`-archived project.
+const projectEditMe = store.addProject({ name: 'Archived while editable', ticketPrefix: 'AE' });
+const projectTicket = store.createTicket(projectEditMe.id, { title: 'On the archived project' });
+const projectNeutralEpic = store.createTicket(projectEditMe.id, { title: 'AE neutral epic', issueType: 'epic' });
+const atProjectEditMe = nextAt();
+check(
+  'F14.9 project: archiveTicketProject succeeds',
+  store.archiveTicketProject(projectEditMe.id, atProjectEditMe).ok === true,
+);
+
+function projectIndex() {
+  return archiveIndexOf([], [store.getTask(projectNeutralEpic.id)], [store.getProject(projectEditMe.id)]);
+}
+exerciseFieldsWhileArchived(
+  'F14.9 project',
+  projectTicket.id,
+  [...FIELD_EDITS_EXCEPT_EPIC, ['epicTaskId', projectNeutralEpic.id]],
+  (ticket) => {
+    check('F14.9 project: projectId is still projectEditMe', ticket.projectId === projectEditMe.id);
+    check(
+      'F14.9 project: projectEditMe.archivedAt is still atProjectEditMe',
+      store.getProject(projectEditMe.id)?.archivedAt === atProjectEditMe,
+    );
+    const by = archivedBy(ticket, projectIndex());
+    check(
+      'F14.9 project: archivedBy is still {by: project, id: projectEditMe}',
+      by?.by === 'project' && by.id === projectEditMe.id,
+    );
+  },
 );
 
 store.close();

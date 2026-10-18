@@ -439,13 +439,32 @@ Map<string, TMilestone>; epics: Map<string, TEpic>; projects: Map<string, TProje
       row, for the same key/title/status-glyph shape `BacklogTable` already draws and per
       `mock-the-real-components`'s own rule against redrawing a row from memory.
 
-- [ ] F14.9 Show archived tickets by direct link with a restore banner and keep them editable @needs: F14.8 Add the Archived view with one-click restore
+- [x] F14.9 Show archived tickets by direct link with a restore banner and keep them editable @needs: F14.8 Add the Archived view with one-click restore
 
   - The F12 panel shows "Archived with <milestone|epic|project> — Restore" from `archivedBy`;
     every field still saves; F12's `hiddenBy` names `'archived'` so _Show on board_ explains
     itself.
   - Acceptance: `hiddenBy` tests gain the archived case; a ticket on an archived milestone
     edits through `ticket:update` and stays archived. Gates green.
+  - **Decisions taken in passing:**
+    - `hiddenBy` gained the tracker archive through an optional `archiveIndex` on
+      `BoardViewState`, checked right after `card.archivedAt` — both "archived" outrank
+      every other filter. `{ kind: 'archived'; by?: Exclude<ArchivedBy, null> }`: `by` absent
+      means the board's own archive (drawer opens), present means the tracker archive — no
+      new `kind`.
+    - The restore banner's one-click fix restores through `archiveRestoreTarget` then selects
+      the card; a non-epic `self` (archived by "archive them too") has no restore target of
+      its own, so the action is just "Open". `TaskDetail` gained an optional `ticketProjects`
+      prop (the tracker `Project`s, with `archivedAt`) for the project-archived case; a
+      lookup miss degrades to "not archived", never a false banner. Fields stay enabled while
+      archived — the banner is information, never a lock.
+    - Editability is proved by construction, not by a runtime guard: `ticketPatchFor`'s
+      one-field diff never names `milestoneId` (or `trackerArchivedAt`, which isn't even in
+      `TicketPatch`'s key set) unless the field being saved IS `milestoneId` itself — checked
+      per-field in `ticketFields.test.ts`, and end to end in
+      `scripts/verify-archive-migration.mjs` against a ticket left on a `backlog`-archived
+      milestone, one under an `archiveEpic`-archived epic, and one on an
+      `archiveTicketProject`-archived project.
 
 ### F14 · Phase 4 — Auto-archive, cloud and web
 
