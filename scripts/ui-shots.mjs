@@ -43,7 +43,12 @@
  *       `[role="option"]` row instead — `IssueRow.tsx`'s rows carry no stable accessible name of
  *       their own (just the fixture's own task title, which a screen map row should not have to
  *       know), so "click a row" is addressed by position, the same way a human would point at
- *       "the first one" without reading its title either.
+ *       "the first one" without reading its title either. A second sentinel, `'board-card:ID'`,
+ *       clicks `TaskCard.tsx`'s own `[data-task-id="ID"]` root directly — plain text matching
+ *       would otherwise land on its hidden chain-link handle first (`aria-label="Chain from
+ *       {title} — …"` also *contains* the card's title, and that handle renders before the
+ *       card's own text in document order), so a card is addressed by its fixture id instead of
+ *       its title, the same reasoning as `issue-row:N`'s own position-not-text sentinel.
  *     - `{ key: spec }` — dispatches a bubbling `keydown` on `document.activeElement` (or
  *       `document.body`), parsed the same `"mod+k"`/`"shift+mod+k"` way
  *       `packages/ui/src/palette/shortcut.ts`'s own spec is, plus the named keys `space`,
@@ -234,12 +239,15 @@ export const SCREENS = [
     },
   },
   {
-    // `useGlobalShortcut('mod+k', ...)` in App.tsx opens CommandPalette.
+    // `useGlobalShortcut('mod+k', ...)` in App.tsx opens CommandPalette. Selecting a card first
+    // (`board-card:1`, `boardShotsFixture.mjs`'s `plainBacklog` — the default board's first
+    // Backlog card, ticketKey `FX-1`) sets `selectedTaskId`, so the palette's context chip ("on
+    // FX-1") renders, matching the mockup.
     name: 'palette',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    setup: [{ key: 'mod+k' }],
+    setup: [{ click: 'board-card:1' }, { key: 'mod+k' }],
     mockup: 'v10-20-palette-light.svg',
   },
   {
@@ -456,15 +464,34 @@ function issueRowClickExprs(index) {
   };
 }
 
+/** `{ click: 'board-card:ID' }` — see `SCREENS`' own doc comment on why a board card is
+ *  addressed by `TaskCard.tsx`'s own `[data-task-id]`, not by its title text. */
+function boardCardClickExprs(taskId) {
+  const selector = JSON.stringify(`[data-task-id=${JSON.stringify(taskId)}]`);
+  return {
+    ready: `!!document.querySelector(${selector})`,
+    click: `(() => {
+      const el = document.querySelector(${selector});
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      el.click();
+      return true;
+    })()`,
+  };
+}
+
 async function runSetupStep(cdp, step) {
   if (step.click !== undefined) {
     const issueRow = /^issue-row:(first|\d+)$/.exec(step.click);
+    const boardCard = /^board-card:(.+)$/.exec(step.click);
     const { ready, click } = issueRow
       ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
-      : {
-          ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
-          click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
-        };
+      : boardCard
+        ? boardCardClickExprs(boardCard[1])
+        : {
+            ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
+            click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
+          };
     await waitFor(async () => (await evaluate(cdp, ready)) === true, {
       timeoutMs: 10000,
       label: `"${step.click}" to appear`,

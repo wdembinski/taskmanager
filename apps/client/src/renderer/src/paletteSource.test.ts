@@ -4,12 +4,15 @@
  * acceptance cases named in the design — a running card offers Stop not Start, a card with no
  * agent project offers no Start, and a card removed between the palette opening and a command
  * running resolves to the engine's own unknown-task sentence instead of throwing something
- * else.
+ * else. Since the v10 mockup (TM-458), also covers that nav/settings/card/action rows carry an
+ * `icon` and that a card row's `prefix` is its tracker key.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Project, type Task } from '@shared/model';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import { LOCAL_TARGET } from '@shared/execTarget';
+import { AddRegular, PlayRegular, SettingsRegular, StopRegular } from '@fluentui/react-icons';
+import { SHELL_NAV } from '@ui/shell/shellNav';
 import { buildDesktopCommands, type DesktopPaletteSnapshot } from './paletteSource';
 
 const task = (over: Partial<Task>): Task => ({
@@ -69,9 +72,11 @@ const snapshot = (over: Partial<DesktopPaletteSnapshot> = {}): DesktopPaletteSna
 });
 
 describe('buildDesktopCommands', () => {
-  it('always offers Add task', () => {
+  it('always offers Add task, with an AddRegular icon', () => {
     const commands = buildDesktopCommands(snapshot());
-    expect(commands.find((c) => c.id === 'add-task')).toBeDefined();
+    const addTask = commands.find((c) => c.id === 'add-task');
+    expect(addTask).toBeDefined();
+    expect(addTask?.icon).toBe(AddRegular);
   });
 
   it('lists every screen and every Settings section in the navigate group', () => {
@@ -79,6 +84,13 @@ describe('buildDesktopCommands', () => {
     expect(commands.find((c) => c.id === 'nav:mytasks')).toBeDefined();
     expect(commands.find((c) => c.id === 'nav:settings')).toBeDefined();
     expect(commands.find((c) => c.id === 'settings:jira')?.title).toBe('Settings: JIRA');
+  });
+
+  it("carries each nav row's own SHELL_NAV icon, and SettingsRegular for a Settings section", () => {
+    const commands = buildDesktopCommands(snapshot());
+    const mytasksIcon = SHELL_NAV.find((entry) => entry.id === 'mytasks')?.icon;
+    expect(commands.find((c) => c.id === 'nav:mytasks')?.icon).toBe(mytasksIcon);
+    expect(commands.find((c) => c.id === 'settings:jira')?.icon).toBe(SettingsRegular);
   });
 
   it('a nav command calls onNavigate with its tab', () => {
@@ -91,11 +103,12 @@ describe('buildDesktopCommands', () => {
     expect(onNavigate).toHaveBeenCalledWith('tickets');
   });
 
-  it('offers Scratch run even though F13.11 dropped its rail tile', () => {
+  it('offers Scratch run even though F13.11 dropped its rail tile, with its own icon', () => {
     const onNavigate = vi.fn();
     const commands = buildDesktopCommands(snapshot({ onNavigate }));
     const scratch = commands.find((c) => c.id === 'nav:scratch');
     expect(scratch?.title).toBe('Scratch run');
+    expect(scratch?.icon).toBeDefined();
     void scratch?.run();
     expect(onNavigate).toHaveBeenCalledWith('scratch');
   });
@@ -115,6 +128,24 @@ describe('buildDesktopCommands', () => {
     const cardIds = commands.filter((c) => c.group === 'cards').map((c) => c.id);
     expect(cardIds).toEqual(['card:c1']);
     expect(commands.find((c) => c.id === 'card:c1')?.keywords).toContain('PROJ-767');
+  });
+
+  it("sets a card row's prefix to its tracker key, preferring ticketKey over externalKey", () => {
+    const withTicketKey = task({
+      id: 'c1',
+      title: 'Fix the thing',
+      ticketKey: 'TM-9',
+      externalKey: 'PROJ-767',
+    });
+    const withExternalOnly = task({
+      id: 'c2',
+      title: 'Ship the other thing',
+      ticketKey: null,
+      externalKey: 'PROJ-9',
+    });
+    const commands = buildDesktopCommands(snapshot({ tasks: [withTicketKey, withExternalOnly] }));
+    expect(commands.find((c) => c.id === 'card:c1')?.prefix).toBe('TM-9');
+    expect(commands.find((c) => c.id === 'card:c2')?.prefix).toBe('PROJ-9');
   });
 
   it('opening a card resolves it live and calls onOpenTask', () => {
@@ -151,17 +182,17 @@ describe('buildDesktopCommands', () => {
     expect(commands.find((c) => c.id === 'start-selected')).toBeUndefined();
   });
 
-  it('offers Start for a card assigned but never run', () => {
+  it('offers Start for a card assigned but never run, with a PlayRegular icon', () => {
     const card = task({ id: 'c1', status: 'pending', agentProjectId: 'p1' });
     const commands = buildDesktopCommands(snapshot({ tasks: [card], selectedTaskId: 'c1' }));
-    expect(commands.find((c) => c.id === 'start-selected')).toBeDefined();
+    expect(commands.find((c) => c.id === 'start-selected')?.icon).toBe(PlayRegular);
     expect(commands.find((c) => c.id === 'stop-selected')).toBeUndefined();
   });
 
-  it('a running card offers Stop, not Start', () => {
+  it('a running card offers Stop, not Start, with a StopRegular icon', () => {
     const card = task({ id: 'c1', status: 'running', agentProjectId: 'p1' });
     const commands = buildDesktopCommands(snapshot({ tasks: [card], selectedTaskId: 'c1' }));
-    expect(commands.find((c) => c.id === 'stop-selected')).toBeDefined();
+    expect(commands.find((c) => c.id === 'stop-selected')?.icon).toBe(StopRegular);
     expect(commands.find((c) => c.id === 'start-selected')).toBeUndefined();
   });
 

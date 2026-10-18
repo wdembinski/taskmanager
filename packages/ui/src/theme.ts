@@ -269,6 +269,7 @@ function schemeVars(scheme: ColorScheme): Record<string, string> {
   const syntax = SYNTAX_BY_SCHEME[scheme];
   return {
     '--tm-page-bg': semantic.canvas,
+    '--tm-scrim': semantic.scrim,
     '--tm-page-wash': washGradient(semantic.wash),
     '--tm-thumb': thumb.visible,
     '--tm-thumb-hover': thumb.hover,

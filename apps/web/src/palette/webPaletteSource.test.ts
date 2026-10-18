@@ -5,11 +5,15 @@
  * CLAUDE-step notes), Scratch run has no way to appear at all (`Screen` has no `'scratch'`
  * member for `goTo` to target), and `relayableCommands` drops a command the instant any one of
  * its channels stops being relayable on whatever policy it is handed — a cloned, mutated copy
- * for a test, the real singleton by default.
+ * for a test, the real singleton by default. Since the v10 mockup (TM-458), also covers that a
+ * card row's `prefix` is its tracker key (with no `subtitle` duplicating it) and that nav/action
+ * rows carry an `icon`.
  */
 import { describe, expect, it } from 'vitest';
 import { RELAY_POLICY } from '@tm/shared/ipcRelay';
 import type { Project, Task } from '@tm/shared/model';
+import { AddRegular, SignOutRegular } from '@fluentui/react-icons';
+import { SHELL_NAV } from '@tm/ui/shell/shellNav';
 import {
   buildWebCommands,
   relayableCommands,
@@ -83,10 +87,32 @@ describe('buildWebCommands', () => {
     expect(byId('t2')?.keywords).toContain('ABC-1');
   });
 
-  it('builds an Add task command that calls channels task:create and ticket:create', () => {
+  it("sets a card row's prefix to its tracker key, and carries no subtitle", () => {
+    const tasks = {
+      t1: task({ id: 't1', title: 'Fix the thing', ticketKey: 'TM-9', externalKey: 'ABC-1' }),
+    };
+    const commands = buildWebCommands({ tasks, projects: {} }, actions());
+    const card = commands.find((c) => c.id === 'card:t1');
+    expect(card?.prefix).toBe('TM-9');
+    expect(card?.subtitle).toBeUndefined();
+  });
+
+  it("carries each nav row's own SHELL_NAV icon", () => {
+    const commands = buildWebCommands({ tasks: {}, projects: {} }, actions());
+    const mytasksIcon = SHELL_NAV.find((entry) => entry.id === 'mytasks')?.icon;
+    expect(commands.find((c) => c.id === 'nav:mytasks')?.icon).toBe(mytasksIcon);
+  });
+
+  it('builds an Add task command that calls channels task:create and ticket:create, with an AddRegular icon', () => {
     const commands = buildWebCommands({ tasks: {}, projects: {} }, actions());
     const addTask = commands.find((c) => c.id === 'action:add-task');
     expect(addTask?.channels).toEqual(['task:create', 'ticket:create']);
+    expect(addTask?.icon).toBe(AddRegular);
+  });
+
+  it('builds a Sign out command with a SignOutRegular icon', () => {
+    const commands = buildWebCommands({ tasks: {}, projects: {} }, actions());
+    expect(commands.find((c) => c.id === 'action:sign-out')?.icon).toBe(SignOutRegular);
   });
 });
 

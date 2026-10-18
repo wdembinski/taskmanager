@@ -263,6 +263,11 @@ export interface SemanticTokens {
   windowClose: WindowCloseTokens;
   mono: string;
   sans: string;
+  /** The content-only overlay `AppShell` draws behind a modal dialog (the command palette) —
+   * covers the rail/sidebar/content band, never the title bar or status bar. From the v10
+   * mockup's own palette scrim, `rgba(17,19,23,0.18)`; dark is not a mockup value, just a
+   * same-feel darker analogue. */
+  scrim: string;
 }
 
 export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
@@ -305,6 +310,7 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
+    scrim: 'rgba(17, 19, 23, 0.18)',
   },
   dark: {
     canvas: WINDOW_CANVAS.dark,
@@ -345,6 +351,7 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
     sans: 'Segoe UI Variable Text, Segoe UI, Inter, system-ui',
+    scrim: 'rgba(0, 0, 0, 0.32)',
   },
 };
 
