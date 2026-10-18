@@ -209,6 +209,78 @@ alongside it. electron-updater reports "Skip checkForUpdates because application
 packed" and similar at `info`, which `apps/client/src/main/updater.ts` silences by default, so an
 entirely inert updater is otherwise indistinguishable from an up-to-date one.
 
+**Going private.** Once the repository stops being public, every install needs a
+per-install GitHub token before it can see the feed at all — the public setup above only
+exercises the unauthenticated path. Settings → General → Updates gets an **Update token**
+field (only shown while `update.mode === 'auto'`, same as the rest of that block) once this
+is in place:
+
+- **The PAT.** Create a **fine-grained personal access token**
+  (<https://github.com/settings/personal-access-tokens/new>) scoped to:
+  - **repository access**: `wdembinski/taskmanager` only — never "All repositories";
+  - **permissions**: Contents → **Read-only**, nothing else;
+  - **expiration**: GitHub's fine-grained tokens cap out at a year; set a reminder for
+    whatever you pick, since an expired token fails the same way a revoked one does
+    (`token-rejected`, below) and the only symptom is updates quietly stopping.
+  Paste it into the field and click **Save token** — it is encrypted with
+  `safeStorage` before it reaches disk (`store.saveUpdateToken`/`loadUpdateToken`), the
+  same as the GitHub integration's own token.
+- **The three honest states** (`UpdateState.reason`, read by `classifyUpdateError` off the
+  feed response's status code — never guessed from whether a token exists locally):
+  - **`needs-token`** — a 404 with *no* token in play. GitHub answers a private repo's
+    unauthenticated request with 404 rather than 401/403 (it never confirms a private repo
+    exists to someone who can't see it), so this is the feed's own "you need to
+    authenticate" — Settings shows *"Updates need a GitHub token"*.
+  - **`token-rejected`** — a 401/403 *with* a token in play. The token is wrong, revoked,
+    or expired — *"Update token rejected or expired — replace it in Settings"*.
+  - **`token-blind`** — a 404 *with* a token in play. The token is valid but cannot see
+    `wdembinski/taskmanager` specifically (wrong repo access, or a scope that isn't
+    Contents) — *"Token cannot see wdembinski/taskmanager"*. The split between this and
+    `needs-token` is the whole reason the classifier is told whether a token was sent:
+    GitHub's single 404 otherwise collapses two very different problems into one.
+- **The `gh` fallback.** The *"Use the GitHub CLI's token too"* switch
+  (`updates.useGhCliToken`, off by default) lets an install with no token of its own fall
+  back to `gh auth token` when the GitHub CLI is signed in on that machine. It is a
+  fallback, never a preference: a token saved in Settings always wins
+  (`pickUpdateToken`), and shelling out to `gh` on every feed check is not something an
+  install should pay for unless it opted in. Broader scopes than the fine-grained PAT come
+  along for the ride, which is exactly why it defaults off.
+- **Why `updateFeedConfig` never sets `private: true`.** electron-updater's own provider
+  factory (`providerFactory.js`) special-cases a `private` GitHub config: it takes the
+  token from **`GH_TOKEN`/`GITHUB_TOKEN` in the environment**, falling back to the config's
+  own `token` field only if neither is set — the opposite precedence from what this feature
+  needs, since the per-install token lives in Settings, not in the environment the app
+  happens to run in. A `token` field alone, with `private` omitted, is enough:
+  electron-updater selects `PrivateGitHubProvider` the moment any token is present,
+  regardless of the `private` flag. Setting `private: true` here would silently prefer
+  nothing over the token a user just pasted in, the moment `GH_TOKEN` is unset — which it
+  always is, on an end user's machine.
+- **The rollout order.** Flip the switch in this order, not any other:
+  1. ship a release while the repository is still **public**, so every existing install's
+     unauthenticated feed check keeps working through the transition;
+  2. let that release reach every install (give the 6-hour check interval, `CHECK_INTERVAL_MS`
+     in `updater.ts`, time to run at least once everywhere);
+  3. have each install paste its token into Settings — this can happen any time before
+     step 4, since a token is harmless against a still-public repo;
+  4. flip the repository to **private**;
+  5. anything that missed step 3 — offline at the time, or a brand-new install with no
+     token yet — now reads `needs-token` and has no automatic path forward; point it at
+     the releases page for one manual download, same as any `manual`-mode install.
+  Reversing steps 1 and 4 leaves every install that hasn't yet received the token-field
+  release stuck on `needs-token` with no in-app way to fix it, since the very update that
+  would carry the fix can no longer be fetched either.
+- **Actions-minutes.** A private repository's GitHub Actions usage counts against the
+  account's monthly minutes (2,000/month on GitHub Free); a public repository's does not.
+  Windows runners are billed at **2×** wall-clock minutes (Linux is 1×), and this project's
+  CI builds both platforms on every release (RELEASE.md §6) — so going private roughly
+  doubles the real cost of each Windows job once minutes are the thing being counted at
+  all. Check the account's actual release cadence against that multiplier before flipping
+  the switch, not after a bill is the first thing to notice it.
+
+Verified headlessly, end to end, against the real repository and a real (and, separately,
+a deliberately wrong) token — `apps/client/scripts/verify-private-update-feed.mjs`. See its
+own header for what is real there and why it is not run in CI.
+
 ---
 
 ## First-run readiness
