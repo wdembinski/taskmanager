@@ -173,6 +173,21 @@ export const BOOT_CHANNELS = {
   'label:list': 'list',
   'ticketLink:list': 'list',
 
+  // Found missing the same way `label:list`/`ticketLink:list` were (see their own comment
+  // above): `Settings.tsx` calls `jira:statuses` unconditionally once its "board" section is
+  // reached (`issue-peek`'s "Open full screen" step lands there via Settings too), and without
+  // a row here the generic `[]` fallback answers in place of `{ statuses, error }` — `[].statuses`
+  // is `undefined`, and `statusesByColumn(undefined, …)` throws `statuses is not iterable`. That
+  // throw lands inside Settings' own error boundary, so it never reaches `collectExceptions` —
+  // the shot still came back "ok", just showing the app's own crash screen instead of Settings.
+  'jira:statuses': { statuses: [], error: null },
+  // `TaskDetail.tsx`'s `ReviewPane` (`issue-peek`/`issue-full-screen`'s own pane) calls this on
+  // mount; missing the same way, the `[]` fallback stands in for a `DiffSummaryResult`, so
+  // `summaryTotals(([]).summary)` throws reading `files` off `undefined` — caught by the same
+  // error boundary, same silent "ok". None of this plan's fixture tasks carry real branch data,
+  // so `'no-branch'` is the state that is actually true of them, not a stand-in for a richer one.
+  'task:diffSummary': { status: 'no-branch' },
+
   'task:activity': { byArgTable: TASK_ACTIVITY, fallback: [] },
   'jira:fetchComments': { byArgTable: TICKET_COMMENTS, fallback: [] },
   'github:fetchComments': 'list',
@@ -183,6 +198,12 @@ export const BOOT_CHANNELS = {
 
   'exec:listDistros': 'list',
   'exec:targetsInUse': EXEC_TARGETS_IN_USE,
+  // Settings' own `ReadinessPanel` probes this for whichever target is selected (the local one,
+  // by default) — missing the same way `jira:statuses`/`task:diffSummary` were: the `[]`
+  // fallback stands in for `TargetReadiness`, and `readiness?.checks.map(…)` only guards
+  // `readiness` itself, not `.checks`, so it throws reading `map` off `undefined`. Caught by the
+  // same error boundary as the other two, so this was the second crash hiding behind the first.
+  'exec:readiness': { target: { kind: 'local' }, ok: true, checks: [] },
   'jira:getConfigStatus': JIRA_STATUS,
   'gitlab:getConfigStatus': GITLAB_STATUS,
   'github:getConfigStatus': GITHUB_STATUS,

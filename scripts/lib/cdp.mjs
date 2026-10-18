@@ -256,6 +256,15 @@ export async function freshLoad(cdp, originUrl, initScript = '') {
  * Subscribes to `Runtime.exceptionThrown`, logging each one the same way every caller already
  * did, and returns a handle whose `count` a caller can assert against (0 uncaught exceptions)
  * without having to wire up its own listener and counter.
+ *
+ * Also subscribes to `Runtime.consoleAPICalled` for `console.error` — a React error boundary
+ * (`RootErrorBoundary.tsx`'s `componentDidCatch`) catches a render-time throw and swaps in its
+ * own fallback screen, which keeps the throw from ever reaching `window.onerror`/
+ * `Runtime.exceptionThrown` at all. Left uncounted, a row whose real screen crashed into that
+ * fallback still came back with `exceptions.count === 0` — a false "ok" a human eyeballing the
+ * shot would catch but the exit code would not. The boundary's own `console.error('Renderer
+ * crashed:', …)` is the one signal still available at that point, so it is treated the same as
+ * an uncaught exception here.
  */
 export function collectExceptions(cdp) {
   const state = { count: 0 };
@@ -266,6 +275,14 @@ export function collectExceptions(cdp) {
       params.exceptionDetails?.text,
       params.exceptionDetails?.exception?.description,
     );
+  });
+  cdp.on('Runtime.consoleAPICalled', (params) => {
+    if (params.type !== 'error') return;
+    state.count++;
+    const text = (params.args ?? [])
+      .map((a) => a.value ?? a.description ?? String(a))
+      .join(' ');
+    console.error('console.error on page:', text);
   });
   return state;
 }
