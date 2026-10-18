@@ -19,6 +19,10 @@
  * `useProjectTickets` loads the selected project's own tickets — a project switch should not
  * re-fetch the roster, and a roster edit should not re-fetch every project's tickets.
  *
+ * `readOnlyNotice` and `hostUnreachable` forward straight through to `TaskDetailHost` — the
+ * web app passes both (F12.10), the desktop neither, the same convention `TaskDetail.tsx`'s
+ * own header documents for the props themselves.
+ *
  * Whether the opened ticket is a `peek` beside the list or a `full`-screen page (F13.13) is
  * this screen's own `issueViewReduce` state — see `issues/issueView.ts` for the reducer and
  * `issues/IssueViewPanes.tsx` for the two surfaces it drives.
@@ -96,6 +100,12 @@ export interface ProjectsProps {
    *  screen's own view state instead; a controlling host must pass `onViewChange` alongside it. */
   view?: ProjectView;
   onViewChange?: (view: ProjectView) => void;
+  /** Forwarded straight through to `TaskDetailHost` — see `TaskDetail.tsx`'s own doc for
+   *  this prop. Unset on the desktop. */
+  readOnlyNotice?: string;
+  /** Forwarded straight through to `TaskDetailHost` — see `TaskDetail.tsx`'s own doc for
+   *  this prop. Unset on the desktop. */
+  hostUnreachable?: string;
 }
 
 export function Projects({
@@ -104,6 +114,8 @@ export function Projects({
   onSelectProject,
   view: controlledView,
   onViewChange,
+  readOnlyNotice,
+  hostUnreachable,
 }: ProjectsProps = {}): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -331,6 +343,8 @@ export function Projects({
       onBack={history.stack.length > 0 ? goBack : undefined}
       onShowOnBoard={onShowOnBoard}
       ticketFold={{ key: 'tm.projects.ticketOpen', defaultOpen: true }}
+      readOnlyNotice={readOnlyNotice}
+      hostUnreachable={hostUnreachable}
     />
   );
 
