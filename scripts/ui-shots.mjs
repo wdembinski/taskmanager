@@ -65,15 +65,21 @@
  * - `clip` — `'sidebar'` crops the capture to `nav[aria-label="Sidebar"]`'s own bounding rect
  *   instead of the whole viewport, so the row shoots the tree on its own rather than whatever
  *   else happens to share the window. Omit it to capture the full viewport, same as before.
+ * - `allowPersistentSpinner` — `true` for a row whose `setup` lands on a screen that means to
+ *   show a Fluent `Spinner` forever, not just until some promise resolves (`waitForIdle`'s own
+ *   doc comment explains the one screen that does, and why this flag exists rather than just
+ *   lengthening the wait). Omit it (same as `false`) everywhere else.
  *
- * ## Known gap
+ * ## The sidebar is always open
  *
- * The two `board-sidebar-folded-*` rows below assume the left project-tree `Sidebar`
- * (`packages/ui/src/shell/Sidebar.tsx`) can be collapsed independently of `NavRail`. As of this
- * step, no such toggle exists anywhere in `packages/ui/src/shell` — grepped for `fold`,
- * `collapse`, and `sidebarVisible`/`sidebarOpen` and found none. Their `setup` is left `null`
- * rather than inventing a click target that does not exist; step 4 (or whichever step first
- * wires a real fold control) fills it in once there is something to click.
+ * No whole-sidebar fold control exists anywhere in `packages/ui/src/shell` — grepped for
+ * `fold`, `collapse`, and `sidebarVisible`/`sidebarOpen` and found none; `Sidebar.tsx`'s own
+ * `folds` are per-project-tree-node, not a toggle for the pane as a whole. Every `'client'`
+ * row below therefore already shows the sidebar open — there is no "folded" state to add a
+ * row for. The `board-sidebar-open-*` rows exist instead to check the column-width floor
+ * (`BOARD_COLUMN_MIN_WIDTH`, `packages/ui/src/board/boardLayout.ts`) and the header-cluster
+ * split (`TaskCard.tsx`) at both 1440 and 1100, with the detail pane closed and open.
+ * `board-light` above already covers 1440/closed, so it is not repeated among them.
  */
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -145,23 +151,43 @@ export const SCREENS = [
     mockup: 'v9-7b-board-dark.svg',
   },
   {
-    // No mockup draws a folded sidebar with the detail panel open — v9-7-board-light.svg is the
-    // nearest available (sidebar open, no detail panel), kept only as an orientation reference.
-    name: 'board-sidebar-folded-detail-open',
+    // Opens the detail pane on `agentRunningParent` (fixture task id '3') — the longest
+    // title among the fixture's board cards, agent-owned, running (one of its own steps is in
+    // `ACTIVE_RUNS`), and so drawing both the Stop and More buttons in the header's trailing
+    // group: exactly the cluster `boardLayout.ts`'s column-width floor and `TaskCard.tsx`'s
+    // header split exist to keep clear of the title. No mockup draws the detail pane open —
+    // v9-7-board-light.svg (sidebar open, no detail pane) is the nearest available, kept only
+    // as an orientation reference.
+    name: 'board-sidebar-open-detail-open',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    setup: null,
+    setup: [{ click: 'board-card:3' }],
+    allowPersistentSpinner: true,
     mockup: 'v9-7-board-light.svg',
   },
   {
-    // Same state as above, narrowed to check it still holds together at a smaller viewport — no
-    // mockup was ever drawn at this size, so there is nothing to compare against.
-    name: 'board-sidebar-folded-detail-open-1100x800',
+    // `board-light` above is the 1440/closed member of this foursome; this is the 1100/closed
+    // one, checking the column floor still holds at a smaller viewport — no mockup was ever
+    // drawn at this size.
+    name: 'board-sidebar-open-detail-closed-1100x800',
     app: 'client',
     viewport: { width: 1100, height: 800 },
     scheme: 'light',
     setup: null,
+    mockup: null,
+  },
+  {
+    // Same state and target card as `board-sidebar-open-detail-open` above, narrowed to 1100 —
+    // this is where the column floor (260px) forces the columns grid to scroll sideways rather
+    // than crush further, which is exactly what this row exists to check holds together with
+    // the detail pane open too.
+    name: 'board-sidebar-open-detail-open-1100x800',
+    app: 'client',
+    viewport: { width: 1100, height: 800 },
+    scheme: 'light',
+    setup: [{ click: 'board-card:3' }],
+    allowPersistentSpinner: true,
     mockup: null,
   },
   {
@@ -532,7 +558,7 @@ async function runSetupStep(cdp, step) {
         return true;
       })()`,
     );
-    if (!scrolled) throw new Error('could not find the sidebar\'s own scroll region');
+    if (!scrolled) throw new Error("could not find the sidebar's own scroll region");
     return;
   }
   throw new Error(`unknown setup step: ${JSON.stringify(step)}`);
@@ -555,16 +581,23 @@ async function sidebarClipRect(cdp) {
   return rect;
 }
 
-/** Fluent's `Skeleton`/`Spinner` are the only loading affordance anything in `packages/ui/src`
+/** Fluent's `Skeleton`/`Spinner` are the only loading affordance most of `packages/ui/src`
  *  draws (see `PaneLoading.tsx`) — gone means the fixture's own promises (already resolved by
- *  the time this is first checked) have painted, not that some unrelated screen is still busy. */
-async function waitForIdle(cdp) {
+ *  the time this is first checked) have painted, not that some unrelated screen is still busy.
+ *
+ *  One screen breaks that assumption on purpose: `TaskDetail.tsx`'s own running band spins for
+ *  as long as `managedByAI` work is in flight (`run.spinner`), which for a fixture card frozen
+ *  mid-run (`agentRunningParent`, the target of `'board-card:3'`) is forever — that `Spinner`
+ *  is the point of the screenshot, not a sign it never finished loading. `allowSpinner` skips
+ *  only the `Spinner` half of the check for a row that clicks into that state on purpose;
+ *  `Skeleton` is still awaited, since nothing in this codebase means to leave one on screen. */
+async function waitForIdle(cdp, { allowSpinner = false } = {}) {
+  const selector = allowSpinner
+    ? '[class*="fui-Skeleton"]'
+    : '[class*="fui-Skeleton"], [class*="fui-Spinner"]';
   await waitFor(
     async () =>
-      (await evaluate(
-        cdp,
-        `document.querySelectorAll('[class*="fui-Skeleton"], [class*="fui-Spinner"]').length`,
-      )) === 0,
+      (await evaluate(cdp, `document.querySelectorAll(${JSON.stringify(selector)}).length`)) === 0,
     { timeoutMs: 15000, label: 'loading skeleton/spinner to clear' },
   );
   // A fixed settle beat on top of "no skeleton" — Fluent's own open/close transitions (the
@@ -803,7 +836,7 @@ async function main() {
         for (const step of row.setup ?? []) {
           await runSetupStep(cdp, step);
         }
-        await waitForIdle(cdp);
+        await waitForIdle(cdp, { allowSpinner: row.allowPersistentSpinner === true });
 
         const shotPath = join(outDir, `${row.name}.png`);
         const clip = row.clip === 'sidebar' ? await sidebarClipRect(cdp) : undefined;
