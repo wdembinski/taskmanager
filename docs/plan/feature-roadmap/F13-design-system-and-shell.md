@@ -840,7 +840,9 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     (F13.21 – F13.25 below); this task still carries the token/glass migration underneath it.
   - Acceptance: no colour literal left in `packages/ui/src/board/`; the cyan run state and the
     amber/red/green dots pass F13.2 in light; gates green; the human reviews the board in both
-    themes against the mockup (there is no screenshot path for the Electron window).
+    themes against the mockup, screenshotted headlessly with `scripts/ui-shots.mjs` (see
+    "Screenshot the real UI headlessly and attach it next to the mockup for every UI task" —
+    CONTRIBUTING.md §6).
 
 - [ ] F13.21 Add the run start time to active runs @needs: F13.14 Move the board onto tokens and glass without changing its anatomy
 
@@ -945,6 +947,8 @@ The frame keeps `AppShell`'s slots and gains one: `sidebar`.
     budget, row anatomy, peek vs full screen, and how to add a screen. `docs/05-glossary.md`
     gains peek, activity bar, sidebar, glass pane. A headless boot of the packaged bundle in
     both schemes and with reduced transparency (memory *verify-electron-app*); the web build
-    served and checked at desktop and phone widths by the human.
+    served and checked at desktop and phone widths by the human. This builds on
+    `scripts/ui-shots.mjs` — add this screen to its `SCREENS` map rather than standing up a
+    second headless driver.
   - Acceptance: the doc's token table is generated from or tested against `tokens.ts` so it
     cannot drift; `pnpm typecheck`, `pnpm test`, `pnpm build` green.

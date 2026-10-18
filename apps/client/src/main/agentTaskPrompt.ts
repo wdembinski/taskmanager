@@ -126,6 +126,11 @@ function planHeadingLines(): string[] {
  *
  * Unconditional, deliberately. Whether auto-release is switched on decides who releases and
  * when — never whether a STEP can, and the answer to that is always no.
+ *
+ * Verification also carries the visual sign-off rule (the "screenshot the real UI
+ * headlessly" plan): a step that changes the UI runs `scripts/ui-shots.mjs --attach` as
+ * its own verification and says so in its summary, because nothing else in this prompt
+ * ever tells the agent a human has to look at a screenshot before the card is Done.
  */
 function planScopeLines(): string[] {
   return [
@@ -144,6 +149,13 @@ function planScopeLines(): string[] {
     `  the orchestrator never runs a heading that starts with one of those.`,
     '',
     `Verification IS work and does belong, if there is something to verify.`,
+    '',
+    `If any step changes the UI, that step's Verification must run`,
+    `\`node scripts/ui-shots.mjs --attach\` (when this project has that script) to`,
+    `screenshot the real UI headlessly next to its mockup — a build or a test run proves`,
+    `the code runs, not that it looks right. That step's final summary must say it`,
+    `needs visual sign-off: a UI task is not Done until a human has looked at the`,
+    `shots and approved them.`,
     '',
   ];
 }
