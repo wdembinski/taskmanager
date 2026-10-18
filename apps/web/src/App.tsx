@@ -15,8 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, makeStyles } from '@fluentui/react-components';
-import { BOARD_COLUMNS, ownsTickets } from '@tm/shared/model';
-import { pickableProjects } from '@tm/shared/trackerArchive';
+import { BOARD_COLUMNS } from '@tm/shared/model';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
 import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
 import { CommandPalette } from '@tm/ui/palette/CommandPalette';
@@ -32,9 +31,11 @@ import { Projects } from '@tm/ui/projects/Projects';
 import { NavRail } from '@tm/ui/shell/NavRail';
 import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@tm/ui/shell/Sidebar';
 import { useDeviceFolds } from '@tm/ui/shell/sidebarFolds';
+import { openTicketCounts } from '@tm/ui/shell/sidebarProject';
 import { SHELL_NAV, type ShellNavId } from '@tm/ui/shell/shellNav';
 import { StatusBar, StatusBusy, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
 import { useSidebarData } from '@tm/ui/shell/useSidebarData';
+import { useTrackerProject } from '@tm/ui/shell/useTrackerProject';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
 import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
@@ -307,17 +308,17 @@ function SignedInBoardView({
 
   /**
    * The sidebar's own tree (F13.11) is one ticket project's milestones/epics/tickets — the
-   * first ticket-owning project this tab's own local mirror already has, same "pick the
-   * first one" rule `Projects.tsx` applies to its own list. Read straight off `board.state`
-   * rather than a separate `project:list` call — this tab already keeps every project
-   * mirrored locally for the board itself.
+   * ticket project `useTrackerProject` resolves (F13.17): this tab's own remembered choice,
+   * or else whichever ticket project has the most open tickets. Read straight off
+   * `board.state` rather than a separate `project:list` call — this tab already keeps every
+   * project mirrored locally for the board itself.
    */
-  const sidebarProjectId = useMemo(
-    () => pickableProjects(Object.values(board.state.projects)).find(ownsTickets)?.id ?? null,
-    [board.state.projects],
+  const tracker = useTrackerProject(
+    Object.values(board.state.projects),
+    useMemo(() => openTicketCounts(Object.values(board.state.tasks)), [board.state.tasks]),
   );
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
-  const sidebarData = useSidebarData(sidebarProjectId, { attentionCount, folds: sidebarFolds });
+  const sidebarData = useSidebarData(tracker.projectId, { attentionCount, folds: sidebarFolds });
   const [newIssueDialogOpen, setNewIssueDialogOpen] = useState(false);
 
   /** The sidebar's own navigation targets (F13.11), mapped onto this host's `screen` — the
@@ -471,11 +472,15 @@ function SignedInBoardView({
                 navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
               }}
               onNewIssue={() => {
-                if (sidebarProjectId) setNewIssueDialogOpen(true);
+                if (tracker.projectId) setNewIssueDialogOpen(true);
               }}
               folds={sidebarFolds}
               onToggleFold={toggleSidebarFold}
               showFleet
+              projectOptions={tracker.projectOptions}
+              selectedProjectId={tracker.projectId}
+              onSelectProject={tracker.selectProject}
+              loading={!sidebarData.loaded}
             />
           }
           banners={
@@ -576,7 +581,12 @@ function SignedInBoardView({
               />
             ))}
           {screen === 'projects' && <ProjectAdmin />}
-          {screen === 'tickets' && <Projects />}
+          {screen === 'tickets' && (
+            <Projects
+              selectedProjectId={tracker.projectId}
+              onSelectProject={tracker.selectProject}
+            />
+          )}
           {screen === 'issues' && (
             <WebIssuesScreen
               pollError={board.pollError}
@@ -626,7 +636,7 @@ function SignedInBoardView({
         />
         <NewTicketDialog
           open={newIssueDialogOpen}
-          projectId={sidebarProjectId ?? ''}
+          projectId={tracker.projectId ?? ''}
           tickets={sidebarData.tickets}
           onClose={() => setNewIssueDialogOpen(false)}
         />
