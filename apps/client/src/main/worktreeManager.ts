@@ -33,6 +33,7 @@ import {
   checkoutOurs,
   commitAll,
   commitsAhead,
+  commitSubjectsTouching,
   conflictedFiles,
   continueRebase,
   createRootCommit,
@@ -409,11 +410,27 @@ export type RemoteSyncResult =
    * comment. `autoResolved` names any file Rung 1.5 fixed without an agent.
    */
   | { status: 'synced'; remoteBase: string; autoResolved?: string[] }
-  /** The rebase onto the fresher base hit a conflict no mechanical rung could resolve. The
+  /**
+   * The rebase onto the fresher base hit a conflict no mechanical rung could resolve. The
    * rebase is already undone (`git rebase --abort`) by the time this is returned — unlike a
    * merge-time conflict, there is no ladder here to hand a paused rebase up to, so leaving one
-   * behind would only strand the worktree. `files` names what conflicted, for the refusal. */
-  | { status: 'conflict'; files: string[] }
+   * behind would only strand the worktree. `files` names what conflicted, for the refusal.
+   *
+   * `remoteBase`/`forkPoint` are the exact refs the rebase was attempted `--onto`/from, so a
+   * caller that hands this off to an agent (rather than just refusing) can redo the same
+   * rebase itself. `baseSubjects`/`branchSubjects` are each side's own commit subjects over
+   * `fork..REMOTE_BASE_REF -- files` / `fork..HEAD -- files`, read BEFORE the abort below —
+   * what each side was actually trying to do to the files that clashed, for the agent's
+   * resolve prompt.
+   */
+  | {
+      status: 'conflict';
+      files: string[];
+      remoteBase: string;
+      forkPoint: string;
+      baseSubjects: string[];
+      branchSubjects: string[];
+    }
   | { status: 'error'; message: string };
 
 /**
@@ -837,6 +854,12 @@ export class WorktreeManager {
    * There is deliberately no `commitsAhead` refusal here: a PR branch that has nothing ahead
    * of its OWN target is `integrate`'s question, not this one's — this call exists only to
    * get a branch that already has a PR open past a conflict with that PR's target.
+   *
+   * `opts.upstream`, when given, turns the first rebase attempt into a `rebase --onto
+   * targetRef upstream` rather than a plain `rebase targetRef` — the same fork-point
+   * isolation `syncOntoRemoteBase` uses, for the one caller (`openPullRequestFor`'s
+   * conflict hand-off) that rebases onto a scratch ref rather than onto the PR/MR's own
+   * target, and so needs the branch's own fork point carried through explicitly.
    */
   rebaseForPullRequest(
     project: Project,
@@ -844,6 +867,7 @@ export class WorktreeManager {
     targetRef: string,
     worktree: string,
     commitMessage: string,
+    opts: { upstream?: string } = {},
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
       const { host } = await this.workspaceFor(project);
@@ -873,12 +897,14 @@ export class WorktreeManager {
         Promise.resolve({ status: 'rebased', branch, base: targetRef, worktree });
 
       if (await rebaseInProgress(worktree, host)) {
-        return this.continuePausedRebase(branch, targetRef, worktree, host, finish);
+        return this.continuePausedRebase(branch, targetRef, worktree, host, finish, opts.upstream);
       }
 
       await commitAll(worktree, commitMessage, host);
 
-      const { rebased, autoResolved } = await this.runRebaseLadder(worktree, targetRef, host);
+      const { rebased, autoResolved } = await this.runRebaseLadder(worktree, targetRef, host, {
+        upstream: opts.upstream,
+      });
       if (rebased.code !== 0) {
         if (await hasConflicts(worktree, host)) {
           return { status: 'conflict', worktree, branch, base: targetRef };
@@ -970,11 +996,32 @@ export class WorktreeManager {
       if (rebased.code !== 0) {
         if (await hasConflicts(worktree, host)) {
           const files = await conflictedFiles(worktree, host);
+          // Read BEFORE the abort below, while HEAD still points at the branch's own
+          // pre-rebase tip and `REMOTE_BASE_REF` still names what it was rebased onto —
+          // `forkPoint` is this worktree's own copy, computed fresh above.
+          const baseSubjects = forkPoint
+            ? await commitSubjectsTouching(
+                worktree,
+                `${forkPoint}..${REMOTE_BASE_REF}`,
+                files,
+                host,
+              )
+            : [];
+          const branchSubjects = forkPoint
+            ? await commitSubjectsTouching(worktree, `${forkPoint}..HEAD`, files, host)
+            : [];
           // Undone rather than left paused, unlike a merge-time conflict: there is no ladder
           // here to hand a paused rebase up to, so leaving one behind would only strand the
           // worktree with no run coming to resolve it. See `RemoteSyncResult`'s own comment.
           await abortRebase(worktree, host);
-          return { status: 'conflict', files };
+          return {
+            status: 'conflict',
+            files,
+            remoteBase: REMOTE_BASE_REF,
+            forkPoint,
+            baseSubjects,
+            branchSubjects,
+          };
         }
         await abortRebase(worktree, host);
         return {
@@ -1283,11 +1330,17 @@ export class WorktreeManager {
     branch: string,
     targetRef: string,
     worktree: string,
+    opts: { upstream?: string } = {},
   ): Promise<IntegrationResult> {
     return this.enqueue(project.id, async () => {
       const { host } = await this.workspaceFor(project);
-      return this.continuePausedRebase(branch, targetRef, worktree, host, () =>
-        Promise.resolve({ status: 'rebased', branch, base: targetRef, worktree }),
+      return this.continuePausedRebase(
+        branch,
+        targetRef,
+        worktree,
+        host,
+        () => Promise.resolve({ status: 'rebased', branch, base: targetRef, worktree }),
+        opts.upstream,
       );
     });
   }
@@ -1314,6 +1367,11 @@ export class WorktreeManager {
     worktree: string,
     host: ExecHost,
     finish: () => Promise<IntegrationResult>,
+    /** `rebaseForPullRequest`/`finishPullRequestRebase`'s own `opts.upstream`, carried through
+     *  for nothing but the timeout error below — the rebase itself was already started (or
+     *  resumed) with its upstream baked in, so there is nothing left here for this to DO with
+     *  it except say, if it never finishes, where it was rebasing from. */
+    upstream?: string,
   ): Promise<IntegrationResult> {
     // Union attrs so later patches' additive files still auto-merge.
     const attrs = withUnionAttributes();
@@ -1348,8 +1406,8 @@ export class WorktreeManager {
       return {
         status: 'error',
         message:
-          `the rebase of "${branch}" onto ${base} stopped more than ${MAX_MECHANICAL_ROUNDS} ` +
-          `times; it is still paused in ${worktree}`,
+          `the rebase of "${branch}" onto ${base}${upstream ? ` (from ${upstream.slice(0, 7)})` : ''} ` +
+          `stopped more than ${MAX_MECHANICAL_ROUNDS} times; it is still paused in ${worktree}`,
       };
     } finally {
       attrs.cleanup();

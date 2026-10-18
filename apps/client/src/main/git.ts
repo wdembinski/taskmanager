@@ -925,6 +925,28 @@ export async function branchCommitMessages(
 }
 
 /**
+ * The subject line of every commit in `range` that touches at least one of `files` —
+ * `git log --format=%s <range> -- <files>`. Read by {@link WorktreeManager.syncOntoRemoteBase}
+ * on a conflict, BEFORE it aborts the rebase, so a human (or the agent it hands the
+ * conflict to) can see what each side was actually trying to do to the files that clashed,
+ * not just their names.
+ *
+ * `[]` on a failed call or an empty `files` list — the same "don't know"/"nothing to ask"
+ * shape every other reader of this file uses, never read as "neither side touched anything".
+ */
+export async function commitSubjectsTouching(
+  dir: string,
+  range: string,
+  files: readonly string[],
+  host?: ExecHost,
+): Promise<string[]> {
+  if (files.length === 0) return [];
+  const res = await git(dir, ['log', '--format=%s', range, '--', ...files], host);
+  if (res.code !== 0) return [];
+  return res.stdout.split('\n').filter((line) => line.trim() !== '');
+}
+
+/**
  * A remote's URL — `git remote get-url <remote>` — or **`''` when git won't say**.
  *
  * The empty answer is the same contract {@link currentBranch} documents: a repo with no

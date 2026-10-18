@@ -148,7 +148,14 @@ export interface CreatePrDeps {
   ): Promise<
     | { status: 'up-to-date' }
     | { status: 'synced'; remoteBase: string; autoResolved?: string[] }
-    | { status: 'conflict'; files: string[] }
+    | {
+        status: 'conflict';
+        files: string[];
+        remoteBase: string;
+        forkPoint: string;
+        baseSubjects: string[];
+        branchSubjects: string[];
+      }
     | { status: 'error'; message: string }
   >;
   /**
@@ -277,6 +284,54 @@ export async function planBranchPush(opts: {
   };
 }
 
+/**
+ * Thrown by {@link openPullRequest} when `base` has moved on the forge since this branch
+ * was built, and rebasing onto its current state conflicts — the one refusal the scheduler
+ * (`openPullRequestFor`'s catch) hands to the card's own agent instead of parking, rather
+ * than treating identically to every other wall this function can name.
+ *
+ * Carries exactly what {@link WorktreeManager.syncOntoRemoteBase}'s `conflict` result
+ * already worked out — the message is built at the throw site (which still knows the
+ * forge's host, for today's wording) and kept verbatim; everything else here is what a
+ * caller needs to redo the same rebase itself rather than re-deriving it from a plain
+ * `Error`'s message.
+ */
+export class BaseMovedConflictError extends Error {
+  readonly branch: string;
+  readonly base: string;
+  readonly worktree: string;
+  readonly files: string[];
+  readonly remoteBase: string;
+  readonly forkPoint: string;
+  readonly baseSubjects: string[];
+  readonly branchSubjects: string[];
+
+  constructor(
+    message: string,
+    info: {
+      branch: string;
+      base: string;
+      worktree: string;
+      files: string[];
+      remoteBase: string;
+      forkPoint: string;
+      baseSubjects: string[];
+      branchSubjects: string[];
+    },
+  ) {
+    super(message);
+    this.name = 'BaseMovedConflictError';
+    this.branch = info.branch;
+    this.base = info.base;
+    this.worktree = info.worktree;
+    this.files = info.files;
+    this.remoteBase = info.remoteBase;
+    this.forkPoint = info.forkPoint;
+    this.baseSubjects = info.baseSubjects;
+    this.branchSubjects = info.branchSubjects;
+  }
+}
+
 /** What the caller gets back — enough to link to, and enough to know not to shout. */
 export interface OpenedPullRequest {
   url: string;
@@ -403,10 +458,20 @@ export async function openPullRequest(
   // showing a conflict on the forge that nothing here ever saw coming.
   const sync = await deps.syncOntoRemoteBase(project, live.base, live.cwd, { url: target.url });
   if (sync.status === 'conflict') {
-    throw new Error(
+    throw new BaseMovedConflictError(
       `"${live.base}" has moved on ${target.host} since "${live.branch}" was built, and ` +
         `rebasing onto its current state conflicts on ${sync.files.join(', ')}. Pull the ` +
         `latest ${live.base} into this project and resolve that there, then press this again.`,
+      {
+        branch: live.branch,
+        base: live.base,
+        worktree: live.cwd,
+        files: sync.files,
+        remoteBase: sync.remoteBase,
+        forkPoint: sync.forkPoint,
+        baseSubjects: sync.baseSubjects,
+        branchSubjects: sync.branchSubjects,
+      },
     );
   }
   if (sync.status === 'error') {

@@ -12,6 +12,7 @@ import type { Project, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { pushBranch } from '../git';
 import {
+  BaseMovedConflictError,
   openPullRequest,
   planBranchPush,
   prBody,
@@ -824,6 +825,110 @@ describe('openPullRequest — lease-pushing a branch rebased locally onto an adv
 
       // Nothing pushed — the remote is exactly as the foreign commit left it.
       expect(git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim()).toBe(foreignTip);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * A conflicted `syncOntoRemoteBase` used to throw a plain `Error` here, which left the
+ * scheduler's catch unable to tell "base moved and conflicts" apart from every other wall
+ * `openPullRequest` can name — so it parked a human `task-failed` even for a wall this app
+ * can now hand to the card's own agent (TM-460). `BaseMovedConflictError` is the typed
+ * alternative; this only checks the type and the fields it carries, not today's wording
+ * (unchanged, and covered by nothing here — `syncOntoRemoteBase` is a fake in this test).
+ */
+describe('openPullRequest — a conflicted sync throws a typed BaseMovedConflictError', () => {
+  const git = (cwd: string, ...args: string[]) => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    return { code: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  };
+
+  it('carries the files, the remote base, the fork point and both sides’ subjects', async () => {
+    const BRANCH = 'feat/needs-rebase';
+    const work = mkdtempSync(join(tmpdir(), 'tm-createpr-conflict-'));
+    try {
+      const repo = join(work, 'repo');
+      git(work, 'init', repo);
+      git(repo, 'config', 'user.email', 'verify@example.com');
+      git(repo, 'config', 'user.name', 'Verify');
+      git(repo, 'config', 'commit.gpgsign', 'false');
+      writeFileSync(join(repo, 'README.md'), '# demo\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'initial');
+      const base = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+      git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/checkout.git');
+
+      git(repo, 'checkout', '-b', BRANCH);
+      writeFileSync(join(repo, 'feature.ts'), 'export const x = 1;\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '--no-verify', '-m', 'feature work');
+
+      const task = {
+        id: 'card-conflict',
+        projectId: 'personal',
+        title: 'Add the feature',
+        type: null,
+        issueType: null,
+        externalType: null,
+        description: null,
+        externalDescription: null,
+        externalSource: null,
+        externalKey: null,
+        ticketKey: null,
+        agentProjectId: 'agent-1',
+        agentBranch: BRANCH,
+        parentTaskId: null,
+        pickedVariantId: null,
+      } as unknown as Task;
+      const project = { id: 'agent-1', path: repo, baseBranch: base } as unknown as Project;
+
+      const deps: CreatePrDeps = {
+        getTask: (id) => (id === task.id ? task : undefined),
+        getProject: (id) => (id === 'agent-1' ? project : undefined),
+        getSettings: () =>
+          ({
+            github: { enabled: true, baseUrl: 'https://api.github.com' },
+          }) as unknown as AppSettings,
+        listMergeRequests: () => [],
+        upsertMergeRequest: () => undefined,
+        listVariantRows: () => [],
+        listAttachments: () => [],
+        listActivity: () => [],
+        inspect: async (_p, _ownerTaskId, branch) => ({
+          cwd: repo,
+          branch: branch ?? BRANCH,
+          base,
+        }),
+        syncOntoRemoteBase: async () => ({
+          status: 'conflict',
+          files: ['feature.ts'],
+          remoteBase: 'refs/orch/remote-base',
+          forkPoint: 'deadbeef',
+          baseSubjects: ['theirs: rework feature.ts'],
+          branchSubjects: ['feature work'],
+        }),
+        tokenFor: () => 'ghp_conflictToken0000',
+        note: () => undefined,
+        now: () => 1_760_000_000_000,
+      };
+
+      const rejection = await openPullRequest(deps, task.id).catch((err: unknown) => err);
+
+      expect(rejection).toBeInstanceOf(BaseMovedConflictError);
+      const err = rejection as BaseMovedConflictError;
+      expect(err.files).toEqual(['feature.ts']);
+      expect(err.remoteBase).toBe('refs/orch/remote-base');
+      expect(err.forkPoint).toBe('deadbeef');
+      expect(err.baseSubjects).toEqual(['theirs: rework feature.ts']);
+      expect(err.branchSubjects).toEqual(['feature work']);
+      expect(err.branch).toBe(BRANCH);
+      expect(err.base).toBe(base);
+      expect(err.worktree).toBe(repo);
+      // Today's wording, unchanged.
+      expect(err.message).toMatch(/has moved on .* since/);
+      expect(err.message).toContain('feature.ts');
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
