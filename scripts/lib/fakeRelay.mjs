@@ -191,7 +191,11 @@ export async function startFakeRelay({
   settingsOverrides = {},
 }) {
   const state = buildState(fixture);
-  const settings = {
+  // Kept on `state` (read by `GET /v1/settings` below) rather than closed over as a local
+  // const — this relay stays up across every `'web'` row `ui-shots.mjs` drives, and `appearance`
+  // is the one field that differs row to row (light vs dark); `state.settings.appearance = …`
+  // lets the caller flip it between rows without restarting the relay or rebuilding `@tm/web`.
+  state.settings = {
     ...defaultSettings,
     ...fixture.SETTINGS_OVERRIDES,
     ...settingsOverrides,
@@ -317,7 +321,7 @@ export async function startFakeRelay({
 
       if (req.method === 'GET' && pathname === '/v1/settings') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ settings }));
+        res.end(JSON.stringify({ settings: state.settings }));
         return;
       }
       if (req.method === 'PUT' && pathname === '/v1/settings') {

@@ -22,6 +22,10 @@ dist/
 # pattern does not reach — a `--keep` run left them showing up as untracked.
 .verify-*/
 
+# scripts/ui-shots.mjs's own output and attach outbox (--out default, and --attach's target) —
+# regenerated from the real UI on every run, never the source of truth
+.vipper/
+
 # Local environment files (NEVER commit real secrets)
 .env
 .env.local

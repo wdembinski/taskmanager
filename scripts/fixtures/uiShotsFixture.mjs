@@ -164,6 +164,14 @@ export const BOOT_CHANNELS = {
   'attachment:list': 'list',
   'board:scopes': 'list',
   'milestone:list': 'list',
+  // `useTicketRegistries.ts` (`Projects.tsx`'s own registries hook, reached once `ui-shots.mjs`
+  // clicks "Tickets") fetches these two alongside `person:list`/`milestone:list` above — found
+  // missing the first time this fixture drove the web target through `fakeRelay.mjs`, whose
+  // own `handleIpcInvoke` (unlike `apiStub.mjs`'s) has no generic fallback for a channel absent
+  // from this table: it answers `{ ok: false, error: … }` instead, which surfaces in `@tm/web`
+  // as an uncaught rejection rather than a quietly empty list.
+  'label:list': 'list',
+  'ticketLink:list': 'list',
 
   'task:activity': { byArgTable: TASK_ACTIVITY, fallback: [] },
   'jira:fetchComments': { byArgTable: TICKET_COMMENTS, fallback: [] },
