@@ -518,11 +518,31 @@ describe('the plan scope rules', () => {
     expect(prompt).toMatch(/shot was never really taken/);
   });
 
+  // The plan-quality rules (2026-10-18): each one is a way an approved plan went wrong on
+  // more than one card — a spec the steps never saw, a stale line reference, a "human checks"
+  // acceptance, "renders correctly" about a blank panel, a paid choice taken silently, two
+  // cards colliding on the same files, and a ticket too big for one card.
+  it('holds every plan to the quality rules before ExitPlanMode', () => {
+    const prompt = planned();
+    expect(prompt).toMatch(/Read the spec it points to/);
+    expect(prompt).toMatch(/Steps never see the ticket or the document/);
+    expect(prompt).toMatch(/Check every reference/);
+    expect(prompt).toMatch(/Acceptance an agent can check/);
+    expect(prompt).toMatch(/Never "the human\s+checks X"/);
+    expect(prompt).toMatch(/UI work names its proof/);
+    expect(prompt).toMatch(/elements that must be\s+visible/);
+    expect(prompt).toMatch(/Owner decisions are asked, not guessed/);
+    expect(prompt).toContain(NEEDS_INPUT_SENTINEL);
+    expect(prompt).toMatch(/Under a "Critical files" heading, list every file/);
+    expect(prompt).toMatch(/Too big is a finding/);
+  });
+
   it('says none of it to an ordinary run — only a planning turn writes steps', () => {
     const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, { branch: 'orch/abc' });
     expect(prompt).not.toMatch(/Merging or releasing/);
     expect(prompt).not.toMatch(/Sections that are not work/);
     expect(prompt).not.toMatch(/ui-shots\.mjs/);
+    expect(prompt).not.toMatch(/Read the spec it points to/);
     expect(prompt).not.toContain('\n\n\n');
   });
 
