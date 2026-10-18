@@ -1377,6 +1377,101 @@ async function row7_desktopUnreachable(cdp, origin, size) {
   await screenshot(cdp, `row7-${size.label}-retried`);
 }
 
+// ── Bottom tab bar fit — F14.9's fix for the stacked-layout label clipping ──────────────────
+//
+// Regression checks for `BottomTabBar.tsx`'s grid-stack fix: at each of 360/390/430px (the
+// narrowest widths the compact shell supports, down to F23.5's planned 5-tab bar at 360px),
+// no tab's visible label may overflow its tile, and every tab — selected or not — must be the
+// same width, so selecting a tab repaints it rather than resizing it around its neighbours.
+
+const TAB_FIT_WIDTHS = [360, 390, 430];
+
+async function measureTabFit(cdp) {
+  return evaluate(
+    cdp,
+    `(() => {
+      // '[role="tab"]' also matches the Board screen's own column switcher (TO DO / IN
+      // PROGRESS / IN REVIEW) once it is on screen — a second, unrelated TabList with its own
+      // (deliberately unequal) tab widths. Scoped to the four bottom-bar labels so that
+      // switcher never pollutes this measurement. 'includes', not '===': the Inbox tab's
+      // badge count sits inside the same button as its label, so textOf(el) reads "1Inbox",
+      // not "Inbox", whenever the badge is showing.
+      const names = ['Inbox', 'Board', 'Search', 'Settings'];
+      const tabs = Array.from(document.querySelectorAll('[role="tab"]')).filter((t) =>
+        names.some((n) => window.__tm.textOf(t).includes(n)),
+      );
+      return {
+        count: tabs.length,
+        widths: tabs.map((t) => t.offsetWidth),
+        overflowing: tabs.filter((t) => {
+          const content = t.querySelector(
+            '.fui-Tab__content:not(.fui-Tab__content--reserved-space)',
+          );
+          return !!content && content.scrollWidth > content.clientWidth;
+        }).length,
+      };
+    })()`,
+  );
+}
+
+async function rowTabFit(cdp, origin, width) {
+  const label = `Row (tab bar fit) @ ${width}px`;
+  resetBoard();
+  // One seeded attention item gives the Inbox tab its badge — the narrowest width is also the
+  // one most likely to show the badge nudging the label, so it is in scope here too.
+  state.attentionItems = [
+    {
+      id: 'tabfit-1',
+      runId: 'run-tabfit-1',
+      taskId: 'task-tabfit-1',
+      projectId: 'proj-1',
+      taskTitle: 'Tab fit card',
+      kind: 'agent-question',
+      prompt: 'Pick one',
+      options: [],
+      toolName: null,
+      reason: null,
+      createdAt: Date.now(),
+      questions: [
+        {
+          header: '',
+          question: 'Pick one',
+          multiSelect: false,
+          options: [{ label: 'Yes' }, { label: 'No' }],
+        },
+      ],
+    },
+  ];
+  const size = { width, height: 700, label: `${width}w` };
+  await freshLoad(cdp, origin, { size, token: 'good-refresh-token' });
+  await waitFor(async () => (await bodyText(cdp)).includes('Tab fit card'), {
+    label: 'inbox seeded',
+  });
+
+  const beforeTap = await measureTabFit(cdp);
+  check(`${label}: every tab has a role (initial selection)`, beforeTap.count === 4);
+  check(
+    `${label}: no tab label overflows its tile (initial selection)`,
+    beforeTap.overflowing === 0,
+  );
+  check(
+    `${label}: every tab is the same width ±1px (initial selection)`,
+    Math.max(...beforeTap.widths) - Math.min(...beforeTap.widths) <= 1,
+  );
+
+  await tap(cdp, 'Board', { exact: true, checkSize: false });
+  await waitFor(async () => (await bodyText(cdp)).length > 0, { label: 'board tab selected' });
+
+  const afterTap = await measureTabFit(cdp);
+  check(`${label}: no tab label overflows its tile (Board selected)`, afterTap.overflowing === 0);
+  check(
+    `${label}: every tab is the same width ±1px (Board selected)`,
+    Math.max(...afterTap.widths) - Math.min(...afterTap.widths) <= 1,
+  );
+  await assertNoOverflow(cdp, label);
+  await screenshot(cdp, `tabfit-${width}w-board-selected`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────────────────
 
 let serverHandle;
@@ -1432,6 +1527,15 @@ async function main() {
         check(`${row.name} @ ${size.label} ran to completion`, false);
         console.error(e);
       }
+    }
+  }
+
+  for (const width of TAB_FIT_WIDTHS) {
+    try {
+      await rowTabFit(cdp, origin, width);
+    } catch (e) {
+      check(`rowTabFit @ ${width}px ran to completion`, false);
+      console.error(e);
     }
   }
 
