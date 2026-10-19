@@ -32,10 +32,11 @@ import type { TaskAttachment } from '@tm/shared/attachments';
 import { GATE_TRUST_ACTION } from '@tm/shared/workflow';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { AttachmentGallery } from './AttachmentGallery';
-import { invokeAttentionAnswer } from './attentionAnswer';
+import { canMakeDecision, invokeAttentionAnswer, MAKE_DECISION_LABEL } from './attentionAnswer';
 import { Markdown } from './chat/MarkdownView';
 import { draftKey, useDraft } from './drafts';
 import { gateTrustChoices, gateTrustWaitingText } from './gateStepView';
+import { InboxDecisionsView, useInboxDecisions } from './InboxDecisions';
 import { useGateTrustHost } from './gateTrustHost';
 import { PaneLoading } from './PaneLoading';
 import { PlanCheckVerdict } from './PlanCheckVerdict';
@@ -152,6 +153,7 @@ export function InboxItem({
   onDismiss: (id: string) => Promise<void>;
 }): JSX.Element {
   const styles = useStyles();
+  const transport = useTransport();
   const trustHost = useGateTrustHost();
   // A draft, not plain state: this component is now ALSO mounted inside the compact inbox's
   // full-screen detail view, which unmounts on every "Back" — unlike the wide list, where an
@@ -175,6 +177,20 @@ export function InboxItem({
     setDismissError(null);
     try {
       await onDismiss(item.id);
+    } catch (e) {
+      setDismissError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The item leaves the list through the engine's own `attention:resolved`, like an answer;
+  // only a refusal has to be shown here, in the same slot a refused Dismiss uses.
+  const toDecision = async (): Promise<void> => {
+    setBusy(true);
+    setDismissError(null);
+    try {
+      await transport.invoke('attention:toDecision', item.id);
     } catch (e) {
       setDismissError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -372,6 +388,16 @@ export function InboxItem({
             >
               Send
             </Button>
+            {canMakeDecision(item) && (
+              <Button
+                data-make-decision=""
+                disabled={busy}
+                title="Stop planning and keep this question on the card until the owner answers it"
+                onClick={() => void toDecision()}
+              >
+                {MAKE_DECISION_LABEL}
+              </Button>
+            )}
           </div>
         </>
       )}
@@ -461,9 +487,18 @@ export function useAttentionItems(): AttentionItems {
   return { items, initial, answer, dismiss, attachmentsByTask };
 }
 
-export function Attention(): JSX.Element {
+export interface AttentionProps {
+  /** Opens a card from a decision's title — absent prints the title as plain text. */
+  onOpenTask?: (taskId: string) => void;
+}
+
+export function Attention({ onOpenTask }: AttentionProps = {}): JSX.Element {
   const styles = useStyles();
   const { items, initial, answer, dismiss, attachmentsByTask } = useAttentionItems();
+  // Open owner decisions sit above the attention list — their own load, so a slow or failed
+  // `board:tasks()` never holds the list back (see `InboxDecisions.tsx`'s own header).
+  const decisions = useInboxDecisions();
+  const decisionGroups = decisions.groups ?? [];
 
   if (items === null) {
     return (
@@ -476,7 +511,7 @@ export function Attention(): JSX.Element {
     );
   }
 
-  if (items.length === 0) {
+  if (items.length === 0 && decisionGroups.length === 0) {
     return (
       <Body1 className={styles.empty}>
         Nothing needs you right now. When a task asks a question or hits a risky action, it appears
@@ -487,6 +522,7 @@ export function Attention(): JSX.Element {
 
   return (
     <div className={styles.root}>
+      <InboxDecisionsView groups={decisionGroups} onAnswer={decisions.answer} onOpen={onOpenTask} />
       {items.map((item) => (
         <InboxItem
           key={item.id}

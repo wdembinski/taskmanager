@@ -89,6 +89,7 @@ describe('the channels that DO relay', () => {
     'task:chat',
     'task:replan',
     'attention:answer',
+    'attention:toDecision',
     'task:activity',
     'attachment:list',
     'attachment:add',

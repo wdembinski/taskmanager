@@ -679,7 +679,7 @@ export function App(): JSX.Element {
         ) : tab === 'activity' ? (
           <ActivityScreen lastSeen={lastSeen} onSeen={onSeen} onOpenTask={openTaskOnBoard} />
         ) : tab === 'attention' ? (
-          <Attention />
+          <Attention onOpenTask={openTaskOnBoard} />
         ) : tab === 'settings' ? (
           <Settings
             initialSection={pendingSettingsSection}

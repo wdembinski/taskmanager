@@ -413,4 +413,18 @@ describe('cardParts', () => {
       expect(parts.trailing).toEqual({ kind: 'due', label: 'Oct 17', flagged: false });
     });
   });
+  describe('decision', () => {
+    it('is absent for a card with no open decision', () => {
+      expect(cardParts(task(), ctx()).decision).toBeUndefined();
+      expect(cardParts(task({ decisionQuestion: null }), ctx()).decision).toBeUndefined();
+    });
+
+    it('carries the question while a decision is open', () => {
+      const parts = cardParts(
+        task({ decisionQuestion: 'Which hosting plan do we pay for?', decisionAskedAt: NOW }),
+        ctx(),
+      );
+      expect(parts.decision).toEqual({ question: 'Which hosting plan do we pay for?' });
+    });
+  });
 });

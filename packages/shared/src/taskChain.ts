@@ -352,6 +352,10 @@ export function awaitingMerge(
  *
  *  - `in-flight` / `landed` / `settled` — this card's own work is done or under way, so
  *    the release was moot ({@link chainWorkUnderWay}).
+ *  - `needs-decision` — the card carries an open owner decision (`decisionQuestion`).
+ *    Asked before everything a human could fix with a click, because no click starts it:
+ *    only an answer does, and Start refuses it too. A flagged card is therefore never
+ *    `ready`.
  *  - `no-agent` — nobody has said who does the work. Asked BEFORE the column, because a
  *    card that is both unassigned and parked needs an agent either way, and "assign one"
  *    is the step that takes no decision.
@@ -364,7 +368,8 @@ export function awaitingMerge(
  * set it already has. Nothing here reads `sessionId` — a card that was planned, or merely
  * chatted with, has one and has done none of the work it was chained to do.
  */
-export type ChainDecline = 'in-flight' | 'landed' | 'settled' | 'no-agent' | 'resting';
+export type ChainDecline =
+  'in-flight' | 'landed' | 'settled' | 'needs-decision' | 'no-agent' | 'resting';
 
 /**
  * The statuses that mean a card's own work is **finished with** — exactly the ones filed
@@ -412,6 +417,7 @@ export function chainWorkUnderWay(
 export function chainDecline(task: Task, inFlight: boolean): ChainDecline | null {
   const working = chainWorkUnderWay(task, inFlight);
   if (working) return working;
+  if (task.decisionQuestion != null) return 'needs-decision';
   if (!task.agentProjectId) return 'no-agent';
   if (!CHAIN_STARTABLE.has(restingStatus(task))) return 'resting';
   return null;

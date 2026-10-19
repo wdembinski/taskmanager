@@ -41,6 +41,7 @@ const ALL_REFUSALS: RunRefusal[] = [
   'unknown-task',
   'already-running',
   'no-project',
+  'needs-decision',
   'limit',
   'signed-out',
   'shutting-down',

@@ -101,7 +101,8 @@ type ReleaseCause = 'landed' | 'written';
  * nothing was written. What changed is the world around the chain, and this is the only
  * record of which part of it — which is why each trigger carries its own sentence.
  */
-export type ChainTrigger = 'boot' | 'limit-lifted' | 'links-changed' | 'card-changed';
+export type ChainTrigger =
+  'boot' | 'limit-lifted' | 'links-changed' | 'card-changed' | 'decision-cleared';
 
 /**
  * What a card's timeline says when a re-ask started it.
@@ -124,6 +125,9 @@ const TRIGGER_NOTE: Record<ChainTrigger, string> = {
     'already finished.',
   'card-changed':
     'Started when this card came back to To Do: everything it was chained to wait for had ' +
+    'already finished.',
+  'decision-cleared':
+    'Started when its open decision was cleared: everything it was chained to wait for had ' +
     'already finished.',
 };
 
@@ -481,9 +485,11 @@ export class ChainRunner {
     const head =
       why === null
         ? 'Started automatically'
-        : why === 'no-agent' || why === 'resting'
-          ? 'Ready to start'
-          : 'Not started';
+        : why === 'needs-decision'
+          ? 'Waiting on a decision'
+          : why === 'no-agent' || why === 'resting'
+            ? 'Ready to start'
+            : 'Not started';
     const because =
       cause === 'landed'
         ? `${name(from)} has landed, and this card was chained to run after it.`
@@ -502,6 +508,11 @@ export class ChainRunner {
     switch (why) {
       case null:
         return MOVED_NOTE;
+      case 'needs-decision':
+        return (
+          ` Nothing was started: its turn came, but it is waiting on a decision: ` +
+          `${to.decisionQuestion} Answer it on the card or in the Inbox, then start it.`
+        );
       case 'no-agent':
         return ' Nothing was started: this card has no agent assigned. Assign one to run it.';
       case 'resting':

@@ -65,6 +65,7 @@ import { activityLabel, runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
 import { typeIcon } from './board/TaskCard';
 import { ChatTurns } from './chat/ChatTurns';
+import { DecisionBanner, RaiseDecisionButton } from './DecisionBanner';
 import { Composer, type ComposerBusy } from './chat/Composer';
 import { foldTurns } from './chat/turns';
 import { EMPTY_COMPOSER, type ComposerValue } from './chat/mentions';
@@ -268,7 +269,7 @@ const useStyles = makeStyles({
    * Right-aligned and subtle: this silences signals, it does not change the card, and it
    * must not compete with the state controls under it.
    */
-  dismissRow: { display: 'flex', justifyContent: 'flex-end' },
+  dismissRow: { display: 'flex', justifyContent: 'flex-end', gap: '4px' },
   /** The live run, pinned between the conversation and the composer. */
   runState: { display: 'flex', flexDirection: 'column', gap: '4px' },
   running: { display: 'flex', alignItems: 'center', gap: '8px' },
@@ -1185,6 +1186,23 @@ export function TaskDetail({
    * `detailsContent`) already replaces the card's details, links, steps and chain, and a
    * step carries no merge requests of its own either.
    */
+  /**
+   * The card's open owner decision, ABOVE the band for the same reason the read-only notice
+   * is: it is why nothing on this card is moving, so it is read before any of it — and it
+   * stays put while the band scrolls. `null` without a decision. A Start refused for the
+   * same reason still lands in `TaskAgentPanel`'s own error bar, beside the Start button.
+   */
+  const decisionBanner = task.decisionQuestion != null && (
+    <div className={styles.notice}>
+      <DecisionBanner
+        task={task}
+        readOnly={ticketReadOnly}
+        onTaskChanged={(updated) => onStatusChanged?.(updated)}
+        onAnswered={() => void loadActivity()}
+      />
+    </div>
+  );
+
   const detailsContent = (
     <>
       {/* The ticket's own identity heads the band: what this card IS, before what is
@@ -1362,8 +1380,16 @@ export function TaskDetail({
               sentence: closing a card hushes it automatically, and this is how you
               hush one you are NOT closing — you have read the comment, you know the
               pipeline is red, and you are getting to it. */}
-          {wantsAttention && (
-            <div className={styles.dismissRow}>
+          <div className={styles.dismissRow}>
+            {/* Hold the card on an owner decision. Gone while one is open: the banner
+                above is where an open decision is answered or withdrawn. */}
+            {!ticketReadOnly && (
+              <RaiseDecisionButton
+                task={task}
+                onTaskChanged={(updated) => onStatusChanged?.(updated)}
+              />
+            )}
+            {wantsAttention && (
               <Button
                 size="small"
                 appearance="subtle"
@@ -1374,8 +1400,8 @@ export function TaskDetail({
               >
                 {busy === 'other' ? 'Dismissing…' : 'Dismiss'}
               </Button>
-            </div>
-          )}
+            )}
+          </div>
           <TaskDetailsCell
             task={task}
             boards={boards}
@@ -1504,6 +1530,7 @@ export function TaskDetail({
             </MessageBar>
           </div>
         )}
+        {decisionBanner}
         {error && (
           <div className={styles.inset}>
             <MessageBar intent="error">
@@ -1527,6 +1554,7 @@ export function TaskDetail({
           </MessageBar>
         </div>
       )}
+      {decisionBanner}
       {/* The band, split into two: `headBand` (identity, agent controls, details, the
           open Ticket fields) and `cell` (Links, Steps, Chain, merge requests) each scroll
           internally once a card has that much to say, up to their own `maxHeight` cap —

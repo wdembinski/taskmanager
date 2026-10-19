@@ -88,6 +88,18 @@ describe('chainStates', () => {
     expect(state).toMatchObject({ ready: false, blocked: 'resting' });
   });
 
+  it('never calls a card waiting on a decision ready, however satisfied its arrows', () => {
+    const b = task({ id: 'b', agentProjectId: 'repo', decisionQuestion: 'Which plan?' });
+    const state = chainStates([link('a', 'b')], index(landed, b)).get('b');
+    expect(state).toMatchObject({ waitingOn: [], ready: false, blocked: 'needs-decision' });
+  });
+
+  it('leaves an unflagged card exactly as it was', () => {
+    const b = task({ id: 'b', agentProjectId: 'repo', decisionQuestion: null });
+    const state = chainStates([link('a', 'b')], index(landed, b)).get('b');
+    expect(state).toMatchObject({ waitingOn: [], ready: true, blocked: null });
+  });
+
   it('is quiet about a card whose own work is done or under way', () => {
     const done = task({ id: 'b', status: 'done', agentProjectId: 'repo' });
     expect(chainStates([link('a', 'b')], index(landed, done)).get('b')).toMatchObject({

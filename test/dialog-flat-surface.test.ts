@@ -32,6 +32,7 @@ const DIALOG_FILES = [
   'packages/ui/src/AddTaskDialog.tsx',
   'packages/ui/src/AssignAgentDialog.tsx',
   'packages/ui/src/ConfirmMergeDialog.tsx',
+  'packages/ui/src/DecisionBanner.tsx',
   'packages/ui/src/SkillsSection.tsx',
   'packages/ui/src/TaskAgentPanel.tsx',
   'packages/ui/src/TaskDetailsCell.tsx',

@@ -573,6 +573,26 @@ export function describeEmptyOutcome(
  */
 export type VariantStartOutcome = RunOutcome | { queued: true };
 
+/**
+ * The comment an answered owner decision leaves on its card — the question and the answer
+ * together, so the planner reading it later through `taskNotes` needs no other context.
+ */
+export function formatDecisionAnswer(question: string, answer: string): string {
+  return `Decision needed: ${question}\n\nAnswer: ${answer}`;
+}
+
+/**
+ * The decision a planning question becomes (`Scheduler.questionToDecision`): the question,
+ * then the choices the planner offered, one per line — so whoever answers it on the card
+ * sees the same options the Inbox would have shown as buttons.
+ */
+export function formatQuestionAsDecision(prompt: string, options: string[]): string {
+  const choices = options.map((o) => o.trim()).filter(Boolean);
+  const question = prompt.trim();
+  if (choices.length === 0) return question;
+  return `${question}\n\nOptions:\n${choices.map((o) => `- ${o}`).join('\n')}`;
+}
+
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
   id: string;
@@ -588,6 +608,8 @@ export interface Schedulable {
   isContract: boolean;
   /** True when this task lays down the milestone's shared scaffold/root (`@scaffold`). */
   isScaffold: boolean;
+  /** An open owner decision (`Task.decisionQuestion`): the task is skipped until answered. */
+  decisionQuestion?: string | null;
 }
 
 /**
@@ -645,6 +667,8 @@ export function selectNextPending<T extends Schedulable>(
   let best: T | null = null;
   for (const task of tasks) {
     if (task.status !== 'pending' || inFlight.has(task.id)) continue;
+    // Waiting on the owner: only an answer starts it, the same rule Start follows.
+    if (task.decisionQuestion != null) continue;
     if (!task.dependsOn.every(satisfied)) continue;
     // Scaffold goes first: hold everything else in the phase (even the contract task)
     // until the scaffold task is done.
@@ -1971,6 +1995,9 @@ export class Scheduler {
     if (this.inFlight.has(taskId)) return { refused: 'already-running' };
     const task = this.store.getTask(taskId);
     if (!task) return { refused: 'unknown-task' };
+    // An open owner decision holds the card until it is answered. A plain refusal, not a
+    // park: no gate's resume should start it behind the human's back.
+    if (task.decisionQuestion != null) return { refused: 'needs-decision' };
 
     // Which task would actually run: the first step waiting its turn, or the card itself.
     // Resolved before anything is parked, because parking the CARD when its STEP is the
@@ -2843,6 +2870,103 @@ export class Scheduler {
   reconsiderChains(trigger: ChainTrigger): void {
     if (this.disposed) return;
     this.chain.reconsider(trigger);
+  }
+
+  /**
+   * Raise (or withdraw, with `null`) an owner decision on a card — `Task.decisionQuestion`.
+   *
+   * While it is open the card is never ready, Start refuses it and the plan queue skips it;
+   * nothing here has to enforce that, the flag IS the enforcement. A blank question counts
+   * as `null`. Re-asking an open decision rewrites the question but keeps the moment it was
+   * first asked, so the Inbox does not present an old question as a new one.
+   *
+   * Withdrawing re-asks the chain exactly as an answer does: the flag was the only thing a
+   * chained card may have been waiting on. Throws a plain sentence for an unknown card.
+   */
+  setDecision(taskId: string, question: string | null): Task {
+    const existing = this.store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const text = question?.trim() || null;
+    const wasOpen = existing.decisionQuestion != null;
+    const task = this.store.updateTask(taskId, {
+      decisionQuestion: text,
+      decisionAskedAt: text ? (existing.decisionAskedAt ?? Date.now()) : null,
+    });
+    if (!task) throw new Error('Task not found.');
+    this.emitTask({ task, runId: null });
+    if (wasOpen && !text) this.reconsiderChains('decision-cleared');
+    return task;
+  }
+
+  /**
+   * Answer a card's open decision: clears the flag and files the question with its answer
+   * as a LOCAL comment (`Decision needed: …\n\nAnswer: …`). Local on purpose — posting to
+   * the tracker would be outward-facing, and {@link Scheduler.taskNotes} already hands every
+   * comment to the next planning run, which is who the answer is for.
+   *
+   * The comment is written before the flag clears, so a card can never read as answered
+   * with the answer missing. Refuses (a plain sentence) an empty answer and a card with no
+   * open decision. Then re-asks the chain, so a successor that was held only by this
+   * decision releases.
+   */
+  answerDecision(taskId: string, answer: string): { task: Task; comment: TaskActivityEntry } {
+    const existing = this.store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const question = existing.decisionQuestion;
+    if (question == null) throw new Error('This card has no open decision to answer.');
+    const text = answer.trim();
+    if (!text) throw new Error('An answer needs some text.');
+    const comment = this.store.addComment(
+      existing.projectId,
+      taskId,
+      formatDecisionAnswer(question, text),
+    );
+    if (!comment) throw new Error('An answer needs some text.');
+    const task = this.store.updateTask(taskId, { decisionQuestion: null, decisionAskedAt: null });
+    if (!task) throw new Error('Task not found.');
+    this.emitTask({ task, runId: null });
+    this.reconsiderChains('decision-cleared');
+    return { task, comment };
+  }
+
+  /**
+   * **Make this a decision on the card**: turn a `@@NEEDS_INPUT@@` question a PLANNING run
+   * raised into the card's owner decision, and stop the planner that asked it.
+   *
+   * Only a planning question qualifies (`AttentionItem.duringPlanning`): a plan can wait for
+   * an owner's answer and be re-planned with it — the answer reaches the next planner as a
+   * comment through `taskNotes` — while a question asked mid-implementation belongs to a
+   * live worktree that stopping would strand. Refuses everything else with a plain sentence.
+   *
+   * The order is the point. The decision is set FIRST, so the card is never ready for a
+   * moment between the stop and the flag; then the item goes; then the run. Only that one
+   * run is stopped — not {@link Scheduler.stopTask}, which would also stop a re-planned
+   * card's queued steps and mark the card stopped. The status write goes through the card
+   * guard, so a board card returns to the column it rests in and a queue task to `pending`,
+   * which the plan queue skips for as long as the decision is open.
+   */
+  questionToDecision(itemId: string): Task {
+    const item = this.attention.get(itemId);
+    if (!item) throw new Error('That question is no longer open.');
+    if (item.kind !== 'question' || !item.duringPlanning) {
+      throw new Error('Only a question asked while planning a card can become a decision on it.');
+    }
+    if (!this.store.getTask(item.taskId)) throw new Error('Task not found.');
+
+    this.setDecision(item.taskId, formatQuestionAsDecision(item.prompt, item.options));
+    this.resolveAttention(itemId);
+
+    const run = item.runId ? this.runs.get(item.runId) : undefined;
+    if (run && !run.settled) {
+      run.settled = true; // the decision is the outcome, not the exit code
+      this.recordRunFinished(run, 'stopped', null);
+      this.clearRunAttention(run.runId);
+      this.sessions.stop(run.runId); // `exited` cleans up the bookkeeping
+    }
+    this.updateTask(item.taskId, { status: 'pending' }, null);
+    const task = this.store.getTask(item.taskId);
+    if (!task) throw new Error('Task not found.');
+    return task;
   }
 
   /**
@@ -5879,6 +6003,9 @@ export class Scheduler {
       steps: detail.steps ?? [],
       questions: detail.questions ?? [],
       planCheck: detail.planCheck ?? null,
+      // The same two flags `startTask` reads as "this run is planning": a turn asked for a
+      // plan AND held to plan mode. A chat reply that merely inherited `plan` is not one.
+      ...(run.expectsPlan && run.permissionMode === 'plan' ? { duringPlanning: true } : {}),
       createdAt: Date.now(),
     };
     this.attention.set(item.id, item);

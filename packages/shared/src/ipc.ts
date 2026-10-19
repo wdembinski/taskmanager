@@ -747,6 +747,23 @@ export interface IpcApi {
    */
   'task:setStatusNote': (taskId: string, note: string) => Promise<Task>;
   /**
+   * Raise an owner decision on a card (`Task.decisionQuestion`), or withdraw it with `null`.
+   * A blank question counts as `null`. While a decision is open the card is never ready,
+   * Start refuses it and the plan queue skips it. Re-asking keeps the original
+   * `decisionAskedAt`. Withdrawing re-asks the chain. Returns the updated task.
+   */
+  'task:setDecision': (taskId: string, question: string | null) => Promise<Task>;
+  /**
+   * Answer a card's open decision: clears the flag and files `Decision needed: <question>`
+   * and `Answer: <answer>` as a LOCAL comment — never posted to the tracker — which the next
+   * planning run reads like any other note. Then re-asks the chain, so a successor held only
+   * by this decision releases. Rejects a blank answer and a card with no open decision.
+   */
+  'task:answerDecision': (
+    taskId: string,
+    answer: string,
+  ) => Promise<{ task: Task; comment: TaskActivityEntry }>;
+  /**
    * Tag a card with the project it belongs to (`null` untags it) — WITHOUT starting
    * anything. Writes `Task.projectTagId`, which is the whole point: this used to set
    * the same `agentProjectId` that `task:assignAgent` sets, so filing a card gave it
@@ -1061,6 +1078,14 @@ export interface IpcApi {
    * way the item clears and its task returns to `running`.
    */
   'attention:answer': (itemId: string, answer: AttentionAnswer) => Promise<void>;
+  /**
+   * "Make this a decision on the card": turn a `question` item a PLANNING run raised
+   * (`AttentionItem.duringPlanning`) into the card's owner decision — the prompt and its
+   * options become `Task.decisionQuestion` — resolve the item, and stop the planning run so
+   * the card returns to its resting status. Rejects with a plain sentence for any other item.
+   * Resolves to the updated card.
+   */
+  'attention:toDecision': (itemId: string) => Promise<Task>;
   /**
    * Grant a parked gate's command permission to run on THIS desktop (F8.8) — the only path
    * that may add a hash to `AppSettings.trustedGateCommands`. Separate from

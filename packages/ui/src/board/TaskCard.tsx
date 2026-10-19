@@ -43,6 +43,7 @@ import {
   PersonRegular,
   PlayCircleRegular,
   PresenceBlockedRegular,
+  QuestionCircleRegular,
   RecordStopRegular,
   SparkleRegular,
   TaskListSquareLtrRegular,
@@ -701,6 +702,22 @@ export function TaskCard({
     </span>
   ) : null;
   /**
+   * The card's open owner decision (`cardParts.decision`), as its own chip — not a branch of
+   * `chainChip`, because a decision holds a card whether or not anybody chained it, and a
+   * card can be waiting on a predecessor AND a decision at once. Monochrome, held weight:
+   * a standing fact, like the chain's own held chips (memory *board-colour-budget*).
+   */
+  const decisionChip = parts.decision ? (
+    <span
+      className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
+      title={`Waiting on a decision: ${parts.decision.question} Answer it on the card or in the Inbox.`}
+      data-decision-chip=""
+    >
+      <QuestionCircleRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>Needs decision</span>
+    </span>
+  ) : null;
+  /**
    * The needs/unblocks row `linkChips` draws in place of `chainChip` — see that prop's doc.
    */
   const needsUnblocksRow =
@@ -1001,6 +1018,7 @@ export function TaskCard({
           </div>
         )}
 
+        {decisionChip && <div>{decisionChip}</div>}
         {(chainChip || needsUnblocksRow) && <div>{chainChip ?? needsUnblocksRow}</div>}
 
         {(parts.epic || parts.trailing) && (

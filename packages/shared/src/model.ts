@@ -838,6 +838,19 @@ export interface Task {
    */
   stoppedAt?: number | null;
   /**
+   * The open decision this card is waiting on — the question the owner has to answer
+   * (cost, accounts, tokens, a product choice) before the work can go on. Non-null IS the
+   * "needs decision" flag: while it is set the card is never ready, Start refuses, and the
+   * Inbox lists the question. Null means no decision is open — never asked, withdrawn, or
+   * answered (the answer is kept as a comment on the card, not here).
+   */
+  decisionQuestion?: string | null;
+  /**
+   * Epoch ms {@link Task.decisionQuestion} was set. Null whenever no decision is open, and
+   * on every card from before the flag existed.
+   */
+  decisionAskedAt?: number | null;
+  /**
    * Serialised {@link SkillRef}s (`lib:<id>` / `repo:<name>`, see `@shared/skills`) attached
    * to this card or step; a step runs with the card's refs union its own, card first (F7.6).
    * Null or empty means none attached. Written only through `setTaskSkillRefs`.
