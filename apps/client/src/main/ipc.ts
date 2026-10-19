@@ -1888,6 +1888,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
 
   handle('attention:list', async () => scheduler.listAttention());
   handle('attention:answer', async (itemId, answer) => scheduler.answerAttention(itemId, answer));
+  handle('attention:toDecision', async (itemId) => scheduler.questionToDecision(itemId));
   /**
    * `gate:trust`'s one handler (F8.8) — host-only (see `ipcRelay.ts`'s `trust-grant`
    * reason), so this only ever runs on the desktop that is about to run the command.

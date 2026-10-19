@@ -128,6 +128,14 @@ export interface AttentionItem {
    * show the same checks next to a plan a human approves by hand. Null for other kinds.
    */
   planCheck?: PlanVerdict | null;
+  /**
+   * True when a plan-mode run (a card being PLANNED, not worked) raised this item. Only a
+   * `question` raised while planning can become a decision on the card
+   * (`attention:toDecision`): the question is then about the plan itself, so parking it
+   * on the card is a real answer rather than an abandoned run. Absent/false otherwise,
+   * and on every item raised before this field existed.
+   */
+  duringPlanning?: boolean;
   /** Epoch ms when the item was raised (inbox sorts oldest-first). */
   createdAt: number;
 }

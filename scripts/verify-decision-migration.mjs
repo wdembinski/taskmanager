@@ -22,6 +22,8 @@
  * - A card INSERTED already carrying a question keeps it (both `insertTask` lists).
  * - A tracker sync of that card leaves the flag alone — the sync's UPDATE must never clear it.
  * - One `updateTask` still logs exactly one `cloud_outbox` row, as the archive script checks.
+ * - `attention_items` gains `duringPlanning` the same way; a pre-upgrade question reads
+ *   `false` (never offers "Make this a decision on the card"), and both values round-trip.
  *
  * It fails loudly if a migration entry is removed: the store cannot even open the upgraded
  * database, because its statements name a column the table lacks. Prove that yourself by
@@ -208,7 +210,68 @@ check(
   resynced?.title === 'Re-synced from the tracker',
 );
 check('and left the open decision alone', resynced?.decisionQuestion === 'Use the staging token?');
+
+// ── attention_items.duringPlanning — what offers "Make this a decision on the card" ──
+const question = (id, duringPlanning) => ({
+  id,
+  runId: 'run-1',
+  taskId: task.id,
+  projectId: 'personal',
+  taskTitle: 'A card from before the upgrade',
+  kind: 'question',
+  prompt: 'Which account pays?',
+  options: ['Mine', 'The company'],
+  toolName: null,
+  reason: null,
+  ...(duringPlanning ? { duringPlanning: true } : {}),
+  createdAt: Date.now(),
+});
+const attentionColumns = () => {
+  const db = new Database(dbPath);
+  try {
+    return db
+      .prepare('PRAGMA table_info(attention_items)')
+      .all()
+      .map((c) => c.name);
+  } finally {
+    db.close();
+  }
+};
+// Seeded as planning, so the drop throws a real `1` away rather than an empty column.
+after.saveAttention(question('ask-old', true), null);
+check(
+  'seed: a planning question is saved before the downgrade',
+  after.listAttention().find((r) => r.item.id === 'ask-old')?.item.duringPlanning === true,
+);
 after.close();
+
+const rawAttention = new Database(dbPath);
+rawAttention.exec('ALTER TABLE attention_items DROP COLUMN duringPlanning');
+rawAttention.close();
+check(
+  'the pre-upgrade attention table really lacks duringPlanning',
+  !attentionColumns().includes('duringPlanning'),
+);
+
+const reopened = createStore(dbPath);
+check('the ALTER added duringPlanning on open', attentionColumns().includes('duringPlanning'));
+const oldAsk = reopened.listAttention().find((r) => r.item.id === 'ask-old');
+check('the pre-upgrade question survived the migration', oldAsk != null);
+// NULL reads as "not during planning": an upgrade offers the one-click on nothing.
+check('and reads duringPlanning: false', oldAsk?.item.duringPlanning === false);
+
+reopened.saveAttention(question('ask-planning', true), null);
+reopened.saveAttention(question('ask-working', false), null);
+const listed = reopened.listAttention();
+check(
+  'a planning question round-trips as duringPlanning: true',
+  listed.find((r) => r.item.id === 'ask-planning')?.item.duringPlanning === true,
+);
+check(
+  'a working question round-trips as duringPlanning: false',
+  listed.find((r) => r.item.id === 'ask-working')?.item.duringPlanning === false,
+);
+reopened.close();
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

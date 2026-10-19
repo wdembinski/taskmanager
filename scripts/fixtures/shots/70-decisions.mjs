@@ -3,8 +3,11 @@
  * (`InboxDecisions.tsx`). See `uiShotsFixture.mjs`'s own header doc for how `CHANNELS` here is
  * merged with every other file under this directory.
  *
+ * Plus one planning question for `inbox-plan-decision`.
+ *
  * Nothing here joins the shared `CHANNELS`: the flagged cards and the second project reach
- * `inbox-decisions` alone, through that row's own `channelOverrides`
+ * `inbox-decisions` alone (and the question `inbox-plan-decision` alone), through each row's
+ * own `channelOverrides`
  * (`scripts/shots/screens/110-decisions.mjs`), so no other row's board, Inbox or sidebar
  * changes.
  */
@@ -54,5 +57,26 @@ export const DECISION_TASKS = [
     decisionAskedAt: asked - DAY,
   }),
 ];
+
+/**
+ * One `@@NEEDS_INPUT@@` question a PLANNING run raised (`duringPlanning`), with the two
+ * choices the planner offered — what `inbox-plan-decision` shows with its "Make this a
+ * decision on the card" button. Parked on fixture task `'1'` (`plainBacklog`), an existing
+ * `TASKS` row, as `INBOX_PLAN_ITEM` (`60-plan-check.mjs`) is.
+ */
+export const INBOX_PLANNING_QUESTION = {
+  id: 'att-plan-question-1',
+  runId: 'run-plan-question-1',
+  taskId: '1',
+  projectId: PROJECT_ID,
+  taskTitle: 'Command palette actions for every issue field',
+  kind: 'question',
+  prompt: 'Should the palette list archived issues as well, or only open ones?',
+  options: ['Only open issues', 'Open and archived, archived last'],
+  toolName: null,
+  reason: null,
+  duringPlanning: true,
+  createdAt: asked - 5 * 60_000,
+};
 
 export const CHANNELS = {};

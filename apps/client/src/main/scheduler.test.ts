@@ -21,7 +21,13 @@ import {
   type ForgeGit,
   type Schedulable,
 } from './scheduler';
-import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
+import {
+  AGREE_SENTINEL,
+  NEEDS_INPUT_SENTINEL,
+  OBJECT_SENTINEL,
+  PROPOSE_SENTINEL,
+} from './attention';
+import type { AttentionItem } from '@shared/attention';
 import { MAX_PLAN_STEPS } from '@shared/board';
 import type { TaskAttachment } from '@shared/attachments';
 import type { PermissionMode } from '@shared/session';
@@ -7139,6 +7145,134 @@ describe('Scheduler — an owner decision on a card', () => {
       scheduler as unknown as { taskNotes: (id: string) => { kept: string[] } }
     ).taskNotes('t1');
     expect(notes.kept).toContain('Decision needed: Which plan?\n\nAnswer: The yearly one.');
+  });
+});
+
+describe('Scheduler.questionToDecision — a planning question becomes a decision', () => {
+  /**
+   * One board card (a ticket) resting in IN PROGRESS with a live run on it, put in the private run map
+   * directly (as the negotiation tests do) so the run's two planning flags are exactly
+   * what each case says. The question then arrives the real way — an assistant message
+   * carrying the sentinel, through `onRunEvent` — so `raiseAttention` is what marks it.
+   */
+  async function setup(planning: boolean) {
+    const card = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'Move the API to the bigger hosting plan',
+      status: 'running',
+      preRunStatus: 'in-progress',
+      sessionId: 's1',
+      order: 0,
+      source: 'ticket',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: null,
+      decisionQuestion: null,
+      decisionAskedAt: null,
+    } as unknown as Task;
+    const store = {
+      getTask: (id: string) => (id === card.id ? card : undefined),
+      getTasks: () => [card],
+      getSubtasks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id !== card.id) return undefined;
+        Object.assign(card, patch);
+        return card;
+      },
+      appendTaskEvent: vi.fn(),
+      getTaskActivity: () => [],
+      listProjects: () => [],
+      listTaskLinks: () => [],
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      ...INERT_ATTENTION_STORE,
+      saveAttention: vi.fn(),
+    } as unknown as Store;
+    const stop = vi.fn();
+    const sessions = { start: vi.fn(), stop, send: vi.fn() } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const emitResolved = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      emitResolved,
+      vi.fn(),
+    );
+    const run = {
+      taskId: 't1',
+      projectId: 'p',
+      runId: 'r1',
+      origin: 'human',
+      startedAt: 0,
+      settled: false,
+      permissionMode: planning ? 'plan' : 'acceptEdits',
+      expectsPlan: true,
+    };
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('r1', run);
+    await (
+      scheduler as unknown as { onRunEvent: (r: string, e: unknown) => Promise<void> }
+    ).onRunEvent('r1', {
+      kind: 'assistant',
+      text: `${NEEDS_INPUT_SENTINEL} Which hosting plan do we pay for?\n- Monthly\n- Yearly`,
+    });
+    const item = emitAttention.mock.calls[0]?.[0] as AttentionItem;
+    return { scheduler, card, item, run, stop, emitResolved };
+  }
+
+  it('turns it into the decision, resolves the item and stops the planning run', async () => {
+    const { scheduler, card, item, run, stop, emitResolved } = await setup(true);
+    expect(item).toMatchObject({ kind: 'question', duringPlanning: true });
+    expect(card.status).toBe('waiting-input');
+
+    const task = scheduler.questionToDecision(item.id);
+
+    expect(task.decisionQuestion).toBe(
+      'Which hosting plan do we pay for?\n\nOptions:\n- Monthly\n- Yearly',
+    );
+    expect(task.decisionAskedAt).toEqual(expect.any(Number));
+    expect(emitResolved).toHaveBeenCalledWith(item.id);
+    expect(scheduler.listAttention()).toEqual([]);
+    expect(stop).toHaveBeenCalledWith('r1');
+    expect(run.settled).toBe(true);
+    // Back in the column the human left it in — not `stopped`, and offering no Resume.
+    expect(card.status).toBe('in-progress');
+    expect(card.preRunStatus).toBeNull();
+    expect(card.stoppedAt ?? null).toBeNull();
+  });
+
+  it('refuses a question a working (non-planning) run asked, and changes nothing', async () => {
+    const { scheduler, card, item, stop, emitResolved } = await setup(false);
+    expect(item.duringPlanning).toBeUndefined();
+
+    expect(() => scheduler.questionToDecision(item.id)).toThrow(
+      'Only a question asked while planning a card can become a decision on it.',
+    );
+    expect(card.decisionQuestion).toBeNull();
+    expect(emitResolved).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(card.status).toBe('waiting-input');
+  });
+
+  it('refuses an item that is no longer open', () => {
+    const scheduler = new Scheduler(
+      { ...INERT_ATTENTION_STORE } as unknown as Store,
+      {} as SessionManager,
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(),
+    );
+    expect(() => scheduler.questionToDecision('gone')).toThrow('That question is no longer open.');
   });
 });
 

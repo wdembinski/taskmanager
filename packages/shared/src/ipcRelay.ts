@@ -313,6 +313,7 @@ export const RELAY_POLICY: {
 
   'attention:list': 'relay',
   'attention:answer': 'relay',
+  'attention:toDecision': 'relay',
   'attention:dismiss': 'relay',
   'gate:trust': 'host-only',
 

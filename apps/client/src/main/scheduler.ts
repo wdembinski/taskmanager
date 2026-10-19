@@ -581,6 +581,18 @@ export function formatDecisionAnswer(question: string, answer: string): string {
   return `Decision needed: ${question}\n\nAnswer: ${answer}`;
 }
 
+/**
+ * The decision a planning question becomes (`Scheduler.questionToDecision`): the question,
+ * then the choices the planner offered, one per line — so whoever answers it on the card
+ * sees the same options the Inbox would have shown as buttons.
+ */
+export function formatQuestionAsDecision(prompt: string, options: string[]): string {
+  const choices = options.map((o) => o.trim()).filter(Boolean);
+  const question = prompt.trim();
+  if (choices.length === 0) return question;
+  return `${question}\n\nOptions:\n${choices.map((o) => `- ${o}`).join('\n')}`;
+}
+
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
   id: string;
@@ -2915,6 +2927,46 @@ export class Scheduler {
     this.emitTask({ task, runId: null });
     this.reconsiderChains('decision-cleared');
     return { task, comment };
+  }
+
+  /**
+   * **Make this a decision on the card**: turn a `@@NEEDS_INPUT@@` question a PLANNING run
+   * raised into the card's owner decision, and stop the planner that asked it.
+   *
+   * Only a planning question qualifies (`AttentionItem.duringPlanning`): a plan can wait for
+   * an owner's answer and be re-planned with it — the answer reaches the next planner as a
+   * comment through `taskNotes` — while a question asked mid-implementation belongs to a
+   * live worktree that stopping would strand. Refuses everything else with a plain sentence.
+   *
+   * The order is the point. The decision is set FIRST, so the card is never ready for a
+   * moment between the stop and the flag; then the item goes; then the run. Only that one
+   * run is stopped — not {@link Scheduler.stopTask}, which would also stop a re-planned
+   * card's queued steps and mark the card stopped. The status write goes through the card
+   * guard, so a board card returns to the column it rests in and a queue task to `pending`,
+   * which the plan queue skips for as long as the decision is open.
+   */
+  questionToDecision(itemId: string): Task {
+    const item = this.attention.get(itemId);
+    if (!item) throw new Error('That question is no longer open.');
+    if (item.kind !== 'question' || !item.duringPlanning) {
+      throw new Error('Only a question asked while planning a card can become a decision on it.');
+    }
+    if (!this.store.getTask(item.taskId)) throw new Error('Task not found.');
+
+    this.setDecision(item.taskId, formatQuestionAsDecision(item.prompt, item.options));
+    this.resolveAttention(itemId);
+
+    const run = item.runId ? this.runs.get(item.runId) : undefined;
+    if (run && !run.settled) {
+      run.settled = true; // the decision is the outcome, not the exit code
+      this.recordRunFinished(run, 'stopped', null);
+      this.clearRunAttention(run.runId);
+      this.sessions.stop(run.runId); // `exited` cleans up the bookkeeping
+    }
+    this.updateTask(item.taskId, { status: 'pending' }, null);
+    const task = this.store.getTask(item.taskId);
+    if (!task) throw new Error('Task not found.');
+    return task;
   }
 
   /**
@@ -5951,6 +6003,9 @@ export class Scheduler {
       steps: detail.steps ?? [],
       questions: detail.questions ?? [],
       planCheck: detail.planCheck ?? null,
+      // The same two flags `startTask` reads as "this run is planning": a turn asked for a
+      // plan AND held to plan mode. A chat reply that merely inherited `plan` is not one.
+      ...(run.expectsPlan && run.permissionMode === 'plan' ? { duringPlanning: true } : {}),
       createdAt: Date.now(),
     };
     this.attention.set(item.id, item);

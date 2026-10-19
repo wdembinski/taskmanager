@@ -32,7 +32,7 @@ import type { TaskAttachment } from '@tm/shared/attachments';
 import { GATE_TRUST_ACTION } from '@tm/shared/workflow';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { AttachmentGallery } from './AttachmentGallery';
-import { invokeAttentionAnswer } from './attentionAnswer';
+import { canMakeDecision, invokeAttentionAnswer, MAKE_DECISION_LABEL } from './attentionAnswer';
 import { Markdown } from './chat/MarkdownView';
 import { draftKey, useDraft } from './drafts';
 import { gateTrustChoices, gateTrustWaitingText } from './gateStepView';
@@ -153,6 +153,7 @@ export function InboxItem({
   onDismiss: (id: string) => Promise<void>;
 }): JSX.Element {
   const styles = useStyles();
+  const transport = useTransport();
   const trustHost = useGateTrustHost();
   // A draft, not plain state: this component is now ALSO mounted inside the compact inbox's
   // full-screen detail view, which unmounts on every "Back" — unlike the wide list, where an
@@ -176,6 +177,20 @@ export function InboxItem({
     setDismissError(null);
     try {
       await onDismiss(item.id);
+    } catch (e) {
+      setDismissError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The item leaves the list through the engine's own `attention:resolved`, like an answer;
+  // only a refusal has to be shown here, in the same slot a refused Dismiss uses.
+  const toDecision = async (): Promise<void> => {
+    setBusy(true);
+    setDismissError(null);
+    try {
+      await transport.invoke('attention:toDecision', item.id);
     } catch (e) {
       setDismissError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -373,6 +388,16 @@ export function InboxItem({
             >
               Send
             </Button>
+            {canMakeDecision(item) && (
+              <Button
+                data-make-decision=""
+                disabled={busy}
+                title="Stop planning and keep this question on the card until the owner answers it"
+                onClick={() => void toDecision()}
+              >
+                {MAKE_DECISION_LABEL}
+              </Button>
+            )}
           </div>
         </>
       )}

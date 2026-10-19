@@ -1079,6 +1079,14 @@ export interface IpcApi {
    */
   'attention:answer': (itemId: string, answer: AttentionAnswer) => Promise<void>;
   /**
+   * "Make this a decision on the card": turn a `question` item a PLANNING run raised
+   * (`AttentionItem.duringPlanning`) into the card's owner decision — the prompt and its
+   * options become `Task.decisionQuestion` — resolve the item, and stop the planning run so
+   * the card returns to its resting status. Rejects with a plain sentence for any other item.
+   * Resolves to the updated card.
+   */
+  'attention:toDecision': (itemId: string) => Promise<Task>;
+  /**
    * Grant a parked gate's command permission to run on THIS desktop (F8.8) — the only path
    * that may add a hash to `AppSettings.trustedGateCommands`. Separate from
    * `attention:answer` (rather than one more `AttentionAnswer` decision carried over it)

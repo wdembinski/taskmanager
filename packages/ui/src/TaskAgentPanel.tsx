@@ -73,7 +73,7 @@ import { effectiveSkillRefs } from '@tm/shared/skills';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import { WORKFLOW_APPLY_REFUSAL_MESSAGE } from '@tm/shared/workflow';
 import { AssignAgentDialog } from './AssignAgentDialog';
-import { invokeAttentionAnswer } from './attentionAnswer';
+import { canMakeDecision, invokeAttentionAnswer, MAKE_DECISION_LABEL } from './attentionAnswer';
 import { stepPosition } from './board/boardColumns';
 import { draftKey, useDraft } from './drafts';
 import { gateTrustChoices, gateTrustWaitingText, isGateTrustItem } from './gateStepView';
@@ -801,6 +801,21 @@ export function TaskAgentPanel({
     }
   }
 
+  /** "Make this a decision on the card" — the ask leaves through `attention:resolved`. */
+  async function toDecision(itemId: string): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await transport.invoke('attention:toDecision', itemId);
+      // The ask may be a step's; only this card's own row is ours to hand up.
+      if (updated.id === taskId) onTaskChanged(updated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function stop(): Promise<void> {
     setBusy(true);
     setError(null);
@@ -1410,6 +1425,16 @@ export function TaskAgentPanel({
                     onClick={() => void answer({ decision: 'reply', text: reply.trim() })}
                   >
                     Send
+                  </Button>
+                )}
+                {canMakeDecision(item) && (
+                  <Button
+                    data-make-decision=""
+                    disabled={busy}
+                    title="Stop planning and keep this question on the card until the owner answers it"
+                    onClick={() => void toDecision(item.id)}
+                  >
+                    {MAKE_DECISION_LABEL}
                   </Button>
                 )}
               </div>

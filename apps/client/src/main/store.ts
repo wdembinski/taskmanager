@@ -1921,7 +1921,8 @@ export function createStore(dbPath: string): Store {
       steps        TEXT,            -- JSON string[]
       questions    TEXT,            -- JSON AttentionQuestion[]
       planCheck    TEXT,            -- JSON PlanVerdict; plan-approval only
-      context      TEXT,            -- JSON, kind-specific; NULL when there is none
+      duringPlanning INTEGER,       -- 1 = a question raised by a plan-mode run
+      context      TEXT,          -- JSON, kind-specific; NULL when there is none
       createdAt    INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_attention_task ON attention_items(taskId);
@@ -2596,6 +2597,12 @@ export function createStore(dbPath: string): Store {
   }>;
   if (!attentionColumns.some((c) => c.name === 'planCheck')) {
     db.exec(`ALTER TABLE attention_items ADD COLUMN planCheck TEXT`);
+  }
+  // …and before a question remembered whether a plan-mode run raised it. NULL on every
+  // existing row reads as "not during planning", so an old question never offers the
+  // one-click "Make this a decision on the card".
+  if (!attentionColumns.some((c) => c.name === 'duringPlanning')) {
+    db.exec(`ALTER TABLE attention_items ADD COLUMN duringPlanning INTEGER`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -3435,6 +3442,8 @@ export function createStore(dbPath: string): Store {
     steps: string | null;
     questions: string | null;
     planCheck: string | null;
+    /** SQLite has no boolean: 1 = raised while planning; 0/NULL = not. */
+    duringPlanning: number | null;
     context: string | null;
     createdAt: number;
   }
@@ -4029,17 +4038,19 @@ export function createStore(dbPath: string): Store {
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
        (id, runId, taskId, projectId, taskTitle, kind, prompt, options, toolName, reason,
-        worktreePath, branch, plan, steps, questions, planCheck, context, createdAt)
+        worktreePath, branch, plan, steps, questions, planCheck, duringPlanning, context,
+        createdAt)
      VALUES
        (@id, @runId, @taskId, @projectId, @taskTitle, @kind, @prompt, @options, @toolName,
-        @reason, @worktreePath, @branch, @plan, @steps, @questions, @planCheck, @context,
-        @createdAt)
+        @reason, @worktreePath, @branch, @plan, @steps, @questions, @planCheck,
+        @duringPlanning, @context, @createdAt)
      ON CONFLICT(id) DO UPDATE SET
        runId = excluded.runId, prompt = excluded.prompt, options = excluded.options,
        toolName = excluded.toolName, reason = excluded.reason,
        worktreePath = excluded.worktreePath, branch = excluded.branch,
        plan = excluded.plan, steps = excluded.steps, questions = excluded.questions,
-       planCheck = excluded.planCheck, context = excluded.context`,
+       planCheck = excluded.planCheck, duringPlanning = excluded.duringPlanning,
+       context = excluded.context`,
   );
   const deleteAttentionStmt = db.prepare(`DELETE FROM attention_items WHERE id = ?`);
   const selectAttentionStmt = db.prepare(`SELECT * FROM attention_items ORDER BY createdAt ASC`);
@@ -6845,6 +6856,7 @@ export function createStore(dbPath: string): Store {
         steps: JSON.stringify(item.steps ?? []),
         questions: JSON.stringify(item.questions ?? []),
         planCheck: item.planCheck ? JSON.stringify(item.planCheck) : null,
+        duringPlanning: item.duringPlanning ? 1 : 0,
         context: context == null ? null : JSON.stringify(context),
         createdAt: item.createdAt,
       });
@@ -6874,6 +6886,7 @@ export function createStore(dbPath: string): Store {
           steps: parseStringArray(r.steps),
           questions: parseJsonColumn<AttentionItem['questions']>(r.questions) ?? [],
           planCheck: parseJsonColumn<AttentionItem['planCheck']>(r.planCheck) ?? null,
+          duringPlanning: r.duringPlanning === 1,
           createdAt: r.createdAt,
         },
         context: parseJsonColumn<unknown>(r.context) ?? null,
