@@ -34,6 +34,8 @@ const require = createRequire(import.meta.url);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** `@shared` for the packages/shared workspace package. */
 const sharedSrc = join(repo, '..', '..', 'packages', 'shared', 'src');
+/** @protocol for packages/protocol, which store.ts reaches through cloudDelta.ts. */
+const protocolSrc = join(repo, '..', '..', 'packages', 'protocol', 'src');
 
 /**
  * Everything this script writes lives here, INSIDE the app package: the bundle keeps
@@ -76,7 +78,7 @@ async function bundle(entry, outDir) {
   await build({
     configFile: false,
     logLevel: 'error',
-    resolve: { alias: { '@shared': sharedSrc, electron: stub } },
+    resolve: { alias: { '@shared': sharedSrc, '@protocol': protocolSrc, electron: stub } },
     build: {
       ssr: entry,
       outDir,

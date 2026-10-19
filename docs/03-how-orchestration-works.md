@@ -988,6 +988,16 @@ Two more routes to the same fact, neither needing a mouse or a visible board:
 - The card's detail pane has a **Chain** section — *Waiting on* above, *Releases* below,
   each row naming the gate, opening that card, and carrying an unlink button.
 
+An arrow is the **only** place a dependency lives, in every project. A ticket link of type
+`blocks` used to say "A before B" too, in the Links section, while holding nothing — so a card
+could sit chained behind six others with "Blocked by" empty. Now `ticketLink:add` draws a
+`blocks` link as an `after-merge` arrow instead (with the arrow's own refusals: a loop, a
+step), and on first launch of this build every `blocks` row already stored is converted
+once, guarded by `migration.blocksToArrows` (`blocksLinkMigration.ts`). The few that cannot
+become an arrow — one that would close a loop, one touching a step, one whose blocker is
+already Done but never landed and so could never release anything — are kept as `relates`:
+the two tickets still belong together, and nothing is held.
+
 ### What the board shows
 
 One arrow per link, drawn over the board in a single SVG that scrolls with the cards. The
