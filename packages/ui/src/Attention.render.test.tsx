@@ -186,6 +186,75 @@ describe('InboxItem', () => {
 
     expect(html).not.toContain('data-plan-check');
   });
+
+  const overlapItem = (overlaps: NonNullable<AttentionItem['planCheck']>['overlaps']) =>
+    item({
+      id: 'item-1',
+      taskId: 'task-1',
+      kind: 'plan-approval',
+      planCheck: { pass: false, checks: [], overlaps },
+    });
+
+  it('warns above the verdict, one line per overlapping card', () => {
+    const html = render(
+      <InboxItem
+        item={overlapItem([
+          {
+            title: 'Ticket panel',
+            key: 'TM-12',
+            why: 'running',
+            files: ['apps/client/src/app.tsx', 'packages/ui/src/a.tsx', 'b.ts', 'c.ts'],
+          },
+          { title: 'No key here', why: 'unmerged PR', files: ['store.ts'] },
+        ])}
+        onAnswer={async () => {}}
+        onDismiss={async () => {}}
+      />,
+    );
+
+    expect(html).toContain('data-plan-overlap');
+    expect(html).toContain(
+      'Overlaps TM-12 (running): apps/client/src/app.tsx, packages/ui/src/a.tsx, b.ts',
+    );
+    // At most MAX_SHOWN_FILES files a card.
+    expect(html).not.toContain('c.ts');
+    // A card with no ticket key is named by its title.
+    expect(html).toContain('Overlaps &quot;No key here&quot; (unmerged PR): store.ts');
+    expect(html.indexOf('data-plan-overlap')).toBeLessThan(html.indexOf('data-plan-check'));
+  });
+
+  it('names at most three cards', () => {
+    const html = render(
+      <InboxItem
+        item={overlapItem(
+          [1, 2, 3, 4].map((n) => ({
+            title: `Card ${n}`,
+            key: `TM-${n}`,
+            why: 'running' as const,
+            files: ['a.ts'],
+          })),
+        )}
+        onAnswer={async () => {}}
+        onDismiss={async () => {}}
+      />,
+    );
+
+    expect(html).toContain('Overlaps TM-3');
+    expect(html).not.toContain('Overlaps TM-4');
+  });
+
+  it('shows no overlap warning without overlaps', () => {
+    for (const overlaps of [undefined, []]) {
+      const html = render(
+        <InboxItem
+          item={overlapItem(overlaps)}
+          onAnswer={async () => {}}
+          onDismiss={async () => {}}
+        />,
+      );
+      expect(html).not.toContain('data-plan-overlap');
+    }
+  });
 });
 
 describe('InboxItem — "Make this a decision on the card"', () => {

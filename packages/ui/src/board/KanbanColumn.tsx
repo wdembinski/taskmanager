@@ -171,6 +171,11 @@ export interface KanbanColumnProps {
    */
   chainStateOf?: (task: Task) => ChainState | undefined;
   /**
+   * Turn a card's file hold (`ChainState.fileHold`) into an after-merge arrow from the card it
+   * waits for. Absent on a board that cannot draw arrows, which hides the card's button.
+   */
+  onMakeArrow?: (fromTaskId: string, toTaskId: string) => void;
+  /**
    * Needs/unblocks (`linkChips.ts`), asked per card like `chainStateOf` — the board holds no
    * index of its own, and the column asks it fresh per card. Absent everywhere the Off/Focus/
    * All switch is not Off, which is also what leaves each card's `chainChip` drawing exactly
@@ -312,6 +317,10 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               chainReady={props.chainStateOf?.(task)?.ready}
               chainQueued={props.chainStateOf?.(task)?.queued}
               chainBlocked={props.chainStateOf?.(task)?.blocked}
+              fileHold={props.chainStateOf?.(task)?.fileHold}
+              onMakeArrow={
+                props.onMakeArrow && ((fromTaskId) => props.onMakeArrow?.(fromTaskId, task.id))
+              }
               chainPosition={props.chainPositionOf?.(task)}
               linkChips={props.linkChipsOf?.(task)}
               // A chain says what runs after what, never where a card belongs; and a run

@@ -17,7 +17,7 @@
  * is never auto-started today, so it is never a candidate here either — a lane cap that
  * suddenly put unchained cards up for release would change what the word means.
  */
-import { isRunStatus, restingStatus } from './board';
+import { holdAgainst, isActiveHolder, liveStepParents, type FileHold } from './fileOverlap';
 import type { MergeRequest } from './mergeRequest';
 import type { Task } from './model';
 import { priorityRank } from './priority';
@@ -27,12 +27,20 @@ import { parseTicketKey } from './ticketKey';
 /** A project's lanes when nobody has set them. `0` means unlimited. */
 export const DEFAULT_READY_LANES = 3;
 
-/** One project's answer. `ready` and `queued` never overlap, and neither holds a step. */
+/**
+ * One project's answer. `ready`, `queued` and `fileHeld` never overlap, and none holds a step.
+ */
 export interface LanePlan {
   /** Candidates that fit in a free lane — what the board marks ready, and the engine starts. */
   ready: Set<string>;
   /** Candidates whose turn has come but for which no lane is free. */
   queued: Set<string>;
+  /**
+   * Candidates whose files overlap an active card's, or an earlier `ready` candidate's — keyed
+   * by candidate, naming the card it waits for. A held card takes no lane: it is neither
+   * ready nor queued, so it never pushes another card out of a lane it cannot use.
+   */
+  fileHeld: Map<string, FileHold>;
   /** Top-level cards already holding a lane. May exceed `cap`. */
   occupied: number;
   /** The cap this plan was drawn against. `0` = unlimited. */
@@ -85,25 +93,6 @@ export function compareLaneOrder(a: Task, b: Task): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-/**
- * Whether this card holds a lane: a live run on it or on one of its steps, a run status it
- * still wears, or a review that has an open PR behind it. `liveSteps` is the set of parents
- * whose steps are running.
- */
-function holdsLane(
-  task: Task,
-  running: ReadonlySet<string>,
-  liveSteps: ReadonlySet<string>,
-  openPrs: ReadonlySet<string>,
-): boolean {
-  return (
-    running.has(task.id) ||
-    liveSteps.has(task.id) ||
-    isRunStatus(task.status) ||
-    (restingStatus(task) === 'in-review' && openPrs.has(task.id))
-  );
-}
-
 /** The plan for one project's cards, with `byId` able to see predecessors anywhere. */
 function planLanes(
   cards: readonly Task[],
@@ -114,19 +103,16 @@ function planLanes(
   openPrs: ReadonlySet<string>,
 ): LanePlan {
   // A running step holds its parent's lane, whichever project the step was filed under.
-  const liveSteps = new Set<string>();
-  for (const t of byId.values()) {
-    if (t.parentTaskId && (running.has(t.id) || isRunStatus(t.status))) {
-      liveSteps.add(t.parentTaskId);
-    }
-  }
+  const liveSteps = liveStepParents(byId.values(), running);
 
   let occupied = 0;
+  const holders: Task[] = [];
   const candidates: Task[] = [];
   for (const task of cards) {
     if (task.parentTaskId) continue;
-    if (holdsLane(task, running, liveSteps, openPrs)) {
+    if (isActiveHolder(task, running, liveSteps, openPrs)) {
       occupied++;
+      holders.push(task);
       continue;
     }
     if (incomingLinks(links, task.id).length === 0) continue;
@@ -136,13 +122,21 @@ function planLanes(
   }
 
   candidates.sort(compareLaneOrder);
-  const free = cap === 0 ? candidates.length : Math.max(0, cap - occupied);
-  return {
-    ready: new Set(candidates.slice(0, free).map((t) => t.id)),
-    queued: new Set(candidates.slice(free).map((t) => t.id)),
-    occupied,
-    cap,
-  };
+  // A candidate is held when its files overlap an active card's, or a candidate that went
+  // ahead of it into a lane — of two overlapping candidates the first by lane order runs and
+  // the second waits for it. Lanes are then handed out over what is left; a queued
+  // candidate holds nothing, since it is not about to run either.
+  const free = cap === 0 ? Infinity : Math.max(0, cap - occupied);
+  const ready: Task[] = [];
+  const queued = new Set<string>();
+  const fileHeld = new Map<string, FileHold>();
+  for (const task of candidates) {
+    const hold = holdAgainst(task, holders) ?? holdAgainst(task, ready);
+    if (hold) fileHeld.set(task.id, hold);
+    else if (ready.length < free) ready.push(task);
+    else queued.add(task.id);
+  }
+  return { ready: new Set(ready.map((t) => t.id)), queued, fileHeld, occupied, cap };
 }
 
 /**

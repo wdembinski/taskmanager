@@ -11,8 +11,12 @@
  * Computed once for the whole board rather than per card, and only for cards with an arrow
  * INTO them: `readyToRelease` is vacuously true for everything else, so asking per card
  * would have every unchained card on the board answering a question about a feature nobody
- * used on it.
+ * used on it. The one exception is a card in To Do held by another card's files
+ * ({@link ChainState.fileHold}): the queue pump holds it whether or not anybody chained it,
+ * so it gets an otherwise idle entry that carries only the hold.
  */
+import { columnForTask } from '@tm/shared/board';
+import { fileHolds, type FileHold } from '@tm/shared/fileOverlap';
 import type { Task } from '@tm/shared/model';
 import { readyLanesByProject } from '@tm/shared/readyLanes';
 import {
@@ -63,7 +67,34 @@ export interface ChainState {
    * the lane inputs to {@link chainStates}.
    */
   queued: boolean;
+  /**
+   * The card is held because an active card in its project touches the same files
+   * (`fileOverlap`) — or, for two overlapping chain candidates, because the first by lane
+   * order went ahead. Never set alongside {@link ready} or {@link queued}: a held card takes
+   * no lane. Only ever set when the board passes the lane inputs to {@link chainStates}.
+   */
+  fileHold?: ChainFileHold;
 }
+
+/** {@link ChainState.fileHold}: the card it waits for, and its own overlapping entries. */
+export interface ChainFileHold extends FileHold {
+  /** The holder's key as a chip shows it — its ticket key, else its title. */
+  byKey: string;
+}
+
+/** A card's key as the chip names it. */
+function keyOf(task: Task | undefined, fallbackId: string): string {
+  return task?.ticketKey || task?.externalKey || task?.title || fallbackId;
+}
+
+/** An idle state for a card nobody chained, which only exists to carry its file hold. */
+const UNCHAINED: Omit<ChainState, 'fileHold'> = {
+  waitingOn: [],
+  mergeHeld: [],
+  ready: false,
+  blocked: null,
+  queued: false,
+};
 
 /**
  * What {@link chainStates} needs to cap the ready set per project — the same inputs the
@@ -97,6 +128,7 @@ export function chainStates(
   // With them, only the candidates the cap holds back lose `ready` — a step is never a
   // candidate, so a chained step keeps the answer it had.
   const laneQueued = new Set<string>();
+  const holds = new Map<string, FileHold>();
   if (lanes) {
     const plans = readyLanesByProject(
       lanes.cards,
@@ -105,8 +137,23 @@ export function chainStates(
       lanes.capOf,
       lanes.openPrTaskIds,
     );
-    for (const plan of plans.values()) for (const id of plan.queued) laneQueued.add(id);
+    for (const plan of plans.values()) {
+      for (const id of plan.queued) laneQueued.add(id);
+      for (const [id, hold] of plan.fileHeld) holds.set(id, hold);
+    }
+    // Every other card sitting in To Do with files — unchained ones included, since the
+    // project queue pump holds them as well (`selectNextPending`). A chain candidate's own
+    // answer above wins: it also knows about the candidate that went ahead of it.
+    for (const [id, hold] of fileHolds(lanes.cards, inFlight, lanes.openPrTaskIds)) {
+      if (holds.has(id)) continue;
+      const task = tasksById.get(id);
+      if (task && columnForTask(task) === 'todo') holds.set(id, hold);
+    }
   }
+  const fileHoldOf = (id: string): ChainFileHold | undefined => {
+    const hold = holds.get(id);
+    return hold && { ...hold, byKey: keyOf(tasksById.get(hold.byTaskId), hold.byTaskId) };
+  };
   for (const id of new Set(links.map((l) => l.toTaskId))) {
     const task = tasksById.get(id);
     if (!task) continue;
@@ -115,14 +162,23 @@ export function chainStates(
     // already, and "waiting on VIP-3, and also unassigned" is two problems reported as one.
     const decline = waitingOn.length === 0 ? chainDecline(task, inFlight.has(id)) : null;
     const startable = waitingOn.length === 0 && decline === null;
+    const fileHold = fileHoldOf(id);
     const queued = startable && laneQueued.has(id);
     byTask.set(id, {
       waitingOn,
       mergeHeld: awaitingMerge(task, links, tasksById),
-      ready: startable && !queued,
+      // A held candidate is in neither `ready` nor `queued` (`LanePlan.fileHeld`).
+      ready: startable && !queued && !fileHold,
       blocked: decline,
       queued,
+      ...(fileHold && { fileHold }),
     });
+  }
+  // The held cards nobody chained — the chip is all they need, so everything else is idle.
+  for (const id of holds.keys()) {
+    if (byTask.has(id)) continue;
+    const fileHold = fileHoldOf(id);
+    if (fileHold) byTask.set(id, { ...UNCHAINED, fileHold });
   }
   return byTask;
 }

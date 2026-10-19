@@ -178,3 +178,95 @@ describe('chainStates with ready lanes', () => {
     expect(five.every((t) => states.get(t.id)?.ready && !states.get(t.id)?.queued)).toBe(true);
   });
 });
+
+describe('chainStates with file holds', () => {
+  const lanes = (cards: Task[], openPrs: string[] = []) => ({
+    capOf: () => 3,
+    openPrTaskIds: new Set(openPrs),
+    cards,
+  });
+  const running = task({
+    id: 'f1',
+    ticketKey: 'FX-f1',
+    agentProjectId: 'repo',
+    plannedFiles: ['packages/ui/src/board/taskcard.tsx'],
+  });
+
+  it('holds an unchained To Do card whose files a running card touches, naming it', () => {
+    const waiting = task({ id: 'f2', plannedFiles: ['packages/ui/src/board/*.tsx'] });
+    const cards = [running, waiting];
+    const states = chainStates([], index(...cards), new Set(['f1']), lanes(cards));
+    expect(states.get('f2')).toMatchObject({
+      waitingOn: [],
+      ready: false,
+      queued: false,
+      blocked: null,
+      fileHold: { byTaskId: 'f1', byKey: 'FX-f1', files: ['packages/ui/src/board/*.tsx'] },
+    });
+    // The running card holds the files — it waits for nothing.
+    expect(states.get('f1')).toBeUndefined();
+  });
+
+  it('takes a held chain candidate out of ready and out of the lanes', () => {
+    const waiting = task({
+      id: 'f2',
+      agentProjectId: 'repo',
+      plannedFiles: ['packages/ui/src/board/taskcard.tsx'],
+    });
+    const cards = [landed, running, waiting];
+    const states = chainStates([link('a', 'f2')], index(...cards), new Set(['f1']), lanes(cards));
+    expect(states.get('f2')).toMatchObject({
+      ready: false,
+      queued: false,
+      fileHold: { byTaskId: 'f1', byKey: 'FX-f1' },
+    });
+  });
+
+  it('holds the second of two overlapping candidates for the first', () => {
+    const first = task({
+      id: 'c1',
+      ticketKey: 'FX-1',
+      agentProjectId: 'repo',
+      plannedFiles: ['apps/client/src/main/store.ts'],
+    });
+    const second = task({
+      id: 'c2',
+      ticketKey: 'FX-2',
+      agentProjectId: 'repo',
+      plannedFiles: ['apps/client/src/main/*.ts'],
+    });
+    const cards = [landed, first, second];
+    const links = [link('a', 'c1'), link('a', 'c2')];
+    const states = chainStates(links, index(...cards), new Set(), lanes(cards));
+    expect(states.get('c1')).toMatchObject({ ready: true });
+    expect(states.get('c1')?.fileHold).toBeUndefined();
+    expect(states.get('c2')).toMatchObject({ ready: false, fileHold: { byKey: 'FX-1' } });
+  });
+
+  it('counts a review with an open PR as holding its files', () => {
+    const review = { ...running, status: 'in-review' as const };
+    const waiting = task({ id: 'f2', plannedFiles: ['packages/ui/src/board/taskcard.tsx'] });
+    const cards = [review, waiting];
+    expect(chainStates([], index(...cards), new Set(), lanes(cards)).get('f2')).toBeUndefined();
+    expect(
+      chainStates([], index(...cards), new Set(), lanes(cards, ['f1'])).get('f2')?.fileHold,
+    ).toMatchObject({ byTaskId: 'f1' });
+  });
+
+  it('leaves a card outside To Do, or in another project, unheld', () => {
+    const later = task({
+      id: 'f2',
+      status: 'in-progress',
+      plannedFiles: ['packages/ui/src/board/taskcard.tsx'],
+    });
+    const elsewhere = task({
+      id: 'f3',
+      projectId: 'other',
+      plannedFiles: ['packages/ui/src/board/taskcard.tsx'],
+    });
+    const cards = [running, later, elsewhere];
+    const states = chainStates([], index(...cards), new Set(['f1']), lanes(cards));
+    expect(states.get('f2')).toBeUndefined();
+    expect(states.get('f3')).toBeUndefined();
+  });
+});

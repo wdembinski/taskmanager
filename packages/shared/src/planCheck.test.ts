@@ -153,6 +153,52 @@ describe('checkPlan: critical-files', () => {
   });
 });
 
+describe('checkPlan: overlaps', () => {
+  const GLOB_PLAN = [
+    '## Critical files',
+    '',
+    '- `apps/client/src/main/*.ts` — every main-process module',
+    '- `.\\Packages\\Shared\\src\\Model.ts`',
+    '',
+    '## Step one',
+  ].join('\n');
+
+  it('parses globs and backticked paths in Critical files to normalised tokens', () => {
+    expect(parseCriticalFiles(GLOB_PLAN)).toEqual([
+      'apps/client/src/main/*.ts',
+      'packages/shared/src/model.ts',
+    ]);
+  });
+
+  it('reports every overlapping active card, glob-aware, with the plan’s own entries', () => {
+    const verdict = checkPlan({
+      ...BASE_INPUT,
+      plan: GLOB_PLAN,
+      activeCards: [
+        {
+          title: 'Store card',
+          key: 'TM-7',
+          why: 'running',
+          files: ['apps/client/src/main/store.ts'],
+        },
+        { title: 'Unrelated', why: 'planning', files: ['apps/web/src/x.ts'] },
+        { title: 'Model card', why: 'unmerged PR', files: ['packages/shared/src/model.ts'] },
+      ],
+    });
+    expect(verdict.overlaps).toEqual([
+      { title: 'Store card', key: 'TM-7', why: 'running', files: ['apps/client/src/main/*.ts'] },
+      { title: 'Model card', why: 'unmerged PR', files: ['packages/shared/src/model.ts'] },
+    ]);
+    const check = verdict.checks.find((c) => c.id === 'critical-files')!;
+    expect(check.pass).toBe(false);
+    expect(check.detail).toBe('overlaps "Store card" (running): apps/client/src/main/*.ts');
+  });
+
+  it('leaves overlaps out when nothing overlaps', () => {
+    expect(checkPlan(BASE_INPUT).overlaps).toBeUndefined();
+  });
+});
+
 describe('checkPlan: step-count', () => {
   it('passes at the limit and fails over it', () => {
     const steps = Array.from({ length: 6 }, (_, i) => ({ title: `s${i}`, description: 'x' }));

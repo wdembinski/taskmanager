@@ -587,6 +587,23 @@ export async function changedInBranch(
 }
 
 /**
+ * Every path `branch` touched since it left `base` — a THREE-dot range, so the diff runs from
+ * their merge base and what `base` itself gained in the meantime is not counted as the
+ * branch's. This is the file set a card's work actually claims (`Task.plannedFiles`), where
+ * {@link changedInBranch}'s two-dot range would also name every file another card landed on
+ * `base` after this branch was cut. `[]` on failure, like `changedInBranch`.
+ */
+export async function changedSinceMergeBase(
+  dir: string,
+  base: string,
+  branch: string,
+  host?: ExecHost,
+): Promise<string[]> {
+  const res = await git(dir, ['diff', '-z', '--name-only', `${base}...${branch}`], host);
+  return res.code === 0 ? splitZ(res.stdout) : [];
+}
+
+/**
  * Reading a diff's actual file contents — status, counts, and the patch text itself
  * (Phase: F6 in-app code review). Where {@link changedInBranch} only names files, these
  * answer "what changed in this one" and "what did this file's old/new side actually

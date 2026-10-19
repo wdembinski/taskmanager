@@ -10,6 +10,11 @@
  *
  * Pure (data in, verdict out) so it is unit-tested with no CLI and no database.
  */
+import { MAX_SHOWN_FILES, normalizePath, overlappingFiles } from './fileOverlap';
+
+// Re-exported so plan paths and branch paths are normalised by the one function; it lives in
+// `fileOverlap` so that module need not import this one back.
+export { normalizePath };
 
 /** One of the five checks a plan must pass. Always run, always reported, in this order. */
 export type PlanCheckId =
@@ -23,15 +28,31 @@ export interface PlanCheckResult {
   detail: string;
 }
 
+/** An active card a plan's Critical files overlap, and the plan's own entries that do. */
+export interface PlanOverlap {
+  title: string;
+  key?: string;
+  why: ActivePlanCard['why'];
+  /** The plan's own overlapping entries — all of them; a preview shows `MAX_SHOWN_FILES`. */
+  files: string[];
+}
+
 /** The outcome of all five checks. `pass` is true only when every check passes. */
 export interface PlanVerdict {
   pass: boolean;
   checks: PlanCheckResult[];
+  /**
+   * Every active card the plan overlaps, in `activeCards` order — not just the first, which
+   * is all the critical-files check names. Absent when there is no overlap.
+   */
+  overlaps?: PlanOverlap[];
 }
 
 /** A sibling card the critical-files check must not overlap with. */
 export interface ActivePlanCard {
   title: string;
+  /** The card's ticket key (`TM-12`), when it has one — for naming it in a warning. */
+  key?: string;
   why: 'running' | 'planning' | 'unmerged PR';
   /** This card's critical files, already normalized by {@link parseCriticalFiles}. */
   files: string[];
@@ -136,13 +157,6 @@ function isPathLike(token: string): boolean {
   return token.includes('/') || token.includes('\\') || /\.[A-Za-z0-9]+$/.test(token);
 }
 
-/** `\` → `/`, a leading `./` dropped, lowercased. */
-function normalizePath(token: string): string {
-  const slashed = token.replace(/\\/g, '/');
-  const stripped = slashed.startsWith('./') ? slashed.slice(2) : slashed;
-  return stripped.toLowerCase();
-}
-
 /**
  * Parse a plan's "Critical files" section into normalized, deduplicated paths.
  * `null` when the plan has no such section at all — distinct from a section
@@ -203,6 +217,25 @@ function checkOpenQuestions(input: PlanCheckInput): PlanCheckResult {
   };
 }
 
+/** Every active card whose files overlap `files` (glob-aware), with the overlapping entries. */
+function planOverlaps(
+  files: readonly string[],
+  activeCards: readonly ActivePlanCard[],
+): PlanOverlap[] {
+  const overlaps: PlanOverlap[] = [];
+  for (const card of activeCards) {
+    const overlap = overlappingFiles(files, card.files);
+    if (overlap.length === 0) continue;
+    overlaps.push({
+      title: card.title,
+      ...(card.key ? { key: card.key } : {}),
+      why: card.why,
+      files: overlap,
+    });
+  }
+  return overlaps;
+}
+
 function checkCriticalFiles(input: PlanCheckInput): PlanCheckResult {
   const id: PlanCheckId = 'critical-files';
   const label = 'Critical files listed, no overlap';
@@ -215,17 +248,14 @@ function checkCriticalFiles(input: PlanCheckInput): PlanCheckResult {
     return { id, label, pass: false, detail: 'the Critical files section lists no files' };
   }
 
-  const fileSet = new Set(files);
-  for (const card of input.activeCards) {
-    const overlap = card.files.filter((f) => fileSet.has(f));
-    if (overlap.length > 0) {
-      return {
-        id,
-        label,
-        pass: false,
-        detail: `overlaps "${card.title}" (${card.why}): ${overlap.slice(0, 3).join(', ')}`,
-      };
-    }
+  const [first] = planOverlaps(files, input.activeCards);
+  if (first) {
+    return {
+      id,
+      label,
+      pass: false,
+      detail: `overlaps "${first.title}" (${first.why}): ${first.files.slice(0, MAX_SHOWN_FILES).join(', ')}`,
+    };
   }
 
   return {
@@ -405,5 +435,10 @@ export function checkPlan(input: PlanCheckInput): PlanVerdict {
     checkSpecRead(input),
     checkAcceptance(input),
   ];
-  return { pass: checks.every((c) => c.pass), checks };
+  const overlaps = planOverlaps(parseCriticalFiles(input.plan) ?? [], input.activeCards);
+  return {
+    pass: checks.every((c) => c.pass),
+    checks,
+    ...(overlaps.length > 0 ? { overlaps } : {}),
+  };
 }
