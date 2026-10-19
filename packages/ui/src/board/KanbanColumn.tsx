@@ -310,6 +310,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
               chainReady={props.chainStateOf?.(task)?.ready}
+              chainQueued={props.chainStateOf?.(task)?.queued}
               chainBlocked={props.chainStateOf?.(task)?.blocked}
               chainPosition={props.chainPositionOf?.(task)}
               linkChips={props.linkChipsOf?.(task)}

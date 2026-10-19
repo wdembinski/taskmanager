@@ -50,6 +50,7 @@ import {
 } from '@shared/settings';
 import type { BoardScope, IpcEvents } from '@shared/ipc';
 import type { MergeRequest } from '@shared/mergeRequest';
+import { DEFAULT_READY_LANES, openPrTaskIds } from '@shared/readyLanes';
 import type { TaskAttachment } from '@shared/attachments';
 import {
   LINK_REFUSAL_MESSAGE,
@@ -727,11 +728,18 @@ export function MyTasks({
    * That answer used to be computed here, with a shorter predicate than the engine's, and
    * the two disagreed: a chained card resting in IN PROGRESS or with no agent assigned got
    * no chip at all, so a satisfied arrow arrived at a card that looked merely idle.
+   *
+   * Capped per project by its Ready lanes: past the cap a card reads `queued (lane limit)`
+   * instead of `ready` — the same `readyLanes` answer the engine's auto-start draws on.
    */
-  const chainState = useMemo(
-    () => chainStates(links, tasksById, liveRuns),
-    [links, tasksById, liveRuns],
-  );
+  const chainState = useMemo(() => {
+    const caps = new Map(projectList.map((p) => [p.id, p.readyLanes ?? DEFAULT_READY_LANES]));
+    return chainStates(links, tasksById, liveRuns, {
+      capOf: (projectId) => caps.get(projectId) ?? DEFAULT_READY_LANES,
+      openPrTaskIds: openPrTaskIds(mergeRequests),
+      cards: tasks ?? [],
+    });
+  }, [links, tasksById, liveRuns, projectList, mergeRequests, tasks]);
 
   /**
    * The chain the selected task belongs to: a card's own steps, or — when a step is

@@ -35,6 +35,7 @@ import {
   BookmarkRegular,
   BugRegular,
   CircleRegular,
+  ClockRegular,
   FlagRegular,
   FlashRegular,
   LinkRegular,
@@ -493,6 +494,9 @@ export interface TaskCardProps {
   mergeHeld?: readonly Task[];
   /** Every predecessor has finished and nothing has started yet. */
   chainReady?: boolean;
+  /** Its turn has come and the engine would start it, but its project's ready lanes are all
+   *  taken (`readyLanes`) — never true together with {@link chainReady}. */
+  chainQueued?: boolean;
   /** Its turn has come and the engine would **not** start it, with the reason. */
   chainBlocked?: ChainDecline | null;
   /** Where this card sits in its chain — folded into the status line as the lowest-priority
@@ -575,6 +579,7 @@ export function TaskCard({
   waitingOn = [],
   mergeHeld = [],
   chainReady = false,
+  chainQueued = false,
   chainBlocked = null,
   chainPosition,
   onLinkTo,
@@ -676,6 +681,19 @@ export function TaskCard({
     >
       <PlayCircleRegular className={styles.chainChipIcon} />
       <span className={styles.chainChipText}>ready</span>
+    </span>
+  ) : chainQueued ? (
+    <span
+      className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
+      title={
+        'Everything this card waits for has finished, but every ready lane of its project ' +
+        'is taken — it becomes ready when one frees up. The number of lanes is the ' +
+        "project's Ready lanes setting."
+      }
+      data-chain-queued=""
+    >
+      <ClockRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>queued (lane limit)</span>
     </span>
   ) : chainBlocked === 'no-agent' ? (
     <span

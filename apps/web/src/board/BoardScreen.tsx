@@ -67,6 +67,7 @@ import type { CardSection } from '@tm/ui/layout/compactRoute';
 import { chainComponent } from '@tm/shared/taskChain';
 import { isVariantRow } from '@tm/shared/board';
 import { archiveIndexOf } from '@tm/shared/trackerArchive';
+import { DEFAULT_READY_LANES, openPrTaskIds } from '@tm/shared/readyLanes';
 import {
   isManualStatus,
   ownsTickets,
@@ -404,11 +405,23 @@ export function BoardScreen({
   /**
    * Where each chained card stands. `MyTasks`'s own `chainStates`, over the mirrored rows
    * and the relayed links — the same functions, so the chip on the web says what it says on
-   * the desktop.
+   * the desktop. Capped by each mirrored project's Ready lanes, as `MyTasks` caps it.
    */
   const chainState = useMemo(
-    () => chainStates(extras.chainLinks, tasksById, extras.liveRunTaskIds),
-    [extras.chainLinks, tasksById, extras.liveRunTaskIds],
+    () =>
+      chainStates(extras.chainLinks, tasksById, extras.liveRunTaskIds, {
+        capOf: (projectId) => state.projects[projectId]?.readyLanes ?? DEFAULT_READY_LANES,
+        openPrTaskIds: openPrTaskIds(extras.mergeRequests),
+        cards: boardTasks,
+      }),
+    [
+      extras.chainLinks,
+      tasksById,
+      extras.liveRunTaskIds,
+      state.projects,
+      extras.mergeRequests,
+      boardTasks,
+    ],
   );
 
   const pendingTaskIds = useMemo(() => {

@@ -125,4 +125,56 @@ describe('chainStates', () => {
   it('skips a link whose target the board no longer holds', () => {
     expect(chainStates([link('a', 'gone')], index(landed)).size).toBe(0);
   });
+
+  it('queues nothing when the board passes no lane inputs', () => {
+    const b = task({ id: 'b', agentProjectId: 'repo' });
+    expect(chainStates([link('a', 'b')], index(landed, b)).get('b')?.queued).toBe(false);
+  });
+});
+
+describe('chainStates with ready lanes', () => {
+  /** Five satisfied successors of `landed`, most urgent first. */
+  const five = ['High', 'High', 'Medium', 'Medium', 'Low'].map((p, i) =>
+    task({
+      id: `l${i + 1}`,
+      agentProjectId: 'repo',
+      externalPriority: p,
+      ticketKey: `FX-${i + 1}`,
+    }),
+  );
+  const links = five.map((t) => link('a', t.id));
+  const lanes = (cards: Task[], cap = 3) => ({
+    capOf: () => cap,
+    openPrTaskIds: new Set<string>(),
+    cards,
+  });
+
+  it('marks the first three ready and queues the other two at cap 3', () => {
+    const cards = [landed, ...five];
+    const states = chainStates(links, index(...cards), new Set(), lanes(cards));
+    const ready = five.filter((t) => states.get(t.id)?.ready).map((t) => t.id);
+    const queued = five.filter((t) => states.get(t.id)?.queued).map((t) => t.id);
+    expect(ready).toEqual(['l1', 'l2', 'l3']);
+    expect(queued).toEqual(['l4', 'l5']);
+    // A queued card is not blocked: the engine would start it, there is just no lane.
+    expect(states.get('l4')?.blocked).toBeNull();
+  });
+
+  it('counts a running card against the cap', () => {
+    const busy = task({ id: 'busy', agentProjectId: 'repo' });
+    const cards = [landed, busy, ...five];
+    const states = chainStates(links, index(...cards), new Set(['busy']), lanes(cards));
+    expect(five.filter((t) => states.get(t.id)?.ready).map((t) => t.id)).toEqual(['l1', 'l2']);
+    expect(five.filter((t) => states.get(t.id)?.queued).map((t) => t.id)).toEqual([
+      'l3',
+      'l4',
+      'l5',
+    ]);
+  });
+
+  it('queues nothing at cap 0', () => {
+    const cards = [landed, ...five];
+    const states = chainStates(links, index(...cards), new Set(), lanes(cards, 0));
+    expect(five.every((t) => states.get(t.id)?.ready && !states.get(t.id)?.queued)).toBe(true);
+  });
 });
