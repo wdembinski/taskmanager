@@ -17,7 +17,9 @@
  *    it through `moveHandStartedCard` (`handStartMove.ts`, wired in `ipc.ts`). Where a card
  *    resting anywhere else SITS stays the human's, exactly as it is for every other run (see
  *    `@shared/board`'s `restingStatus`): a start never moves it, and a decline or a settle
- *    moves nothing.
+ *    moves nothing. The one narrow exception: a project with "Move to Done when its PR
+ *    lands" moves a landed card to DONE from the forge sync (`landedDoneMove.ts`). The chain
+ *    never reads that move — successors start on `landedAt`, not on status.
  *  - **`landedAt` is the durable fact, and the release is the perishable one.** A release
  *    that could not happen — a usage limit, an app that closed — is not lost, because the
  *    landing is on disk and {@link ChainRunner.reconsider} can re-ask the question at any
