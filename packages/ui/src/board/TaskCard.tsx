@@ -677,17 +677,6 @@ export function TaskCard({
       <PlayCircleRegular className={styles.chainChipIcon} />
       <span className={styles.chainChipText}>ready</span>
     </span>
-  ) : chainBlocked === 'needs-decision' ? (
-    <span
-      className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
-      title={
-        `Everything this card waits for has finished, but it is waiting on a decision: ` +
-        `${task.decisionQuestion ?? ''} Answer it on the card or in the Inbox.`
-      }
-    >
-      <QuestionCircleRegular className={styles.chainChipIcon} />
-      <span className={styles.chainChipText}>needs a decision</span>
-    </span>
   ) : chainBlocked === 'no-agent' ? (
     <span
       className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
@@ -710,6 +699,22 @@ export function TaskCard({
     >
       <PresenceBlockedRegular className={styles.chainChipIcon} />
       <span className={styles.chainChipText}>its turn — held</span>
+    </span>
+  ) : null;
+  /**
+   * The card's open owner decision (`cardParts.decision`), as its own chip — not a branch of
+   * `chainChip`, because a decision holds a card whether or not anybody chained it, and a
+   * card can be waiting on a predecessor AND a decision at once. Monochrome, held weight:
+   * a standing fact, like the chain's own held chips (memory *board-colour-budget*).
+   */
+  const decisionChip = parts.decision ? (
+    <span
+      className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
+      title={`Waiting on a decision: ${parts.decision.question} Answer it on the card or in the Inbox.`}
+      data-decision-chip=""
+    >
+      <QuestionCircleRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>Needs decision</span>
     </span>
   ) : null;
   /**
@@ -1013,6 +1018,7 @@ export function TaskCard({
           </div>
         )}
 
+        {decisionChip && <div>{decisionChip}</div>}
         {(chainChip || needsUnblocksRow) && <div>{chainChip ?? needsUnblocksRow}</div>}
 
         {(parts.epic || parts.trailing) && (

@@ -93,6 +93,10 @@ export interface CardParts {
   /** A short epic/feature label, truncated — see `truncateLabel`. */
   epic?: string;
   trailing?: CardTrailing;
+  /** The card's open owner decision (`Task.decisionQuestion`) — present only while one is
+   *  open, so the "Needs decision" chip appears for exactly the cards Start refuses. A blank
+   *  question never reaches the store (`task:setDecision` stores it as `null`). */
+  decision?: { question: string };
 }
 
 /** `cardRunLabel`'s ink, once it has something to say: `needsAgentInput`/`parkedStep` decide
@@ -263,5 +267,6 @@ export function cardParts(task: Task, ctx: CardPartsContext): CardParts {
     progress: progress.total > 0 ? progress : undefined,
     epic: epicLabel(task, ctx.epicName),
     trailing: trailingFor(task, ctx),
+    decision: task.decisionQuestion != null ? { question: task.decisionQuestion } : undefined,
   };
 }
