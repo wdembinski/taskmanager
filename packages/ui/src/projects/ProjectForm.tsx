@@ -42,7 +42,15 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
-import { hasPlan, hasRepo, ownsTickets, type GitPreflight, type Project } from '@tm/shared/model';
+import {
+  AUTO_MERGE_METHODS,
+  hasPlan,
+  hasRepo,
+  ownsTickets,
+  type AutoMergeMethod,
+  type GitPreflight,
+  type Project,
+} from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from '@tm/shared/session';
 import { RELEASE_DOC } from '@tm/shared/release';
 import { suggestTicketPrefix } from '@tm/shared/ticketKey';
@@ -73,11 +81,27 @@ const useStyles = makeStyles({
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
 
+const AUTO_MERGE_METHOD_LABELS: Record<AutoMergeMethod, string> = {
+  merge: 'Merge',
+  squash: 'Squash',
+  rebase: 'Rebase',
+};
+
 /** Split a free-text epic list ("ABC-1, ABC-2") into keys; the engine normalizes them. */
 function parseEpicKeys(text: string): string[] {
   return text
     .split(/[\s,;]+/)
     .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+/** Split a free-text, comma-separated check-name list ("gates, docker"). Commas only, unlike
+ *  `parseEpicKeys` above — a CI check name may itself contain a space (e.g. a matrix job's
+ *  own label), which a JIRA epic key never does. */
+function parseCommaList(text: string): string[] {
+  return text
+    .split(',')
+    .map((v) => v.trim())
     .filter(Boolean);
 }
 
@@ -140,6 +164,9 @@ export function ProjectForm({
   const [useWorktrees, setUseWorktrees] = useState(true);
   const [autoRelease, setAutoRelease] = useState(false);
   const [autoCreatePr, setAutoCreatePr] = useState(false);
+  const [autoMergeOnGreen, setAutoMergeOnGreen] = useState(false);
+  const [autoMergeMethod, setAutoMergeMethod] = useState<AutoMergeMethod>('squash');
+  const [autoMergeRequiredChecks, setAutoMergeRequiredChecks] = useState('');
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
   const [autoApprovePlans, setAutoApprovePlans] = useState(false);
@@ -202,6 +229,9 @@ export function ProjectForm({
       setUseWorktrees(project.useWorktrees);
       setAutoRelease(project.autoRelease);
       setAutoCreatePr(project.autoCreatePr);
+      setAutoMergeOnGreen(project.autoMergeOnGreen);
+      setAutoMergeMethod(project.autoMergeMethod);
+      setAutoMergeRequiredChecks(project.autoMergeRequiredChecks.join(', '));
       setAutoIntegrate(project.autoIntegrate);
       setAutoApprovePlans(project.autoApprovePlans);
       setAutoApproveMaxSteps(project.autoApproveMaxSteps);
@@ -223,6 +253,9 @@ export function ProjectForm({
       setBaseBranch(''); // follow the checkout, exactly as before this field existed
       setUseWorktrees(true); // default on; only engages for git repos
       setAutoRelease(false); // releasing is opt-in, always
+      setAutoMergeOnGreen(false); // merging itself is opt-in too, always
+      setAutoMergeMethod('squash');
+      setAutoMergeRequiredChecks('');
       setAutoIntegrate(null); // and merging follows the app until this project says otherwise
       setAutoApprovePlans(false); // auto-approving a plan is opt-in, always
       setAutoApproveMaxSteps(6);
@@ -310,6 +343,9 @@ export function ProjectForm({
           useWorktrees,
           autoRelease,
           autoCreatePr,
+          autoMergeOnGreen,
+          autoMergeMethod,
+          autoMergeRequiredChecks: parseCommaList(autoMergeRequiredChecks),
           autoIntegrate,
           autoApprovePlans,
           autoApproveMaxSteps,
@@ -585,6 +621,45 @@ export function ProjectForm({
                 onChange={(_e, d) => setAutoCreatePr(d.checked)}
               />
             </Field>
+          )}
+
+          {/* Once its PR's required checks pass, the forge merges it — a card whose own
+              steps changed the UI still waits for the owner's Approve (`autoMergeDecision`),
+              regardless of this switch. */}
+          {repo && path && useWorktrees && (
+            <Field hint="When this project's PR passes its required checks, the forge merges it. Cards with UI changes wait for Approve.">
+              <Switch
+                checked={autoMergeOnGreen}
+                label="Merge on green"
+                onChange={(_e, d) => setAutoMergeOnGreen(d.checked)}
+              />
+            </Field>
+          )}
+
+          {repo && path && useWorktrees && autoMergeOnGreen && (
+            <div className={styles.row}>
+              <Field label="Merge method" className={styles.grow}>
+                <Dropdown
+                  aria-label="Merge method"
+                  value={AUTO_MERGE_METHOD_LABELS[autoMergeMethod]}
+                  selectedOptions={[autoMergeMethod]}
+                  onOptionSelect={(_e, d) => setAutoMergeMethod(d.optionValue as AutoMergeMethod)}
+                >
+                  {AUTO_MERGE_METHODS.map((m) => (
+                    <Option key={m} value={m}>
+                      {AUTO_MERGE_METHOD_LABELS[m]}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
+              <Field label="Required checks (comma-separated)" className={styles.grow}>
+                <Input
+                  value={autoMergeRequiredChecks}
+                  onChange={(_e, d) => setAutoMergeRequiredChecks(d.value)}
+                  placeholder="changes, gates, docker, package"
+                />
+              </Field>
+            </div>
           )}
 
           {/* Offered on every project — a plan has nothing to do with a repo or worktrees,

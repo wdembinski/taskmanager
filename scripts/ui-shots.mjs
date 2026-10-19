@@ -171,7 +171,12 @@ window.__tm = {
     return r.width > 0 && r.height > 0 && !!el.offsetParent;
   },
   candidates() {
-    return Array.from(document.querySelectorAll('button, [role="menuitem"], [role="tab"]'));
+    // 'label' added for a Fluent Switch (projects-merge-on-green): it renders an
+    // <input type="checkbox" role="switch"> with its visible text in a sibling <label
+    // htmlFor>, not in a button — clicking the label is how a real click toggles it too,
+    // via the browser's own label-forwarding, so no Switch-specific click expression is
+    // needed the way issue-row/board-card have their own.
+    return Array.from(document.querySelectorAll('button, [role="menuitem"], [role="tab"], label'));
   },
   textOf(el) {
     const clone = el.cloneNode(true);

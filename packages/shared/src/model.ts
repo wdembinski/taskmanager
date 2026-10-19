@@ -197,6 +197,25 @@ export function isFilingProject(
   return !hasPlan(project) && (hasRepo(project) || !ownsTickets(project));
 }
 
+/**
+ * The merge strategy the forge performs when a project's {@link Project.autoMergeOnGreen}
+ * fires — GitHub's and GitLab's own merge/squash/rebase, minus `'ff'`, which neither forge's
+ * auto-merge path offers.
+ */
+export type AutoMergeMethod = 'merge' | 'squash' | 'rebase';
+
+/** Every value {@link Project.autoMergeMethod} may legally hold — the `Dropdown` this feeds
+ *  and the store's own cast-on-read both check membership against this, not against the type
+ *  alone (a type guard, unlike the type, still exists once this compiles away). */
+export const AUTO_MERGE_METHODS: readonly AutoMergeMethod[] = ['merge', 'squash', 'rebase'];
+
+/** Whether `value` is one of {@link AUTO_MERGE_METHODS} — the membership check behind
+ *  {@link Project.autoMergeMethod}'s "cast and validate, unknown falls back to `'squash'`"
+ *  rule, and behind `project:update`'s own guard against a relayed value from the web. */
+export function isAutoMergeMethod(value: string): value is AutoMergeMethod {
+  return (AUTO_MERGE_METHODS as readonly string[]).includes(value);
+}
+
 /** A project the app orchestrates: a directory plus the plan that drives it. */
 export interface Project {
   /** Stable app-assigned id (UUID). Not derived from the path, so a project can
@@ -279,6 +298,41 @@ export interface Project {
    * project that predates the field, so an upgrade opens nothing by itself.
    */
   autoCreatePr: boolean;
+  /**
+   * The project's PREFERENCE for merging its own open PR: once a card's PR passes its
+   * required checks, ask the forge to merge it itself (GitHub's `enablePullRequestAutoMerge`,
+   * GitLab's `merge_when_pipeline_succeeds`) rather than waiting for the owner to click
+   * Merge on GitHub/GitLab.
+   *
+   * A default, not a decision, exactly like {@link Project.autoCreatePr} — a card may still
+   * override it in the Details Panel (a later step of this ticket), and a card that never
+   * does follows this. Off for every project that predates the field, so an upgrade enables
+   * nothing by itself.
+   *
+   * One exclusion holds regardless of this setting: a card whose own steps changed the UI
+   * (it carries at least one shot pair on its owner card, see `@shared/visualSignOff`'s
+   * `shotPairs`) never auto-merges while its visual sign-off reads `pending` or
+   * `needs-changes` — only the owner's Approve enables it. See `@shared/autoMerge`'s
+   * `autoMergeDecision`, the one function all of that gating lives in.
+   */
+  autoMergeOnGreen: boolean;
+  /**
+   * Which strategy the forge performs when {@link Project.autoMergeOnGreen} fires. Defaults
+   * to `'squash'`, matching how this repo's own PRs already land — one squashed commit per
+   * PR, titled `(#NNN)`.
+   */
+  autoMergeMethod: AutoMergeMethod;
+  /**
+   * The check names this project expects to gate its base branch before
+   * {@link Project.autoMergeOnGreen} merges anything. Purely informational — enabling
+   * auto-merge only ever asks the forge to wait on whatever check IT already requires
+   * (GitHub branch protection, the GitLab pipeline); these names are never sent with that
+   * request. Test connection (a later step) cross-checks them against what the base branch
+   * actually requires, so a human can catch "I meant for CI to gate this" before anything
+   * merges on nothing. Empty by default — every project that predates the field, and any new
+   * one nobody has named checks for yet.
+   */
+  autoMergeRequiredChecks: string[];
   /**
    * The project's PREFERENCE for auto-merge: when a card's run finishes, merge its branch
    * back into base without waiting to be asked (see `@shared/integrate`).
@@ -463,6 +517,9 @@ export type ProjectPatch = Partial<
     | 'writeBackPlan'
     | 'autoRelease'
     | 'autoCreatePr'
+    | 'autoMergeOnGreen'
+    | 'autoMergeMethod'
+    | 'autoMergeRequiredChecks'
     | 'autoIntegrate'
     | 'autoApprovePlans'
     | 'autoApproveMaxSteps'

@@ -16,6 +16,9 @@ describe('buildProject', () => {
     expect(project.writeBackPlan).toBe(DEFAULT_SETTINGS.writeBackPlan);
     expect(project.autoRelease).toBe(false);
     expect(project.autoCreatePr).toBe(false);
+    expect(project.autoMergeOnGreen).toBe(false);
+    expect(project.autoMergeMethod).toBe('squash');
+    expect(project.autoMergeRequiredChecks).toEqual([]);
     expect(project.autoIntegrate).toBeNull();
     expect(project.autoApprovePlans).toBe(false);
     expect(project.autoApproveMaxSteps).toBe(6);

@@ -79,6 +79,11 @@ export const BrowserWindow = class {};
 export default { app, protocol, ipcMain, shell, safeStorage, BrowserWindow };
 `;
 
+/** `packages/protocol` — unlike `@shared`, both legs read the SAME live copy: `cloudDelta.ts`'s
+ *  `@protocol/wire` import (pulled in transitively through `store.ts`) is identical code on
+ *  both sides of this script's own old/new split, so there is nothing to archive it against. */
+const protocolSrc = join(repoRoot, 'packages', 'protocol', 'src');
+
 /** Bundle one scenario file to a runnable ESM module. `sharedDir` is what `@shared` means. */
 async function bundle(entry, outDir, sharedDir) {
   const stub = join(work, 'electron-stub.mjs');
@@ -86,7 +91,7 @@ async function bundle(entry, outDir, sharedDir) {
   await build({
     configFile: false,
     logLevel: 'error',
-    resolve: { alias: { '@shared': sharedDir, electron: stub } },
+    resolve: { alias: { '@shared': sharedDir, '@protocol': protocolSrc, electron: stub } },
     build: {
       ssr: entry,
       outDir,
@@ -391,6 +396,25 @@ const agentTask = migrated.getTask(ids.agentTaskId);
 check(
   "the agent project's card kept its id and title too",
   Boolean(agentTask) && agentTask.id === ids.agentTaskId && agentTask.title === 'an agent card from before',
+);
+
+// Merge-on-green's own ALTER migration (step 1 of "merge a card's PR on GitHub
+// automatically"): __OLD_REF__'s database has none of these three columns at all, so
+// opening it with today's code must backfill the safe "never merged anything, squash,
+// no checks named" defaults rather than leaving them NULL/undefined.
+check(
+  'the migrated agent project backfilled merge-on-green off, squash, no checks',
+  Boolean(agentProject) &&
+    agentProject.autoMergeOnGreen === false &&
+    agentProject.autoMergeMethod === 'squash' &&
+    Array.isArray(agentProject.autoMergeRequiredChecks) &&
+    agentProject.autoMergeRequiredChecks.length === 0,
+  agentProject &&
+    JSON.stringify({
+      on: agentProject.autoMergeOnGreen,
+      method: agentProject.autoMergeMethod,
+      checks: agentProject.autoMergeRequiredChecks,
+    }),
 );
 
 // The migration proof for step 2 of this plan (guaranteeing every board project a key
@@ -752,6 +776,76 @@ check(
   backToPersonalAfterRestart && backToPersonalAfterRestart.ticketPrefix,
 );
 reopened.close();
+
+// ---------------------------------------------------------------------------
+section('8. Merge-on-green round-trips through updateProject (step 1 of the auto-merge ticket)');
+
+// 'store' was closed at the end of section 7 (to prove the personal-prefix backfill
+// survives a restart) — a fresh connection to the same file picks up right where it left
+// off, same as 'reopened' did there.
+const store8 = createStore(scratch + '/fresh/orchestrator.db');
+
+// addProject has no input field for any of the three — a brand-new project always starts
+// off, squash, no checks (see @shared/projectBuilders) until a human turns it on from the
+// edit drawer, which is exactly what updateProject below stands in for.
+const mergeProject = store8.addProject({ name: 'Merge On Green Co', path: scratch + '/merge-on-green' });
+check(
+  'a freshly added project starts off, squash, no checks',
+  mergeProject.autoMergeOnGreen === false &&
+    mergeProject.autoMergeMethod === 'squash' &&
+    mergeProject.autoMergeRequiredChecks.length === 0,
+  JSON.stringify({
+    on: mergeProject.autoMergeOnGreen,
+    method: mergeProject.autoMergeMethod,
+    checks: mergeProject.autoMergeRequiredChecks,
+  }),
+);
+
+const mergeProjectOn = store8.updateProject(mergeProject.id, {
+  autoMergeOnGreen: true,
+  autoMergeMethod: 'rebase',
+  autoMergeRequiredChecks: ['gates', 'docker'],
+});
+check(
+  'updateProject takes all three new values',
+  Boolean(mergeProjectOn) &&
+    mergeProjectOn.autoMergeOnGreen === true &&
+    mergeProjectOn.autoMergeMethod === 'rebase' &&
+    mergeProjectOn.autoMergeRequiredChecks.join(',') === 'gates,docker',
+  mergeProjectOn &&
+    JSON.stringify({
+      on: mergeProjectOn.autoMergeOnGreen,
+      method: mergeProjectOn.autoMergeMethod,
+      checks: mergeProjectOn.autoMergeRequiredChecks,
+    }),
+);
+
+const mergeProjectReadBack = store8.listProjects().find((p) => p.id === mergeProject.id);
+check(
+  'and all three read back the same way through a fresh listProjects',
+  Boolean(mergeProjectReadBack) &&
+    mergeProjectReadBack.autoMergeOnGreen === true &&
+    mergeProjectReadBack.autoMergeMethod === 'rebase' &&
+    mergeProjectReadBack.autoMergeRequiredChecks.join(',') === 'gates,docker',
+  JSON.stringify(mergeProjectReadBack),
+);
+
+// The store's own cast-and-validate rule: an unknown method on the raw column (a future
+// app's value this build does not know, or plain corruption) must read back as 'squash',
+// not as whatever garbage string sits in the row. Closed first, like the old-leg mutation
+// above does — two live connections to the same file is not a scenario worth risking.
+store8.close();
+const rawDb = new Database(scratch + '/fresh/orchestrator.db');
+rawDb.prepare('UPDATE projects SET autoMergeMethod = ? WHERE id = ?').run('bogus', mergeProject.id);
+rawDb.close();
+const store8Reopened = createStore(scratch + '/fresh/orchestrator.db');
+const mergeProjectAfterCorruption = store8Reopened.getProject(mergeProject.id);
+check(
+  "an unrecognized autoMergeMethod on the raw row reads back as 'squash', not the garbage value",
+  Boolean(mergeProjectAfterCorruption) && mergeProjectAfterCorruption.autoMergeMethod === 'squash',
+  mergeProjectAfterCorruption && mergeProjectAfterCorruption.autoMergeMethod,
+);
+store8Reopened.close();
 
 console.log('');
 if (failures > 0) {
