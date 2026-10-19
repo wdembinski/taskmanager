@@ -39,6 +39,7 @@ const project = (over = {}) => ({
   autoIntegrate: null,
   autoApprovePlans: false,
   autoApproveMaxSteps: 6,
+  readyLanes: 3,
   planAligned: true,
   jiraEpicKeys: [],
   ticketPrefix: 'FX',

@@ -1373,6 +1373,8 @@ describe('Scheduler — the global parallel-session cap (maxParallelSessions)', 
       },
       getSettings: () => ({ limitJitterMs: 0, concurrency: 2, maxParallelSessions }),
       appendTaskEvent: vi.fn(),
+      // A run's exit re-asks the chain (a ready lane may have freed); no arrows here.
+      listTaskLinks: () => [],
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'ignored' }));
@@ -4703,6 +4705,8 @@ describe('Scheduler.replanCard (Phase 18)', () => {
         if (t) Object.assign(t, patch);
         return t;
       },
+      // A run's exit re-asks the chain (a ready lane may have freed); no arrows here.
+      listTaskLinks: () => [],
       appendTaskEvent: vi.fn(),
       appendTokenUsage: vi.fn(),
       getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
@@ -5634,6 +5638,8 @@ describe('Scheduler — a lifting usage limit restarts a card chain', () => {
       getTaskActivity: () => [],
       addComment: (_p: string, _t: string, body: string) => comments.push(body),
       listTaskLinks: () => links,
+      // The chain's lane count asks which cards hold an open PR.
+      listMergeRequests: () => [],
       updateTask: (id: string, patch: Partial<Task>) => {
         const task = byId.get(id);
         if (task) Object.assign(task, patch);

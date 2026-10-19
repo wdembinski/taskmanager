@@ -14,6 +14,7 @@
  * used on it.
  */
 import type { Task } from '@tm/shared/model';
+import { readyLanesByProject } from '@tm/shared/readyLanes';
 import {
   awaitingMerge,
   blockedBy,
@@ -55,6 +56,26 @@ export interface ChainState {
    * nobody had assigned an agent to.
    */
   blocked: ChainDecline | null;
+  /**
+   * Its turn has come and the engine would start it, but every one of its project's ready
+   * lanes is taken (`readyLanes`). Never true alongside {@link ready}: a queued card is the
+   * one the cap held back, and `ready` is false for it. Only ever set when the board passes
+   * the lane inputs to {@link chainStates}.
+   */
+  queued: boolean;
+}
+
+/**
+ * What {@link chainStates} needs to cap the ready set per project — the same inputs the
+ * chain engine's auto-start reads, so the chip and the release cannot disagree.
+ */
+export interface LaneInputs {
+  /** A project's Ready lanes (`0` = unlimited). */
+  capOf(projectId: string): number;
+  /** Cards with an open PR (`openPrTaskIds`): a card in review with one holds its lane. */
+  openPrTaskIds: ReadonlySet<string>;
+  /** Every card on the board, steps included, so the occupied lanes are all counted. */
+  cards: readonly Task[];
 }
 
 /**
@@ -69,8 +90,23 @@ export function chainStates(
   links: readonly TaskLink[],
   tasksById: ReadonlyMap<string, Task>,
   inFlight: ReadonlySet<string> = new Set<string>(),
+  lanes?: LaneInputs,
 ): Map<string, ChainState> {
   const byTask = new Map<string, ChainState>();
+  // Without lane inputs nothing is queued, and every card the chain would start is ready.
+  // With them, only the candidates the cap holds back lose `ready` — a step is never a
+  // candidate, so a chained step keeps the answer it had.
+  const laneQueued = new Set<string>();
+  if (lanes) {
+    const plans = readyLanesByProject(
+      lanes.cards,
+      links,
+      inFlight,
+      lanes.capOf,
+      lanes.openPrTaskIds,
+    );
+    for (const plan of plans.values()) for (const id of plan.queued) laneQueued.add(id);
+  }
   for (const id of new Set(links.map((l) => l.toTaskId))) {
     const task = tasksById.get(id);
     if (!task) continue;
@@ -78,11 +114,14 @@ export function chainStates(
     // Asked only once the arrows are satisfied: a card that is still waiting has its chip
     // already, and "waiting on VIP-3, and also unassigned" is two problems reported as one.
     const decline = waitingOn.length === 0 ? chainDecline(task, inFlight.has(id)) : null;
+    const startable = waitingOn.length === 0 && decline === null;
+    const queued = startable && laneQueued.has(id);
     byTask.set(id, {
       waitingOn,
       mergeHeld: awaitingMerge(task, links, tasksById),
-      ready: waitingOn.length === 0 && decline === null,
+      ready: startable && !queued,
       blocked: decline,
+      queued,
     });
   }
   return byTask;

@@ -235,6 +235,7 @@ import {
 import { autoMergeLanded, mergedByAutoMergeNote } from '@shared/autoMerge';
 import { formatSignOff } from '@shared/visualSignOff';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
+import { openPrTaskIds } from '@shared/readyLanes';
 import type { TaskAttachment } from '@shared/attachments';
 import {
   addAttachments,
@@ -1112,6 +1113,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       watcher.watch(updated); // re-point the watcher if the plan path changed
       // The path or target may have just changed too — re-scan under whichever is current.
       refreshProjectRepoSkillsIfCloudEnabled(updated);
+      // A wider cap (or none) frees lanes for cards it was holding in the queue.
+      if (patch.readyLanes !== undefined) scheduler.reconsiderChains('lane-freed');
     }
     return updated ?? null;
   });
@@ -3198,6 +3201,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
     for (const mr of upserts) if (!mr.hasConflicts) scheduler.noteForgeConflictCleared(mr.id);
+    reconsiderIfAnOpenMrClosed(stored);
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;
@@ -3387,6 +3391,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
     for (const mr of upserts) if (!mr.hasConflicts) scheduler.noteForgeConflictCleared(mr.id);
+    reconsiderIfAnOpenMrClosed(stored);
     const all = store.listMergeRequests();
     send('mergeRequests:changed', all);
     return all;
@@ -3440,6 +3445,20 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       throw new Error(e instanceof Error ? e.message : String(e));
     }
   });
+
+  /**
+   * After a forge sync: re-ask the chain if an MR that was `opened` no longer is (merged,
+   * closed, or gone). A card in review with an open MR holds a ready lane, so that MR leaving
+   * `opened` is the moment a queued card can take the lane — see `@shared/readyLanes`.
+   */
+  function reconsiderIfAnOpenMrClosed(before: readonly MergeRequest[]): void {
+    const after = openPrTaskIds(store.listMergeRequests());
+    for (const id of openPrTaskIds(before)) {
+      if (after.has(id)) continue;
+      scheduler.reconsiderChains('lane-freed');
+      return;
+    }
+  }
 
   /**
    * Re-file stored MRs against the board as it is now. Cheap, and no network.

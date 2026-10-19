@@ -46,4 +46,24 @@ export default [
     expect: '[data-auto-approve-plans]',
     mockup: null,
   },
+  {
+    // Proves the same edit form shows the "Ready lanes" field (`Project.readyLanes`, the
+    // cap `@shared/readyLanes` applies to the board), loaded with the fixture project's
+    // default 3. Same click path as the row above; no mockup draws this field yet. The two
+    // fields sit next to each other near the drawer's end, so both scrolls clamp to the same
+    // frame — clicking the label focuses the field, which is what tells the two shots apart
+    // (and proves the label is wired to its SpinButton).
+    name: 'project-form-ready-lanes-light',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [
+      { click: 'Projects' },
+      { click: 'Edit' },
+      { scrollToSelector: '[data-ready-lanes]' },
+      { click: 'Ready lanes' },
+    ],
+    expect: '[data-ready-lanes]',
+    mockup: null,
+  },
 ];

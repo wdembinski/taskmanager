@@ -37,6 +37,7 @@ const project = (id, name, ticketPrefix, over = {}) => ({
   autoIntegrate: null,
   autoApprovePlans: false,
   autoApproveMaxSteps: 6,
+  readyLanes: 3,
   planAligned: true,
   jiraEpicKeys: [],
   ticketPrefix,
@@ -47,7 +48,9 @@ const project = (id, name, ticketPrefix, over = {}) => ({
   ...over,
 });
 
-const TRAVELBOOK = project(TRAVELBOOK_ID, 'Travelbook', 'TRAVEL', { createdAt: now - 3 * 86_400_000 });
+const TRAVELBOOK = project(TRAVELBOOK_ID, 'Travelbook', 'TRAVEL', {
+  createdAt: now - 3 * 86_400_000,
+});
 const TM = project(TM_ID, 'TM', 'TM', { createdAt: now - 2 * 86_400_000 });
 const EM = project(EM_ID, 'EM', 'EM', { createdAt: now - 86_400_000 });
 
@@ -157,14 +160,22 @@ export const TM_TICKETS = [
   tmUnmilestoned,
 ];
 
-const emTicket1 = ticket(EM_ID, 'EM', 201, { id: 'em-t1', title: 'Rotate the deploy key', order: 0 });
+const emTicket1 = ticket(EM_ID, 'EM', 201, {
+  id: 'em-t1',
+  title: 'Rotate the deploy key',
+  order: 0,
+});
 const emTicket2 = ticket(EM_ID, 'EM', 202, {
   id: 'em-t2',
   title: 'Document the rollback runbook',
   order: 1,
   status: 'in-progress',
 });
-const emTicket3 = ticket(EM_ID, 'EM', 203, { id: 'em-t3', title: 'Trim the stale feature flags', order: 2 });
+const emTicket3 = ticket(EM_ID, 'EM', 203, {
+  id: 'em-t3',
+  title: 'Trim the stale feature flags',
+  order: 2,
+});
 
 export const EM_TICKETS = [emTicket1, emTicket2, emTicket3];
 

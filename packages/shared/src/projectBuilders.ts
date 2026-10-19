@@ -9,6 +9,7 @@
  * `defaults`.
  */
 import type { AddProjectInput, Project } from './model';
+import { DEFAULT_READY_LANES } from './readyLanes';
 import { hostJoin } from './wslPath';
 import { normalizeTicketPrefix, suggestTicketPrefix, uniqueTicketPrefix } from './ticketKey';
 import type { AppSettings } from './settings';
@@ -130,6 +131,7 @@ export function buildProject(
     // Off unless asked for: a project approves its own plans only once a human opts in.
     autoApprovePlans: input.autoApprovePlans ?? false,
     autoApproveMaxSteps: input.autoApproveMaxSteps ?? 6,
+    readyLanes: input.readyLanes ?? DEFAULT_READY_LANES,
     // New projects are trusted as aligned; legacy projects backfill to false via the
     // store's own migration. A plan carrying `@needs:`/`@contract` is also confirmed
     // aligned on its next sync (see ipc `syncProjectPlan`).

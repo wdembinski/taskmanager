@@ -46,12 +46,14 @@ const link = (from: string, to: string, gate: LinkGate = 'after-merge'): TaskLin
 function harness(
   tasks: Task[],
   links: TaskLink[],
-  opts: { limit?: boolean; inFlight?: string[]; refuseRun?: boolean } = {},
+  opts: { limit?: boolean; inFlight?: string[]; refuseRun?: boolean; cap?: number } = {},
 ) {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const started: string[] = [];
   const notes: Array<{ taskId: string; body: string }> = [];
   let limit = opts.limit ?? false;
+  // Unlimited unless a test is about the lanes, so every other test reads as it always did.
+  let cap = opts.cap ?? 0;
   const reserved = new Set<string>(opts.inFlight ?? []);
   const deps: ChainRunnerDeps = {
     links: () => links,
@@ -75,6 +77,9 @@ function harness(
     limitActive: () => limit,
     inFlight: (id) => reserved.has(id),
     branchOf: (t) => t.agentBranch || `orch/${t.id}`,
+    projectTasks: (projectId) => [...byId.values()].filter((t) => t.projectId === projectId),
+    laneCap: () => cap,
+    openPrTaskIds: () => new Set(),
     now: () => 1_000,
   };
   return {
@@ -84,6 +89,13 @@ function harness(
     notes,
     setLimit: (on: boolean) => {
       limit = on;
+    },
+    setCap: (n: number) => {
+      cap = n;
+    },
+    /** A run leaves `inFlight` — the moment its lane frees. */
+    runExits: (id: string) => {
+      reserved.delete(id);
     },
     /**
      * What the engine does a moment after `runTask`: the CLI reports `started`, and the run
@@ -604,6 +616,7 @@ describe('ChainRunner — re-asking the chain', () => {
       'links-changed',
       'card-changed',
       'decision-cleared',
+      'lane-freed',
     ];
     const said = triggers.map((trigger) => {
       const { runner, notes } = overdue();
@@ -775,5 +788,117 @@ describe('ChainRunner — an automatic start moves the card', () => {
     expect(started).toEqual(['b']);
     expect(byId.get('b')?.status).toBe('in-progress');
     expect(byId.get('b')?.preRunStatus).toBeUndefined();
+  });
+});
+
+describe('ChainRunner — ready lanes', () => {
+  /**
+   * Five cards behind one landed predecessor, all releasable at once. Keys and one priority
+   * are deliberately out of input order, so the lane order is something the test can see:
+   * c3 (High) first, then by ticket number — c4, c2, c5, c1.
+   */
+  const five = (opts: Parameters<typeof harness>[2] = {}, extra: Task[] = []) =>
+    harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        { ...successor('c1'), externalKey: 'TM-15' },
+        { ...successor('c2'), externalKey: 'TM-12' },
+        { ...successor('c3'), externalKey: 'TM-14', externalPriority: 'High' },
+        { ...successor('c4'), externalKey: 'TM-11' },
+        { ...successor('c5'), externalKey: 'TM-13' },
+        ...extra,
+      ],
+      ['c1', 'c2', 'c3', 'c4', 'c5'].map((id) => link('a', id)),
+      opts,
+    );
+  const queuedNotes = (notes: Array<{ taskId: string; body: string }>) =>
+    notes.filter((n) => n.body.startsWith('Queued')).map((n) => n.taskId);
+
+  it('starts only as many as the cap allows, in priority then ticket order', () => {
+    const { runner, started, notes } = five({ cap: 3 });
+    runner.reconsider('boot');
+    expect(started).toEqual(['c3', 'c4', 'c2']);
+    expect(queuedNotes(notes).sort()).toEqual(['c1', 'c5']);
+    expect(notes.find((n) => n.taskId === 'c5')?.body).toContain('all 3 of');
+  });
+
+  it('tells a queued card once, however many re-asks find it still waiting', () => {
+    const { runner, started, notes } = five({ cap: 3 });
+    runner.reconsider('boot');
+    runner.reconsider('links-changed');
+    expect(started).toEqual(['c3', 'c4', 'c2']);
+    expect(queuedNotes(notes).sort()).toEqual(['c1', 'c5']);
+  });
+
+  it('counts a card already in flight against the cap', () => {
+    const { runner, started } = five({ cap: 3, inFlight: ['busy'] }, [task({ id: 'busy' })]);
+    runner.reconsider('boot');
+    expect(started).toEqual(['c3', 'c4']);
+  });
+
+  it('starts every card when the cap is 0 (unlimited)', () => {
+    const { runner, started, notes } = five({ cap: 0 });
+    runner.reconsider('boot');
+    expect(started).toHaveLength(5);
+    expect(queuedNotes(notes)).toEqual([]);
+  });
+
+  it('starts the next queued card when a lane frees', () => {
+    const { runner, byId, started, notes, runExits } = five({ cap: 3 });
+    runner.reconsider('boot');
+    // c3's run ends and its work lands: its lane is free, and it is no candidate any more.
+    runExits('c3');
+    byId.get('c3')!.landedAt = 9;
+    runner.reconsider('lane-freed');
+    expect(started).toEqual(['c3', 'c4', 'c2', 'c5']);
+    expect(notes.find((n) => n.taskId === 'c5' && n.body.startsWith('Started'))?.body).toContain(
+      'ready lane freed up',
+    );
+    // c1 is still queued — and was told so once, back at boot.
+    expect(queuedNotes(notes).sort()).toEqual(['c1', 'c5']);
+  });
+
+  it('queues a card a landing releases into a full project, then starts it when a lane frees', () => {
+    const { runner, started, notes, runExits } = harness(
+      [task({ id: 'a' }), successor('b'), task({ id: 'busy' })],
+      [link('a', 'b')],
+      { cap: 1, inFlight: ['busy'] },
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].taskId).toBe('b');
+    expect(notes[0].body).toMatch(/^Queued: a has landed/);
+    expect(notes[0].body).toContain("all 1 of this project's ready lane is taken");
+
+    // The re-ask that follows the busy run's exit does not repeat the landing's note…
+    runExits('busy');
+    runner.reconsider('lane-freed');
+    expect(started).toEqual(['b']);
+    expect(queuedNotes(notes)).toEqual(['b']);
+    // …and a later poll of the same merged MR does not report b's own run as a decline.
+    const before = notes.length;
+    runner.landed('a');
+    expect(notes).toHaveLength(before);
+  });
+
+  it('lets two releases in one landing take only the lanes there are', () => {
+    const { runner, started, notes } = harness(
+      [task({ id: 'a' }), successor('b'), successor('c')],
+      [link('a', 'b'), link('a', 'c')],
+      { cap: 1 },
+    );
+    runner.landed('a');
+    expect(started).toEqual(['b']);
+    expect(queuedNotes(notes)).toEqual(['c']);
+  });
+
+  it('Release now goes past the cap, and says so on a queued card', () => {
+    const { runner, started, notes } = five({ cap: 3 });
+    runner.reconsider('boot');
+    expect(runner.releaseNow('c1')).toBeNull();
+    expect(started).toContain('c1');
+    expect(notes.at(-1)?.taskId).toBe('c1');
+    expect(notes.at(-1)?.body).toContain("went past the project's ready-lane limit");
   });
 });
