@@ -40,6 +40,19 @@ export default [
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {
+    // Same pane as `issue-peek`, at the shorter 1100x800 viewport the give-way layout
+    // (`TaskDetail.tsx`'s `headBand`/`cell`/`scrollWrap`) targets — proves the bands shrink
+    // inside their own boxes rather than overlapping the conversation when the pane is too
+    // short for both at their full caps.
+    name: 'issue-peek-1100x800',
+    app: 'client',
+    viewport: { width: 1100, height: 800 },
+    scheme: 'light',
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
+    expect: 'button[aria-label="Open full screen"]',
+    mockup: 'v9-2-issue-detail-light.svg',
+  },
+  {
     // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full'.
     name: 'issue-full-screen',
     app: 'client',
