@@ -30,6 +30,7 @@ import {
 import type { AttentionItem } from '@shared/attention';
 import { MAX_PLAN_STEPS } from '@shared/board';
 import type { TaskAttachment } from '@shared/attachments';
+import type { PlanVerdict } from '@shared/planCheck';
 import type { PermissionMode } from '@shared/session';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { LimitState } from '@shared/limit';
@@ -3923,10 +3924,18 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       expect(emitAttention).toHaveBeenCalledTimes(1);
       const item = emitAttention.mock.calls[0][0] as {
         prompt: string;
-        planCheck?: { pass: boolean };
+        planCheck?: PlanVerdict;
       };
       expect(item.prompt).toContain('Other card in flight');
       expect(item.planCheck?.pass).toBe(false);
+      // The Inbox's overlap warning reads this straight off the stored item.
+      expect(item.planCheck?.overlaps).toEqual([
+        {
+          title: 'Other card in flight',
+          why: 'running',
+          files: ['apps/client/src/main/scheduler.ts'],
+        },
+      ]);
       expect(added).toEqual([]);
     });
 

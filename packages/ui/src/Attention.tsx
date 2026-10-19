@@ -29,6 +29,8 @@ import {
 import { DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import type { TaskAttachment } from '@tm/shared/attachments';
+import { MAX_SHOWN_FILES } from '@tm/shared/fileOverlap';
+import type { PlanOverlap } from '@tm/shared/planCheck';
 import { GATE_TRUST_ACTION } from '@tm/shared/workflow';
 import { AgentQuestionForm } from './AgentQuestionForm';
 import { AttachmentGallery } from './AttachmentGallery';
@@ -78,7 +80,35 @@ const useStyles = makeStyles({
   },
   empty: { color: tokens.colorNeutralForeground3 },
   dismissError: { marginTop: '-4px' },
+  overlapLine: { wordBreak: 'break-word' },
 });
+
+/** How many overlapping cards the plan preview names; the rest are left to the checklist. */
+const MAX_SHOWN_OVERLAPS = 3;
+
+/**
+ * The active cards an approved plan would collide with, one line each — so the human sees
+ * the collision before approving, not when the card is later held back on the board.
+ */
+export function PlanOverlapWarning({
+  overlaps,
+}: {
+  overlaps: readonly PlanOverlap[];
+}): JSX.Element {
+  const styles = useStyles();
+  return (
+    <MessageBar intent="warning" data-plan-overlap>
+      <MessageBarBody>
+        {overlaps.slice(0, MAX_SHOWN_OVERLAPS).map((o, i) => (
+          <div key={i} className={styles.overlapLine}>
+            Overlaps {o.key ?? `"${o.title}"`} ({o.why}):{' '}
+            {o.files.slice(0, MAX_SHOWN_FILES).join(', ')}
+          </div>
+        ))}
+      </MessageBarBody>
+    </MessageBar>
+  );
+}
 
 /** True once `options` is exactly the trust/decline pair a parked gate offers (F8.8). */
 function isGateTrustOptions(options: readonly string[]): boolean {
@@ -240,6 +270,9 @@ export function InboxItem({
         <Caption1 className={styles.reason}>
           Steps: {item.steps!.map((s, i) => `${i + 1}. ${s}`).join(' · ')}
         </Caption1>
+      )}
+      {item.kind === 'plan-approval' && (item.planCheck?.overlaps?.length ?? 0) > 0 && (
+        <PlanOverlapWarning overlaps={item.planCheck!.overlaps!} />
       )}
       {item.kind === 'plan-approval' && item.planCheck && (
         <PlanCheckVerdict verdict={item.planCheck} />
