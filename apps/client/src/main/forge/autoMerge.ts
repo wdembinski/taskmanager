@@ -22,11 +22,13 @@ import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import type { SignOffStatus } from '@shared/visualSignOff';
 import { latestVisualState, shotPairs } from '@shared/visualSignOff';
+import type { ExecHost } from '../exec';
 import { hostFor } from '../exec';
 import { GitHubClient } from '../github/githubClient';
 import { GitLabClient } from '../gitlab/gitlabClient';
 import { forgeBaseUrl } from './baseUrl';
 import { openMergeRequestFor, resolveForgeGitTarget } from './createPr';
+import { parseRemoteUrl, pickForge } from './remoteUrl';
 
 /** What {@link requestAutoMerge} and {@link disableAutoMerge} need from the world around
  *  them — a strict subset of `CreatePrDeps`, so `openPullRequest` can hand its own deps
@@ -252,4 +254,83 @@ export async function applyVisualSignOff(
         `${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/** The fields {@link collectAutoMergePrerequisites} needs off a project — just enough to
+ *  find its `origin` remote and know whether "Merge on green" is even on. */
+export type AutoMergePrerequisiteProject = Pick<
+  Project,
+  'name' | 'path' | 'target' | 'baseBranch' | 'autoMergeOnGreen' | 'autoMergeRequiredChecks'
+>;
+
+/** What {@link collectAutoMergePrerequisites} needs from the world around it — built once
+ *  per `testConnection` call, by GitHub's handler and GitLab's own, so each forge decides
+ *  what "the facts" even mean for itself (see `getAutoMergeFacts` on either client) while
+ *  this function stays the one place that walks every project and matches origins to it. */
+export interface AutoMergePrerequisiteDeps {
+  listProjects(): readonly AutoMergePrerequisiteProject[];
+  settings: AppSettings;
+  /** Which forge this call is checking — only a project whose `origin` resolves to THIS
+   *  provider (via `pickForge`) is ever handed to {@link prerequisitesFor}. */
+  provider: ForgeProvider;
+  /** `git remote get-url origin`, read on the host the project itself runs on — `''` (or a
+   *  throw) reads as "no remote to check", the same contract `remoteUrl` always carries. */
+  remoteUrl(cwd: string, host: ExecHost): Promise<string>;
+  /** The forge-specific prerequisite sentences for one project's repository — already
+   *  resolved against that project's own `autoMergeRequiredChecks`. A throw (a 403 with no
+   *  admin access, a dead instance) is caught by the caller and turned into one generic
+   *  "could not read" entry, so a single unreachable project never drops every other one
+   *  from the result. */
+  prerequisitesFor(
+    project: AutoMergePrerequisiteProject,
+    owner: string,
+    repo: string,
+    base: string,
+  ): Promise<string[]>;
+}
+
+/**
+ * Every project with "Merge on green" switched on whose `origin` belongs to `deps.provider`,
+ * paired with whatever {@link AutoMergePrerequisiteDeps.prerequisitesFor} found missing for
+ * it — the per-project assembly `github:testConnection` and `gitlab:testConnection` (`ipc.ts`)
+ * both call after their own `getMe` succeeds, to fill in `JiraTestResult.prerequisites`.
+ *
+ * A project with nothing missing is left out entirely, same as `autoMergePrerequisites`'s own
+ * empty array — Settings has nothing to render for it either way.
+ */
+export async function collectAutoMergePrerequisites(
+  deps: AutoMergePrerequisiteDeps,
+): Promise<{ project: string; missing: string[] }[]> {
+  const results: { project: string; missing: string[] }[] = [];
+  for (const project of deps.listProjects()) {
+    if (!project.autoMergeOnGreen) continue;
+
+    let origin: string;
+    try {
+      origin = await deps.remoteUrl(project.path, hostFor(project.target));
+    } catch {
+      continue;
+    }
+    const remote = origin ? parseRemoteUrl(origin) : null;
+    if (!remote) continue;
+    if (pickForge(remote.host, deps.settings) !== deps.provider) continue;
+
+    // `remote.path` can itself be a GitLab subgroup path (`group/sub/proj`), so only the
+    // first segment is ever the "owner" — the rest, however many slashes it holds, is `repo`.
+    const [owner, ...rest] = remote.path.split('/');
+    const repo = rest.join('/');
+    const base = project.baseBranch?.trim() || 'main';
+    try {
+      const missing = await deps.prerequisitesFor(project, owner, repo, base);
+      if (missing.length > 0) results.push({ project: project.name, missing });
+    } catch (err) {
+      results.push({
+        project: project.name,
+        missing: [
+          `Could not read branch protection — ${err instanceof Error ? err.message : String(err)}; check it by hand.`,
+        ],
+      });
+    }
+  }
+  return results;
 }

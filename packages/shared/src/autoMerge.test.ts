@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TaskActivityEntry } from './model';
 import {
   autoMergeDecision,
+  autoMergeGitLabPrerequisites,
   autoMergeLanded,
   autoMergePrerequisites,
   mergedByAutoMergeNote,
@@ -115,5 +116,51 @@ describe('autoMergePrerequisites', () => {
       requiredChecks: ['gates', 'package', 'docker'],
     });
     expect(problems.some((p) => p.includes('docker'))).toBe(true);
+  });
+
+  it('flags both auto-merge being off and checks being unprotected at once', () => {
+    const problems = autoMergePrerequisites(project, {
+      allowAutoMerge: false,
+      requiredChecks: null,
+    });
+    expect(problems.some((p) => p.includes('does not allow auto-merge'))).toBe(true);
+    expect(problems.some((p) => p.includes('Could not read'))).toBe(true);
+    expect(problems).toHaveLength(2);
+  });
+
+  it('flags both auto-merge being off and a check nobody named, together', () => {
+    const problems = autoMergePrerequisites(project, {
+      allowAutoMerge: false,
+      requiredChecks: ['gates', 'package', 'docker'],
+    });
+    expect(problems.some((p) => p.includes('does not allow auto-merge'))).toBe(true);
+    expect(problems.some((p) => p.includes('docker'))).toBe(true);
+    expect(problems).toHaveLength(2);
+  });
+});
+
+describe('autoMergeGitLabPrerequisites', () => {
+  const project = { autoMergeOnGreen: true };
+
+  it('reports nothing when the setting is off', () => {
+    expect(
+      autoMergeGitLabPrerequisites({ autoMergeOnGreen: false }, { pipelineMustSucceed: false }),
+    ).toEqual([]);
+  });
+
+  it('reports nothing when the project already requires pipelines to succeed', () => {
+    expect(autoMergeGitLabPrerequisites(project, { pipelineMustSucceed: true })).toEqual([]);
+  });
+
+  it('flags a project that does not require pipelines to succeed', () => {
+    const problems = autoMergeGitLabPrerequisites(project, { pipelineMustSucceed: false });
+    expect(problems.some((p) => p.includes('Pipelines must succeed'))).toBe(true);
+    expect(problems).toHaveLength(1);
+  });
+
+  it('flags settings that could not be read', () => {
+    const problems = autoMergeGitLabPrerequisites(project, { pipelineMustSucceed: null });
+    expect(problems.some((p) => p.includes('Could not read'))).toBe(true);
+    expect(problems).toHaveLength(1);
   });
 });

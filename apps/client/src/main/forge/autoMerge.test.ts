@@ -15,7 +15,13 @@ import type { MergeRequest } from '@shared/mergeRequest';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import { formatSignOff } from '@shared/visualSignOff';
-import { applyVisualSignOff, type VisualSignOffDeps } from './autoMerge';
+import {
+  applyVisualSignOff,
+  collectAutoMergePrerequisites,
+  type AutoMergePrerequisiteDeps,
+  type AutoMergePrerequisiteProject,
+  type VisualSignOffDeps,
+} from './autoMerge';
 
 const originalFetch = globalThis.fetch;
 
@@ -286,5 +292,142 @@ describe('applyVisualSignOff — VisualSignOff Approve enables auto-merge', () =
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
+  });
+});
+
+function prereqProject(
+  over: Partial<AutoMergePrerequisiteProject> & { name: string },
+): AutoMergePrerequisiteProject {
+  return {
+    path: '/repos/whatever',
+    target: { kind: 'local' },
+    baseBranch: 'main',
+    autoMergeOnGreen: true,
+    autoMergeRequiredChecks: [],
+    ...over,
+  } as unknown as AutoMergePrerequisiteProject;
+}
+
+function prereqDeps(
+  projects: AutoMergePrerequisiteProject[],
+  overrides: Partial<AutoMergePrerequisiteDeps> = {},
+): AutoMergePrerequisiteDeps {
+  return {
+    listProjects: () => projects,
+    settings: {
+      github: { enabled: true, baseUrl: 'https://api.github.com' },
+    } as unknown as AppSettings,
+    provider: 'github',
+    remoteUrl: async (cwd: string) =>
+      cwd === '/repos/whatever' ? 'https://github.com/acme/checkout.git' : '',
+    prerequisitesFor: async () => [],
+    ...overrides,
+  };
+}
+
+describe('collectAutoMergePrerequisites', () => {
+  it('skips a project whose "merge on green" is off', async () => {
+    const projects = [prereqProject({ name: 'Off', autoMergeOnGreen: false })];
+    const deps = prereqDeps(projects, {
+      prerequisitesFor: async () => ['should never be reached'],
+    });
+
+    expect(await collectAutoMergePrerequisites(deps)).toEqual([]);
+  });
+
+  it('skips a project whose origin does not belong to this provider', async () => {
+    const projects = [prereqProject({ name: 'Elsewhere', path: '/repos/elsewhere' })];
+    const deps = prereqDeps(projects, {
+      // Both providers enabled so `pickForge` cannot fall back to "only one is on" and must
+      // answer honestly off the host alone.
+      settings: {
+        github: { enabled: true, baseUrl: 'https://api.github.com' },
+        gitlab: { enabled: true, baseUrl: 'https://gitlab.com' },
+      } as unknown as AppSettings,
+      remoteUrl: async () => 'https://gitlab.com/acme/checkout.git',
+      prerequisitesFor: async () => ['should never be reached'],
+    });
+
+    expect(await collectAutoMergePrerequisites(deps)).toEqual([]);
+  });
+
+  it('skips a project with no origin remote at all', async () => {
+    const projects = [prereqProject({ name: 'No origin', path: '/repos/none' })];
+    const deps = prereqDeps(projects, {
+      remoteUrl: async () => '',
+      prerequisitesFor: async () => ['should never be reached'],
+    });
+
+    expect(await collectAutoMergePrerequisites(deps)).toEqual([]);
+  });
+
+  it('names the project and reports what is missing, passing owner/repo/base through', async () => {
+    const projects = [prereqProject({ name: 'Task Manager', autoMergeRequiredChecks: ['gates'] })];
+    const seen: Array<{ owner: string; repo: string; base: string }> = [];
+    const deps = prereqDeps(projects, {
+      prerequisitesFor: async (_project, owner, repo, base) => {
+        seen.push({ owner, repo, base });
+        return ["switch on 'Allow auto-merge'.", 'missing: docker, package.'];
+      },
+    });
+
+    expect(await collectAutoMergePrerequisites(deps)).toEqual([
+      {
+        project: 'Task Manager',
+        missing: ["switch on 'Allow auto-merge'.", 'missing: docker, package.'],
+      },
+    ]);
+    expect(seen).toEqual([{ owner: 'acme', repo: 'checkout', base: 'main' }]);
+  });
+
+  it('leaves out a project with nothing missing', async () => {
+    const projects = [prereqProject({ name: 'All good' })];
+    const deps = prereqDeps(projects, { prerequisitesFor: async () => [] });
+
+    expect(await collectAutoMergePrerequisites(deps)).toEqual([]);
+  });
+
+  it('turns a thrown prerequisite check into one generic entry, without dropping other projects', async () => {
+    const projects = [
+      prereqProject({ name: 'Admin only', path: '/repos/admin-only' }),
+      prereqProject({ name: 'Fine' }),
+    ];
+    const deps = prereqDeps(projects, {
+      remoteUrl: async (cwd: string) =>
+        cwd === '/repos/whatever' || cwd === '/repos/admin-only'
+          ? 'https://github.com/acme/checkout.git'
+          : '',
+      prerequisitesFor: async (project) => {
+        if (project.name === 'Admin only') throw new Error('403 Forbidden');
+        return [];
+      },
+    });
+
+    const result = await collectAutoMergePrerequisites(deps);
+    expect(result).toEqual([
+      {
+        project: 'Admin only',
+        missing: ['Could not read branch protection — 403 Forbidden; check it by hand.'],
+      },
+    ]);
+  });
+
+  it('resolves a GitLab subgroup path as owner plus a multi-segment repo', async () => {
+    const projects = [prereqProject({ name: 'Nested', path: '/repos/nested' })];
+    const seen: Array<{ owner: string; repo: string }> = [];
+    const deps = prereqDeps(projects, {
+      provider: 'gitlab',
+      settings: {
+        gitlab: { enabled: true, baseUrl: 'https://gitlab.com' },
+      } as unknown as AppSettings,
+      remoteUrl: async () => 'https://gitlab.com/group/sub/proj.git',
+      prerequisitesFor: async (_project, owner, repo) => {
+        seen.push({ owner, repo });
+        return [];
+      },
+    });
+
+    await collectAutoMergePrerequisites(deps);
+    expect(seen).toEqual([{ owner: 'group', repo: 'sub/proj' }]);
   });
 });

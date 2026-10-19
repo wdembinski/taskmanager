@@ -37,4 +37,43 @@ export default [
       },
     },
   },
+  {
+    // The GitHub pane's Test connection result, once "Merge on green" is on for a project
+    // whose base branch is missing the prerequisites it needs — `ipc.ts`'s `github:testConnection`
+    // now fills `JiraTestResult.prerequisites` with one entry per such project
+    // (`forge/autoMerge.ts`'s `collectAutoMergePrerequisites`). No mockup draws this state yet,
+    // so this reuses the General Settings mockup only for app chrome/scale, same as
+    // `settings-updates-token` above does with its own.
+    name: 'settings-github-automerge-prereqs',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [
+      { click: 'Settings' },
+      { click: 'GitHub' },
+      { click: 'Test connection' },
+      // The GitHub pane is already tall (every field down through the token input), so the
+      // result bars this click adds land past the 900px fold — bring the first one (the
+      // success bar) into frame, which also brings the warning bar right below it.
+      { scrollToSelector: '.fui-MessageBar' },
+    ],
+    expect: '.fui-MessageBar',
+    mockup: 'v10-19-settings-light.svg',
+    channelOverrides: {
+      'github:testConnection': {
+        ok: true,
+        displayName: 'wdembinski',
+        message: 'Connected as wdembinski.',
+        prerequisites: [
+          {
+            project: 'Task Manager',
+            missing: [
+              "Switch on 'Allow auto-merge' (Settings → General → Pull Requests).",
+              'Required checks are missing: docker, package.',
+            ],
+          },
+        ],
+      },
+    },
+  },
 ];

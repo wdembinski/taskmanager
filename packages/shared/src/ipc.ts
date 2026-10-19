@@ -258,6 +258,16 @@ export interface JiraTestResult {
   displayName?: string;
   /** Human-readable detail (error text on failure, a greeting on success). */
   message: string;
+  /**
+   * What `@shared/autoMerge`'s `autoMergePrerequisites` found missing for each project with
+   * "Merge on green" switched on whose `origin` belongs to this forge — GitHub's and
+   * GitLab's own `testConnection` handlers fill this in, never JIRA's or Linear's. Absent
+   * (not just empty) when nothing was checked, so Settings can tell "no projects to check"
+   * apart from "checked, nothing missing" without a third state on `missing`. Deliberately
+   * independent of {@link ok}: a missing prerequisite is never a reason to fail the token
+   * check that is the rest of this result.
+   */
+  prerequisites?: { project: string; missing: string[] }[];
 }
 
 /** One Linear team the Settings UI can offer for `teamKeys` — `key` appears nowhere else. */

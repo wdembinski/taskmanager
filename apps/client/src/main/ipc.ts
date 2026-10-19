@@ -247,7 +247,7 @@ import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
-import { fetchRef, git, gitPreflight, pushBranch } from './git';
+import { fetchRef, git, gitPreflight, pushBranch, remoteUrl } from './git';
 import { emptyGitGraph } from '@shared/gitGraph';
 import { cardBranchesFor, readGitGraph } from './gitGraph';
 import { listClaudeSessions } from './claudeSessions';
@@ -261,7 +261,8 @@ import {
   tokenizedUrl,
   type CreatePrDeps,
 } from './forge/createPr';
-import { applyVisualSignOff } from './forge/autoMerge';
+import { applyVisualSignOff, collectAutoMergePrerequisites } from './forge/autoMerge';
+import { autoMergeGitLabPrerequisites, autoMergePrerequisites } from '@shared/autoMerge';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
@@ -2298,7 +2299,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('gitlab:testConnection', async () => {
     try {
       const me = await buildGitLabClient().getMe();
-      return { ok: true, displayName: me.username, message: `Connected as ${me.username}.` };
+      // A missing prerequisite never turns this connection red — `ok` stays about the token
+      // alone, so a failure gathering them (an unreachable project, a 403) is swallowed here
+      // rather than letting it mask the successful `getMe` above.
+      let prerequisites: { project: string; missing: string[] }[] | undefined;
+      try {
+        const found = await collectAutoMergePrerequisites({
+          listProjects: () => store.listProjects(),
+          settings: store.getSettings(),
+          provider: 'gitlab',
+          remoteUrl: (cwd, host) => remoteUrl(cwd, 'origin', host),
+          prerequisitesFor: async (project, owner, repo) => {
+            const facts = await buildGitLabClient().getAutoMergeFacts(`${owner}/${repo}`);
+            return autoMergeGitLabPrerequisites(project, {
+              pipelineMustSucceed: facts.onlyAllowMergeIfPipelineSucceeds,
+            });
+          },
+        });
+        if (found.length > 0) prerequisites = found;
+      } catch (e) {
+        logMain('GitLab auto-merge prerequisite check failed', e);
+      }
+      return {
+        ok: true,
+        displayName: me.username,
+        message: `Connected as ${me.username}.`,
+        ...(prerequisites ? { prerequisites } : {}),
+      };
     } catch (e) {
       logMain('GitLab test connection failed', e);
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
@@ -2585,7 +2612,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       // own card orange later, without a request of its own. Keyed by base URL, so pointing
       // the app at another instance re-discovers rather than mis-attributing.
       store.saveGitHubIdentity(githubIdentityFrom(me, store.getSettings().github.baseUrl));
-      return { ok: true, displayName: me.login, message: `Connected as ${me.login}.` };
+      // Same non-fatal rule as GitLab's own handler above: `ok` stays about the token, so a
+      // missing prerequisite — or a failure finding out — never turns this connection red.
+      let prerequisites: { project: string; missing: string[] }[] | undefined;
+      try {
+        const found = await collectAutoMergePrerequisites({
+          listProjects: () => store.listProjects(),
+          settings: store.getSettings(),
+          provider: 'github',
+          remoteUrl: (cwd, host) => remoteUrl(cwd, 'origin', host),
+          prerequisitesFor: async (project, owner, repo, base) => {
+            const facts = await buildGitHubClient().getAutoMergeFacts(owner, repo, base);
+            return autoMergePrerequisites(project, facts);
+          },
+        });
+        if (found.length > 0) prerequisites = found;
+      } catch (e) {
+        logMain('GitHub auto-merge prerequisite check failed', e);
+      }
+      return {
+        ok: true,
+        displayName: me.login,
+        message: `Connected as ${me.login}.`,
+        ...(prerequisites ? { prerequisites } : {}),
+      };
     } catch (e) {
       logMain('GitHub test connection failed', e);
       return { ok: false, message: e instanceof Error ? e.message : String(e) };

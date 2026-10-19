@@ -168,3 +168,41 @@ export function autoMergePrerequisites(
   }
   return problems;
 }
+
+/** What {@link autoMergeGitLabPrerequisites} reads about a project's own merge settings —
+ *  the shape `GitLabClient.getAutoMergeFacts` already returns. GitLab has no equivalent of
+ *  a base branch's required-checks list (a pipeline either exists or it doesn't), so this
+ *  carries only the one project-wide setting that can silently defeat "Merge on green". */
+export interface GitLabAutoMergePrerequisiteFacts {
+  /** `GET /projects/:id`'s own `only_allow_merge_if_pipeline_succeeds`, or `null` on an
+   *  instance too old to send it. */
+  pipelineMustSucceed: boolean | null;
+}
+
+/**
+ * The GitLab half of {@link autoMergePrerequisites} — same purpose, never a throw, empty
+ * when the setting is off — but over GitLab's own, much smaller set of facts: there is no
+ * "required checks" list to cross-check, only whether this project itself insists a pipeline
+ * succeeds before anything merges. Without that, `merge_when_pipeline_succeeds` has nothing
+ * to wait for and the merge request merges the moment it opens.
+ */
+export function autoMergeGitLabPrerequisites(
+  project: Pick<Project, 'autoMergeOnGreen'>,
+  facts: GitLabAutoMergePrerequisiteFacts,
+): string[] {
+  if (!project.autoMergeOnGreen) return [];
+  if (facts.pipelineMustSucceed === null) {
+    return [
+      "Could not read this project's merge settings — the token needs at least Maintainer " +
+        'access; check it by hand.',
+    ];
+  }
+  if (facts.pipelineMustSucceed === false) {
+    return [
+      'This project does not require pipelines to succeed before merging — switch on ' +
+        '"Pipelines must succeed" (Settings → Merge requests), or auto-merge will merge the ' +
+        'moment the merge request opens.',
+    ];
+  }
+  return [];
+}
