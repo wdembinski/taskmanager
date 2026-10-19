@@ -146,13 +146,19 @@ const useStyles = makeStyles({
   },
   /**
    * The card's own identity: title, agent controls, details and (for a native ticket) the
-   * open Ticket fields. Capped generously (55vh, against `cell`'s 20vh) and scrolled on its
-   * OWN. A ticket's type, epic and milestone are what a reader opened the pane to check, so
-   * this band gets the LARGER share; `cell` below it, further down the list of things a
-   * reader wants first, gets what is left. `vh` rather than `%`, since a flex item's
-   * percentage height only resolves against a DEFINITE container height, which two
-   * percentage-capped siblings in a row (this one and `cell`) are not guaranteed to leave
-   * it; `vh` is definite against the viewport regardless.
+   * open Ticket fields. `maxHeight` (55vh, against `cell`'s 20vh) is an UPPER bound, not a
+   * fixed size — a ticket's type, epic and milestone are what a reader opened the pane to
+   * check, so this band claims the larger share of whatever room is going, up to that cap,
+   * and scrolls on its OWN past it. `vh` rather than `%`, since a flex item's percentage
+   * height only resolves against a DEFINITE container height, which two percentage-capped
+   * siblings in a row (this one and `cell`) are not guaranteed to leave it; `vh` is
+   * definite against the viewport regardless.
+   *
+   * Below that cap, this band GIVES WAY: `flex: '0 1 auto'` lets it shrink once `headBand`,
+   * `cell` and the conversation's own floor (see `scrollWrap`) together outgrow the pane,
+   * rather than holding its content's full height and pushing the conversation to nothing.
+   * `cell` carries a higher shrink weight (`flex: '0 2 auto'`) and gives way first, since a
+   * ticket's own fields — what this band holds — are what a reader wants most.
    *
    * `minHeight: 0` is the second load-bearing line, the same one `scrollWrap` below
    * already has: a flex item's default `min-height` is `auto`, which in a flex context
@@ -176,17 +182,23 @@ const useStyles = makeStyles({
     gap: '12px',
     padding: '12px',
     boxSizing: 'border-box',
-    flexShrink: 0,
+    flex: '0 1 auto',
     minHeight: 0,
     maxHeight: '55vh',
     overflowY: 'auto',
   },
   /**
    * Everything else the band shows — Links, Steps, Chain, Releases — in ONE scrollable
-   * strip beneath `headBand`. Capped (in `vh` — see `headBand`'s own docstring on why not
-   * `%`) so a long chain can never crowd the conversation out entirely. `minHeight: 0` and
-   * `boxSizing: 'border-box'` for the same two reasons `headBand` has them — see its
-   * docstring.
+   * strip beneath `headBand`. `maxHeight` (in `vh` — see `headBand`'s own docstring on why
+   * not `%`) is an upper bound so a long chain can never crowd the conversation out
+   * entirely. `minHeight: 0` and `boxSizing: 'border-box'` for the same two reasons
+   * `headBand` has them — see its docstring.
+   *
+   * GIVES WAY before `headBand` does: `flex: '0 2 auto'` carries twice `headBand`'s shrink
+   * weight (`flex: '0 1 auto'`), so once the pane is too short for both bands plus the
+   * conversation's own floor (`scrollWrap`'s `minHeight`), this box shrinks first and
+   * furthest — a ticket's own fields in `headBand` are what a reader opened the pane for,
+   * Links/Steps/Chain/Releases are the second thing they want.
    *
    * `marginBottom`: `root` itself carries no gap between its own children on purpose (see
    * its own comment) — every OTHER pair of sections already keeps its distance with its
@@ -205,9 +217,9 @@ const useStyles = makeStyles({
     padding: '12px',
     boxSizing: 'border-box',
     marginBottom: '8px',
-    // Fixed while the conversation scrolls: this half never moves, and only overflows
-    // into its own scroll when a card really has that much to say.
-    flexShrink: 0,
+    // Shrinks TWICE as readily as `headBand` once the pane runs short — see this
+    // style's own docstring — and only overflows into its own scroll past that.
+    flex: '0 2 auto',
     minHeight: 0,
     maxHeight: '20vh',
     overflowY: 'auto',
@@ -216,8 +228,15 @@ const useStyles = makeStyles({
    * Wraps the scrolling conversation so the "new messages" pill (below) can be
    * positioned against it without affecting layout — the pill floats over the
    * conversation, it does not take a row of its own.
+   *
+   * `minHeight: '120px'` is the conversation's OWN floor: enough for the empty-state line
+   * plus the start of one turn. `headBand` and `cell` above both give way (see their own
+   * docstrings) once the pane is shorter than their combined caps, but without a floor
+   * here flexbox would keep shrinking this box too — all the way to the `flex: 1` default
+   * of 0 — before it touched either band's `maxHeight`, since neither band hits ITS cap
+   * until the conversation is already gone. The floor forces the bands to give way first.
    */
-  scrollWrap: { position: 'relative', flex: 1, minHeight: 0 },
+  scrollWrap: { position: 'relative', flex: 1, minHeight: '120px' },
   /**
    * The conversation: unframed, on the pane's own surface, and the ONLY thing that
    * scrolls — the details band above and the composer below stay put however long the
@@ -1509,10 +1528,11 @@ export function TaskDetail({
         </div>
       )}
       {/* The band, split into two: `headBand` (identity, agent controls, details, the
-          open Ticket fields) never scrolls on its own and always lays out in full, then
-          `cell` (Links, Steps, Chain, merge requests) takes whatever room is left and
-          scrolls internally once a card has that much to say. Never drawn for the `chat`
-          section: that tab is the conversation alone. */}
+          open Ticket fields) and `cell` (Links, Steps, Chain, merge requests) each scroll
+          internally once a card has that much to say, up to their own `maxHeight` cap —
+          and below those caps, both GIVE WAY to leave the conversation (`scrollWrap`) its
+          floor, `cell` first and furthest (see each style's own docstring). Never drawn
+          for the `chat` section: that tab is the conversation alone. */}
       {section === undefined && (
         <>
           <div className={styles.headBand}>{detailsContent}</div>
