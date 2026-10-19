@@ -29,4 +29,20 @@ export default [
     setup: [{ click: 'Archived' }, { click: 'Expand' }, { click: 'issue-row:first' }],
     mockup: 'v10-21-archived-light.svg',
   },
+  {
+    // Same setup as `ticket-archived-banner` above, but at a narrower laptop width —
+    // the harder case for the metadata columns' new shrink behaviour (TM's "keep the
+    // Archived table's Milestone column when the side panel is open" fix). The smaller
+    // viewport is also what keeps this shot from being a byte-for-byte DUPLICATE of
+    // `ticket-archived-banner`. No mockup draws the Archived view with the panel open;
+    // `v10-21-archived-light.svg` is the nearest, so this needs human visual sign-off
+    // rather than a pixel diff.
+    name: 'archived-light-peek',
+    app: 'client',
+    viewport: { width: 1280, height: 800 },
+    scheme: 'light',
+    setup: [{ click: 'Archived' }, { click: 'Expand' }, { click: 'issue-row:first' }],
+    expect: '[role="table"]',
+    mockup: 'v10-21-archived-light.svg',
+  },
 ];
