@@ -8,8 +8,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // of how loaded the machine is rather than of anything under test — `git.test.ts` carries
 // the same line for the same reason.
 vi.setConfig({ testTimeout: 30_000 });
+import type { TaskAttachment } from '@shared/attachments';
 import type { Project, Task } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
+import { formatSignOff } from '@shared/visualSignOff';
 import { pushBranch } from '../git';
 import {
   BaseMovedConflictError,
@@ -1015,6 +1017,307 @@ describe('planBranchPush — a lease that goes stale before the push runs', () =
       // The remote still holds the commit the race put there — the stale lease refused to
       // overwrite it.
       expect(git(bare, 'rev-parse', `refs/heads/${BRANCH}`).stdout.trim()).toBe(foreignTip);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * "Request auto-merge when a card's PR opens" — `openPullRequest` calls `requestAutoMerge`
+ * after each PR-open exit, which in turn reads `@shared/autoMerge`'s `autoMergeDecision`
+ * off the owner card's own attachments and timeline. These four cases are the ones the
+ * ticket names: a non-UI card, a UI card with sign-off pending, the same UI card once
+ * approved, and the setting off.
+ */
+describe('openPullRequest — requests auto-merge when the PR opens', () => {
+  const originalFetch = globalThis.fetch;
+  const originalGitConfig = process.env.GIT_CONFIG_GLOBAL;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalGitConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = originalGitConfig;
+  });
+
+  const git = (cwd: string, ...args: string[]) => {
+    const res = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    return { code: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  };
+
+  function attachment(
+    over: Partial<TaskAttachment> & { id: string; name: string },
+  ): TaskAttachment {
+    return {
+      taskId: 'owner-1',
+      fileName: over.name,
+      mimeType: null,
+      size: 0,
+      createdAt: 0,
+      ...over,
+    };
+  }
+
+  /** A fresh bare origin plus a branch with one commit, tokenized so the push lands there
+   *  instead of the real github.com — the same trick every other describe block in this
+   *  file uses. */
+  function setupPushedBranch(suffix: string) {
+    const BRANCH = `feat/auto-merge-${suffix}`;
+    const work = mkdtempSync(join(tmpdir(), `tm-createpr-automerge-${suffix}-`));
+    const bare = join(work, 'origin.git');
+    const repo = join(work, 'repo');
+    git(work, 'init', '--bare', bare);
+    git(work, 'init', repo);
+    git(repo, 'config', 'user.email', 'verify@example.com');
+    git(repo, 'config', 'user.name', 'Verify');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repo, 'README.md'), '# demo\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'initial');
+    const base = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.trim();
+    git(repo, 'remote', 'add', 'origin', 'https://github.com/acme/checkout.git');
+
+    git(repo, 'checkout', '-b', BRANCH);
+    writeFileSync(join(repo, `${suffix}.ts`), 'export const x = true;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'the work');
+
+    const TOKEN = `ghp_automerge${suffix}0000`;
+    const gitConfig = join(work, 'harness.gitconfig');
+    writeFileSync(
+      gitConfig,
+      `[url "file://${bare.replace(/\\/g, '/')}"]\n` +
+        `\tinsteadOf = https://x-access-token:${TOKEN}@github.com/acme/checkout.git\n`,
+      'utf8',
+    );
+    process.env.GIT_CONFIG_GLOBAL = gitConfig;
+
+    return { work, bare, repo, base, BRANCH, TOKEN };
+  }
+
+  const PR_NUMBER = 42;
+
+  /**
+   * Dispatches by method+URL: the create POST, the pre-read GET `enableAutoMerge` makes to
+   * decide idempotency, and the GraphQL mutation itself. Records every call, so a test can
+   * assert on exactly which ones happened — not just on the end state.
+   */
+  function stubFetch(): Array<{ url: string; method: string; body?: Record<string, unknown> }> {
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+    const json = (body: unknown, status = 200) => ({
+      ok: true,
+      status,
+      statusText: 'OK',
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+      headers: { get: () => null },
+    });
+    globalThis.fetch = (async (url: unknown, init?: { method?: string; body?: string }) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      const body = init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+      calls.push({ url: u, method, body });
+
+      if (method === 'POST' && u.endsWith('/pulls')) {
+        return json(
+          {
+            id: 900,
+            number: PR_NUMBER,
+            title: body?.title,
+            state: 'open',
+            draft: false,
+            html_url: `https://github.com/acme/checkout/pull/${PR_NUMBER}`,
+            head: { ref: body?.head, repo: { id: 555 } },
+            base: { ref: body?.base },
+          },
+          201,
+        );
+      }
+      if (method === 'GET' && /\/pulls\/\d+$/.test(u)) {
+        return json({ number: PR_NUMBER, state: 'open', node_id: 'PR_test123', auto_merge: null });
+      }
+      if (method === 'POST' && u.endsWith('/graphql')) {
+        return json({
+          data: { enablePullRequestAutoMerge: { pullRequest: { number: PR_NUMBER } } },
+        });
+      }
+      throw new Error(`unexpected fetch ${method} ${u}`);
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  const owner = {
+    id: 'owner-1',
+    projectId: 'personal',
+    title: 'Add the merge switch',
+    type: null,
+    issueType: null,
+    externalType: null,
+    description: null,
+    externalDescription: null,
+    externalSource: null,
+    externalKey: null,
+    ticketKey: null,
+    agentProjectId: 'agent-1',
+    agentBranch: null,
+    parentTaskId: null,
+    pickedVariantId: null,
+  } as unknown as Task;
+
+  function depsFor(opts: {
+    repo: string;
+    base: string;
+    branch: string;
+    TOKEN: string;
+    project: Project;
+    attachments?: TaskAttachment[];
+    activity?: Array<{ kind: 'comment'; id: number; body: string; createdAt: number }>;
+    notes: string[];
+  }): CreatePrDeps {
+    return {
+      getTask: (id) => (id === owner.id ? { ...owner, agentBranch: opts.branch } : undefined),
+      getProject: (id) => (id === opts.project.id ? opts.project : undefined),
+      getSettings: () =>
+        ({
+          github: { enabled: true, baseUrl: 'https://api.github.com' },
+        }) as unknown as AppSettings,
+      listMergeRequests: () => [],
+      upsertMergeRequest: () => undefined,
+      listVariantRows: () => [],
+      listAttachments: () => opts.attachments ?? [],
+      listActivity: () => opts.activity ?? [],
+      inspect: async () => ({ cwd: opts.repo, branch: opts.branch, base: opts.base }),
+      syncOntoRemoteBase: async () => ({ status: 'up-to-date' }),
+      tokenFor: () => opts.TOKEN,
+      note: (_projectId, _taskId, body) => {
+        opts.notes.push(body);
+      },
+      now: () => 1_760_000_000_000,
+    };
+  }
+
+  it('(a) requests auto-merge for a non-UI card once the project setting is on', async () => {
+    const { work, repo, base, BRANCH, TOKEN } = setupPushedBranch('a');
+    try {
+      const calls = stubFetch();
+      const project = {
+        id: 'agent-1',
+        path: repo,
+        baseBranch: base,
+        autoMergeOnGreen: true,
+        autoMergeMethod: 'squash',
+      } as unknown as Project;
+      const notes: string[] = [];
+      const deps = depsFor({ repo, base, branch: BRANCH, TOKEN, project, notes });
+
+      await openPullRequest(deps, owner.id);
+
+      const graphqlCall = calls.find((c) => c.method === 'POST' && c.url.endsWith('/graphql'));
+      expect(graphqlCall).toBeDefined();
+      expect(String(graphqlCall?.body?.query)).toContain('enablePullRequestAutoMerge');
+      expect(
+        notes.some((n) => n.includes('Auto-merge enabled') && n.includes('waiting for checks')),
+      ).toBe(true);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('(b) holds a UI card whose sign-off is still pending — no auto-merge request', async () => {
+    const { work, repo, base, BRANCH, TOKEN } = setupPushedBranch('b');
+    try {
+      const calls = stubFetch();
+      const project = {
+        id: 'agent-1',
+        path: repo,
+        baseBranch: base,
+        autoMergeOnGreen: true,
+        autoMergeMethod: 'squash',
+      } as unknown as Project;
+      const notes: string[] = [];
+      const attachments = [
+        attachment({ id: 'att-1', name: 'board-light.png' }),
+        attachment({ id: 'att-2', name: 'board-light-mockup.png' }),
+      ];
+      const deps = depsFor({
+        repo,
+        base,
+        branch: BRANCH,
+        TOKEN,
+        project,
+        attachments,
+        activity: [],
+        notes,
+      });
+
+      await openPullRequest(deps, owner.id);
+
+      expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/graphql'))).toBe(false);
+      expect(calls.some((c) => c.method === 'GET' && /\/pulls\/\d+$/.test(c.url))).toBe(false);
+      expect(notes.some((n) => n.includes('waiting for visual sign-off'))).toBe(true);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('(c) requests auto-merge for the same UI card once its sign-off is approved', async () => {
+    const { work, repo, base, BRANCH, TOKEN } = setupPushedBranch('c');
+    try {
+      const calls = stubFetch();
+      const project = {
+        id: 'agent-1',
+        path: repo,
+        baseBranch: base,
+        autoMergeOnGreen: true,
+        autoMergeMethod: 'squash',
+      } as unknown as Project;
+      const notes: string[] = [];
+      const attachments = [
+        attachment({ id: 'att-1', name: 'board-light.png' }),
+        attachment({ id: 'att-2', name: 'board-light-mockup.png' }),
+      ];
+      const activity = [
+        { kind: 'comment' as const, id: 1, body: formatSignOff('approved'), createdAt: 1 },
+      ];
+      const deps = depsFor({
+        repo,
+        base,
+        branch: BRANCH,
+        TOKEN,
+        project,
+        attachments,
+        activity,
+        notes,
+      });
+
+      await openPullRequest(deps, owner.id);
+
+      expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/graphql'))).toBe(true);
+      expect(notes.some((n) => n.includes('Auto-merge enabled'))).toBe(true);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('(d) makes no request at all when the project setting is off', async () => {
+    const { work, repo, base, BRANCH, TOKEN } = setupPushedBranch('d');
+    try {
+      const calls = stubFetch();
+      const project = {
+        id: 'agent-1',
+        path: repo,
+        baseBranch: base,
+        autoMergeOnGreen: false,
+        autoMergeMethod: 'squash',
+      } as unknown as Project;
+      const notes: string[] = [];
+      const deps = depsFor({ repo, base, branch: BRANCH, TOKEN, project, notes });
+
+      await openPullRequest(deps, owner.id);
+
+      expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/graphql'))).toBe(false);
+      expect(calls.some((c) => c.method === 'GET' && /\/pulls\/\d+$/.test(c.url))).toBe(false);
+      expect(notes.some((n) => n.includes('Auto-merge'))).toBe(false);
     } finally {
       rmSync(work, { recursive: true, force: true });
     }

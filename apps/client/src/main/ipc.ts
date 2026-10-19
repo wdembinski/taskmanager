@@ -227,9 +227,11 @@ import {
   forgeName,
   mrIsSettled,
   mrReadyToMerge,
+  mrRef,
   type ForgeProvider,
   type MergeRequest,
 } from '@shared/mergeRequest';
+import { autoMergeLanded, mergedByAutoMergeNote } from '@shared/autoMerge';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -3073,7 +3075,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // A merged MR is this app's only way of learning that a reviewed branch actually landed
     // — nobody here ran the merge. It is what a chain's `after-merge` gate waits for, so it
     // is handed to the engine before the board is told anything (see `Task.landedAt`).
-    for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    for (const taskId of landedTaskIds(upserts)) {
+      // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
+      // why this card landed with nobody clicking Merge, same as a failed pipeline already
+      // names `prWatcher`'s own `fix-pipeline` note.
+      if (autoMergeLanded(store.getTaskActivity(taskId))) {
+        const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
+        const task = store.getTask(taskId);
+        if (mr && task) {
+          prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
+        }
+      }
+      scheduler.noteWorkLanded(taskId);
+    }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
@@ -3250,7 +3264,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // The same hand-off GitLab's sync makes, and the reason `after-merge` chain gates work on
     // a GitHub repository at all: nobody here ran the merge, so a merged PR is this app's
     // only way of learning that a reviewed branch landed (see `Task.landedAt`).
-    for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    for (const taskId of landedTaskIds(upserts)) {
+      // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
+      // why this card landed with nobody clicking Merge, same as a failed pipeline already
+      // names `prWatcher`'s own `fix-pipeline` note.
+      if (autoMergeLanded(store.getTaskActivity(taskId))) {
+        const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
+        const task = store.getTask(taskId);
+        if (mr && task) {
+          prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
+        }
+      }
+      scheduler.noteWorkLanded(taskId);
+    }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
