@@ -2222,6 +2222,12 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       /** `addSubtask` behaves like the real store: it refuses a step as a parent and
        *  creates a findable `pending` row. Off by default — most cases only read `added`. */
       realSubtasks?: boolean;
+      /** The project's "Approve clean plans automatically" switch (TM's auto-approve). */
+      autoApprovePlans?: boolean;
+      /** Clamp on how many steps an auto-approved plan may create; defaults to 6. */
+      autoApproveMaxSteps?: number;
+      /** What `store.listMergeRequests()` reports — the overlap check's "unmerged PR" feed. */
+      mergeRequests?: MergeRequest[];
     },
   ) {
     const agentProject = {
@@ -2235,6 +2241,8 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       defaultModel: 'sonnet',
       defaultPermissionMode: 'acceptEdits',
       autoIntegrate: opts?.projectAutoIntegrate ?? null,
+      autoApprovePlans: opts?.autoApprovePlans ?? false,
+      autoApproveMaxSteps: opts?.autoApproveMaxSteps ?? 6,
     } as unknown as Project;
     const parent = {
       id: 't1',
@@ -2365,6 +2373,10 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       // the restart case below is about: statuses left parked with no gate behind them.
       saveLimitGate: () => undefined,
       loadLimitGate: () => opts?.savedLimit ?? null,
+      // The overlap check's "unmerged PR" feed (`planVerdictFor`) — every `plan-approval`
+      // now computes a verdict, whether or not auto-approve is on, so every case here needs
+      // this to exist even when it has nothing to report.
+      listMergeRequests: () => opts?.mergeRequests ?? [],
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const prepared: Array<{ taskId: string; owner: string }> = [];
@@ -3653,6 +3665,137 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       } as never);
       await Promise.resolve();
       expect(run.planPresented).toBe(true);
+    });
+  });
+
+  describe('auto-approving a clean plan (the project switch)', () => {
+    const CLEAN_PLAN =
+      '## Reproduce it\nfirst\nAcceptance: run the repro script and confirm it fails.\n\n' +
+      '## Fix it\nsecond\nTests: add a unit test covering the fix.\n\n' +
+      '## Critical files\n- apps/client/src/main/scheduler.ts\n';
+
+    it('auto-approves a clean plan when the switch is on', async () => {
+      const { scheduler, comments, added, emitAttention, seedRun } = setup([], {
+        autoApprovePlans: true,
+      });
+      seedRun('r0', 't1');
+      let decision: { behavior: string; message?: string } | undefined;
+      void scheduler
+        .decidePermission({
+          runId: 'r0',
+          toolName: 'ExitPlanMode',
+          input: { plan: CLEAN_PLAN },
+        } as never)
+        .then((d) => {
+          decision = d as { behavior: string; message?: string };
+        });
+      await Promise.resolve();
+
+      expect(scheduler.listAttention()).toEqual([]);
+      expect(emitAttention).not.toHaveBeenCalled();
+      expect(added.map((s) => s.title)).toEqual(['Reproduce it', 'Fix it']);
+      expect(decision?.behavior).toBe('deny');
+      expect(decision?.message).toContain('do NOT implement it here');
+      expect(comments.some((c) => c.startsWith('Plan approved automatically'))).toBe(true);
+    });
+
+    it('raises a plan-approval item, naming the failed check, when a check fails', async () => {
+      const PLAN_WITH_OPEN_QUESTION =
+        '## Reproduce it\nfirst\nAcceptance: run the repro script and confirm it fails.\n\n' +
+        '## Fix it\nsecond\nTests: add a unit test covering the fix.\n\n' +
+        '## Open questions\n- What format should the export use?\n\n' +
+        '## Critical files\n- apps/client/src/main/scheduler.ts\n';
+      const { scheduler, added, emitAttention, seedRun } = setup([], { autoApprovePlans: true });
+      seedRun('r0', 't1');
+      void scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: PLAN_WITH_OPEN_QUESTION },
+      } as never);
+      await Promise.resolve();
+
+      expect(emitAttention).toHaveBeenCalledTimes(1);
+      const item = emitAttention.mock.calls[0][0] as {
+        kind: string;
+        prompt: string;
+        planCheck?: { pass: boolean };
+      };
+      expect(item.kind).toBe('plan-approval');
+      expect(item.prompt).toContain('Not approved automatically — No open question');
+      expect(item.planCheck?.pass).toBe(false);
+      expect(added).toEqual([]);
+    });
+
+    it('fails the critical-files check, naming the sibling card, when a running card shares a file', async () => {
+      const { scheduler, store, added, emitAttention, seedRun } = setup([], {
+        autoApprovePlans: true,
+      });
+      const otherCard = {
+        id: 'other1',
+        projectId: 'personal',
+        title: 'Other card in flight',
+        status: 'in-progress',
+        parentTaskId: null,
+        agentProjectId: 'agent-1',
+        agentPlan: '## Critical files\n- apps/client/src/main/scheduler.ts\n',
+      } as unknown as Task;
+      const baseGetTask = store.getTask.bind(store);
+      (store as unknown as { getTask: typeof store.getTask }).getTask = (id: string) =>
+        id === 'other1' ? otherCard : baseGetTask(id);
+
+      seedRun('r0', 't1');
+      seedRun('r-other', 'other1', 'other1');
+      void scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: CLEAN_PLAN },
+      } as never);
+      await Promise.resolve();
+
+      expect(emitAttention).toHaveBeenCalledTimes(1);
+      const item = emitAttention.mock.calls[0][0] as {
+        prompt: string;
+        planCheck?: { pass: boolean };
+      };
+      expect(item.prompt).toContain('Other card in flight');
+      expect(item.planCheck?.pass).toBe(false);
+      expect(added).toEqual([]);
+    });
+
+    it('raises today’s item with a passing verdict and no prefix when the switch is off', async () => {
+      const { scheduler, added, emitAttention, seedRun } = setup([]);
+      seedRun('r0', 't1');
+      void scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: CLEAN_PLAN },
+      } as never);
+      await Promise.resolve();
+
+      expect(emitAttention).toHaveBeenCalledTimes(1);
+      const item = emitAttention.mock.calls[0][0] as {
+        prompt: string;
+        planCheck?: { pass: boolean };
+      };
+      expect(item.planCheck?.pass).toBe(true);
+      expect(item.prompt).not.toContain('Not approved automatically');
+      expect(added).toEqual([]); // nothing created yet — the human hasn't approved it
+    });
+
+    it('does not double-raise from the event-stream fallback after an auto-approval', async () => {
+      const { scheduler, emitAttention, seedRun, fire } = setup([], { autoApprovePlans: true });
+      seedRun('r0', 't1');
+      void scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: CLEAN_PLAN },
+      } as never);
+      await Promise.resolve();
+      expect(emitAttention).not.toHaveBeenCalled(); // auto-approved; nothing was ever raised
+
+      fire('r0', { kind: 'tool-use', name: 'ExitPlanMode', id: 'x', input: { plan: CLEAN_PLAN } });
+      await Promise.resolve();
+      expect(emitAttention).not.toHaveBeenCalled();
     });
   });
 
@@ -7475,6 +7618,9 @@ describe('Scheduler — activity log (F2.7)', () => {
       loadAuthGate: () => null,
       saveParkedRuns: vi.fn(),
       loadParkedRuns: () => [],
+      // `planVerdictFor`'s overlap check reads this for every `plan-approval`, whether or
+      // not auto-approve is on — nothing here is about the overlap feed, so an empty list.
+      listMergeRequests: () => [],
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const start = vi.fn((_req: unknown, opts: { runId?: string }) => ({

@@ -13,9 +13,8 @@
  * source of truth, shared with the prompt builder so the two never drift.
  */
 import type { SessionEvent } from '@shared/session';
-
-/** The marker Claude is told to put at the start of a line to ask for input. */
-export const NEEDS_INPUT_SENTINEL = '@@NEEDS_INPUT@@';
+export { NEEDS_INPUT_SENTINEL } from '@shared/planCheck';
+import { NEEDS_INPUT_SENTINEL } from '@shared/planCheck';
 
 /** A detected clarifying question, optionally with discrete choices to offer. */
 export interface DetectedQuestion {

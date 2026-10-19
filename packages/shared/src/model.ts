@@ -290,6 +290,19 @@ export interface Project {
    */
   autoIntegrate: boolean | null;
   /**
+   * The project's preference for approving a clean plan by itself: when an
+   * `ExitPlanMode` plan passes every check in `@shared/planCheck`, the app approves it
+   * without waiting in the Inbox. Off by default and for every project that predates the
+   * field, so nothing starts approving its own plans until a human opts in.
+   */
+  autoApprovePlans: boolean;
+  /**
+   * The most steps a plan may split into and still qualify for {@link
+   * Project.autoApprovePlans}'s automatic approval. Defaults to 6; clamped to 1..50 in
+   * the form.
+   */
+  autoApproveMaxSteps: number;
+  /**
    * Whether the plan has been reviewed for the team-orchestration features
    * (dependency `@needs:` clauses and, later, a shared contract). Projects that
    * predate those features migrate in as `false` ("needs review") so the UI can
@@ -401,6 +414,10 @@ export interface AddProjectInput {
   autoCreatePr?: boolean;
   /** Merge a finished card's branch by itself; defaults to `null` = follow the app setting. */
   autoIntegrate?: boolean | null;
+  /** Approve a clean plan automatically instead of waiting in the Inbox. Defaults to off. */
+  autoApprovePlans?: boolean;
+  /** Most steps a plan may have and still auto-approve. Defaults to 6. */
+  autoApproveMaxSteps?: number;
   planAligned?: boolean;
   jiraEpicKeys?: string[];
   /**
@@ -447,6 +464,8 @@ export type ProjectPatch = Partial<
     | 'autoRelease'
     | 'autoCreatePr'
     | 'autoIntegrate'
+    | 'autoApprovePlans'
+    | 'autoApproveMaxSteps'
     | 'planAligned'
     | 'jiraEpicKeys'
     // Renaming a prefix re-keys every ticket the project owns, in the same transaction —

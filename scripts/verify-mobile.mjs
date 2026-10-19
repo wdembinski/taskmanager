@@ -206,6 +206,8 @@ function makeProject(id, name) {
     autoRelease: false,
     autoCreatePr: false,
     autoIntegrate: null,
+    autoApprovePlans: false,
+    autoApproveMaxSteps: 6,
     planAligned: true,
     jiraEpicKeys: [],
     ticketPrefix: '',

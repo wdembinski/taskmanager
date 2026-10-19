@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { checkPlan } from '@shared/planCheck';
 import {
   MAX_PLAN_STEPS,
   extractPlanMarkdown,
@@ -450,5 +451,48 @@ describe('stepsToAppend', () => {
 
   it('returns nothing when every proposed step is a duplicate', () => {
     expect(stepsToAppend(['Wire the IPC'], [step('Wire the IPC')])).toEqual([]);
+  });
+});
+
+describe('splitPlanIntoSteps feeding checkPlan', () => {
+  const CLEAN_PLAN = [
+    '# Add request retries',
+    '',
+    '## Context',
+    '',
+    'The sync client drops a request on first failure; this adds a bounded retry.',
+    '',
+    '## Critical files',
+    '',
+    '- src/main/syncClient.ts',
+    '- src/main/syncClient.test.ts',
+    '',
+    '## Open questions',
+    '',
+    '- None',
+    '',
+    '## Add the retry loop',
+    '',
+    'Wrap the fetch call in a bounded retry with backoff.',
+    '',
+    '**Acceptance:** `pnpm --filter client test -- syncClient` passes.',
+    '',
+    '## Cover it with a test',
+    '',
+    'Add a test that forces two failures then a success.',
+    '',
+    '**Acceptance:** the new test fails before the fix and passes after.',
+  ].join('\n');
+
+  it('passes every check on a realistic clean plan', () => {
+    const steps = splitPlanIntoSteps(CLEAN_PLAN);
+    const verdict = checkPlan({
+      plan: CLEAN_PLAN,
+      steps,
+      maxSteps: MAX_PLAN_STEPS,
+      ticketText: null,
+      activeCards: [],
+    });
+    expect(verdict.pass).toBe(true);
   });
 });
