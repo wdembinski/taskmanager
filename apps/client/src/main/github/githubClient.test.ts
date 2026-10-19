@@ -1110,3 +1110,190 @@ describe('GitHubClient.listReviewRequests', () => {
     expect(result).toMatchObject({ incompleteResults: false, truncated: true });
   });
 });
+
+describe('GitHubClient.enableAutoMerge', () => {
+  it('sends the GraphQL mutation with the node id and the mapped merge method', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ number: 7, state: 'open', node_id: 'PR_kwabc' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ data: { enablePullRequestAutoMerge: { pullRequest: { number: 7 } } } }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().enableAutoMerge('o', 'r', 7, 'squash');
+
+    expect(result).toBe('enabled');
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/graphql');
+    expect(init.method).toBe('POST');
+    const sent = JSON.parse(String(init.body));
+    expect(sent.variables).toEqual({ id: 'PR_kwabc', m: 'SQUASH' });
+    expect(sent.query).toContain('enablePullRequestAutoMerge');
+  });
+
+  it('skips the mutation and reports already when auto_merge is already set', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse({
+        number: 7,
+        state: 'open',
+        node_id: 'PR_kwabc',
+        auto_merge: { merge_method: 'SQUASH' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().enableAutoMerge('o', 'r', 7, 'squash');
+
+    expect(result).toBe('already');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to a direct merge when GitHub refuses for clean status', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ number: 7, state: 'open', node_id: 'PR_kwabc' }))
+      .mockResolvedValueOnce(
+        jsonResponse({ errors: [{ message: 'Pull request is in clean status' }] }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ sha: 'deadbeef', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().enableAutoMerge('o', 'r', 7, 'merge');
+
+    expect(result).toBe('merged');
+    const [url, init] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/o/r/pulls/7/merge');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ merge_method: 'merge' });
+  });
+
+  it('throws GitHubError with GitHub’s own message for any other refusal', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ number: 7, state: 'open', node_id: 'PR_kwabc' }))
+      .mockResolvedValueOnce(jsonResponse({ errors: [{ message: 'Resource not accessible' }] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(client().enableAutoMerge('o', 'r', 7, 'merge')).rejects.toMatchObject({
+      name: 'GitHubError',
+      message: expect.stringContaining('Resource not accessible'),
+    });
+  });
+});
+
+describe('GitHubClient.disableAutoMerge', () => {
+  it('sends the disable mutation with the node id', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          number: 7,
+          state: 'open',
+          node_id: 'PR_kwabc',
+          auto_merge: { merge_method: 'SQUASH' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ data: { disablePullRequestAutoMerge: { clientMutationId: null } } }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().disableAutoMerge('o', 'r', 7);
+
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/graphql');
+    const sent = JSON.parse(String(init.body));
+    expect(sent.variables).toEqual({ id: 'PR_kwabc' });
+    expect(sent.query).toContain('disablePullRequestAutoMerge');
+  });
+
+  it('is a no-op when auto_merge is already null', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ number: 7, state: 'open', node_id: 'PR_kwabc' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().disableAutoMerge('o', 'r', 7);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GitHubClient.getAutoMergeFacts', () => {
+  it('reads allowAutoMerge off the repository and required checks off classic protection', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ id: 1, full_name: 'acme/web', allow_auto_merge: true }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          required_status_checks: { contexts: ['ci/build'], checks: [{ context: 'ci/test' }] },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const facts = await client().getAutoMergeFacts('acme', 'web', 'main');
+
+    expect(facts.allowAutoMerge).toBe(true);
+    expect(facts.protectionReadable).toBe(true);
+    expect(new Set(facts.requiredChecks)).toEqual(new Set(['ci/build', 'ci/test']));
+  });
+
+  it('reports an empty required-check list when branch protection 404s', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 1, full_name: 'acme/web', allow_auto_merge: false }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ message: 'Branch not protected' }, 404))
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const facts = await client().getAutoMergeFacts('acme', 'web', 'main');
+
+    expect(facts).toMatchObject({
+      allowAutoMerge: false,
+      requiredChecks: [],
+      protectionReadable: true,
+    });
+  });
+
+  it('reports requiredChecks as null, not empty, when protection is admin-gated with a 403', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ id: 1, full_name: 'acme/web' }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'admin only' }, 403));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const facts = await client().getAutoMergeFacts('acme', 'web', 'main');
+
+    expect(facts).toMatchObject({ requiredChecks: null, protectionReadable: false });
+    // The ruleset call is skipped once the classic read is already known to be unreadable.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('merges in checks named only by a repository ruleset', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ id: 1, full_name: 'acme/web' }))
+      .mockResolvedValueOnce(jsonResponse({ message: 'Branch not protected' }, 404))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            type: 'required_status_checks',
+            parameters: { required_status_checks: [{ context: 'ci/package' }] },
+          },
+          { type: 'pull_request' },
+        ]),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const facts = await client().getAutoMergeFacts('acme', 'web', 'main');
+
+    expect(facts.requiredChecks).toEqual(['ci/package']);
+    expect(String(fetchMock.mock.calls[2][0])).toBe(
+      'https://api.github.com/repos/acme/web/rules/branches/main',
+    );
+  });
+});

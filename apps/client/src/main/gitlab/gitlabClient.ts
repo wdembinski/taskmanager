@@ -63,6 +63,12 @@ export interface GitLabMergeRequest {
    */
   diff_refs?: { base_sha?: string; head_sha?: string; start_sha?: string } | null;
   has_conflicts?: boolean | null;
+  /**
+   * Set once this merge request is waiting for its pipeline before merging — GitLab's own
+   * auto-merge flag, and what {@link GitLabClient.enableAutoMerge} reads to decide the call
+   * is already a no-op.
+   */
+  merge_when_pipeline_succeeds?: boolean | null;
   references?: { full?: string } | null;
   head_pipeline?: { id?: number; status?: string; web_url?: string } | null;
   pipeline?: { id?: number; status?: string; web_url?: string } | null;
@@ -168,6 +174,12 @@ export interface GitLabMergeRequestDiffList {
   /** The page cap stopped `/diffs` early, or `/changes` admitted its own `overflow: true`. */
   truncated: boolean;
   endpoint: 'diffs' | 'changes';
+}
+
+/** What {@link GitLabClient.getAutoMergeFacts} answers about a project. */
+export interface GitLabAutoMergeFacts {
+  /** `GET /projects/:id`'s own merge-on-green setting, or `null` on an instance too old to send it. */
+  onlyAllowMergeIfPipelineSucceeds: boolean | null;
 }
 
 /** What {@link GitLabClient.createMergeRequest} is asked to open. */
@@ -815,5 +827,63 @@ export class GitLabClient {
       `/projects/${projectId}/merge_requests/${iid}/notes?per_page=100&order_by=created_at&sort=desc`,
     );
     return Array.isArray(body) ? (body as GitLabNote[]).filter((n) => n?.system !== true) : [];
+  }
+
+  /**
+   * Arm auto-merge — `PUT /merge_requests/:iid/merge` with `merge_when_pipeline_succeeds`,
+   * the flag that has meant "merge this once its pipeline is green" since before GitLab had
+   * a dedicated name for the feature. `auto_merge: true` is sent alongside it: GitLab 17+'s
+   * own name for the same request, sent so a newer instance recognises this as an explicit
+   * auto-merge request rather than inferring it — and simply ignored by anything older.
+   *
+   * **Idempotent.** A fresh {@link getMergeRequestByPath} decides first: a merge request
+   * already flagged `merge_when_pipeline_succeeds` means some earlier call already armed it,
+   * and `'already'` is reported rather than re-sending a PUT GitLab would answer with
+   * nothing new to do.
+   */
+  async enableAutoMerge(
+    projectPath: string,
+    iid: number,
+    options?: { squash?: boolean },
+  ): Promise<'already' | 'enabled'> {
+    const mr = await this.getMergeRequestByPath(projectPath, iid);
+    if (mr.merge_when_pipeline_succeeds) return 'already';
+    const project = encodeURIComponent(projectPath);
+    const body: Record<string, unknown> = {
+      merge_when_pipeline_succeeds: true,
+      auto_merge: true,
+    };
+    if (options?.squash !== undefined) body.squash = options.squash;
+    await this.write(`/projects/${project}/merge_requests/${iid}/merge`, 'PUT', body);
+    return 'enabled';
+  }
+
+  /**
+   * Disarm auto-merge — `POST /merge_requests/:iid/cancel_merge_when_pipeline_succeeds`,
+   * GitLab's own endpoint for withdrawing the hold {@link enableAutoMerge} placed. Safe to
+   * call on a merge request with none armed: GitLab answers success either way, so there is
+   * no fresh read to make it conditional on the way {@link enableAutoMerge} has one.
+   */
+  async cancelAutoMerge(projectPath: string, iid: number): Promise<void> {
+    const project = encodeURIComponent(projectPath);
+    await this.write(
+      `/projects/${project}/merge_requests/${iid}/cancel_merge_when_pipeline_succeeds`,
+      'POST',
+    );
+  }
+
+  /**
+   * Whether this project itself requires a green pipeline before ANY merge request can be
+   * merged — `GET /projects/:id`'s `only_allow_merge_if_pipeline_succeeds`, a project-wide
+   * setting independent of any one merge request's own `merge_when_pipeline_succeeds`.
+   */
+  async getAutoMergeFacts(projectPath: string): Promise<GitLabAutoMergeFacts> {
+    const project = encodeURIComponent(projectPath);
+    const body = await this.request<{ only_allow_merge_if_pipeline_succeeds?: boolean | null }>(
+      `/projects/${project}`,
+    );
+    return {
+      onlyAllowMergeIfPipelineSucceeds: body.only_allow_merge_if_pipeline_succeeds ?? null,
+    };
   }
 }

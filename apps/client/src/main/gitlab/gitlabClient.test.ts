@@ -681,3 +681,92 @@ describe('GitLabClient.listReviewerMergeRequests', () => {
     expect(truncated).toBe(false);
   });
 });
+
+describe('GitLabClient.enableAutoMerge', () => {
+  it('PUTs merge_when_pipeline_succeeds, auto_merge and squash to :iid/merge', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ iid: 12, state: 'opened' }))
+      .mockResolvedValueOnce(jsonResponse({ iid: 12, state: 'opened' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().enableAutoMerge('g/p', 12, { squash: true });
+
+    expect(result).toBe('enabled');
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(String(url)).toBe('https://gitlab.com/api/v4/projects/g%2Fp/merge_requests/12/merge');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({
+      merge_when_pipeline_succeeds: true,
+      auto_merge: true,
+      squash: true,
+    });
+  });
+
+  it('omits squash when it was not given', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ iid: 12, state: 'opened' }))
+      .mockResolvedValueOnce(jsonResponse({ iid: 12, state: 'opened' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().enableAutoMerge('g/p', 12);
+
+    const init = fetchMock.mock.calls[1][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      merge_when_pipeline_succeeds: true,
+      auto_merge: true,
+    });
+  });
+
+  it('skips the PUT and reports already when the MR is already flagged', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ iid: 12, state: 'opened', merge_when_pipeline_succeeds: true }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await client().enableAutoMerge('g/p', 12, { squash: true });
+
+    expect(result).toBe('already');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('GitLabClient.cancelAutoMerge', () => {
+  it('POSTs to cancel_merge_when_pipeline_succeeds', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'opened' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().cancelAutoMerge('g/p', 12);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      'https://gitlab.com/api/v4/projects/g%2Fp/merge_requests/12/cancel_merge_when_pipeline_succeeds',
+    );
+    expect(init.method).toBe('POST');
+  });
+});
+
+describe('GitLabClient.getAutoMergeFacts', () => {
+  it('reads only_allow_merge_if_pipeline_succeeds off GET /projects/:id', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ id: 42, only_allow_merge_if_pipeline_succeeds: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const facts = await client().getAutoMergeFacts('g/p');
+
+    expect(facts).toEqual({ onlyAllowMergeIfPipelineSucceeds: true });
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://gitlab.com/api/v4/projects/g%2Fp');
+  });
+
+  it('reports null on an instance too old to send the field', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ id: 42 })));
+
+    const facts = await client().getAutoMergeFacts('g/p');
+
+    expect(facts).toEqual({ onlyAllowMergeIfPipelineSucceeds: null });
+  });
+});
