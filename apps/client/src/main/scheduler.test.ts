@@ -33,6 +33,7 @@ import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import { GATE_TRUST_ACTION } from '@shared/workflow';
 import { createActivityRecorder } from './activityRecorder';
 import { gateCommandHash } from './gateTrust';
+import { BaseMovedConflictError } from './forge/createPr';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type { WorktreeManager } from './worktreeManager';
@@ -8273,6 +8274,315 @@ describe('Scheduler.settle — opening a pull request instead of merging', () =>
     expect(notes.some((n) => n.includes('cannot reach a forge'))).toBe(true);
     expect(worktrees.integrate).not.toHaveBeenCalled();
   });
+});
+
+/**
+ * TM-460: a base-moved conflict found while OPENING a pull request (`openPullRequestFor`'s
+ * catch) is handed to the card's own agent instead of being parked outright — the same
+ * Rung 2/Rung 3 ladder the PR/MR conflict suite above drives, reached from a different
+ * door. `open` is wired to throw a `BaseMovedConflictError` on its first call (as the real
+ * `openPullRequest` now does on a conflicted sync) and a plain `#12` on any call after.
+ */
+describe('Scheduler.settle — a base-moved conflict found while opening a pull request (TM-460)', () => {
+  function setup(
+    opts: {
+      rebaseResult?: Record<string, unknown>;
+      finishResult?: Record<string, unknown>;
+    } = {},
+  ) {
+    const project = {
+      id: 'agent-1',
+      name: 'Checkout service',
+      path: 'C:/repo',
+      planPath: '',
+      kind: 'agent',
+      concurrency: 1,
+      useWorktrees: true,
+      defaultModel: 'sonnet',
+      defaultPermissionMode: 'acceptEdits',
+      instructions: '',
+      baseBranch: 'development',
+      autoCreatePr: true,
+    } as unknown as Project;
+    const card = {
+      id: 't1',
+      projectId: 'personal',
+      phase: '',
+      title: 'Fix the export dialog',
+      status: 'running',
+      sessionId: 'sess-1',
+      order: 0,
+      source: 'jira',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: 'agent-1',
+      agentBranch: 'orch/t1',
+      agentMode: 'acceptEdits',
+      parentTaskId: null,
+    } as unknown as Task;
+    const tasks = [card];
+    const notes: string[] = [];
+    const store = {
+      getTask: (id: string) => tasks.find((x) => x.id === id),
+      getProject: (id: string) => (id === 'agent-1' ? project : undefined),
+      listProjects: () => [project],
+      getTasks: () => tasks,
+      getSubtasks: (parentId: string) => tasks.filter((x) => x.parentTaskId === parentId),
+      getTaskActivity: () => [],
+      addComment: (_p: string, _t: string, body: string) => notes.push(body),
+      listTaskLinks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const found = tasks.find((x) => x.id === id);
+        if (found) Object.assign(found, patch);
+        return found;
+      },
+      appendTaskEvent: vi.fn((_p: string, _t: string, _r: string, e: { text?: string }) => {
+        if (e?.text) notes.push(e.text);
+      }),
+      appendTokenUsage: vi.fn(),
+      getSettings: () => ({
+        maxAutoRetries: 0,
+        limitJitterMs: 0,
+        concurrency: 1,
+        trustedGateCommands: [],
+      }),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+
+    const rebaseCalls: Array<{ branch: string; target: string; upstream?: string }> = [];
+    const finishCalls: Array<{ branch: string; target: string; upstream?: string }> = [];
+    const worktrees = {
+      // Succeeds, so the requeued conflict-fix run's own launch doesn't park a SECOND,
+      // unrelated "run" failure on top of the one this suite is about.
+      prepare: vi.fn(async () => ({
+        mode: 'worktree',
+        cwd: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'development',
+      })),
+      inspect: vi.fn(async () => ({ cwd: 'C:/wt/t1', branch: 'orch/t1', base: 'development' })),
+      listConflicts: vi.fn(async () => ['src/app.ts']),
+      rebaseForPullRequest: vi.fn(
+        async (
+          _p: Project,
+          branch: string,
+          target: string,
+          worktree: string,
+          _msg: string,
+          ropts?: { upstream?: string },
+        ) => {
+          rebaseCalls.push({ branch, target, upstream: ropts?.upstream });
+          return opts.rebaseResult ?? { status: 'rebased', branch, base: target, worktree };
+        },
+      ),
+      finishPullRequestRebase: vi.fn(
+        async (
+          _p: Project,
+          branch: string,
+          target: string,
+          worktree: string,
+          fopts?: { upstream?: string },
+        ) => {
+          finishCalls.push({ branch, target, upstream: fopts?.upstream });
+          return opts.finishResult ?? { status: 'rebased', branch, base: target, worktree };
+        },
+      ),
+      integrate: vi.fn(),
+      cleanup: vi.fn(),
+      changedFiles: vi.fn(async () => []),
+    };
+
+    const start = vi.fn((_req: unknown, o: { runId?: string }) => ({ runId: o?.runId ?? 'r-new' }));
+    const sessions = { start, stop: vi.fn(), send: vi.fn() } as unknown as SessionManager;
+    const emitAttention = vi.fn();
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+      worktrees as unknown as WorktreeManager,
+    );
+
+    const err = new BaseMovedConflictError(
+      '"development" has moved on github.com since "orch/t1" was built, and rebasing onto ' +
+        'its current state conflicts on src/app.ts. Pull the latest development into this ' +
+        'project and resolve that there, then press this again.',
+      {
+        branch: 'orch/t1',
+        base: 'development',
+        worktree: 'C:/wt/t1',
+        files: ['src/app.ts'],
+        remoteBase: 'refs/orch/remote-base',
+        forkPoint: 'deadbeef',
+        baseSubjects: ['theirs: rework app.ts'],
+        branchSubjects: ['mine: fix the export dialog'],
+      },
+    );
+    let attempt = 0;
+    const open = vi.fn(async () => {
+      attempt++;
+      if (attempt === 1) throw err;
+      return { url: 'https://github.com/o/r/pull/12', ref: '#12', existed: false };
+    });
+    scheduler.setPullRequestOpener(open);
+
+    /** Settle a finished run that owns the card's branch — the moment the work is written. */
+    const finish = (): void =>
+      (scheduler as unknown as { settle: (r: unknown, s: string) => void }).settle(
+        {
+          runId: 'r1',
+          taskId: 't1',
+          projectId: 'agent-1',
+          branch: 'orch/t1',
+          base: 'development',
+          worktree: 'C:/wt/t1',
+        },
+        'done',
+      );
+
+    /** Seed a live run for the card, as the scheduler would have while it is still working. */
+    const seedRun = (runId: string): void => {
+      (scheduler as unknown as { runs: Map<string, unknown> }).runs.set(runId, {
+        taskId: 't1',
+        projectId: 'agent-1',
+        runId,
+        settled: false,
+      });
+    };
+
+    const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+    return {
+      scheduler,
+      card,
+      notes,
+      worktrees,
+      open,
+      store,
+      finish,
+      flush,
+      emitAttention,
+      rebaseCalls,
+      finishCalls,
+      err,
+      seedRun,
+      start,
+    };
+  }
+
+  it(
+    'requests a conflict-fix run — pendingConflictFix set, the requeued run is ' +
+      'conflictFix:true with a prompt naming the files and both sides\u2019 subjects — no ' +
+      'attention item and no task-failed; once it settles, finishPullRequestRebase runs and ' +
+      'the opener is called a second time',
+    async () => {
+      const { finish, flush, open, emitAttention, scheduler, start, finishCalls } = setup({
+        rebaseResult: {
+          status: 'conflict',
+          worktree: 'C:/wt/t1',
+          branch: 'orch/t1',
+          base: 'refs/orch/remote-base',
+        },
+      });
+
+      finish();
+      await flush();
+
+      expect(open).toHaveBeenCalledTimes(1);
+      // No task-failed and no human-facing merge-conflict item — the agent gets it instead.
+      expect(emitAttention).not.toHaveBeenCalled();
+
+      const pendingConflictFix = (
+        scheduler as unknown as { pendingConflictFix: Map<string, { openPr?: unknown }> }
+      ).pendingConflictFix;
+      expect(pendingConflictFix.has('t1')).toBe(true);
+      expect(pendingConflictFix.get('t1')?.openPr).toBeTruthy();
+
+      type FakeRun = { taskId: string; runId: string; conflictFix?: boolean };
+      const runs = (scheduler as unknown as { runs: Map<string, FakeRun> }).runs;
+      const requeuedRun = [...runs.values()].find((r) => r.conflictFix === true);
+      expect(requeuedRun).toBeTruthy();
+
+      expect(start).toHaveBeenCalledTimes(1);
+      const prompt = String((start.mock.calls[0]?.[0] as { prompt?: string })?.prompt ?? '');
+      expect(prompt).toContain('src/app.ts');
+      expect(prompt).toContain('theirs: rework app.ts');
+      expect(prompt).toContain('mine: fix the export dialog');
+
+      // The fix "settles" — the orchestrator finishes the rebase, which this time comes back
+      // clean, and the opener is tried again.
+      (scheduler as unknown as { settle: (r: FakeRun, s: string) => void }).settle(
+        requeuedRun as FakeRun,
+        'done',
+      );
+      await flush();
+
+      expect(finishCalls).toEqual([
+        { branch: 'orch/t1', target: 'refs/orch/remote-base', upstream: 'deadbeef' },
+      ]);
+      expect(open).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('parks a merge-conflict item naming the files once the AI fix runs out of attempts', async () => {
+    const { finish, flush, emitAttention, scheduler } = setup({
+      rebaseResult: {
+        status: 'conflict',
+        worktree: 'C:/wt/t1',
+        branch: 'orch/t1',
+        base: 'refs/orch/remote-base',
+      },
+    });
+    (scheduler as unknown as { conflictFixAttempts: Map<string, number> }).conflictFixAttempts.set(
+      't1',
+      2,
+    );
+
+    finish();
+    await flush();
+
+    expect(emitAttention).toHaveBeenCalled();
+    const item = emitAttention.mock.calls[0]?.[0] as { kind: string; prompt: string };
+    expect(item.kind).toBe('merge-conflict');
+    expect(item.prompt).toContain('src/app.ts');
+
+    const pendingConflictFix = (
+      scheduler as unknown as { pendingConflictFix: Map<string, unknown> }
+    ).pendingConflictFix;
+    expect(pendingConflictFix.has('t1')).toBe(false);
+  });
+
+  it(
+    'defers a conflict found while the owner\u2019s worktree is busy — no rebase, no ' +
+      'attention item — and the redrive performs the hand-off once the run exits',
+    async () => {
+      const { finish, flush, seedRun, scheduler, worktrees, emitAttention } = setup();
+      seedRun('r-live');
+
+      finish();
+      await flush();
+
+      expect(worktrees.rebaseForPullRequest).not.toHaveBeenCalled();
+      expect(emitAttention).not.toHaveBeenCalled();
+      const deferred = (scheduler as unknown as { deferredPrConflicts: Map<string, unknown> })
+        .deferredPrConflicts;
+      expect(deferred.has('t1')).toBe(true);
+
+      // The run exits — freeing the worktree — and the redrive performs the hand-off.
+      (scheduler as unknown as { runs: Map<string, unknown> }).runs.delete('r-live');
+      (
+        scheduler as unknown as { redriveForgeConflicts: (id: string) => void }
+      ).redriveForgeConflicts('t1');
+      await flush();
+
+      expect(worktrees.rebaseForPullRequest).toHaveBeenCalledTimes(1);
+      expect(deferred.has('t1')).toBe(false);
+    },
+  );
 });
 
 /**

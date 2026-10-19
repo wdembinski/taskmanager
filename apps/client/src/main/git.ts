@@ -925,6 +925,28 @@ export async function branchCommitMessages(
 }
 
 /**
+ * The subject line of every commit in `range` that touches at least one of `files` —
+ * `git log --format=%s <range> -- <files>`. Read by {@link WorktreeManager.syncOntoRemoteBase}
+ * on a conflict, BEFORE it aborts the rebase, so a human (or the agent it hands the
+ * conflict to) can see what each side was actually trying to do to the files that clashed,
+ * not just their names.
+ *
+ * `[]` on a failed call or an empty `files` list — the same "don't know"/"nothing to ask"
+ * shape every other reader of this file uses, never read as "neither side touched anything".
+ */
+export async function commitSubjectsTouching(
+  dir: string,
+  range: string,
+  files: readonly string[],
+  host?: ExecHost,
+): Promise<string[]> {
+  if (files.length === 0) return [];
+  const res = await git(dir, ['log', '--format=%s', range, '--', ...files], host);
+  if (res.code !== 0) return [];
+  return res.stdout.split('\n').filter((line) => line.trim() !== '');
+}
+
+/**
  * A remote's URL — `git remote get-url <remote>` — or **`''` when git won't say**.
  *
  * The empty answer is the same contract {@link currentBranch} documents: a repo with no
@@ -1197,6 +1219,37 @@ export async function isAncestor(
 ): Promise<boolean> {
   const res = await git(dir, ['merge-base', '--is-ancestor', a, b], host);
   return res.code === 0;
+}
+
+/**
+ * The SHAs `git cherry <head> <upstream>` marks `+` — commits reachable from `upstream`
+ * that have no patch-id twin among the commits reachable from `head`. `[]` on a failed
+ * call, the same "don't know" shape {@link branchCommitMessages} uses, since this file's
+ * one caller ({@link planBranchPush} in `forge/createPr.ts`) already has its own fallback
+ * for that case and must never read an empty array as "every commit matched".
+ *
+ * Git's own argument order is `git cherry [<upstream> [<head>]]`: commits are walked from
+ * `<head>` and each is checked for a patch-id match against `<upstream>`. Passing `head`
+ * into that first slot and `upstream` into the second therefore answers a different
+ * question than the names suggest — it walks commits reachable from THIS function's
+ * `upstream` argument and checks each against THIS function's `head` argument. That is
+ * deliberate: the one caller wants to know whether a remote branch's own tip (its
+ * `upstream` here) was already rebased into the local branch (`head`) — i.e. whether
+ * `git cherry HEAD <remote-sha>` prints no `+` lines — and that is exactly what this
+ * parameter order spells.
+ */
+export async function cherryUnmatched(
+  cwd: string,
+  head: string,
+  upstream: string,
+  host?: ExecHost,
+): Promise<string[]> {
+  const res = await git(cwd, ['cherry', head, upstream], host);
+  if (res.code !== 0) return [];
+  return res.stdout
+    .split('\n')
+    .filter((line) => line.startsWith('+ '))
+    .map((line) => line.slice(2).trim());
 }
 
 /**

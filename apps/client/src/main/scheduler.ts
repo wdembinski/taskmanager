@@ -120,7 +120,9 @@ import { guardCardStatus, humanStatusPatch } from './cardStatusGuard';
 import { ChainRunner, type ChainTrigger } from './chainRunner';
 import { GateStepRunner, type GateFailureInfo, type GatePrepResult } from './gateStep';
 import { gateCommandHash, isCommandTrusted, withTrustedHash } from './gateTrust';
-import { GATE_TRUST_ACTION, isGateStep } from '@shared/workflow';
+import { runGate } from './gateRunner';
+import { GATE_TRUST_ACTION, isGateStep, type GateStep } from '@shared/workflow';
+import { BaseMovedConflictError } from './forge/createPr';
 import type { PermissionGate } from './claudeSession';
 import { buildChainSummary } from './chainSummary';
 import { shouldSurfaceEvent } from './eventNoise';
@@ -1036,10 +1038,43 @@ interface ForgeConflictCtx {
 }
 
 /**
+ * The identifiers a conflict found while OPENING a pull request (never one already open —
+ * that is `ForgeConflictCtx`'s job) needs to carry through the same ladder and out the
+ * other side — see {@link Scheduler.handPrConflictToAgent}. There is no `mrId` yet, which
+ * is exactly why this is a separate marker from `forge` rather than a variant of it: nothing
+ * about this card has a pull request open on any forge until the rebase this carries lands
+ * and `openPullRequestFor` is called again.
+ *
+ * Plain strings and arrays only — this rides inside {@link PendingIntegration}, which is
+ * persisted as JSON on a parked `merge-conflict` attention item (see `rehydrateAttention`),
+ * so nothing here may be a class instance, a Map, or anything else JSON would silently drop.
+ */
+interface OpenPrConflictCtx {
+  /** The card whose branch/worktree this is — see `IntegrationCtx.taskId`'s own doc for why
+   *  this is carried explicitly rather than re-derived from it. */
+  ownerId: string;
+  /** The scratch ref (`refs/orch/remote-base`) the branch was rebased `--onto`, fetched fresh
+   *  by `syncOntoRemoteBase` — never the project's own `base`, which the branch may already
+   *  have fallen behind. */
+  remoteBase: string;
+  /** The branch's own fork point off `base`, computed before the rebase — the `--onto`
+   *  rebase's `upstream`, so retrying isolates exactly the branch's own commits again. */
+  forkPoint: string;
+  /** The files the rebase conflicted on. */
+  files: string[];
+  /** Each side's own commit subjects touching `files` since `forkPoint` — the remote base's
+   *  ("theirs") and this branch's own ("yours") — for the resolve prompt. */
+  baseSubjects: string[];
+  branchSubjects: string[];
+}
+
+/**
  * The shape every step of the conflict ladder passes around: what branch, in what worktree,
- * is being rebased onto what. `forge` is present exactly when this is a PR/MR rebase rather
- * than a merge into the project's own base — its presence is the one thing that tells
- * `applyIntegrationResult`, `escalateConflict` and friends which of the two they are driving.
+ * is being rebased onto what. `forge` is present exactly when this is an already-open PR/MR
+ * rebase; `openPr` when it is a conflict found while OPENING one. Never both — their
+ * presence (or absence) is what tells `applyIntegrationResult`, `escalateConflict` and
+ * friends which of the three landings (plain merge, forge rebase, open-PR rebase) they are
+ * driving.
  */
 interface IntegrationCtx {
   taskId: string;
@@ -1048,6 +1083,7 @@ interface IntegrationCtx {
   base: string;
   worktree: string;
   forge?: ForgeConflictCtx;
+  openPr?: OpenPrConflictCtx;
 }
 
 /** A parked merge conflict awaiting a human, so `answerAttention` can finish integrating. */
@@ -1273,6 +1309,24 @@ export class Scheduler {
    * `finishAfterConflict` instead of a fresh integrate. Keyed by task id → integration ctx.
    */
   private readonly pendingConflictFix = new Map<string, PendingIntegration>();
+  /**
+   * A base-moved conflict found while opening a pull request (TM-460), keyed by owner id,
+   * for when the owner's worktree was busy at the moment {@link Scheduler.openPullRequestFor}
+   * caught the {@link BaseMovedConflictError} — the same reason `forgeConflicts` queues
+   * rather than drives immediately. {@link Scheduler.redriveForgeConflicts} re-offers it
+   * (alongside every queued forge conflict) once the worktree may have freed up; nothing
+   * here is a human-facing park, so there is no `AttentionItem`/`PendingIntegration` to
+   * persist until {@link Scheduler.handPrConflictToAgent} actually runs and a REAL conflict
+   * (one the mechanical rungs can't resolve) escalates one.
+   */
+  private readonly deferredPrConflicts = new Map<
+    string,
+    {
+      project: Project;
+      ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string };
+      err: BaseMovedConflictError;
+    }
+  >();
   /**
    * PR/MRs the watcher found conflicted and `features.prAutoResolve` is on for, keyed by MR
    * id — queued here by {@link Scheduler.resolveForgeConflict} for the conflict ladder to
@@ -2897,11 +2951,21 @@ export class Scheduler {
    * first among them), so calling it again here is harmless whether or not anything was
    * actually deferred: if the next step has already started, the worktree reads busy
    * again and nothing happens.
+   *
+   * Also redrives {@link Scheduler.deferredPrConflicts} (TM-460) — a base-moved conflict
+   * found while OPENING a pull request, deferred for the exact same reason and re-checked
+   * the same way: `worktreeBusy` once more, so a worktree that is still busy (or busy
+   * again by the time this runs) simply leaves it queued for the next call.
    */
   private redriveForgeConflicts(ownerId: string): void {
     for (const { taskId, mr } of [...this.forgeConflicts.values()]) {
       const owner = this.store.getTask(taskId)?.parentTaskId ?? taskId;
       if (owner === ownerId) this.resolveForgeConflict(taskId, mr);
+    }
+    const deferred = this.deferredPrConflicts.get(ownerId);
+    if (deferred && !this.worktreeBusy(ownerId)) {
+      this.deferredPrConflicts.delete(ownerId);
+      void this.handPrConflictToAgent(deferred.project, deferred.ctx, ownerId, deferred.err);
     }
   }
 
@@ -3045,6 +3109,64 @@ export class Scheduler {
   }
 
   /**
+   * Hand a base-moved conflict found while OPENING a pull request (TM-460) to the card's
+   * own agent — the PR twin of {@link Scheduler.driveForgeConflict}, climbing the identical
+   * Rung 2/Rung 3 ladder but rebasing onto the scratch ref `syncOntoRemoteBase` just fetched
+   * (`err.remoteBase`, from the branch's own fork point `err.forkPoint`) rather than onto an
+   * already-open PR/MR's target — there is no `mrId` yet, which is exactly why `ctx.openPr`
+   * is a separate marker from `ctx.forge`.
+   *
+   * No `raiseTaskFailed` here: every outcome — clean, conflicted, or a git error — is
+   * {@link Scheduler.applyIntegrationResult}'s to decide, the same as every other entry onto
+   * this ladder. The caller (`openPullRequestFor`'s catch, or a later redrive) has already
+   * checked `!worktreeBusy(ownerId)` before calling this.
+   */
+  private async handPrConflictToAgent(
+    project: Project,
+    ctx: { taskId: string; runId: string; branch: string; base: string; worktree: string },
+    ownerId: string,
+    err: BaseMovedConflictError,
+  ): Promise<void> {
+    const ownerTask = this.store.getTask(ownerId);
+    const integrationCtx: IntegrationCtx = {
+      taskId: ownerId,
+      runId: ownerTask?.sessionId ?? ownerId,
+      branch: ctx.branch,
+      base: ctx.base,
+      worktree: ctx.worktree,
+      openPr: {
+        ownerId,
+        remoteBase: err.remoteBase,
+        forkPoint: err.forkPoint,
+        files: err.files,
+        baseSubjects: err.baseSubjects,
+        branchSubjects: err.branchSubjects,
+      },
+    };
+    this.beginIntegration(ownerId);
+    try {
+      const result = await this.worktrees!.rebaseForPullRequest(
+        project,
+        ctx.branch,
+        err.remoteBase,
+        ctx.worktree,
+        'orchestrator: rebase for pull request',
+        { upstream: err.forkPoint },
+      );
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, integrationCtx, result);
+    } catch (e) {
+      if (this.disposed) return;
+      this.applyIntegrationResult(project, integrationCtx, {
+        status: 'error',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      this.endIntegration(ownerId);
+    }
+  }
+
+  /**
    * The second half of a PR/MR rebase landing clean (`applyIntegrationResult`'s `rebased`
    * case): force-with-lease push it back to the forge, leasing the SHA fetched before the
    * rebase started so a push that landed in the gap is refused by git rather than
@@ -3090,6 +3212,100 @@ export class Scheduler {
       `Rebased "${ctx.branch}" onto \`${ctx.base}\` and pushed it back to the forge.${resolved}`,
     );
     this.markMrActed?.(forge.mrId, forge.leaseSha, 'resolve-conflicts');
+  }
+
+  /**
+   * The `openPr` twin of {@link Scheduler.pushForgeRebase}: a base-moved conflict's rebase
+   * landed clean (`applyIntegrationResult`'s `rebased` case), so there is no `forge` to push
+   * against — only a worktree that is finally ahead of the remote base again. Run the card's
+   * own trusted gates in it before trying the pull request a second time: the resolve prompt
+   * already told the agent to run them, but an agent can finish a turn without actually
+   * having done so, and a pull request opened on red gates is worse than one that is merely
+   * late.
+   *
+   * A failing gate parks a `pull-request` failure carrying its output, exactly like a push
+   * that failed outright — never a `merge-conflict` (there is no conflict left) and never a
+   * silent retry (the human needs to see why).
+   */
+  private async landOpenPrRebase(
+    project: Project,
+    ctx: IntegrationCtx,
+    result: Extract<IntegrationResult, { status: 'rebased' }>,
+  ): Promise<void> {
+    const openPr = ctx.openPr;
+    if (!openPr) return;
+    const host = hostFor(project.target);
+    const gates = await this.runCardGates(ctx.taskId, ctx.worktree, host);
+    if (this.disposed) return;
+    if (!gates.ok) {
+      this.raiseTaskFailed({
+        kind: 'pull-request',
+        projectId: project.id,
+        taskId: ctx.taskId,
+        runId: ctx.runId,
+        reason:
+          `Rebased "${ctx.branch}" onto the latest base, but its gate command ` +
+          `"${gates.command}" failed before the pull request could be reopened:\n\n${gates.output}`,
+        branch: ctx.branch,
+        base: ctx.base,
+        worktree: ctx.worktree,
+      });
+      return;
+    }
+    const resolved = result.autoResolved?.length
+      ? ` ${result.autoResolved.length} conflict(s) were resolved automatically, with no agent ` +
+        `(${summarizeFiles(result.autoResolved)}).`
+      : '';
+    this.noteRun(
+      project.id,
+      ctx.taskId,
+      ctx.runId,
+      `Rebased "${ctx.branch}" onto the latest base and its gates passed — reopening the ` +
+        `pull request.${resolved}`,
+    );
+    void this.openPullRequestFor(project, ctx, openPr.ownerId);
+  }
+
+  /**
+   * Run every TRUSTED gate-step command of `ownerId`'s own chain, in order, in `worktree` —
+   * the scheduler's own re-check before a rebased branch's pull request is reopened
+   * ({@link Scheduler.landOpenPrRebase}), never a substitute for the chain's own gate steps
+   * (those still run, and park, exactly as they always have). An untrusted command is never
+   * run — it is skipped with a note, the same "never run a command nobody has trusted on
+   * this desktop" rule {@link GateStepRunner.start} enforces for a gate step's own turn.
+   */
+  private async runCardGates(
+    ownerId: string,
+    worktree: string,
+    host: ExecHost,
+  ): Promise<{ ok: true } | { ok: false; command: string; output: string }> {
+    const owner = this.store.getTask(ownerId);
+    const gates = this.store
+      .getSubtasks(ownerId)
+      .filter((t): t is Task & { stepSpec: GateStep } => !!t.stepSpec && isGateStep(t.stepSpec));
+    for (const gate of gates) {
+      const command = gate.stepSpec.command;
+      if (!command.trim()) continue;
+      if (!isCommandTrusted(this.store.getSettings().trustedGateCommands ?? [], command)) {
+        this.noteCard(
+          owner?.projectId ?? gate.projectId,
+          ownerId,
+          `Skipped the untrusted gate command "${command}" before reopening the pull ` +
+            `request — trust it on this desktop (from the gate step itself) to have it run here.`,
+        );
+        continue;
+      }
+      const run = await runGate(host, { command, cwd: worktree });
+      if (run.error) return { ok: false, command, output: run.error.message };
+      if (run.exitCode !== 0) {
+        return {
+          ok: false,
+          command,
+          output: run.output || `exited with code ${run.exitCode ?? 'null'}`,
+        };
+      }
+    }
+    return { ok: true };
   }
 
   /**
@@ -6455,7 +6671,12 @@ export class Scheduler {
         // without touching the status, and the push below writes none either — so the card
         // span "working" with no process behind it, long after the PR/MR was mergeable.
         this.releaseBorrowedStatus(ctx.taskId);
-        void this.pushForgeRebase(project, ctx, result);
+        // No `forge` here — a PR/MR open yet has no `mrId` to push against — so there is no
+        // `pushForgeRebase` landing for it. Instead: the card's own gates, then reopen its
+        // pull request (whose own push takes the lease `planBranchPush` already grants a
+        // branch this worktree just rebased).
+        if (ctx.openPr) void this.landOpenPrRebase(project, ctx, result);
+        else void this.pushForgeRebase(project, ctx, result);
         break;
       }
       case 'nothing-to-merge': {
@@ -6759,16 +6980,26 @@ export class Scheduler {
   ): Promise<void> {
     const files = await this.worktrees!.listConflicts(project, ctx.worktree);
     if (this.disposed) return;
+    const openPr = ctx.openPr;
     const rebaseTarget = ctx.forge
       ? `origin/${ctx.forge.targetBranch} for ${this.forgeMrRef(ctx.forge.mrId)}`
-      : `"${ctx.base}"`;
+      : openPr
+        ? 'the remote base'
+        : `"${ctx.base}"`;
     const note =
       `Rebasing your branch onto ${rebaseTarget} left merge conflicts in this worktree` +
       (files.length ? ` (${summarizeFiles(files)})` : '') +
+      (openPr
+        ? ` — theirs: ${summarizeFiles(openPr.baseSubjects)} / yours: ${summarizeFiles(openPr.branchSubjects)}`
+        : '') +
       `. Resolve the conflict markers, then \`git add\` each resolved file. Do NOT run ` +
       `\`git rebase --continue\`, commit, push, or switch branches — the orchestrator finishes ` +
       `the rebase once your resolutions are staged. If a lockfile (e.g. pnpm-lock.yaml) ` +
-      `conflicts, regenerate it (e.g. \`pnpm install\`) and stage it.`;
+      `conflicts, regenerate it (e.g. \`pnpm install\`) and stage it.` +
+      (openPr
+        ? ` Run this project's gates and make sure they pass before staging your resolution — ` +
+          `the orchestrator reopens the pull request only once they do.`
+        : '');
     this.noteRun(
       project.id,
       ctx.taskId,
@@ -6806,9 +7037,14 @@ export class Scheduler {
         `${this.forgeMrRef(ctx.forge.mrId)} hit a merge conflict. Resolve the conflicts in ` +
         `the worktree below (edit the files, then \`git add\` them), then choose Resolved to ` +
         `finish the rebase and push it back — or Abandon to leave the branch for later.`
-      : `Integrating branch "${ctx.branch}" into ${ctx.base} hit a merge conflict. Resolve the ` +
-        `conflicts in the worktree below (edit the files, then \`git add\` them), then choose ` +
-        `Resolved to finish the merge — or Abandon to leave the branch for later.`;
+      : ctx.openPr
+        ? `Rebasing branch "${ctx.branch}" onto the remote base to open its pull request hit ` +
+          `a merge conflict on ${summarizeFiles(ctx.openPr.files)}. Resolve the conflicts in ` +
+          `the worktree below (edit the files, then \`git add\` them), then choose Resolved to ` +
+          `finish the rebase and reopen the pull request — or Abandon to leave the branch for later.`
+        : `Integrating branch "${ctx.branch}" into ${ctx.base} hit a merge conflict. Resolve the ` +
+          `conflicts in the worktree below (edit the files, then \`git add\` them), then choose ` +
+          `Resolved to finish the merge — or Abandon to leave the branch for later.`;
     const item: AttentionItem = {
       id: randomUUID(),
       runId: ctx.runId,
@@ -6832,6 +7068,7 @@ export class Scheduler {
       base: ctx.base,
       worktree: ctx.worktree,
       forge: ctx.forge,
+      openPr: ctx.openPr,
     };
     this.attention.set(item.id, item);
     this.pendingIntegrations.set(item.id, pending);
@@ -7858,6 +8095,25 @@ export class Scheduler {
       );
     } catch (err) {
       if (this.disposed) return;
+      // A base-moved conflict is handed to the card's own agent (TM-460) instead of being
+      // parked like every other wall this call can hit — the flag is cleared FIRST, because
+      // `worktreeBusy` reads it and this call's own reservation must not make itself look
+      // busy to its own check.
+      if (err instanceof BaseMovedConflictError && this.worktrees) {
+        this.openingPullRequest.delete(ownerId);
+        if (!this.worktreeBusy(ownerId)) {
+          void this.handPrConflictToAgent(project, ctx, ownerId, err);
+          return;
+        }
+        this.deferredPrConflicts.set(ownerId, { project, ctx, err });
+        this.noteCard(
+          project.id,
+          ownerId,
+          `"${ctx.branch}" has fallen behind ${ctx.base} and conflicts when rebased onto its ` +
+            `current state, but this card's worktree is busy — left for when it frees up.`,
+        );
+        return;
+      }
       const why = err instanceof Error ? err.message : String(err);
       this.raiseTaskFailed({
         kind: 'pull-request',
@@ -8197,9 +8453,10 @@ export class Scheduler {
   /**
    * Finish integrating after a human (or Rung 2's agent) resolved a rebase conflict in the
    * worktree: continue the rebase, then land it. Still conflicted → re-park; otherwise apply
-   * the same outcomes as the initial attempt. `pending.forge` decides which landing a clean
-   * rebase gets: a fast-forwarded base for an ordinary merge, or a force-with-lease push for
-   * a PR/MR — see {@link WorktreeManager.finishPullRequestRebase}.
+   * the same outcomes as the initial attempt. `pending.forge`/`pending.openPr` decide which
+   * landing a clean rebase gets: a fast-forwarded base for an ordinary merge, or a
+   * force-with-lease push for an already-open PR/MR, or (for `openPr`) the card's own gates
+   * followed by reopening its pull request — see {@link WorktreeManager.finishPullRequestRebase}.
    */
   private async finishConflict(pending: PendingIntegration): Promise<void> {
     const project = this.store.getProject(pending.projectId);
@@ -8211,6 +8468,7 @@ export class Scheduler {
       base: pending.base,
       worktree: pending.worktree,
       forge: pending.forge,
+      openPr: pending.openPr,
     };
     // The same merge, resumed — so it says the same thing while it runs. Answering
     // "Resolved — finish merge" otherwise dismissed the inbox item and left the card
@@ -8224,12 +8482,20 @@ export class Scheduler {
             `refs/remotes/origin/${pending.forge.targetBranch}`,
             pending.worktree,
           )
-        : await this.worktrees!.finishAfterConflict(
-            project,
-            pending.branch,
-            pending.base,
-            pending.worktree,
-          );
+        : pending.openPr
+          ? await this.worktrees!.finishPullRequestRebase(
+              project,
+              pending.branch,
+              pending.openPr.remoteBase,
+              pending.worktree,
+              { upstream: pending.openPr.forkPoint },
+            )
+          : await this.worktrees!.finishAfterConflict(
+              project,
+              pending.branch,
+              pending.base,
+              pending.worktree,
+            );
       if (this.disposed) return;
       this.applyIntegrationResult(project, ctx, result);
     } catch (err) {
