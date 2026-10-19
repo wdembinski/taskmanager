@@ -45,6 +45,7 @@ import { logMain } from './log';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
 import { DEFAULT_READY_LANES, openPrTaskIds } from '@shared/readyLanes';
+import { fileHolds } from '@shared/fileOverlap';
 import { variantWorkOwner } from '@shared/variants';
 import {
   forgeName,
@@ -2986,6 +2987,12 @@ export class Scheduler {
   noteWorkLanded(taskId: string): void {
     if (this.disposed) return;
     this.chain.landed(taskId);
+    // The merged PR no longer holds its card's lane or files (`openPrTaskIds` reads open
+    // ones only), so a card the lane cap queued, or that waited for those files, may start
+    // now — the run exited long ago, so nothing else re-asks. Both are idempotent, which the
+    // repeat polls of a retained MR need.
+    this.reconsiderChains('lane-freed');
+    this.pumpAllActive();
   }
 
   /**
@@ -4004,7 +4011,16 @@ export class Scheduler {
       }
       if (this.runProjectFor(row)?.id === projectId) queued.push(row);
     }
-    return [...this.store.getTasks(projectId), ...queued];
+    const cards = [...this.store.getTasks(projectId), ...queued];
+    // A card whose files overlap an active card's — running, or in review behind an open
+    // PR — waits for it (`@shared/fileOverlap`). Re-read on every pass: once the first of two
+    // overlapping pending cards is picked it is in `inFlight`, and holds the second on the
+    // next iteration. The hold lifts when that run exits or its PR merges (both pump again).
+    // A project where no card has files (every one before plannedFiles) holds nothing, so
+    // the merge-request read is skipped for it.
+    if (!cards.some((t) => t.plannedFiles?.length)) return cards;
+    const held = fileHolds(cards, this.inFlight, openPrTaskIds(this.store.listMergeRequests()));
+    return held.size === 0 ? cards : cards.filter((t) => !held.has(t.id));
   }
 
   /** Fill this project's free concurrency slots with its next pending tasks. */

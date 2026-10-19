@@ -42,9 +42,14 @@
  * paths ask that one function which of a project's releasable cards fit, so the engine starts
  * exactly the cards the board marks ready and queues the ones it marks queued. Only the
  * human's **Release now** goes past it, as it goes past every other gate.
+ *
+ * And one more, from the same plan: a card whose **files** overlap an active card's in its
+ * project (`@shared/fileOverlap`, the plan's `fileHeld`) waits for that card, and says so.
+ * Release now goes past that too.
  */
 import { restingStatus } from '@shared/board';
 import type { Task } from '@shared/model';
+import { fileHolds, holdAgainst, MAX_SHOWN_FILES, type FileHold } from '@shared/fileOverlap';
 import { compareLaneOrder, readyLanesByProject, type LanePlan } from '@shared/readyLanes';
 import {
   blockedBy,
@@ -142,8 +147,8 @@ const TRIGGER_NOTE: Record<ChainTrigger, string> = {
     'Started when its open decision was cleared: everything it was chained to wait for had ' +
     'already finished.',
   'lane-freed':
-    'Started when a ready lane freed up: everything it was chained to wait for had already ' +
-    'finished, and it was next in line.',
+    'Started when a ready lane freed up, or the files it waited for: everything it was ' +
+    'chained to wait for had already finished, and it was next in line.',
 };
 
 /**
@@ -155,6 +160,9 @@ const TRIGGER_NOTE: Record<ChainTrigger, string> = {
  */
 const MOVED_NOTE =
   ' The card was moved to In Progress: nobody was here to move it, and its work is under way.';
+
+/** How a card waiting for another card's files is told it will not wait forever. */
+const FREED_NOTE = 'It starts by itself once that card lands or its run ends.';
 
 /** The statuses that mean "the human has taken this card off the chain's hands". */
 const ABANDONED: ReadonlySet<Task['status']> = new Set(['stopped', 'cancelled']);
@@ -173,7 +181,9 @@ type Decline =
   /** The engine itself refused the start — a limit, or a run that beat us to it. */
   | 'refused'
   /** Its turn came, but every ready lane of its project is taken — see `@shared/readyLanes`. */
-  | 'lane-limit';
+  | 'lane-limit'
+  /** Its turn came, but an active card of its project touches the same files — `@shared/fileOverlap`. */
+  | 'file-overlap';
 
 /** How a card is named in another card's timeline: its ticket key when it has one. */
 function name(task: Task): string {
@@ -222,6 +232,14 @@ export class ChainRunner {
    * as a decline.
    */
   private readonly queued = new Map<string, string[]>();
+
+  /**
+   * The cards already told they **wait for another card's files**, with the card they wait
+   * for and the start keys of the arrows that held them — the twin of `queued`, drained the
+   * same way when the card starts. A re-ask that finds it held by the same card says
+   * nothing; held by a different one, it is told again.
+   */
+  private readonly held = new Map<string, { by: string; keys: string[] }>();
 
   constructor(private readonly deps: ChainRunnerDeps) {}
 
@@ -291,11 +309,13 @@ export class ChainRunner {
     const waiting = blockedBy(task, links, this.index(links));
     // Asked before the start, which takes a lane of its own. The cap is ignored here exactly
     // as the gates are — the human chose — but a card that was queued says it jumped the queue.
+    // A file hold is bypassed the same way: the human pressed the button knowing what runs.
     const wasQueued = this.lanePlan(task.projectId, links).queued.has(task.id);
     if (!this.deps.runTask(taskId)) {
       return 'The engine could not start that card — it may already be running, or held by a usage limit.';
     }
     this.queued.delete(task.id);
+    this.held.delete(task.id);
     const jumped = wasQueued
       ? ` It also went past the project's ready-lane limit: ${this.lanesTaken(task)}`
       : '';
@@ -354,7 +374,13 @@ export class ChainRunner {
     // so the cards that start are exactly the ones the board marks ready.
     for (const group of candidates.values()) {
       for (const task of group.sort(compareLaneOrder)) {
-        // Re-asked per card: each start takes a lane, and a refused one leaves it free.
+        // Re-asked per card: each start takes a lane and holds its files, and a refused one
+        // leaves both free. A held card is asked first — it takes no lane while it waits.
+        const hold = this.fileHold(task, links);
+        if (hold) {
+          this.noteHeld(task, hold, null);
+          continue;
+        }
         const lane = this.lane(task, links);
         if (!lane.fits) {
           this.noteQueued(task, lane.plan);
@@ -476,6 +502,15 @@ export class ChainRunner {
         this.noteDecline(from, to, link, cause, said, why);
         continue;
       }
+      // Its turn has come, but an active card may be touching the same files — every merge
+      // conflict of 2026-10-18 was two cards editing the same files at once. Asked per start,
+      // so the first of two overlapping successors runs and the second waits for it.
+      const hold = this.fileHold(to, links);
+      if (hold) {
+        this.noteDecline(from, to, link, cause, said, 'file-overlap', hold);
+        this.noteHeld(to, hold, said);
+        continue;
+      }
       // Its turn has come, but the project's lanes may all be taken. Asked per start, so two
       // releases in one loop cannot both take the last lane.
       if (!this.lane(to, links).fits) {
@@ -514,11 +549,12 @@ export class ChainRunner {
     cause: ReleaseCause,
     said: string,
     why: Decline,
+    hold?: FileHold,
   ): void {
     const key = `${said}:${why}`;
     if (this.announced.has(key)) return;
     this.announced.add(key);
-    this.deps.addComment(to.projectId, to.id, this.releaseNote(from, to, link, cause, why));
+    this.deps.addComment(to.projectId, to.id, this.releaseNote(from, to, link, cause, why, hold));
   }
 
   /**
@@ -545,13 +581,14 @@ export class ChainRunner {
     link: TaskLink,
     cause: ReleaseCause,
     why: Decline | null,
+    hold?: FileHold,
   ): string {
     const head =
       why === null
         ? 'Started automatically'
         : why === 'needs-decision'
           ? 'Waiting on a decision'
-          : why === 'lane-limit'
+          : why === 'lane-limit' || why === 'file-overlap'
             ? 'Queued'
             : why === 'no-agent' || why === 'resting'
               ? 'Ready to start'
@@ -566,11 +603,11 @@ export class ChainRunner {
           `contains that card's commits — merge ${name(from)} first, or merging this one ` +
           `carries its work along with it.`
         : '';
-    return `${head}: ${because}${stacked}${this.tail(to, why)}`;
+    return `${head}: ${because}${stacked}${this.tail(to, why, hold)}`;
   }
 
   /** The half of {@link ChainRunner.releaseNote} that names the reason. */
-  private tail(to: Task, why: Decline | null): string {
+  private tail(to: Task, why: Decline | null, hold?: FileHold): string {
     switch (why) {
       case null:
         return MOVED_NOTE;
@@ -603,7 +640,38 @@ export class ChainRunner {
         );
       case 'lane-limit':
         return ` Nothing was started yet: ${this.lanesTaken(to)} It starts by itself when one frees up.`;
+      case 'file-overlap':
+        return ` Nothing was started yet. ${this.waitsFor(hold)}. ${FREED_NOTE}`;
     }
+  }
+
+  /** "Waits for TM-x — same files: a, b" — the card it waits for, and up to three of the files. */
+  private waitsFor(hold: FileHold | undefined): string {
+    if (!hold) return 'Waits for another card — same files';
+    const by = this.deps.getTask(hold.byTaskId);
+    const who = by?.externalKey ?? (by ? `"${by.title}"` : 'another card');
+    const shown = hold.files.slice(0, MAX_SHOWN_FILES).join(', ');
+    const more = hold.files.length - MAX_SHOWN_FILES;
+    return `Waits for ${who} — same files: ${shown}${more > 0 ? ` and ${more} more` : ''}`;
+  }
+
+  /**
+   * Remember that a card waits for another card's files, and tell it — once per card it
+   * waits for. `said` is the start key of the arrow that held it, or null for a re-ask; a
+   * release files its own note through `noteDecline`, so only a re-ask writes one here.
+   */
+  private noteHeld(task: Task, hold: FileHold, said: string | null): void {
+    const prior = this.held.get(task.id);
+    const keys = [...(prior?.keys ?? [])];
+    if (said && !keys.includes(said)) keys.push(said);
+    this.held.set(task.id, { by: hold.byTaskId, keys });
+    if (said || prior?.by === hold.byTaskId) return;
+    this.deps.addComment(
+      task.projectId,
+      task.id,
+      `${this.waitsFor(hold)}. Everything this card was chained to wait for has finished, ` +
+        `but two cards editing the same files at once is how merge conflicts start. ${FREED_NOTE}`,
+    );
   }
 
   /** The half-sentence every queued card's note shares: how many lanes, all of them taken. */
@@ -627,10 +695,15 @@ export class ChainRunner {
     );
   }
 
-  /** A card left the queue by starting: the arrows that queued it count as having started it. */
+  /**
+   * A card left the queue by starting: the arrows that queued or held it count as having
+   * started it.
+   */
   private startedFromQueue(taskId: string): void {
     for (const key of this.queued.get(taskId) ?? []) this.announced.add(key);
+    for (const key of this.held.get(taskId)?.keys ?? []) this.announced.add(key);
     this.queued.delete(taskId);
+    this.held.delete(taskId);
   }
 
   /**
@@ -642,17 +715,8 @@ export class ChainRunner {
    * plan is read back.
    */
   private lanePlan(projectId: string, links: readonly TaskLink[]): LanePlan {
-    const cards = new Map(this.deps.projectTasks(projectId).map((t) => [t.id, t]));
-    for (const [id, t] of this.index(links)) if (!cards.has(id)) cards.set(id, t);
-    const all = [...cards.values()];
-    const running = new Set(all.filter((t) => this.deps.inFlight(t.id)).map((t) => t.id));
-    const plans = readyLanesByProject(
-      all,
-      links,
-      running,
-      (id) => this.deps.laneCap(id),
-      this.deps.openPrTaskIds(),
-    );
+    const { all, running, openPrs } = this.board(projectId, links);
+    const plans = readyLanesByProject(all, links, running, (id) => this.deps.laneCap(id), openPrs);
     return (
       plans.get(projectId) ?? {
         ready: new Set(),
@@ -662,6 +726,44 @@ export class ChainRunner {
         cap: 0,
       }
     );
+  }
+
+  /** The cards a lane plan is drawn over (see {@link ChainRunner.lanePlan}), as they stand now. */
+  private board(
+    projectId: string,
+    links: readonly TaskLink[],
+  ): { all: Task[]; running: Set<string>; openPrs: ReadonlySet<string> } {
+    const cards = new Map(this.deps.projectTasks(projectId).map((t) => [t.id, t]));
+    for (const [id, t] of this.index(links)) if (!cards.has(id)) cards.set(id, t);
+    const all = [...cards.values()];
+    const running = new Set(all.filter((t) => this.deps.inFlight(t.id)).map((t) => t.id));
+    return { all, running, openPrs: this.deps.openPrTaskIds() };
+  }
+
+  /**
+   * Why this card must wait for another card's files right now, or null when it need not.
+   *
+   * The plan's `fileHeld` is the board's answer, and the one to agree with. But a release
+   * asks before the board's copy of the predecessor has caught up (see `lane` below), so the
+   * card may not be a candidate in the plan yet — then it is held by hand, against the active
+   * cards and the ready candidates ahead of it in lane order, as the plan would a moment later.
+   *
+   * The hold lifts by itself: an active card stops being one when its run exits or its PR
+   * merges, and both re-ask the chain (`reconsiderChains('lane-freed')`).
+   */
+  private fileHold(task: Task, links: readonly TaskLink[]): FileHold | null {
+    if (task.parentTaskId || !task.plannedFiles?.length) return null;
+    const plan = this.lanePlan(task.projectId, links);
+    const planned = plan.fileHeld.get(task.id);
+    if (planned) return planned;
+    if (plan.ready.has(task.id) || plan.queued.has(task.id)) return null;
+    const { all, running, openPrs } = this.board(task.projectId, links);
+    const active = fileHolds(all, running, openPrs).get(task.id);
+    if (active) return active;
+    const ahead = [...plan.ready]
+      .map((id) => this.deps.getTask(id))
+      .filter((t): t is Task => t !== undefined && compareLaneOrder(t, task) < 0);
+    return holdAgainst(task, ahead);
   }
 
   /**

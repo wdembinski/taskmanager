@@ -902,3 +902,61 @@ describe('ChainRunner — ready lanes', () => {
     expect(notes.at(-1)?.body).toContain("went past the project's ready-lane limit");
   });
 });
+
+describe('ChainRunner — file overlap', () => {
+  const files = (id: string, plannedFiles: string[], key: string): Task => ({
+    ...successor(id),
+    externalKey: key,
+    plannedFiles,
+  });
+
+  it('releases only the first of two overlapping successors, and names it on the second', () => {
+    const { runner, started, notes } = harness(
+      [
+        task({ id: 'a' }),
+        files('b', ['src/a.ts', 'src/b.ts'], 'TM-1'),
+        files('c', ['src/*.ts'], 'TM-2'),
+      ],
+      [link('a', 'b'), link('a', 'c')],
+    );
+    runner.landed('a');
+    expect(started).toEqual(['b']);
+    const note = notes.find((n) => n.taskId === 'c')?.body;
+    expect(note).toMatch(/^Queued: a has landed/);
+    expect(note).toContain('Waits for TM-1 — same files: src/*.ts');
+  });
+
+  it('holds a re-asked card against a running one, once, and starts it when that run ends', () => {
+    const { runner, byId, started, notes, runExits } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        files('busy', ['src/a.ts'], 'TM-9'),
+        files('b', ['src/a.ts'], 'TM-1'),
+        files('c', ['src/z.ts'], 'TM-2'),
+      ],
+      [link('a', 'b'), link('a', 'c')],
+      { inFlight: ['busy'] },
+    );
+    runner.reconsider('boot');
+    runner.reconsider('links-changed');
+    expect(started).toEqual(['c']);
+    const held = notes.filter((n) => n.taskId === 'b');
+    expect(held).toHaveLength(1);
+    expect(held[0].body).toMatch(/^Waits for TM-9 — same files: src\/a\.ts\./);
+
+    runExits('busy');
+    byId.get('busy')!.landedAt = 9;
+    runner.reconsider('lane-freed');
+    expect(started).toEqual(['c', 'b']);
+  });
+
+  it('Release now goes past a file hold', () => {
+    const { runner, started } = harness(
+      [task({ id: 'a' }), files('busy', ['src/a.ts'], 'TM-9'), files('b', ['src/a.ts'], 'TM-1')],
+      [link('a', 'b')],
+      { inFlight: ['busy'] },
+    );
+    expect(runner.releaseNow('b')).toBeNull();
+    expect(started).toEqual(['b']);
+  });
+});

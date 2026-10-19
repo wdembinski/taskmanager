@@ -1346,6 +1346,69 @@ describe('Scheduler.start resumes stopped tasks', () => {
   });
 });
 
+describe('Scheduler — the project queue holds cards that edit the same files', () => {
+  const card = (id: string, order: number, plannedFiles: string[]): Task =>
+    ({
+      id,
+      projectId: 'p',
+      phase: '',
+      title: id,
+      status: 'pending',
+      sessionId: null,
+      order,
+      source: 'plan',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      plannedFiles,
+    }) as Task;
+
+  function setup(tasks: Task[]) {
+    const project = { id: 'p', path: 'C:/w', planPath: 'C:/w/plan.md', concurrency: 2 } as Project;
+    const store = {
+      getTasks: (projectId: string) => tasks.filter((t) => t.projectId === projectId),
+      getProject: (id: string) => (id === 'p' ? project : undefined),
+      getTask: (id: string) => tasks.find((t) => t.id === id),
+      getSubtasks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        const found = tasks.find((x) => x.id === id);
+        if (found) Object.assign(found, patch);
+        return found;
+      },
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 2 }),
+      appendTaskEvent: vi.fn(),
+      listTaskLinks: () => [],
+      listMergeRequests: () => [],
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const start = vi.fn((_req: unknown, _opts: unknown) => ({ runId: 'ignored' }));
+    const sessions = { start, stop: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    const inFlight = (scheduler as unknown as { inFlight: Set<string> }).inFlight;
+    return { scheduler, inFlight };
+  }
+
+  it('a second overlapping card is not auto-started', () => {
+    const { scheduler, inFlight } = setup([
+      card('first', 0, ['src/a.ts']),
+      card('second', 1, ['src/*.ts']),
+    ]);
+    scheduler.start('p');
+    // Concurrency 2 has room for both — the files are what keep the second back.
+    expect([...inFlight]).toEqual(['first']);
+  });
+
+  it('starts a card whose files are disjoint from the running one', () => {
+    const { scheduler, inFlight } = setup([
+      card('first', 0, ['src/a.ts']),
+      card('second', 1, ['src/*.ts']),
+      card('third', 2, ['docs/readme.md']),
+    ]);
+    scheduler.start('p');
+    expect([...inFlight].sort()).toEqual(['first', 'third']);
+  });
+});
+
 describe('Scheduler — the global parallel-session cap (maxParallelSessions)', () => {
   const makeTask = (id: string, projectId: string, order: number): Task =>
     ({
