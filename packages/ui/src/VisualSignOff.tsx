@@ -115,6 +115,21 @@ export function submitVisualSignOff(
   return transport.invoke('task:visualSignOff', taskId, status, screens);
 }
 
+/** The attachment the desktop's "Open comparison" opens for one row: its own side-by-side
+ *  page, else the contact sheet, else the real PNG itself. */
+export function comparisonTarget(pair: ShotPair, indexHtml?: TaskAttachment): TaskAttachment {
+  return pair.html ?? indexHtml ?? pair.real;
+}
+
+/** Opens `comparisonTarget` through `attachment:open` — what the desktop button calls. */
+export function openComparisonOnDesktop(
+  transport: Transport,
+  pair: ShotPair,
+  indexHtml?: TaskAttachment,
+): void {
+  void transport.invoke('attachment:open', comparisonTarget(pair, indexHtml).id);
+}
+
 /** `transport.attachmentUrl?.(a) ?? attachmentUrl(a.id)` — `AttachmentStrip.tsx`'s own
  *  expression, so an image preview resolves the same way everywhere it is used. */
 function imageSrc(
@@ -213,9 +228,7 @@ export function VisualSignOff({
       setDialogRow(pair);
       return;
     }
-    const target = indexHtml ?? pair.html;
-    if (!target) return;
-    void transport.invoke('attachment:open', target.id);
+    openComparisonOnDesktop(transport, pair, indexHtml);
   }
 
   return (
@@ -223,6 +236,18 @@ export function VisualSignOff({
       <div className={styles.head}>
         <Text weight="semibold">Visual sign-off</Text>
         <StateBadge state={state.human} />
+        {/* Rows open their own side-by-side page now, so the contact sheet keeps its own
+            link — desktop only, since the web host's dialog is per-row. */}
+        {indexHtml && transport.host !== 'web' && (
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={<OpenRegular />}
+            onClick={() => void transport.invoke('attachment:open', indexHtml.id)}
+          >
+            Open all
+          </Button>
+        )}
         <span className={styles.grow} />
         <Button
           size="small"

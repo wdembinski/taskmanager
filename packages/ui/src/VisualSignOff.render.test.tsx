@@ -116,4 +116,20 @@ describe('VisualSignOff, rendered inside TaskDetail', () => {
     expect(webHtml).toContain('aria-haspopup="dialog"');
     expect(desktopHtml).not.toContain('aria-haspopup="dialog"');
   });
+
+  it('offers "Open all" on the desktop only, and only when the contact sheet is attached', () => {
+    const card = task({ id: 'card-1' });
+    const withIndex = [
+      ...shotPairAttachments,
+      attachment({ id: 'a-index', name: 'index.html', mimeType: 'text/html' }),
+    ];
+
+    const desktopWithIndex = render(<TaskDetail task={card} attachments={withIndex} />);
+    const desktopWithout = render(<TaskDetail task={card} attachments={shotPairAttachments} />);
+    const webWithIndex = render(<TaskDetail task={card} attachments={withIndex} />, webTransport);
+
+    expect(desktopWithIndex).toContain('Open all');
+    expect(desktopWithout).not.toContain('Open all');
+    expect(webWithIndex).not.toContain('Open all');
+  });
 });
