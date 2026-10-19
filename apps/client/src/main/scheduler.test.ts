@@ -43,6 +43,17 @@ import { BaseMovedConflictError } from './forge/createPr';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type { WorktreeManager } from './worktreeManager';
+import { changedSinceMergeBase } from './git';
+
+// `landWork` reads a branch's three-dot file list before it merges (`recordLandedFiles`).
+// Every other git helper stays real; this one answers `[]` — what git itself answers for a
+// checkout that does not exist, which is every fake project here — without spawning git,
+// so a landing's merge is never left waiting on a real process. Cases about the recorded
+// files set their own answer.
+vi.mock('./git', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./git')>()),
+  changedSinceMergeBase: vi.fn(() => Promise.resolve([])),
+}));
 
 /**
  * An in-memory `appendActivity` that mimics `activity_log`'s partial unique index: a second
@@ -2367,6 +2378,13 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
         if (task) Object.assign(task, patch);
         return task;
       },
+      // The one writer of `plannedFiles`; the real store also normalises and stores an
+      // empty set as NULL, which these cases never depend on.
+      setTaskPlannedFiles: (id: string, files: readonly string[]) => {
+        const task = byId.get(id);
+        if (task) task.plannedFiles = files.length ? [...files] : null;
+        return task;
+      },
       appendTaskEvent: vi.fn(),
       appendTokenUsage: vi.fn(),
       // `autoIntegrate` on: these cases are ABOUT the integration path, and Phase 17 made
@@ -2734,6 +2752,48 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
     expect(children[0].status).toBe('done');
     expect(integrated).toEqual([]); // the chain's branch is not finished yet
     expect(start).toHaveBeenCalledTimes(1); // …step 2 is on its way instead
+  });
+
+  it('landing widens the card’s file set by what its branch changed, read before it merges', async () => {
+    const { parent, children, integrated, seedRun, fire } = setup();
+    parent.plannedFiles = ['apps/client/src/main/*.ts', 'docs/plan.md'];
+    const changed = vi.mocked(changedSinceMergeBase);
+    changed.mockClear();
+    changed.mockImplementationOnce(() => {
+      // Read while the branch is still unmerged — after the merge the range is empty.
+      expect(integrated).toEqual([]);
+      return Promise.resolve(['apps/client/src/main/store.ts', 'Docs\\Plan.md', 'README.md']);
+    });
+    children[0].status = 'done';
+    seedRun('r2', 's2');
+    fire('r2', okResult);
+    await flush();
+
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(changed.mock.calls[0].slice(0, 3)).toEqual(['C:/repos/checkout', 'main', 'orch/t1']);
+    // The union, normalised: the plan's glob is kept for work not written yet.
+    expect(parent.plannedFiles).toEqual([
+      'apps/client/src/main/*.ts',
+      'docs/plan.md',
+      'apps/client/src/main/store.ts',
+      'readme.md',
+    ]);
+    // A step's files are its parent's — the step itself never gets a set.
+    expect(children[1].plannedFiles).toBeUndefined();
+    expect(integrated).toEqual([{ branch: 'orch/t1', base: 'main' }]);
+  });
+
+  it('landing without auto-merge still records the branch’s files on the card', async () => {
+    const { parent, integrated, seedRun, fire } = setup([], { autoIntegrate: false });
+    vi.mocked(changedSinceMergeBase).mockImplementationOnce(() =>
+      Promise.resolve(['src/export.ts']),
+    );
+    seedRun('r1', 't1');
+    fire('r1', okResult);
+    await flush();
+
+    expect(integrated).toEqual([]);
+    expect(parent.plannedFiles).toEqual(['src/export.ts']);
   });
 
   it('the FINAL step integrates the shared branch and hands the card back for review', async () => {
@@ -3713,6 +3773,35 @@ describe('Scheduler — a plan approved into subtasks (Phase 11)', () => {
       expect(decision?.behavior).toBe('deny');
       expect(decision?.message).toContain('do NOT implement it here');
       expect(comments.some((c) => c.startsWith('Plan approved automatically'))).toBe(true);
+    });
+
+    it('writes the plan’s Critical files to the card as its file set when it is approved', async () => {
+      const { scheduler, parent, seedRun } = setup([], { autoApprovePlans: true });
+      seedRun('r0', 't1');
+      void scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: CLEAN_PLAN },
+      } as never);
+      await Promise.resolve();
+
+      expect(parent.plannedFiles).toEqual(['apps/client/src/main/scheduler.ts']);
+    });
+
+    it('writes a step’s approved plan to its PARENT, never to the step', async () => {
+      const { scheduler, parent, children, seedRun } = setup([{ id: 's1' }], {
+        autoApprovePlans: true,
+      });
+      seedRun('r0', 's1');
+      void scheduler.decidePermission({
+        runId: 'r0',
+        toolName: 'ExitPlanMode',
+        input: { plan: CLEAN_PLAN },
+      } as never);
+      await Promise.resolve();
+
+      expect(parent.plannedFiles).toEqual(['apps/client/src/main/scheduler.ts']);
+      expect(children[0].plannedFiles).toBeUndefined();
     });
 
     it('raises a plan-approval item, naming the failed check, when a check fails', async () => {

@@ -62,6 +62,7 @@ import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
 import type { VariantRowDraft } from '@shared/variants';
 import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
 import { DEFAULT_READY_LANES } from '@shared/readyLanes';
+import { normalizePath } from '@shared/fileOverlap';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
 import type {
@@ -300,6 +301,9 @@ interface TaskRow {
   workflowId: string | null;
   /** Attempts a gate step has used; 0 by default. See `Task.gateAttempts`. */
   gateAttempts: number;
+  /** JSON array of normalised repo-relative paths/globs, NULL = no known files. See
+   *  `Task.plannedFiles`. */
+  plannedFiles: string | null;
 }
 
 /** A project row as stored; `writeBackPlan` is a 0/1 INTEGER (SQLite has no boolean). */
@@ -610,6 +614,13 @@ export interface Store {
    * updated task.
    */
   setTaskGateAttempts(id: string, attempts: number): Task | undefined;
+  /**
+   * Write a card's file set — the one writer of `Task.plannedFiles`, mirroring
+   * `setTaskSkillRefs`. Each entry goes through planCheck's `normalizePath` and is
+   * de-duplicated; an empty list is stored as NULL ("no known files"). Undefined for an
+   * unknown id, else the updated task.
+   */
+  setTaskPlannedFiles(id: string, files: readonly string[]): Task | undefined;
   /**
    * Destroy every card archived before `cutoff`, exactly as `deleteTask` would — the retention
    * backstop, so a board that archives forever does not grow forever. Returns how many cards
@@ -1798,6 +1809,9 @@ export function createStore(dbPath: string): Store {
       -- Attempts a gate step has used. 0 is the truth for every row: no pre-F8 row was ever
       -- a gate step, so there is nothing to have attempted.
       gateAttempts           INTEGER NOT NULL DEFAULT 0,
+      -- JSON array of the files a card is expected to touch (Task.plannedFiles), written
+      -- at plan approval and widened on landing. NULL = no known files.
+      plannedFiles           TEXT,
       -- Same trigger-touched column as projects.updatedAt above, for the same reason.
       updatedAt              INTEGER
     );
@@ -2801,6 +2815,9 @@ export function createStore(dbPath: string): Store {
     ['stepSpec', 'TEXT'],
     ['workflowId', 'TEXT'],
     ['gateAttempts', 'INTEGER NOT NULL DEFAULT 0'],
+    // NULL on every pre-existing row = no known files, which is correct: nothing recorded a
+    // card's files before this column existed, and such a card never holds or is held.
+    ['plannedFiles', 'TEXT'],
   ] as Array<[string, string]>) {
     if (!taskColumns.some((c) => c.name === name)) {
       db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
@@ -3192,7 +3209,7 @@ export function createStore(dbPath: string): Store {
         autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId, originAutomationId,
-        skillRefs, stepSpec, workflowId, gateAttempts)
+        skillRefs, stepSpec, workflowId, gateAttempts, plannedFiles)
      VALUES
        (@id, @projectId, @phase, @title, @status, @sessionId, @order, @source, @dependsOn, @isContract, @isScaffold, @type,
         @parentTaskId, @description, @statusNote, @statusNoteAt,
@@ -3215,7 +3232,7 @@ export function createStore(dbPath: string): Store {
         -- same bug wearing a different name.
         @ticketKey, @ticketNumber, @issueType, @epicTaskId, @milestoneId, @labels,
         @storyPoints, @estimateDays, @startAt, @dueAt, @assigneeId, @reporterId, @originAutomationId,
-        @skillRefs, @stepSpec, @workflowId, @gateAttempts)`,
+        @skillRefs, @stepSpec, @workflowId, @gateAttempts, @plannedFiles)`,
   );
   const deleteTask = db.prepare(`DELETE FROM tasks WHERE id = ?`);
   // Native tickets. No foreign key backs epicTaskId (see the tasks table above), so deleting
@@ -3243,6 +3260,10 @@ export function createStore(dbPath: string): Store {
   // The only writer of `gateAttempts` — see `Task.gateAttempts` and `setTaskGateAttempts`.
   const setTaskGateAttemptsStmt = db.prepare(
     `UPDATE tasks SET gateAttempts = @gateAttempts WHERE id = @id`,
+  );
+  // The only writer of `plannedFiles` — see `Task.plannedFiles` and `setTaskPlannedFiles`.
+  const setTaskPlannedFilesStmt = db.prepare(
+    `UPDATE tasks SET plannedFiles = @plannedFiles WHERE id = @id`,
   );
   // The ids the retention sweep is allowed to destroy. Selected rather than deleted in one
   // statement so each goes out through the same `deleteTaskDeep` an explicit delete uses, and
@@ -4434,6 +4455,21 @@ export function createStore(dbPath: string): Store {
     };
   }
 
+  /** `Task.plannedFiles` → the `plannedFiles` column: each entry normalised by planCheck's
+   *  `normalizePath`, de-duplicated in first-seen order, and an empty set stored as NULL —
+   *  "no known files" has one spelling in the column. */
+  function encodePlannedFiles(files: readonly string[] | null | undefined): string | null {
+    const normalized = [...new Set((files ?? []).map(normalizePath).filter(Boolean))];
+    return normalized.length ? JSON.stringify(normalized) : null;
+  }
+
+  /** The `plannedFiles` column back to `Task.plannedFiles`: NULL, unparseable JSON and an
+   *  empty array all read as `null` (no known files). */
+  function parsePlannedFilesColumn(raw: string | null): string[] | null {
+    const files = parseStringArray(raw);
+    return files.length ? files : null;
+  }
+
   /** Read a JSON string-array column (`dependsOn`, `jiraEpicKeys`) back (NULL/garbage → []). */
   function parseStringArray(raw: string | null): string[] {
     if (!raw) return [];
@@ -4614,6 +4650,7 @@ export function createStore(dbPath: string): Store {
       stepSpec: task.stepSpec ? JSON.stringify(task.stepSpec) : null,
       workflowId: task.workflowId ?? null,
       gateAttempts: task.gateAttempts ?? 0,
+      plannedFiles: encodePlannedFiles(task.plannedFiles),
     };
   }
 
@@ -4708,6 +4745,7 @@ export function createStore(dbPath: string): Store {
       stepSpec: parseStepSpecColumn(r.stepSpec),
       workflowId: r.workflowId ?? null,
       gateAttempts: r.gateAttempts ?? 0,
+      plannedFiles: parsePlannedFilesColumn(r.plannedFiles),
     };
   }
 
@@ -5228,6 +5266,7 @@ export function createStore(dbPath: string): Store {
     // `skillRefs` is deliberately absent — see `setTaskSkillRefs`, its one writer.
     // `stepSpec`/`workflowId`/`gateAttempts` are absent too — a step's spec is written once
     // at instantiation, and the attempt counter has one writer, `setTaskGateAttempts`.
+    // `plannedFiles` is absent likewise — see `setTaskPlannedFiles`, its one writer.
   );
   // See `upsertCloudTask`: keeps a project's ticket allocator ahead of any number a pulled
   // ticket already carries, since `ticketSeq` itself never travels on the wire.
@@ -5940,6 +5979,12 @@ export function createStore(dbPath: string): Store {
       if (!getTask(id)) return undefined;
       const clamped = Math.max(0, Math.trunc(attempts));
       setTaskGateAttemptsStmt.run({ id, gateAttempts: clamped });
+      return getTask(id);
+    },
+
+    setTaskPlannedFiles(id, files) {
+      if (!getTask(id)) return undefined;
+      setTaskPlannedFilesStmt.run({ id, plannedFiles: encodePlannedFiles(files) });
       return getTask(id);
     },
 

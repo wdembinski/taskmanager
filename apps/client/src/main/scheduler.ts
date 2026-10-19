@@ -56,6 +56,7 @@ import {
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
 import {
   checkPlan,
+  normalizePath,
   parseCriticalFiles,
   type ActivePlanCard,
   type PlanCheckInput,
@@ -160,7 +161,7 @@ import {
 } from './planToSubtasks';
 import type { SessionManager } from './sessionManager';
 import { hostFor, type ExecHost } from './exec';
-import { changedInBranch } from './git';
+import { changedInBranch, changedSinceMergeBase } from './git';
 import { appPlanPath, appProjectFile, planRelPath } from './projectPaths';
 import { readRepoSkill, type RepoSkill } from './repoSkills';
 import { resolveRunSkills, runSkillRefs, skillsTimelineNote } from './runSkills';
@@ -6555,6 +6556,11 @@ export class Scheduler {
     // work its steps only contributed to.
     const settling = this.store.getTask(ctx.taskId);
     const owner = settling?.parentTaskId ? this.store.getTask(settling.parentTaskId) : settling;
+    // Widen the owner's file set by what the branch actually touched — here, once, so every
+    // way out below (PR, auto-merge, the Merge button) records it and `finishParentChain`
+    // need not. Read before an auto-merge starts: once base contains the branch, the
+    // three-dot range is empty and the work would claim no files at all.
+    const recorded = this.recordLandedFiles(ctx, owner);
     // Open a pull request INSTEAD of merging, when the card asks for it.
     //
     // Asked before auto-merge and asked of the OWNER, both deliberately. Before, because
@@ -6589,7 +6595,7 @@ export class Scheduler {
       return true;
     }
     if (autoIntegrateOn(owner, project, this.store.getSettings())) {
-      void this.integrateWorktree(project, ctx);
+      void recorded.then(() => this.integrateWorktree(project, ctx));
       return true;
     }
     this.attempts.delete(ctx.taskId);
@@ -6628,6 +6634,38 @@ export class Scheduler {
       merged: false,
     });
     return true;
+  }
+
+  /**
+   * Save to `owner` (the parent when the landed task is a step — a step's files are its
+   * parent's) the UNION of its recorded `plannedFiles` and every path its branch changed
+   * since it left base (`changedSinceMergeBase`, three-dot). A union, not a replacement: a
+   * plan's globs keep covering work its later steps have not written yet. A no-op when the
+   * landing has no branch or base, when git reports nothing new, or when git fails (`[]`).
+   * Never throws — a landing must not fail over bookkeeping.
+   */
+  private async recordLandedFiles(ctx: LandingContext, owner: Task | undefined): Promise<void> {
+    if (!owner || !ctx.branch || !ctx.base) return;
+    const project = this.runProjectFor(owner);
+    if (!project) return;
+    try {
+      const changed = await changedSinceMergeBase(
+        project.path,
+        ctx.base,
+        ctx.branch,
+        hostFor(project.target),
+      );
+      const current = this.store.getTask(owner.id);
+      if (!current) return;
+      const before = current.plannedFiles ?? [];
+      const union = [...new Set([...before, ...changed].map(normalizePath).filter(Boolean))];
+      const known = new Set(before);
+      if (union.length === 0 || union.every((f) => known.has(f))) return;
+      const updated = this.store.setTaskPlannedFiles(owner.id, union);
+      if (updated) this.emitTask({ task: updated, runId: null });
+    } catch {
+      // Bookkeeping only: the card simply keeps the files it already had.
+    }
   }
 
   /**
@@ -7717,8 +7755,12 @@ export class Scheduler {
       seenOwners.add(owner.id);
       activeCards.push({
         title: owner.title,
+        key: owner.externalKey || owner.ticketKey || undefined,
         why,
-        files: parseCriticalFiles(owner.agentPlan ?? '') ?? [],
+        // The recorded file set first — it is the approved plan's Critical files widened
+        // by whatever the branch actually touched — then the plan text for a card approved
+        // before `plannedFiles` existed.
+        files: owner.plannedFiles ?? parseCriticalFiles(owner.agentPlan ?? '') ?? [],
       });
     };
 
@@ -7905,6 +7947,14 @@ export class Scheduler {
     const replacement = target.replaceRound != null ? { round: target.replaceRound } : undefined;
     const plan = asker.agentPlan ?? target.plan ?? '';
     const fresh = this.planStepsToAppend(parent.id, plan, replacement?.round);
+    // The plan's Critical files become the OWNER's file set — a step's files are its
+    // parent's, so a step never gets its own. A plan with no section (`null`) leaves what
+    // the card already had; an empty section is the planner saying "no files" and clears it.
+    const files = parseCriticalFiles(plan);
+    if (files) {
+      const updated = this.store.setTaskPlannedFiles(parent.id, files);
+      if (updated) this.emitTask({ task: updated, runId: null });
+    }
 
     const roundSteps = replacement
       ? this.store.getSubtasks(parent.id).filter((s) => (s.planRound ?? 1) === replacement.round)
