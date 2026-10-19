@@ -1738,6 +1738,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     return task;
   });
 
+  // The scheduler owns both, because answering re-asks the chain; it pushes `task:changed`
+  // itself and refuses in a plain sentence (no open decision, a blank answer).
+  handle('task:setDecision', async (taskId, question) => scheduler.setDecision(taskId, question));
+  handle('task:answerDecision', async (taskId, answer) => scheduler.answerDecision(taskId, answer));
+
   handle('task:setPriority', async (taskId, priority) => {
     const existing = store.getTask(taskId);
     if (!existing) throw new Error('Task not found.');

@@ -101,7 +101,8 @@ type ReleaseCause = 'landed' | 'written';
  * nothing was written. What changed is the world around the chain, and this is the only
  * record of which part of it — which is why each trigger carries its own sentence.
  */
-export type ChainTrigger = 'boot' | 'limit-lifted' | 'links-changed' | 'card-changed';
+export type ChainTrigger =
+  'boot' | 'limit-lifted' | 'links-changed' | 'card-changed' | 'decision-cleared';
 
 /**
  * What a card's timeline says when a re-ask started it.
@@ -124,6 +125,9 @@ const TRIGGER_NOTE: Record<ChainTrigger, string> = {
     'already finished.',
   'card-changed':
     'Started when this card came back to To Do: everything it was chained to wait for had ' +
+    'already finished.',
+  'decision-cleared':
+    'Started when its open decision was cleared: everything it was chained to wait for had ' +
     'already finished.',
 };
 

@@ -598,7 +598,13 @@ describe('ChainRunner — re-asking the chain', () => {
   });
 
   it('names the cause on the timeline — each trigger its own sentence', () => {
-    const triggers: ChainTrigger[] = ['boot', 'limit-lifted', 'links-changed', 'card-changed'];
+    const triggers: ChainTrigger[] = [
+      'boot',
+      'limit-lifted',
+      'links-changed',
+      'card-changed',
+      'decision-cleared',
+    ];
     const said = triggers.map((trigger) => {
       const { runner, notes } = overdue();
       runner.reconsider(trigger);
@@ -611,6 +617,7 @@ describe('ChainRunner — re-asking the chain', () => {
     expect(said[1]).toContain('usage limit');
     expect(said[2]).toContain('chain changed');
     expect(said[3]).toContain('To Do');
+    expect(said[4]).toContain('decision was cleared');
   });
 });
 

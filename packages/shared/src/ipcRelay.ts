@@ -266,6 +266,8 @@ export const RELAY_POLICY: {
   'task:setTitle': 'relay',
   'task:setPriority': 'relay',
   'task:setStatusNote': 'relay',
+  'task:setDecision': 'relay',
+  'task:answerDecision': 'relay',
   'task:setProject': 'relay',
   'task:setBoard': 'relay',
   'task:setAgentOptions': 'relay',

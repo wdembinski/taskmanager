@@ -25,7 +25,7 @@ import { AGREE_SENTINEL, OBJECT_SENTINEL, PROPOSE_SENTINEL } from './attention';
 import { MAX_PLAN_STEPS } from '@shared/board';
 import type { TaskAttachment } from '@shared/attachments';
 import type { PermissionMode } from '@shared/session';
-import type { Project, Task } from '@shared/model';
+import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { MergeRequest } from '@shared/mergeRequest';
 import type { ActivityRow } from '@shared/activity';
@@ -7003,6 +7003,142 @@ describe('Scheduler.startTaskNow — the reason a Start was refused', () => {
   it('still answers runTask with a plain null', () => {
     const { scheduler } = setup({ authGate: true });
     expect(scheduler.runTask('t1')).toBeNull();
+  });
+});
+
+describe('Scheduler — an owner decision on a card', () => {
+  function setup(): {
+    scheduler: Scheduler;
+    card: Task;
+    comments: TaskActivityEntry[];
+    emitTask: ReturnType<typeof vi.fn>;
+    reconsider: ReturnType<typeof vi.spyOn>;
+  } {
+    const card = {
+      id: 't1',
+      projectId: 'p',
+      phase: '',
+      title: 'Move the API to the bigger hosting plan',
+      status: 'pending',
+      sessionId: null,
+      order: 0,
+      source: 'board',
+      dependsOn: [],
+      isContract: false,
+      isScaffold: false,
+      agentProjectId: null,
+      decisionQuestion: null,
+      decisionAskedAt: null,
+    } as unknown as Task;
+    const comments: TaskActivityEntry[] = [];
+    const store = {
+      getTask: (id: string) => (id === card.id ? card : undefined),
+      getTasks: () => [card],
+      getSubtasks: () => [],
+      updateTask: (id: string, patch: Partial<Task>) => {
+        if (id !== card.id) return undefined;
+        Object.assign(card, patch);
+        return card;
+      },
+      addComment: (_projectId: string, _taskId: string, body: string) => {
+        const text = body.trim();
+        if (!text) return undefined;
+        const entry = { kind: 'comment', id: comments.length + 1, body: text, createdAt: 1 };
+        comments.push(entry as TaskActivityEntry);
+        return entry;
+      },
+      getTaskActivity: () => [...comments],
+      listProjects: () => [],
+      listTaskLinks: () => [],
+      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      saveLimitGate: vi.fn(),
+      loadLimitGate: () => null,
+      saveAuthGate: vi.fn(),
+      loadAuthGate: () => null,
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const emitTask = vi.fn();
+    const sessions = { start: vi.fn(), stop: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, emitTask, vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    const reconsider = vi.spyOn(scheduler, 'reconsiderChains');
+    return { scheduler, card, comments, emitTask, reconsider };
+  }
+
+  it('sets a decision, then an answer files it as a comment and clears both fields', () => {
+    const { scheduler, card, comments, emitTask, reconsider } = setup();
+
+    const flagged = scheduler.setDecision('t1', '  Which hosting plan do we pay for?  ');
+    expect(flagged.decisionQuestion).toBe('Which hosting plan do we pay for?');
+    expect(flagged.decisionAskedAt).toEqual(expect.any(Number));
+    expect(emitTask).toHaveBeenLastCalledWith({ task: card, runId: null });
+    expect(reconsider).not.toHaveBeenCalled();
+
+    const { task, comment } = scheduler.answerDecision('t1', ' The 4 GB plan. ');
+    expect(comment).toMatchObject({
+      kind: 'comment',
+      body: 'Decision needed: Which hosting plan do we pay for?\n\nAnswer: The 4 GB plan.',
+    });
+    expect(comments).toHaveLength(1);
+    expect(task.decisionQuestion).toBeNull();
+    expect(task.decisionAskedAt).toBeNull();
+    expect(emitTask).toHaveBeenLastCalledWith({ task: card, runId: null });
+    // The flag was the last thing a chained card might have been waiting on.
+    expect(reconsider).toHaveBeenCalledWith('decision-cleared');
+  });
+
+  it('keeps the moment a decision was first asked when the question is rewritten', () => {
+    const { scheduler } = setup();
+    const first = scheduler.setDecision('t1', 'Which plan?').decisionAskedAt;
+    expect(scheduler.setDecision('t1', 'Which plan, monthly or yearly?')).toMatchObject({
+      decisionQuestion: 'Which plan, monthly or yearly?',
+      decisionAskedAt: first,
+    });
+  });
+
+  it('refuses an empty answer and leaves the decision open', () => {
+    const { scheduler, card, comments, reconsider } = setup();
+    scheduler.setDecision('t1', 'Which plan?');
+    expect(() => scheduler.answerDecision('t1', '   ')).toThrow('An answer needs some text.');
+    expect(card.decisionQuestion).toBe('Which plan?');
+    expect(comments).toEqual([]);
+    expect(reconsider).not.toHaveBeenCalled();
+  });
+
+  it('refuses to answer a card with no open decision', () => {
+    const { scheduler, comments } = setup();
+    expect(() => scheduler.answerDecision('t1', 'Yes')).toThrow(
+      'This card has no open decision to answer.',
+    );
+    expect(() => scheduler.answerDecision('nope', 'Yes')).toThrow('Task not found.');
+    expect(comments).toEqual([]);
+  });
+
+  it('withdraws with null — clears both fields and files no comment', () => {
+    const { scheduler, card, comments, reconsider } = setup();
+    scheduler.setDecision('t1', 'Which plan?');
+    const cleared = scheduler.setDecision('t1', null);
+    expect(cleared.decisionQuestion).toBeNull();
+    expect(cleared.decisionAskedAt).toBeNull();
+    expect(card.decisionQuestion).toBeNull();
+    expect(comments).toEqual([]);
+    expect(reconsider).toHaveBeenCalledWith('decision-cleared');
+  });
+
+  it('treats a blank question as a withdraw, and re-asks nothing when none was open', () => {
+    const { scheduler, card, reconsider } = setup();
+    expect(scheduler.setDecision('t1', '   ').decisionQuestion).toBeNull();
+    expect(card.decisionAskedAt).toBeNull();
+    expect(reconsider).not.toHaveBeenCalled();
+  });
+
+  it('hands the answer to the next run through taskNotes', () => {
+    const { scheduler } = setup();
+    scheduler.setDecision('t1', 'Which plan?');
+    scheduler.answerDecision('t1', 'The yearly one.');
+    const notes = (
+      scheduler as unknown as { taskNotes: (id: string) => { kept: string[] } }
+    ).taskNotes('t1');
+    expect(notes.kept).toContain('Decision needed: Which plan?\n\nAnswer: The yearly one.');
   });
 });
 

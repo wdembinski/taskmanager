@@ -573,6 +573,14 @@ export function describeEmptyOutcome(
  */
 export type VariantStartOutcome = RunOutcome | { queued: true };
 
+/**
+ * The comment an answered owner decision leaves on its card — the question and the answer
+ * together, so the planner reading it later through `taskNotes` needs no other context.
+ */
+export function formatDecisionAnswer(question: string, answer: string): string {
+  return `Decision needed: ${question}\n\nAnswer: ${answer}`;
+}
+
 /** Minimal shape the selection logic needs — kept tiny so tests don't build full tasks. */
 export interface Schedulable {
   id: string;
@@ -2850,6 +2858,63 @@ export class Scheduler {
   reconsiderChains(trigger: ChainTrigger): void {
     if (this.disposed) return;
     this.chain.reconsider(trigger);
+  }
+
+  /**
+   * Raise (or withdraw, with `null`) an owner decision on a card — `Task.decisionQuestion`.
+   *
+   * While it is open the card is never ready, Start refuses it and the plan queue skips it;
+   * nothing here has to enforce that, the flag IS the enforcement. A blank question counts
+   * as `null`. Re-asking an open decision rewrites the question but keeps the moment it was
+   * first asked, so the Inbox does not present an old question as a new one.
+   *
+   * Withdrawing re-asks the chain exactly as an answer does: the flag was the only thing a
+   * chained card may have been waiting on. Throws a plain sentence for an unknown card.
+   */
+  setDecision(taskId: string, question: string | null): Task {
+    const existing = this.store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const text = question?.trim() || null;
+    const wasOpen = existing.decisionQuestion != null;
+    const task = this.store.updateTask(taskId, {
+      decisionQuestion: text,
+      decisionAskedAt: text ? (existing.decisionAskedAt ?? Date.now()) : null,
+    });
+    if (!task) throw new Error('Task not found.');
+    this.emitTask({ task, runId: null });
+    if (wasOpen && !text) this.reconsiderChains('decision-cleared');
+    return task;
+  }
+
+  /**
+   * Answer a card's open decision: clears the flag and files the question with its answer
+   * as a LOCAL comment (`Decision needed: …\n\nAnswer: …`). Local on purpose — posting to
+   * the tracker would be outward-facing, and {@link Scheduler.taskNotes} already hands every
+   * comment to the next planning run, which is who the answer is for.
+   *
+   * The comment is written before the flag clears, so a card can never read as answered
+   * with the answer missing. Refuses (a plain sentence) an empty answer and a card with no
+   * open decision. Then re-asks the chain, so a successor that was held only by this
+   * decision releases.
+   */
+  answerDecision(taskId: string, answer: string): { task: Task; comment: TaskActivityEntry } {
+    const existing = this.store.getTask(taskId);
+    if (!existing) throw new Error('Task not found.');
+    const question = existing.decisionQuestion;
+    if (question == null) throw new Error('This card has no open decision to answer.');
+    const text = answer.trim();
+    if (!text) throw new Error('An answer needs some text.');
+    const comment = this.store.addComment(
+      existing.projectId,
+      taskId,
+      formatDecisionAnswer(question, text),
+    );
+    if (!comment) throw new Error('An answer needs some text.');
+    const task = this.store.updateTask(taskId, { decisionQuestion: null, decisionAskedAt: null });
+    if (!task) throw new Error('Task not found.');
+    this.emitTask({ task, runId: null });
+    this.reconsiderChains('decision-cleared');
+    return { task, comment };
   }
 
   /**
