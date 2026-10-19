@@ -159,7 +159,7 @@ export interface AddTaskResult {
 }
 
 /** The reverse of {@link RUN_REFUSAL_MESSAGE} — an exact-string lookup, `null` for anything
- *  that is not one of its six entries. */
+ *  that is not one of its entries. */
 export function refusalFromMessage(message: string): RunRefusal | null {
   const found = (Object.entries(RUN_REFUSAL_MESSAGE) as Array<[RunRefusal, string]>).find(
     ([, text]) => text === message,

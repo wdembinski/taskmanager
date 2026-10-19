@@ -481,9 +481,11 @@ export class ChainRunner {
     const head =
       why === null
         ? 'Started automatically'
-        : why === 'no-agent' || why === 'resting'
-          ? 'Ready to start'
-          : 'Not started';
+        : why === 'needs-decision'
+          ? 'Waiting on a decision'
+          : why === 'no-agent' || why === 'resting'
+            ? 'Ready to start'
+            : 'Not started';
     const because =
       cause === 'landed'
         ? `${name(from)} has landed, and this card was chained to run after it.`
@@ -502,6 +504,11 @@ export class ChainRunner {
     switch (why) {
       case null:
         return MOVED_NOTE;
+      case 'needs-decision':
+        return (
+          ` Nothing was started: its turn came, but it is waiting on a decision: ` +
+          `${to.decisionQuestion} Answer it on the card or in the Inbox, then start it.`
+        );
       case 'no-agent':
         return ' Nothing was started: this card has no agent assigned. Assign one to run it.';
       case 'resting':

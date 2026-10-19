@@ -588,6 +588,8 @@ export interface Schedulable {
   isContract: boolean;
   /** True when this task lays down the milestone's shared scaffold/root (`@scaffold`). */
   isScaffold: boolean;
+  /** An open owner decision (`Task.decisionQuestion`): the task is skipped until answered. */
+  decisionQuestion?: string | null;
 }
 
 /**
@@ -645,6 +647,8 @@ export function selectNextPending<T extends Schedulable>(
   let best: T | null = null;
   for (const task of tasks) {
     if (task.status !== 'pending' || inFlight.has(task.id)) continue;
+    // Waiting on the owner: only an answer starts it, the same rule Start follows.
+    if (task.decisionQuestion != null) continue;
     if (!task.dependsOn.every(satisfied)) continue;
     // Scaffold goes first: hold everything else in the phase (even the contract task)
     // until the scaffold task is done.
@@ -1971,6 +1975,9 @@ export class Scheduler {
     if (this.inFlight.has(taskId)) return { refused: 'already-running' };
     const task = this.store.getTask(taskId);
     if (!task) return { refused: 'unknown-task' };
+    // An open owner decision holds the card until it is answered. A plain refusal, not a
+    // park: no gate's resume should start it behind the human's back.
+    if (task.decisionQuestion != null) return { refused: 'needs-decision' };
 
     // Which task would actually run: the first step waiting its turn, or the card itself.
     // Resolved before anything is parked, because parking the CARD when its STEP is the

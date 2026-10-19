@@ -394,4 +394,39 @@ describe('chainDecline', () => {
     // ...and the narrower one stops short of the two the board can act on.
     expect(chainWorkUnderWay(task({ id: 'b' }), false)).toBeNull();
   });
+
+  /** Every startable shape of a card, and what it declines with no decision open. */
+  const startable = [
+    { status: 'pending', agentProjectId: 'repo', unflagged: null },
+    { status: 'in-progress', agentProjectId: 'repo', unflagged: null },
+    { status: 'pending', agentProjectId: null, unflagged: 'no-agent' },
+    { status: 'in-progress', agentProjectId: null, unflagged: 'no-agent' },
+  ] as const;
+
+  it.each(startable)(
+    'declines a flagged $status card (agent $agentProjectId) as needs-decision',
+    ({ status, agentProjectId }) => {
+      const flagged = task({
+        id: 'b',
+        status,
+        agentProjectId,
+        decisionQuestion: 'Which plan?',
+        decisionAskedAt: 1,
+      });
+      expect(chainDecline(flagged, false)).toBe('needs-decision');
+    },
+  );
+
+  it.each(startable)(
+    'leaves an unflagged $status card (agent $agentProjectId) exactly as it was',
+    ({ status, agentProjectId, unflagged }) => {
+      const plain = task({ id: 'b', status, agentProjectId, decisionQuestion: null });
+      expect(chainDecline(plain, false)).toBe(unflagged);
+    },
+  );
+
+  it('lets work under way outrank an open decision — the release is moot either way', () => {
+    const flagged = task({ id: 'b', agentProjectId: 'r', decisionQuestion: 'Which plan?' });
+    expect(chainDecline(flagged, true)).toBe('in-flight');
+  });
 });

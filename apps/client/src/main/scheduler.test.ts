@@ -129,6 +129,14 @@ describe('selectNextPending', () => {
     expect(selectNextPending(tasks, new Set())?.id).toBe('go');
   });
 
+  it('skips a task waiting on an owner decision, and takes it again once answered', () => {
+    const flagged = { ...t('a', 'pending', 0), decisionQuestion: 'Which plan?' };
+    const tasks = [flagged, t('b', 'pending', 1)];
+    expect(selectNextPending(tasks, new Set())?.id).toBe('b');
+    expect(selectNextPending([flagged], new Set())).toBeNull();
+    expect(selectNextPending([{ ...flagged, decisionQuestion: null }], new Set())?.id).toBe('a');
+  });
+
   it('holds a task until its @needs dependency is done', () => {
     // 'b' needs 'a'; while 'a' is pending, only 'a' is eligible.
     const pending = [t('a', 'pending', 0), t('b', 'pending', 1, ['a'])];
@@ -6939,6 +6947,24 @@ describe('Scheduler.startTaskNow — the reason a Start was refused', () => {
       undefined;
     expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'no-project' });
     expect(scheduler.currentAuth()?.parkedTaskIds).toEqual([]);
+  });
+
+  /**
+   * An open owner decision is a plain refusal, asked BEFORE the gates: a park would have a
+   * gate's resume start the card behind the human's back, with the question unanswered.
+   */
+  it('refuses a card waiting on a decision, starts nothing and parks nothing', () => {
+    const { scheduler, card, start } = setup({ authGate: true });
+    card.decisionQuestion = 'Which hosting plan?';
+    card.decisionAskedAt = 1;
+
+    expect(scheduler.startTaskNow('t1')).toEqual({ refused: 'needs-decision' });
+    expect(start).not.toHaveBeenCalled();
+    expect(scheduler.currentAuth()?.parkedTaskIds).toEqual([]);
+    expect(RUN_REFUSAL_MESSAGE['needs-decision']).toBe(
+      'This card is waiting on a decision. Answer it on the card or in the Inbox, then start ' +
+        'it again.',
+    );
   });
 
   it('refuses everything once the engine is shutting down', () => {

@@ -143,6 +143,11 @@ export type RunRefusal =
   | 'already-running'
   /** Nothing resolves a directory to run in: the card is not delegated to an agent project. */
   | 'no-project'
+  /**
+   * The card carries an open owner decision (`Task.decisionQuestion`). A plain refusal,
+   * never a park: nothing resumes it but a human answering the question.
+   */
+  | 'needs-decision'
   /** A usage limit holds all work account-wide. The card is parked and resumes at the reset. */
   | 'limit'
   /** The `claude` CLI cannot authenticate. The card is parked and resumes when a human signs in. */
@@ -220,6 +225,8 @@ export const RUN_REFUSAL_MESSAGE: Record<RunRefusal, string> = {
     'An agent is already working on this card. Stop it first if you want to start again.',
   'no-project':
     'This card has no repository to run in — assign it to an agent project before starting it.',
+  'needs-decision':
+    'This card is waiting on a decision. Answer it on the card or in the Inbox, then start it again.',
   limit:
     'A usage limit is holding all agent work. This card is now waiting behind it and starts ' +
     'by itself when the limit resets — there is nothing else to press.',

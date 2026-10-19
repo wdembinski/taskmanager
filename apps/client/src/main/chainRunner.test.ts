@@ -195,6 +195,27 @@ describe('ChainRunner — a card lands', () => {
     expect(notes[0].body).toContain('no agent assigned');
   });
 
+  it('holds a successor waiting on a decision, and names the question on its timeline', () => {
+    const flagged = {
+      ...successor('b'),
+      decisionQuestion: 'Which hosting plan should we pay for?',
+      decisionAskedAt: 1,
+    };
+    const { runner, byId, started, notes } = harness(
+      [task({ id: 'a' }), flagged],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    // Nothing moved: a decline never takes the card off the column the human left it in.
+    expect(byId.get('b')?.status).toBe('pending');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].taskId).toBe('b');
+    expect(notes[0].body).toContain(
+      'its turn came, but it is waiting on a decision: Which hosting plan should we pay for?',
+    );
+  });
+
   it('leaves a card the human has moved on from where it is', () => {
     const { runner, started, notes } = harness(
       [task({ id: 'a' }), task({ id: 'b', status: 'blocked', agentProjectId: 'agent-1' })],

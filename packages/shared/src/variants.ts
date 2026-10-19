@@ -62,7 +62,7 @@ export const VARIANT_HINTS: Readonly<Record<VariantLabel, string | null>> = {
  * variant group is allowed to hang off.
  */
 export type VariantRefusal =
-  | Extract<RunRefusal, 'unknown-task' | 'already-running' | 'no-project'>
+  | Extract<RunRefusal, 'unknown-task' | 'already-running' | 'needs-decision' | 'no-project'>
   /** A step of a chain runs in its parent's worktree, in sequence — variants are out of scope. */
   | 'is-step'
   /** A plan-project task, or a row that is itself a variant: only a board card leads a group. */
@@ -72,6 +72,7 @@ export type VariantRefusal =
 export const VARIANT_REFUSAL_MESSAGE: Record<VariantRefusal, string> = {
   'unknown-task': RUN_REFUSAL_MESSAGE['unknown-task'],
   'already-running': RUN_REFUSAL_MESSAGE['already-running'],
+  'needs-decision': RUN_REFUSAL_MESSAGE['needs-decision'],
   'no-project': RUN_REFUSAL_MESSAGE['no-project'],
   'is-step': 'Variants run a whole card, not a step of one — start them on the parent card.',
   'not-a-card': 'Only a card on your board can run variants.',
@@ -92,6 +93,7 @@ export type VariantLeader = Pick<
   | 'agentMode'
   | 'agentModel'
   | 'agentPlanningModel'
+  | 'decisionQuestion'
 > &
   VariantFields;
 
@@ -109,6 +111,7 @@ export function canStartVariants(
   if (leader.parentTaskId) return { refused: 'is-step' };
   if (leader.variantOf || !isBoardCard(leader as Task)) return { refused: 'not-a-card' };
   if (isRunStatus(leader.status)) return { refused: 'already-running' };
+  if (leader.decisionQuestion != null) return { refused: 'needs-decision' };
   if (!(input?.agentProjectId || leader.agentProjectId)) return { refused: 'no-project' };
   return { ok: true };
 }

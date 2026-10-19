@@ -43,6 +43,7 @@ import {
   PersonRegular,
   PlayCircleRegular,
   PresenceBlockedRegular,
+  QuestionCircleRegular,
   RecordStopRegular,
   SparkleRegular,
   TaskListSquareLtrRegular,
@@ -675,6 +676,17 @@ export function TaskCard({
     >
       <PlayCircleRegular className={styles.chainChipIcon} />
       <span className={styles.chainChipText}>ready</span>
+    </span>
+  ) : chainBlocked === 'needs-decision' ? (
+    <span
+      className={mergeClasses(styles.chainChip, styles.chainChipHeld)}
+      title={
+        `Everything this card waits for has finished, but it is waiting on a decision: ` +
+        `${task.decisionQuestion ?? ''} Answer it on the card or in the Inbox.`
+      }
+    >
+      <QuestionCircleRegular className={styles.chainChipIcon} />
+      <span className={styles.chainChipText}>needs a decision</span>
     </span>
   ) : chainBlocked === 'no-agent' ? (
     <span
