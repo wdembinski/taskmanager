@@ -168,6 +168,7 @@ export function ProjectForm({
   const [autoMergeOnGreen, setAutoMergeOnGreen] = useState(false);
   const [autoMergeMethod, setAutoMergeMethod] = useState<AutoMergeMethod>('squash');
   const [autoMergeRequiredChecks, setAutoMergeRequiredChecks] = useState('');
+  const [autoDoneOnLand, setAutoDoneOnLand] = useState(false);
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
   const [autoApprovePlans, setAutoApprovePlans] = useState(false);
@@ -234,6 +235,7 @@ export function ProjectForm({
       setAutoMergeOnGreen(project.autoMergeOnGreen);
       setAutoMergeMethod(project.autoMergeMethod);
       setAutoMergeRequiredChecks(project.autoMergeRequiredChecks.join(', '));
+      setAutoDoneOnLand(project.autoDoneOnLand);
       setAutoIntegrate(project.autoIntegrate);
       setAutoApprovePlans(project.autoApprovePlans);
       setAutoApproveMaxSteps(project.autoApproveMaxSteps);
@@ -259,6 +261,7 @@ export function ProjectForm({
       setAutoMergeOnGreen(false); // merging itself is opt-in too, always
       setAutoMergeMethod('squash');
       setAutoMergeRequiredChecks('');
+      setAutoDoneOnLand(false); // moving a card for the human is opt-in, always
       setAutoIntegrate(null); // and merging follows the app until this project says otherwise
       setAutoApprovePlans(false); // auto-approving a plan is opt-in, always
       setAutoApproveMaxSteps(6);
@@ -350,6 +353,7 @@ export function ProjectForm({
           autoMergeOnGreen,
           autoMergeMethod,
           autoMergeRequiredChecks: parseCommaList(autoMergeRequiredChecks),
+          autoDoneOnLand,
           autoIntegrate,
           autoApprovePlans,
           autoApproveMaxSteps,
@@ -381,6 +385,7 @@ export function ProjectForm({
           useWorktrees,
           autoRelease,
           autoCreatePr,
+          autoDoneOnLand,
           autoIntegrate,
           autoApprovePlans,
           autoApproveMaxSteps,
@@ -638,6 +643,21 @@ export function ProjectForm({
                 checked={autoMergeOnGreen}
                 label="Merge on green"
                 onChange={(_e, d) => setAutoMergeOnGreen(d.checked)}
+              />
+            </Field>
+          )}
+
+          {/* The one thing the app moves for the human, and only on a forge's merged report
+              — never over a move the human made after the merge (`landedDoneMove`). */}
+          {repo && path && useWorktrees && (
+            <Field
+              data-auto-done-on-land
+              hint="When this project's pull/merge request is merged, its card moves to Done — the linked ticket moves with it, as a drag would. A card you moved yourself after it merged stays where you put it."
+            >
+              <Switch
+                checked={autoDoneOnLand}
+                label="Move to Done when its PR lands"
+                onChange={(_e, d) => setAutoDoneOnLand(d.checked)}
               />
             </Field>
           )}

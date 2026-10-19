@@ -66,7 +66,9 @@
  *       would otherwise land on its hidden chain-link handle first (`aria-label="Chain from
  *       {title} — …"` also *contains* the card's title, and that handle renders before the
  *       card's own text in document order), so a card is addressed by its fixture id instead of
- *       its title, the same reasoning as `issue-row:N`'s own position-not-text sentinel.
+ *       its title, the same reasoning as `issue-row:N`'s own position-not-text sentinel. A
+ *       third, `'tab:NAME'`, clicks the visible `[role="tab"]` whose text is exactly `NAME` —
+ *       for a tab sharing its name with an earlier button (Settings' "Projects" tab).
  *     - `{ key: spec }` — dispatches a bubbling `keydown` on `document.activeElement` (or
  *       `document.body`), parsed the same `"mod+k"`/`"shift+mod+k"` way
  *       `packages/ui/src/palette/shortcut.ts`'s own spec is, plus the named keys `space`,
@@ -303,15 +305,35 @@ function boardCardClickExprs(taskId) {
   };
 }
 
+/** `{ click: 'tab:NAME' }` — the visible `[role="tab"]` whose text is exactly `NAME`. A plain
+ *  text click on "Projects" lands on the sidebar's own Projects link, which comes first in
+ *  document order, never on the Settings tab of the same name. */
+function tabClickExprs(name) {
+  const find = `Array.from(document.querySelectorAll('[role="tab"]')).find((el) => window.__tm.visible(el) && window.__tm.textOf(el) === ${JSON.stringify(name)})`;
+  return {
+    ready: `!!${find}`,
+    click: `(() => {
+      const el = ${find};
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      el.click();
+      return true;
+    })()`,
+  };
+}
+
 async function runSetupStep(cdp, step) {
   if (step.click !== undefined) {
     const issueRow = /^issue-row:(first|\d+)$/.exec(step.click);
     const boardCard = /^board-card:(.+)$/.exec(step.click);
+    const tab = /^tab:(.+)$/.exec(step.click);
     const { ready, click } = issueRow
       ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
       : boardCard
         ? boardCardClickExprs(boardCard[1])
-        : {
+        : tab
+          ? tabClickExprs(tab[1])
+          : {
             ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
             click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
           };
