@@ -36,6 +36,7 @@ export interface PlanStep {
 }
 
 import { MAX_PLAN_STEPS } from '@shared/board';
+import { SHARED_CONTEXT_MARKER } from '@shared/planCheck';
 
 /**
  * Upper bound on generated subtasks; a runaway plan shouldn't create 200 rows. Defined in
@@ -273,11 +274,7 @@ function withSharedContext(work: PlanStep[], framing: PlanStep[]): PlanStep[] {
       : shared;
   return work.map((s) => ({
     ...s,
-    description: [
-      s.description,
-      "Shared plan context — the approved plan's framing sections, given to every step:",
-      capped,
-    ]
+    description: [s.description, SHARED_CONTEXT_MARKER, capped]
       .filter((part) => part.trim().length > 0)
       .join('\n\n'),
   }));

@@ -95,6 +95,12 @@ describe('checkPlan: open-questions', () => {
     expect(check.pass).toBe(true);
   });
 
+  it('passes when the heading itself says Open questions — None, with no body', () => {
+    const plan = `${BASE_PLAN}\n\n## Open questions — None`;
+    const check = checkPlan({ ...BASE_INPUT, plan }).checks.find((c) => c.id === 'open-questions')!;
+    expect(check.pass).toBe(true);
+  });
+
   it('fails when the Open questions section lists a real question', () => {
     const plan = `${BASE_PLAN}\n\n## Open questions\n\n- which database should we use?`;
     const check = checkPlan({ ...BASE_INPUT, plan }).checks.find((c) => c.id === 'open-questions')!;
@@ -218,6 +224,15 @@ describe('checkPlan: spec-read', () => {
     }).checks.find((c) => c.id === 'spec-read')!;
     expect(check.pass).toBe(false);
     expect(check.detail).toContain('docs/foo.md');
+  });
+
+  it('fails when a § reference is never mentioned in the plan', () => {
+    const check = checkPlan({
+      ...BASE_INPUT,
+      ticketText: 'Follow §4.1 of the spec.',
+    }).checks.find((c) => c.id === 'spec-read')!;
+    expect(check.pass).toBe(false);
+    expect(check.detail).toContain('§4.1');
   });
 
   it('passes when the plan mentions the Plan: line value', () => {
