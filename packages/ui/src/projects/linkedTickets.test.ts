@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task } from '@tm/shared/model';
 import type { TaskLink } from '@tm/shared/taskChain';
 import type { TicketLinkRefusal } from '@tm/shared/ticketLinks';
-import { linkAddRefusal, linkedTicketRows } from './linkedTickets';
+import { arrowAddRefusal, linkAddRefusal, linkedTicketRows } from './linkedTickets';
 
 const task = (over: Partial<Task> & { id: string }): Task => ({
   projectId: PERSONAL_PROJECT_ID,
@@ -36,23 +36,40 @@ const chainLink = (fromTaskId: string, toTaskId: string): TaskLink => ({
 });
 
 describe('linkedTicketRows', () => {
-  it('reads "blocks" from both ends', () => {
+  it('builds "Blocked by" and "Blocks" from the arrows, both ends', () => {
+    const a = task({ id: 'a', ticketKey: 'TM-1' });
+    const b = task({ id: 'b', ticketKey: 'TM-2' });
+    const chain = [chainLink('a', 'b')];
+    const tasksById = index(a, b);
+
+    const fromA = linkedTicketRows(a, [], tasksById, chain);
+    expect(fromA?.blockedBy).toEqual([]);
+    expect(fromA?.blocks).toEqual([expect.objectContaining({ key: 'TM-2', taskId: 'b' })]);
+
+    const fromB = linkedTicketRows(b, [], tasksById, chain);
+    expect(fromB?.blockedBy).toEqual([expect.objectContaining({ key: 'TM-1', taskId: 'a' })]);
+    expect(fromB?.blocks).toEqual([]);
+  });
+
+  it('leaves a leftover "blocks" ticket link out — the arrows are the dependencies', () => {
     const a = task({ id: 'a', ticketKey: 'TM-1' });
     const b = task({ id: 'b', ticketKey: 'TM-2' });
     const links = [ticketLink('a', 'b', 'blocks')];
-    const tasksById = index(a, b);
 
-    const fromA = linkedTicketRows(a, links, tasksById);
-    expect(fromA?.groups).toEqual([
-      { phrase: 'blocks', rows: [expect.objectContaining({ key: 'TM-2', otherTaskId: 'b' })] },
-    ]);
+    expect(linkedTicketRows(a, links, index(a, b))).toBeNull();
+    expect(linkedTicketRows(b, links, index(a, b))).toBeNull();
+  });
 
-    const fromB = linkedTicketRows(b, links, tasksById);
-    expect(fromB?.groups).toEqual([
-      {
-        phrase: 'is blocked by',
-        rows: [expect.objectContaining({ key: 'TM-1', otherTaskId: 'a' })],
-      },
+  it('says whether each predecessor has merged', () => {
+    const landed = task({ id: 'l', ticketKey: 'TM-1', status: 'done', landedAt: 5 });
+    const open = task({ id: 'o', ticketKey: 'TM-2', status: 'in-progress' });
+    const me = task({ id: 'me', ticketKey: 'TM-3' });
+    const chain = [chainLink('o', 'me'), chainLink('l', 'me')];
+
+    const section = linkedTicketRows(me, [], index(landed, open, me), chain);
+    expect(section?.blockedBy.map((r) => [r.key, r.merged, r.satisfied])).toEqual([
+      ['TM-1', true, true],
+      ['TM-2', false, false],
     ]);
   });
 
@@ -88,12 +105,12 @@ describe('linkedTicketRows', () => {
 
   it('marks a deleted ticket missing, keyed by its id, with the link still removable', () => {
     const a = task({ id: 'a', ticketKey: 'TM-1' });
-    const links = [ticketLink('a', 'gone', 'blocks')];
+    const links = [ticketLink('a', 'gone', 'relates')];
 
     const section = linkedTicketRows(a, links, index(a));
     expect(section?.groups).toEqual([
       {
-        phrase: 'blocks',
+        phrase: 'relates to',
         rows: [
           {
             linkId: links[0].id,
@@ -116,39 +133,29 @@ describe('linkedTicketRows', () => {
 
     const b = task({ id: 'b' });
     const c = task({ id: 'c' });
-    const unrelated = [ticketLink('b', 'c', 'blocks')];
-    expect(linkedTicketRows(a, unrelated, index(a, b, c))).toBeNull();
+    const unrelated = [ticketLink('b', 'c', 'relates')];
+    expect(linkedTicketRows(a, unrelated, index(a, b, c), [chainLink('b', 'c')])).toBeNull();
   });
 
-  it('gives a single chain pointer, with runs-after and runs-before keys', () => {
-    const a = task({ id: 'a', ticketKey: 'TM-1' });
-    const b = task({ id: 'b', ticketKey: 'TM-2' });
-    const c = task({ id: 'c', ticketKey: 'TM-3' });
-    const chain = [chainLink('a', 'b'), chainLink('b', 'c')];
-
-    const section = linkedTicketRows(b, [], index(a, b, c), chain);
-    expect(section?.groups).toEqual([]);
-    expect(section?.chain).toEqual({ runsAfter: ['TM-1'], runsBefore: ['TM-3'] });
-  });
-
-  it('works with no ticket links at all', () => {
-    const a = task({ id: 'a', ticketKey: 'TM-1' });
-    const b = task({ id: 'b', ticketKey: 'TM-2' });
-    const chain = [chainLink('a', 'b')];
-
-    const section = linkedTicketRows(b, [], index(a, b), chain);
-    expect(section).toEqual({ groups: [], chain: { runsAfter: ['TM-1'], runsBefore: [] } });
-  });
-
-  it('collapses several chain links touching the same ticket into one pointer', () => {
+  it('lists only the arrows when there are no ticket links at all', () => {
     const a = task({ id: 'a', ticketKey: 'TM-1' });
     const b = task({ id: 'b', ticketKey: 'TM-2' });
     const c = task({ id: 'c', ticketKey: 'TM-3' });
     const d = task({ id: 'd', ticketKey: 'TM-4' });
-    const chain = [chainLink('a', 'b'), chainLink('c', 'b'), chainLink('b', 'd')];
+    const chain = [chainLink('c', 'b'), chainLink('a', 'b'), chainLink('b', 'd')];
 
     const section = linkedTicketRows(b, [], index(a, b, c, d), chain);
-    expect(section?.chain).toEqual({ runsAfter: ['TM-1', 'TM-3'], runsBefore: ['TM-4'] });
+    expect(section?.groups).toEqual([]);
+    expect(section?.blockedBy.map((r) => r.key)).toEqual(['TM-1', 'TM-3']);
+    expect(section?.blocks.map((r) => r.key)).toEqual(['TM-4']);
+  });
+
+  it('keeps an arrow to a card that is gone, marked missing', () => {
+    const a = task({ id: 'a', ticketKey: 'TM-1' });
+    const section = linkedTicketRows(a, [], index(a), [chainLink('gone', 'a')]);
+    expect(section?.blockedBy).toEqual([
+      expect.objectContaining({ taskId: 'gone', missing: true, merged: false }),
+    ]);
   });
 
   it('sorts rows naturally — TM-9 before TM-31', () => {
@@ -198,9 +205,19 @@ describe('linkAddRefusal', () => {
     ['missing', 'one of those tickets no longer exists'],
     ['self', 'a ticket cannot link to itself'],
     ['duplicate', 'that relationship is already recorded'],
+    ['cycle', 'that would make a loop, and a loop can never start'],
   ];
 
   it.each(reasons)('gives the message for a %s refusal', (reason, message) => {
     expect(linkAddRefusal({ status: 'refused', reason })).toBe(message);
+  });
+});
+
+describe('arrowAddRefusal', () => {
+  it("gives null on an ok result, and the arrow's own words on a refusal", () => {
+    expect(arrowAddRefusal({ status: 'ok', links: [] })).toBeNull();
+    expect(arrowAddRefusal({ status: 'refused', reason: 'step' })).toBe(
+      'steps of a plan already run in order — chain their cards instead',
+    );
   });
 });
