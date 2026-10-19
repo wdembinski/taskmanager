@@ -1,8 +1,14 @@
 /**
- * The Links section's own view model — every ticket link and chain link that touches one
+ * The Links section's own view model — every order arrow and ticket link that touches one
  * ticket, grouped and sorted for display. Pure, no React, for the same reason
  * `@shared/ticketLinks` is: the phrasing a row shows has to be the one `linksFor()` already
  * settled on, not a second copy of the vocabulary that could drift from it.
+ *
+ * A dependency lives in the order arrows alone. "Blocked by" / "Blocks" are read off them
+ * through `dependencyLists` — the same list the engine and the board's chips read — so the
+ * panel can never claim nothing holds a card the engine is holding. A `blocks` ticket link
+ * left over from before the migration is NOT listed: it decides nothing, and showing it next
+ * to the arrows would be a second answer to the same question.
  */
 import { columnForTask } from '@tm/shared/board';
 import type { BoardColumn, IssueType, Task, TicketLink } from '@tm/shared/model';
@@ -12,7 +18,13 @@ import {
   TICKET_LINK_VOCABULARY,
   type TicketLinkResult,
 } from '@tm/shared/ticketLinks';
-import type { TaskLink } from '@tm/shared/taskChain';
+import {
+  dependencyLists,
+  LINK_REFUSAL_MESSAGE,
+  type DependencyRow,
+  type LinkResult,
+  type TaskLink,
+} from '@tm/shared/taskChain';
 
 export interface LinkedTicketRow {
   /** What `ticketLink:remove` addresses. */
@@ -37,15 +49,13 @@ export interface LinkedTicketGroup {
   rows: LinkedTicketRow[];
 }
 
-/** The tickets this one runs after/before, as keys (id fallback). */
-export interface ChainPointer {
-  runsAfter: string[];
-  runsBefore: string[];
-}
-
 export interface LinkedTicketsSection {
+  /** Every arrow INTO the card — what it waits for. */
+  blockedBy: DependencyRow[];
+  /** Every arrow OUT of the card — what waits for it. */
+  blocks: DependencyRow[];
+  /** The ticket links, every type except `blocks`. */
   groups: LinkedTicketGroup[];
-  chain: ChainPointer | null;
 }
 
 /** Every phrase a row can show, in the order its group should appear. */
@@ -53,18 +63,14 @@ const PHRASE_ORDER: readonly string[] = Object.values(TICKET_LINK_VOCABULARY).fl
   entry.symmetric ? [entry.outward] : [entry.outward, entry.inward],
 );
 
-function keyFor(taskId: string, tasksById: ReadonlyMap<string, Task>): string {
-  return tasksById.get(taskId)?.ticketKey ?? taskId;
-}
-
 function compareKeys(a: LinkedTicketRow, b: LinkedTicketRow): number {
   return a.key.localeCompare(b.key, undefined, { numeric: true });
 }
 
 /**
- * Every ticket link and chain link that touches `ticket`, read into the shape the Links
- * section renders. `null` when there is nothing to show — the ticket has neither kind of
- * link — so the caller can swap in an empty state rather than render empty groups.
+ * Every order arrow and non-`blocks` ticket link that touches `ticket`, read into the shape
+ * the Links section renders. `null` when there is nothing to show — no arrow either way and
+ * no ticket link — so the caller can swap in an empty state rather than render empty groups.
  */
 export function linkedTicketRows(
   ticket: Pick<Task, 'id' | 'projectId'>,
@@ -72,11 +78,12 @@ export function linkedTicketRows(
   tasksById: ReadonlyMap<string, Task>,
   chainLinks: readonly TaskLink[] = [],
 ): LinkedTicketsSection | null {
-  const views = linksFor(ticketLinks, ticket.id);
-  const touchingChain = chainLinks.filter(
-    (link) => link.fromTaskId === ticket.id || link.toTaskId === ticket.id,
+  const { blockedBy, blocks } = dependencyLists(ticket, chainLinks, tasksById);
+  const views = linksFor(
+    ticketLinks.filter((link) => link.type !== 'blocks'),
+    ticket.id,
   );
-  if (views.length === 0 && touchingChain.length === 0) return null;
+  if (views.length === 0 && blockedBy.length === 0 && blocks.length === 0) return null;
 
   const rowsByPhrase = new Map<string, LinkedTicketRow[]>();
   for (const view of views) {
@@ -103,18 +110,7 @@ export function linkedTicketRows(
     if (rows && rows.length > 0) groups.push({ phrase, rows: [...rows].sort(compareKeys) });
   }
 
-  let chain: ChainPointer | null = null;
-  if (touchingChain.length > 0) {
-    const runsAfter: string[] = [];
-    const runsBefore: string[] = [];
-    for (const link of touchingChain) {
-      if (link.toTaskId === ticket.id) runsAfter.push(keyFor(link.fromTaskId, tasksById));
-      if (link.fromTaskId === ticket.id) runsBefore.push(keyFor(link.toTaskId, tasksById));
-    }
-    chain = { runsAfter, runsBefore };
-  }
-
-  return { groups, chain };
+  return { blockedBy, blocks, groups };
 }
 
 /**
@@ -125,4 +121,9 @@ export function linkedTicketRows(
  */
 export function linkAddRefusal(result: TicketLinkResult): string | null {
   return result.status === 'refused' ? TICKET_LINK_REFUSAL_MESSAGE[result.reason] : null;
+}
+
+/** {@link linkAddRefusal} for `chain:link` — an arrow drawn from the add row. */
+export function arrowAddRefusal(result: LinkResult): string | null {
+  return result.status === 'refused' ? LINK_REFUSAL_MESSAGE[result.reason] : null;
 }
