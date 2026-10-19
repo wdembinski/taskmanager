@@ -257,6 +257,10 @@ interface TaskRow {
   workedAt: number | null;
   /** Epoch ms the human stopped this card's work; NULL once anything starts. See `Task.stoppedAt`. */
   stoppedAt: number | null;
+  /** The open decision's question; NULL = none open. See `Task.decisionQuestion`. */
+  decisionQuestion: string | null;
+  /** Epoch ms the open decision was asked; NULL = none open. See `Task.decisionAskedAt`. */
+  decisionAskedAt: number | null;
   // Native tickets (Phase 24). NULL on everything that is not one.
   /** The ticket's permanent name, `'TM-123'`. Partial-unique over the non-NULL rows. */
   ticketKey: string | null;
@@ -492,6 +496,8 @@ export interface Store {
         | 'chainLandedAt'
         | 'workedAt'
         | 'stoppedAt'
+        | 'decisionQuestion'
+        | 'decisionAskedAt'
         | 'autoRelease'
         | 'autoCreatePr'
         | 'autoIntegrate'
@@ -1751,6 +1757,8 @@ export function createStore(dbPath: string): Store {
       chainLandedAt          INTEGER,
       workedAt               INTEGER,
       stoppedAt              INTEGER,
+      decisionQuestion       TEXT,
+      decisionAskedAt        INTEGER,
       autoRelease            INTEGER,
       autoCreatePr           INTEGER,
       autoIntegrate          INTEGER,
@@ -2708,6 +2716,12 @@ export function createStore(dbPath: string): Store {
     // cards that had plainly run, NULL here is exactly true: nothing was stopped mid-upgrade,
     // and a guess would offer Resume on cards nobody ever stopped.
     ['stoppedAt', 'INTEGER'],
+    // The open decision a card waits on, and when it was asked. NULL on every pre-existing
+    // row = "no decision is open", which is exactly true — nothing could flag a card before
+    // these columns existed — so they are deliberately NOT backfilled, and an upgrade keeps
+    // every card exactly as ready as it was the day before.
+    ['decisionQuestion', 'TEXT'],
+    ['decisionAskedAt', 'INTEGER'],
     // The card's auto-release override. NULL on every pre-existing row = "nobody has ruled
     // on this card", which follows the project's (also new, also off) preference — so no
     // upgraded install starts releasing anything by itself.
@@ -3157,7 +3171,8 @@ export function createStore(dbPath: string): Store {
         preBlockStatus, preRunStatus, retainedSince, pinnedImport, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
         agentPlan, agentBranch, planRound, variantOf, variantLabel, pickedVariantId,
-        landedAt, chainLandedAt, workedAt, stoppedAt, autoRelease, autoCreatePr, autoIntegrate,
+        landedAt, chainLandedAt, workedAt, stoppedAt, decisionQuestion, decisionAskedAt,
+        autoRelease, autoCreatePr, autoIntegrate,
         ticketKey, ticketNumber, issueType, epicTaskId, milestoneId, labels,
         storyPoints, estimateDays, startAt, dueAt, assigneeId, reporterId, originAutomationId,
         skillRefs, stepSpec, workflowId, gateAttempts)
@@ -3173,7 +3188,8 @@ export function createStore(dbPath: string): Store {
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel, @agentPlanningModel,
         @agentPlan, @agentBranch, @planRound, @variantOf, @variantLabel, @pickedVariantId,
-        @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @autoRelease, @autoCreatePr, @autoIntegrate,
+        @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @decisionQuestion, @decisionAskedAt,
+        @autoRelease, @autoCreatePr, @autoIntegrate,
         -- The twelve ticket columns are listed HERE as well as in the column list above,
         -- and that is the whole discipline: a column added to the table, the row type and
         -- the writer but not to this statement is silently dropped at creation. That is
@@ -4531,6 +4547,8 @@ export function createStore(dbPath: string): Store {
       chainLandedAt: task.chainLandedAt ?? null,
       workedAt: task.workedAt ?? null,
       stoppedAt: task.stoppedAt ?? null,
+      decisionQuestion: task.decisionQuestion ?? null,
+      decisionAskedAt: task.decisionAskedAt ?? null,
       // Three states in one column: 1 = release, 0 = don't, NULL = follow the project.
       autoRelease:
         task.autoRelease === null || task.autoRelease === undefined
@@ -4633,6 +4651,8 @@ export function createStore(dbPath: string): Store {
       chainLandedAt: r.chainLandedAt ?? null,
       workedAt: r.workedAt ?? null,
       stoppedAt: r.stoppedAt ?? null,
+      decisionQuestion: r.decisionQuestion ?? null,
+      decisionAskedAt: r.decisionAskedAt ?? null,
       // NULL stays null — it is a real third state ("this card has not ruled"), not a
       // missing false, and collapsing it here would pin every card to whatever the
       // project's preference was the first time it was read.
@@ -5172,7 +5192,9 @@ export function createStore(dbPath: string): Store {
        planRound = @planRound, variantOf = @variantOf, variantLabel = @variantLabel,
        pickedVariantId = @pickedVariantId,
        landedAt = @landedAt, chainLandedAt = @chainLandedAt,
-       workedAt = @workedAt, stoppedAt = @stoppedAt, autoRelease = @autoRelease,
+       workedAt = @workedAt, stoppedAt = @stoppedAt,
+       decisionQuestion = @decisionQuestion, decisionAskedAt = @decisionAskedAt,
+       autoRelease = @autoRelease,
        autoIntegrate = @autoIntegrate, ticketKey = @ticketKey, ticketNumber = @ticketNumber,
        issueType = @issueType, epicTaskId = @epicTaskId, milestoneId = @milestoneId,
        labels = @labels, storyPoints = @storyPoints, estimateDays = @estimateDays,
@@ -5775,6 +5797,8 @@ export function createStore(dbPath: string): Store {
         'chainLandedAt',
         'workedAt',
         'stoppedAt',
+        'decisionQuestion',
+        'decisionAskedAt',
         // Variants (F10). `variantOf`/`variantLabel` are deliberately absent — a row's
         // identity, set once at creation and never rewritten, exactly like `parentTaskId`.
         'pickedVariantId',
@@ -5929,6 +5953,10 @@ export function createStore(dbPath: string): Store {
         // `stepSpec`/`workflowId`/`gateAttempts` are absent for the same reason: a tracker
         // sync has no idea what workflow step a card came from, and must never clear it or
         // reset a gate's attempt count mid-run.
+        //
+        // `decisionQuestion`/`decisionAskedAt` are absent too: an open decision is the
+        // owner's, not the tracker's, and a sync that cleared one would quietly make the
+        // card ready again with the question still unanswered.
         db.prepare(
           `UPDATE tasks SET
              phase = @phase, title = @title, status = @status, "order" = @order, source = @source,
