@@ -1042,6 +1042,7 @@ describe('reconcileJiraTasks — assigning tickets to their own board', () => {
     autoCreatePr: false,
     autoMergeOnGreen: false,
     autoMergeMethod: 'squash',
+    autoMergeBy: 'forge',
     autoMergeRequiredChecks: [],
     autoIntegrate: null,
     autoApprovePlans: false,

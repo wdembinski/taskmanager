@@ -50,6 +50,7 @@ import type {
 import {
   hasPlan,
   hasRepo,
+  isAutoMergeBy,
   isAutoMergeMethod,
   isFilingProject,
   isManualStatus,
@@ -1107,6 +1108,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // Same relayed-write guard as the model checks above: a browser can name any string.
     if (patch.autoMergeMethod !== undefined && !isAutoMergeMethod(patch.autoMergeMethod)) {
       throw new Error(`Not a usable merge method: ${patch.autoMergeMethod}`);
+    }
+    if (patch.autoMergeBy !== undefined && !isAutoMergeBy(patch.autoMergeBy)) {
+      throw new Error(`Not a usable merger: ${patch.autoMergeBy}`);
     }
     await retireRunStateIfTargetChanged(id, patch);
     const updated = store.updateProject(id, patch);

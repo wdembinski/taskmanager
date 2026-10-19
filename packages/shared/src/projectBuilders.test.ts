@@ -18,6 +18,7 @@ describe('buildProject', () => {
     expect(project.autoCreatePr).toBe(false);
     expect(project.autoMergeOnGreen).toBe(false);
     expect(project.autoMergeMethod).toBe('squash');
+    expect(project.autoMergeBy).toBe('forge');
     expect(project.autoMergeRequiredChecks).toEqual([]);
     expect(project.autoIntegrate).toBeNull();
     expect(project.autoApprovePlans).toBe(false);

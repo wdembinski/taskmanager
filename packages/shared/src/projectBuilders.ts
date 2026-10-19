@@ -124,6 +124,7 @@ export function buildProject(
     // booleans above did before `AddProjectInput` grew fields for them.
     autoMergeOnGreen: false,
     autoMergeMethod: 'squash',
+    autoMergeBy: 'forge',
     autoMergeRequiredChecks: [],
     // `null` unless the caller ruled: a new project inherits the app-wide switch and
     // keeps inheriting it, rather than freezing today's value into the row.

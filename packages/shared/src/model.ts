@@ -216,6 +216,30 @@ export function isAutoMergeMethod(value: string): value is AutoMergeMethod {
   return (AUTO_MERGE_METHODS as readonly string[]).includes(value);
 }
 
+/**
+ * Who performs the merge when a project's {@link Project.autoMergeOnGreen} fires: the forge's
+ * own auto-merge (`'forge'`), or Task Manager itself, merging the PR once it is green
+ * (`'app'`) — for a repo whose forge refuses auto-merge (a private repo on GitHub Free).
+ */
+export type AutoMergeBy = 'forge' | 'app';
+
+/** Every value {@link Project.autoMergeBy} may legally hold — the `Dropdown` this feeds and
+ *  the store's own cast-on-read both check membership against this. */
+export const AUTO_MERGE_BY: readonly AutoMergeBy[] = ['forge', 'app'];
+
+/** Whether `value` is one of {@link AUTO_MERGE_BY} — the membership check behind
+ *  {@link Project.autoMergeBy}'s "cast and validate, unknown falls back to `'forge'`" rule,
+ *  and behind `project:update`'s own guard against a relayed value from the web. */
+export function isAutoMergeBy(value: string): value is AutoMergeBy {
+  return (AUTO_MERGE_BY as readonly string[]).includes(value);
+}
+
+/** The human label for each {@link AutoMergeBy} — the "Who merges on green" dropdown's text. */
+export const AUTO_MERGE_BY_LABELS: Record<AutoMergeBy, string> = {
+  forge: 'Forge (auto-merge)',
+  app: 'Task Manager',
+};
+
 /** A project the app orchestrates: a directory plus the plan that drives it. */
 export interface Project {
   /** Stable app-assigned id (UUID). Not derived from the path, so a project can
@@ -322,6 +346,20 @@ export interface Project {
    * PR, titled `(#NNN)`.
    */
   autoMergeMethod: AutoMergeMethod;
+  /**
+   * Who merges when {@link Project.autoMergeOnGreen} fires. `'forge'` — the default, and
+   * every project that predates the field — asks the forge to auto-merge, as before. `'app'`
+   * never asks the forge: Task Manager merges the PR itself once it is green, re-reading every
+   * fact from the forge right before it does. Cast-on-read: an unknown stored value reads as
+   * `'forge'`.
+   *
+   * The automatic fallback (the forge refusing auto-merge for a plan/visibility reason) is
+   * recorded on the card's timeline, not by rewriting this setting: `requestAutoMerge` writes
+   * one note, and `effectiveAutoMergeBy` reads `'app'` when this says so OR that note is on
+   * the card's timeline. The timeline is the record that survives a restart, and nobody's
+   * setting changes silently.
+   */
+  autoMergeBy: AutoMergeBy;
   /**
    * The check names this project expects to gate its base branch before
    * {@link Project.autoMergeOnGreen} merges anything. Purely informational — enabling
@@ -534,6 +572,7 @@ export type ProjectPatch = Partial<
     | 'autoCreatePr'
     | 'autoMergeOnGreen'
     | 'autoMergeMethod'
+    | 'autoMergeBy'
     | 'autoMergeRequiredChecks'
     | 'autoIntegrate'
     | 'autoApprovePlans'
