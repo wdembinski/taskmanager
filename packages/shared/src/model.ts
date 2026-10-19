@@ -357,6 +357,12 @@ export interface Project {
    */
   autoApproveMaxSteps: number;
   /**
+   * How many of the project's cards the board marks **ready** at once (`@shared/readyLanes`):
+   * the cards already holding a lane count toward it, the rest show "queued (lane limit)".
+   * Defaults to 3; 0 = unlimited; clamped to 0..20 in the form and the store.
+   */
+  readyLanes: number;
+  /**
    * Whether the plan has been reviewed for the team-orchestration features
    * (dependency `@needs:` clauses and, later, a shared contract). Projects that
    * predate those features migrate in as `false` ("needs review") so the UI can
@@ -472,6 +478,8 @@ export interface AddProjectInput {
   autoApprovePlans?: boolean;
   /** Most steps a plan may have and still auto-approve. Defaults to 6. */
   autoApproveMaxSteps?: number;
+  /** Most cards marked ready at once; 0 = unlimited. Defaults to 3. */
+  readyLanes?: number;
   planAligned?: boolean;
   jiraEpicKeys?: string[];
   /**
@@ -523,6 +531,7 @@ export type ProjectPatch = Partial<
     | 'autoIntegrate'
     | 'autoApprovePlans'
     | 'autoApproveMaxSteps'
+    | 'readyLanes'
     | 'planAligned'
     | 'jiraEpicKeys'
     // Renaming a prefix re-keys every ticket the project owns, in the same transaction —

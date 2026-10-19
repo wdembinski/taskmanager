@@ -69,6 +69,7 @@ const project = (id: string): Project => ({
   autoIntegrate: null,
   autoApprovePlans: false,
   autoApproveMaxSteps: 6,
+  readyLanes: 3,
   planAligned: true,
   jiraEpicKeys: [],
   ticketPrefix: '',

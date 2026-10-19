@@ -54,6 +54,7 @@ import {
 import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from '@tm/shared/session';
 import { RELEASE_DOC } from '@tm/shared/release';
 import { suggestTicketPrefix } from '@tm/shared/ticketKey';
+import { DEFAULT_READY_LANES } from '@tm/shared/readyLanes';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -171,6 +172,7 @@ export function ProjectForm({
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
   const [autoApprovePlans, setAutoApprovePlans] = useState(false);
   const [autoApproveMaxSteps, setAutoApproveMaxSteps] = useState(6);
+  const [readyLanes, setReadyLanes] = useState(DEFAULT_READY_LANES);
   /**
    * The app-wide merge switch as it stands. Read in both modes — setting this repo's
    * switch to what the app already says stores `null`, which is how it goes back to
@@ -235,6 +237,7 @@ export function ProjectForm({
       setAutoIntegrate(project.autoIntegrate);
       setAutoApprovePlans(project.autoApprovePlans);
       setAutoApproveMaxSteps(project.autoApproveMaxSteps);
+      setReadyLanes(project.readyLanes ?? DEFAULT_READY_LANES);
       setModel(project.defaultModel);
       setPlanningModel(project.planningModel);
       setPermMode(project.defaultPermissionMode);
@@ -259,6 +262,7 @@ export function ProjectForm({
       setAutoIntegrate(null); // and merging follows the app until this project says otherwise
       setAutoApprovePlans(false); // auto-approving a plan is opt-in, always
       setAutoApproveMaxSteps(6);
+      setReadyLanes(DEFAULT_READY_LANES);
       setWriteBackPlan(false); // moot here — this dialog always adds plan-less (see save())
       setInstructions('');
       void transport.invoke('settings:get').then((s) => {
@@ -349,6 +353,7 @@ export function ProjectForm({
           autoIntegrate,
           autoApprovePlans,
           autoApproveMaxSteps,
+          readyLanes,
           writeBackPlan,
           instructions,
         });
@@ -379,6 +384,7 @@ export function ProjectForm({
           autoIntegrate,
           autoApprovePlans,
           autoApproveMaxSteps,
+          readyLanes,
           writeBackPlan,
           instructions,
         });
@@ -686,6 +692,24 @@ export function ProjectForm({
                 const n = d.value ?? Number(d.displayValue);
                 if (Number.isFinite(n)) {
                   setAutoApproveMaxSteps(Math.max(1, Math.min(50, Math.round(n as number))));
+                }
+              }}
+            />
+          </Field>
+
+          <Field
+            label="Ready lanes"
+            data-ready-lanes
+            hint="The most cards of this project the board marks ready at once — the ones already running or in an open PR count toward it. The rest wait as queued. 0 = no limit."
+          >
+            <SpinButton
+              min={0}
+              max={20}
+              value={readyLanes}
+              onChange={(_e, d) => {
+                const n = d.value ?? Number(d.displayValue);
+                if (Number.isFinite(n)) {
+                  setReadyLanes(Math.max(0, Math.min(20, Math.round(n as number))));
                 }
               }}
             />

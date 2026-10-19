@@ -22,6 +22,7 @@ describe('buildProject', () => {
     expect(project.autoIntegrate).toBeNull();
     expect(project.autoApprovePlans).toBe(false);
     expect(project.autoApproveMaxSteps).toBe(6);
+    expect(project.readyLanes).toBe(3);
     expect(project.planAligned).toBe(true);
     expect(project.jiraEpicKeys).toEqual([]);
     // A plan project has a plan file, so the ticket-prefix guarantee never fires.

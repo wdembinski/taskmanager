@@ -61,6 +61,7 @@ import {
 import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
 import type { VariantRowDraft } from '@shared/variants';
 import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
+import { DEFAULT_READY_LANES } from '@shared/readyLanes';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
 import type {
@@ -334,6 +335,8 @@ interface ProjectRow {
   autoApprovePlans: number;
   /** The most steps an auto-approved plan may have. See `Project.autoApproveMaxSteps`. */
   autoApproveMaxSteps: number;
+  /** How many cards the project marks ready at once; 0 = unlimited. See `Project.readyLanes`. */
+  readyLanes: number;
   planAligned: number;
   /**
    * A derived legacy label (`'plan' | 'agent' | 'ticket'`), written on every insert for
@@ -1677,7 +1680,8 @@ export function createStore(dbPath: string): Store {
       autoIntegrate         INTEGER,
       autoApprovePlans      INTEGER NOT NULL DEFAULT 0,
       autoApproveMaxSteps   INTEGER NOT NULL DEFAULT 6,
-      planAligned           INTEGER NOT NULL DEFAULT 0,
+      readyLanes            INTEGER NOT NULL DEFAULT 3,
+      planAligned          INTEGER NOT NULL DEFAULT 0,
       kind                  TEXT NOT NULL DEFAULT 'plan',
       jiraEpicKeys          TEXT,
       -- A ticket project's key prefix ('TM'), NULL for every other kind. COLLATE NOCASE
@@ -2391,6 +2395,12 @@ export function createStore(dbPath: string): Store {
   }
   if (!projectColumns.some((c) => c.name === 'autoApproveMaxSteps')) {
     db.exec(`ALTER TABLE projects ADD COLUMN autoApproveMaxSteps INTEGER NOT NULL DEFAULT 6`);
+  }
+
+  // Migrate databases created before a project capped how many cards it marks ready at once
+  // (`@shared/readyLanes`). 3 = the documented default, applied to every existing project.
+  if (!projectColumns.some((c) => c.name === 'readyLanes')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN readyLanes INTEGER NOT NULL DEFAULT 3`);
   }
 
   // Migrate databases created before a project could plan on a different model than it runs
@@ -3117,8 +3127,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeRequiredChecks, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeRequiredChecks, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeRequiredChecks, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeRequiredChecks, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -4335,6 +4345,7 @@ export function createStore(dbPath: string): Store {
         r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
       autoApprovePlans: r.autoApprovePlans !== 0,
       autoApproveMaxSteps: r.autoApproveMaxSteps ?? 6,
+      readyLanes: r.readyLanes ?? DEFAULT_READY_LANES,
       planAligned: r.planAligned !== 0,
       jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
       // NULL — "this project has no prefix" — presents as '' for the same reason `color`
@@ -4396,6 +4407,8 @@ export function createStore(dbPath: string): Store {
             : 0,
       autoApprovePlans: project.autoApprovePlans ? 1 : 0,
       autoApproveMaxSteps: project.autoApproveMaxSteps,
+      // A project pulled from a build that predates the field arrives without it.
+      readyLanes: project.readyLanes ?? DEFAULT_READY_LANES,
       planAligned: project.planAligned ? 1 : 0,
       // A derived legacy label — see `addProject`'s own insert for the same derivation.
       // `rowToProject` never reads this back; it exists only for whatever outside this
@@ -5666,6 +5679,13 @@ export function createStore(dbPath: string): Store {
           1,
           Math.min(50, Math.round(patch.autoApproveMaxSteps)),
         );
+      }
+      if (patch.readyLanes !== undefined) {
+        sets.push(`readyLanes = @readyLanes`);
+        // 0 is a real value (unlimited), so only a non-number falls back to the default.
+        params.readyLanes = Number.isFinite(patch.readyLanes)
+          ? Math.max(0, Math.min(20, Math.round(patch.readyLanes)))
+          : DEFAULT_READY_LANES;
       }
       if (patch.planAligned !== undefined) {
         sets.push(`planAligned = @planAligned`);
