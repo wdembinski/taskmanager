@@ -53,6 +53,13 @@ import {
   type PrWatchAction,
 } from '@shared/mergeRequest';
 import { attachmentsInScope, type PromptAttachment } from '@shared/attachments';
+import {
+  checkPlan,
+  parseCriticalFiles,
+  type ActivePlanCard,
+  type PlanCheckInput,
+  type PlanVerdict,
+} from '@shared/planCheck';
 import type {
   SchedulerState,
   TaskChange,
@@ -967,6 +974,15 @@ interface Run {
    * Absent on every ordinary re-plan, which only ever appends.
    */
   replaceRound?: number;
+  /**
+   * This run's plan was approved automatically (`presentPlan`, the project's "Approve
+   * clean plans automatically" switch) — nothing was ever raised for a human to see. Guards
+   * both places a finished plan can reach the scheduler a second time: a gated
+   * `ExitPlanMode` that arrives after the auto-approval just denies with the hand-over
+   * message, and the event-stream fallback skips entirely, so neither raises a stray
+   * `plan-approval` for a plan that already handed its card over to its steps.
+   */
+  planAutoApproved?: boolean;
   /** Set once we've decided the task's outcome, so a trailing `exited` doesn't re-settle it. */
   settled: boolean;
   /**
@@ -3455,6 +3471,13 @@ export class Scheduler {
     // process (`plan-approval` is not in `OUTLIVES_ITS_RUN`), and `stepsToAppend` drops
     // repeats by title, so approving it first would create no duplicate steps either.
     if (request.toolName === EXIT_PLAN_MODE_TOOL) {
+      // The plan already went through `presentPlan` on an earlier pass (a trailing
+      // `ExitPlanMode` the CLI re-sends, or the event-stream fallback beating this call) and
+      // was approved automatically — nothing is left to raise, and the session only needs
+      // the same hand-over it would have gotten the first time.
+      if (run.planAutoApproved) {
+        return Promise.resolve({ behavior: 'deny', message: PLAN_HANDOVER_MESSAGE });
+      }
       const open = this.openAttentionOfKind(request.runId, 'plan-approval');
       const adoptable = open && !this.pendingDecisions.has(open.id);
       if (adoptable && open) {
@@ -3471,13 +3494,15 @@ export class Scheduler {
         });
       }
       const raise = (): Promise<PermissionDecisionResult> => {
-        const item = this.raisePlanApproval(run);
         return new Promise<PermissionDecisionResult>((resolve) => {
-          this.pendingDecisions.set(item.id, {
-            runId: request.runId,
-            input: request.input,
-            resolve,
-          });
+          const item = this.presentPlan(run, resolve);
+          if (item) {
+            this.pendingDecisions.set(item.id, {
+              runId: request.runId,
+              input: request.input,
+              resolve,
+            });
+          }
         });
       };
       // TM-442, see the identical comment in the `agent-question` branch above.
@@ -3567,14 +3592,26 @@ export class Scheduler {
       this.pendingDecisions.delete(itemId);
       this.resolveAttention(itemId);
       const note = 'note' in answer ? answer.note?.trim() : undefined;
+      // Resolved either way, before the branch below: an approval needs the round it
+      // replaces, and a rejection's next `ExitPlanMode` re-derives `{ round }` from the
+      // run's own `replaceRound` (untouched by a rejection), so this item's own entry is
+      // stale regardless of which way the human decided.
+      const replacement = this.pendingReplacements.get(itemId);
+      this.pendingReplacements.delete(itemId);
       if (answer.decision === 'approve') {
-        this.approvePlan(item, pending?.resolve, note);
+        this.approvePlan(
+          {
+            taskId: item.taskId,
+            runId: item.runId,
+            plan: item.plan ?? null,
+            replaceRound: replacement?.round,
+          },
+          pending?.resolve,
+          note,
+        );
       } else {
         // Rejected: the session keeps its plan-mode context and re-plans with the note
-        // as the reason, which is far cheaper than starting the research over. Its next
-        // `ExitPlanMode` raises a FRESH item and re-derives `{ round }` from the run's own
-        // `replaceRound` (untouched by a rejection), so this item's own entry is now stale.
-        this.pendingReplacements.delete(itemId);
+        // as the reason, which is far cheaper than starting the research over.
         const message = note || PLAN_REJECTED_MESSAGE;
         if (pending) pending.resolve({ behavior: 'deny', message });
         else this.sessions.send(item.runId, message);
@@ -4858,9 +4895,11 @@ export class Scheduler {
     // `answerAttention` already tolerates an item with no held tool.
     if (event.kind === 'tool-use' && event.name === EXIT_PLAN_MODE_TOOL) {
       this.capturePlan(run.taskId, event.input);
-      if (!this.openAttentionOfKind(runId, 'plan-approval')) {
+      // A plan already approved automatically on an earlier pass has nothing left to
+      // raise — see `Run.planAutoApproved`.
+      if (!run.planAutoApproved && !this.openAttentionOfKind(runId, 'plan-approval')) {
         if (this.hasAttachOutbox(run)) await this.ingestOutboxBeforePark(run);
-        this.raisePlanApproval(run);
+        this.presentPlan(run);
       }
     }
 
@@ -5812,6 +5851,8 @@ export class Scheduler {
       steps?: string[];
       /** `agent-question` only: the structured questions, with their options. */
       questions?: AttentionQuestion[];
+      /** `plan-approval` only: the plan-check rules' verdict (`@shared/planCheck`). */
+      planCheck?: PlanVerdict;
       /**
        * Kind-specific context to persist alongside the item, read back the same way
        * `raiseTaskFailed`/`raiseMergeConflict` do for their own kinds — a `plan-approval`
@@ -5837,6 +5878,7 @@ export class Scheduler {
       plan: detail.plan ?? null,
       steps: detail.steps ?? [],
       questions: detail.questions ?? [],
+      planCheck: detail.planCheck ?? null,
       createdAt: Date.now(),
     };
     this.attention.set(item.id, item);
@@ -7454,6 +7496,131 @@ export class Scheduler {
   }
 
   /**
+   * A finished plan reached the scheduler (the gated `ExitPlanMode` or the event-stream
+   * fallback) — compute its plan-check verdict and either hand it straight to
+   * `approvePlan` (the project's "Approve clean plans automatically" switch is on and
+   * every check passed) or raise it for a human via `raisePlanApproval`.
+   *
+   * Returns the raised item, or `undefined` when nothing was raised — either because the
+   * plan was approved automatically, or because this run already was (`Run.planAutoApproved`
+   * guards both call sites, so that case should never actually reach here).
+   */
+  private presentPlan(
+    run: Run,
+    release?: (result: PermissionDecisionResult) => void,
+  ): AttentionItem | undefined {
+    const asker = this.store.getTask(run.taskId);
+    const plan = asker?.agentPlan ?? '';
+    const ownerId = asker ? this.planOwnerOf(asker).id : run.taskId;
+    const steps = this.planStepsToAppend(ownerId, plan, run.replaceRound);
+    const verdict = this.planVerdictFor(run, plan, steps);
+
+    const project = this.store.getProject(run.projectId);
+    if (project?.autoApprovePlans && verdict.pass) {
+      run.planAutoApproved = true;
+      run.planPresented = true;
+      try {
+        this.activity.record({
+          at: Date.now(),
+          projectId: run.projectId,
+          taskId: run.taskId,
+          runId: run.runId,
+          kind: 'plan-presented',
+          outcome: null,
+          origin: run.origin,
+          title: asker?.title ?? '(unknown task)',
+          costUsd: null,
+          detail: null,
+        });
+      } catch (err) {
+        logMain('activity: could not record attention raised', err);
+      }
+      const owner = asker ? this.planOwnerOf(asker) : null;
+      if (owner) {
+        this.store.addComment(
+          owner.projectId,
+          owner.id,
+          `Plan approved automatically — every check passed: ` +
+            `${verdict.checks.map((c) => c.label).join(', ')}.`,
+        );
+      }
+      this.approvePlan(
+        { taskId: run.taskId, runId: run.runId, plan, replaceRound: run.replaceRound },
+        release,
+      );
+      return undefined;
+    }
+
+    return this.raisePlanApproval(run, verdict);
+  }
+
+  /**
+   * Build the `PlanCheckInput` for this run's plan and run the five plan-check rules
+   * (`checkPlan`, `@shared/planCheck`) against it. Computed — and its verdict stored —
+   * for every `plan-approval`, whether or not auto-approve is on, so the Inbox shows the
+   * same checks next to a plan a human approves by hand.
+   */
+  private planVerdictFor(run: Run, plan: string, steps: PlanStep[]): PlanVerdict {
+    const asker = this.store.getTask(run.taskId);
+    const ownerId = asker ? this.planOwnerOf(asker).id : run.taskId;
+    const project = this.store.getProject(run.projectId);
+    const maxSteps = project?.autoApproveMaxSteps ?? 6;
+    const ticketText = asker ? (asker.externalDescription ?? asker.description) : null;
+
+    // A sibling card counts as overlapping when it runs in the same execution project as
+    // the planning card, and is not the planning card's own plan owner — pre-seeding the
+    // owner here means every candidate that resolves back to it (the asker itself, or one
+    // of its own steps/rounds) is skipped below without a special case.
+    const seenOwners = new Set<string>([ownerId]);
+    const activeCards: ActivePlanCard[] = [];
+    const addCandidate = (task: Task | undefined, why: ActivePlanCard['why']): void => {
+      if (!task) return;
+      if ((task.agentProjectId ?? task.projectId) !== run.projectId) return;
+      const owner = this.planOwnerOf(task);
+      if (seenOwners.has(owner.id)) return;
+      seenOwners.add(owner.id);
+      activeCards.push({
+        title: owner.title,
+        why,
+        files: parseCriticalFiles(owner.agentPlan ?? '') ?? [],
+      });
+    };
+
+    // running / planning: any other live run, card- or step-level.
+    for (const other of this.runs.values()) {
+      if (other.settled) continue;
+      addCandidate(
+        this.store.getTask(other.taskId),
+        other.permissionMode === 'plan' ? 'planning' : 'running',
+      );
+    }
+    // planning: a plan already parked in the Inbox for a sibling card.
+    for (const item of this.attention.values()) {
+      if (item.kind !== 'plan-approval') continue;
+      addCandidate(this.store.getTask(item.taskId), 'planning');
+    }
+    // unmerged PR: an open merge request this app opened, or a sync matched by key.
+    for (const mr of this.store.listMergeRequests()) {
+      if (mr.state !== 'opened') continue;
+      const taskId = mr.openedForTaskId ?? mr.taskId;
+      if (!taskId) continue;
+      addCandidate(this.store.getTask(taskId), 'unmerged PR');
+    }
+
+    const input: PlanCheckInput = {
+      plan,
+      steps,
+      maxSteps,
+      ticketText,
+      // TM-466 ("Needs decision" flag) is not in the code yet — `Task` has no such field —
+      // so this stays `undefined` until it exists; `checkPlan` already covers it either way.
+      needsDecision: undefined,
+      activeCards,
+    };
+    return checkPlan(input);
+  }
+
+  /**
    * Park a finished plan for the human. The item carries the plan markdown and the
    * titles of the subtasks approval would create, so the inbox shows the breakdown
    * being signed off rather than just prose. Reuses the existing plan capture: the
@@ -7466,8 +7633,13 @@ export class Scheduler {
    * how many of its steps would be replaced, and the round is parked on the item — via
    * `raiseAttention`'s `context` — as `{ round }` in `pendingReplacements`, so `approvePlan`
    * can find it even after a restart drops this run.
+   *
+   * `verdict` (the plan-check rules, `@shared/planCheck`) is always stored on the item. When
+   * the project's auto-approve switch is on, a failing verdict means `presentPlan` already
+   * decided this plan needs a human — the prompt is prefixed with the check that failed, so
+   * the inbox names the reason instead of making the human re-derive it from the checklist.
    */
-  private raisePlanApproval(run: Run): AttentionItem {
+  private raisePlanApproval(run: Run, verdict: PlanVerdict): AttentionItem {
     run.planPresented = true; // this run did its job, whatever the human decides next
     const asker = this.store.getTask(run.taskId);
     const plan = asker?.agentPlan ?? '';
@@ -7480,10 +7652,19 @@ export class Scheduler {
     const steps = this.planStepsToAppend(ownerId, plan, replaceRound);
     const targetSteps =
       replaceRound != null ? existing.filter((s) => (s.planRound ?? 1) === replaceRound) : [];
+
+    const project = this.store.getProject(run.projectId);
+    const failedCheck = verdict.checks.find((c) => !c.pass);
+    const autoApprovePrefix =
+      project?.autoApprovePlans && !verdict.pass && failedCheck
+        ? `Not approved automatically — ${failedCheck.label}: ${failedCheck.detail}.\n\n`
+        : '';
+
     const item = this.raiseAttention(run, {
       kind: 'plan-approval',
       prompt:
-        steps.length === 0
+        autoApprovePrefix +
+        (steps.length === 0
           ? 'The agent finished planning, but the plan proposes nothing this card does not ' +
             'already have. Review it below — approving will not add any steps.'
           : askingStep
@@ -7503,11 +7684,12 @@ export class Scheduler {
                   `${existing.length} already on this card. Approving runs them one at a time, ` +
                   `each in its own session, on this card's branch.`
                 : `The agent finished planning and proposes ${steps.length} step(s). Approving runs ` +
-                  `them one at a time, each in its own session, on this card's branch.`,
+                  `them one at a time, each in its own session, on this card's branch.`),
       toolName: null,
       reason: null,
       plan,
       steps: steps.map((s) => s.title),
+      planCheck: verdict,
       context: replaceRound != null ? { round: replaceRound } : undefined,
     });
     if (replaceRound != null) this.pendingReplacements.set(item.id, { round: replaceRound });
@@ -7573,20 +7755,19 @@ export class Scheduler {
    * kept, and the fresh ones land as a new round after them, with a comment saying so.
    */
   private approvePlan(
-    item: AttentionItem,
+    target: { taskId: string; runId: string; plan: string | null; replaceRound?: number },
     release?: (result: PermissionDecisionResult) => void,
     note?: string,
   ): void {
     // The plan is the ASKER's (it is where `capturePlan` wrote it); the steps are the
     // CARD's. They differ when a step re-planned from inside its own session — see
     // {@link planOwnerOf} for what that used to do.
-    const asker = this.store.getTask(item.taskId);
+    const asker = this.store.getTask(target.taskId);
     if (!asker) return;
     const parent = this.planOwnerOf(asker);
     const askingStep = parent.id === asker.id ? null : asker;
-    const replacement = this.pendingReplacements.get(item.id);
-    this.pendingReplacements.delete(item.id);
-    const plan = asker.agentPlan ?? item.plan ?? '';
+    const replacement = target.replaceRound != null ? { round: target.replaceRound } : undefined;
+    const plan = asker.agentPlan ?? target.plan ?? '';
     const fresh = this.planStepsToAppend(parent.id, plan, replacement?.round);
 
     const roundSteps = replacement
@@ -7645,7 +7826,7 @@ export class Scheduler {
 
     // Hand over: stop the planner rather than let it implement what it just planned.
     release?.({ behavior: 'deny', message: PLAN_HANDOVER_MESSAGE });
-    const run = this.runs.get(item.runId);
+    const run = this.runs.get(target.runId);
     if (run) {
       run.settled = true; // we are deciding this run's outcome, not its exit code
       this.clearRunAttention(run.runId);

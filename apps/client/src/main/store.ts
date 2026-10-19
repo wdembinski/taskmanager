@@ -1897,6 +1897,7 @@ export function createStore(dbPath: string): Store {
       plan         TEXT,
       steps        TEXT,            -- JSON string[]
       questions    TEXT,            -- JSON AttentionQuestion[]
+      planCheck    TEXT,            -- JSON PlanVerdict; plan-approval only
       context      TEXT,            -- JSON, kind-specific; NULL when there is none
       createdAt    INTEGER NOT NULL
     );
@@ -2548,6 +2549,17 @@ export function createStore(dbPath: string): Store {
   }
   if (mrColumns.some((c) => c.name === 'iid')) {
     db.exec(`ALTER TABLE merge_requests RENAME COLUMN iid TO "number"`);
+  }
+
+  // Migrate databases created before every `plan-approval` item carried its plan-check
+  // verdict. NULL on every existing row — nobody has re-checked an old plan — and the
+  // Inbox falls back to showing no verdict for those, exactly as it did before this
+  // column existed.
+  const attentionColumns = db.prepare(`PRAGMA table_info(attention_items)`).all() as Array<{
+    name: string;
+  }>;
+  if (!attentionColumns.some((c) => c.name === 'planCheck')) {
+    db.exec(`ALTER TABLE attention_items ADD COLUMN planCheck TEXT`);
   }
 
   // Migrate databases created before Phase 8 added the task source column. Existing
@@ -3378,6 +3390,7 @@ export function createStore(dbPath: string): Store {
     plan: string | null;
     steps: string | null;
     questions: string | null;
+    planCheck: string | null;
     context: string | null;
     createdAt: number;
   }
@@ -3972,16 +3985,17 @@ export function createStore(dbPath: string): Store {
   const upsertAttentionStmt = db.prepare(
     `INSERT INTO attention_items
        (id, runId, taskId, projectId, taskTitle, kind, prompt, options, toolName, reason,
-        worktreePath, branch, plan, steps, questions, context, createdAt)
+        worktreePath, branch, plan, steps, questions, planCheck, context, createdAt)
      VALUES
        (@id, @runId, @taskId, @projectId, @taskTitle, @kind, @prompt, @options, @toolName,
-        @reason, @worktreePath, @branch, @plan, @steps, @questions, @context, @createdAt)
+        @reason, @worktreePath, @branch, @plan, @steps, @questions, @planCheck, @context,
+        @createdAt)
      ON CONFLICT(id) DO UPDATE SET
        runId = excluded.runId, prompt = excluded.prompt, options = excluded.options,
        toolName = excluded.toolName, reason = excluded.reason,
        worktreePath = excluded.worktreePath, branch = excluded.branch,
        plan = excluded.plan, steps = excluded.steps, questions = excluded.questions,
-       context = excluded.context`,
+       planCheck = excluded.planCheck, context = excluded.context`,
   );
   const deleteAttentionStmt = db.prepare(`DELETE FROM attention_items WHERE id = ?`);
   const selectAttentionStmt = db.prepare(`SELECT * FROM attention_items ORDER BY createdAt ASC`);
@@ -6751,6 +6765,7 @@ export function createStore(dbPath: string): Store {
         plan: item.plan ?? null,
         steps: JSON.stringify(item.steps ?? []),
         questions: JSON.stringify(item.questions ?? []),
+        planCheck: item.planCheck ? JSON.stringify(item.planCheck) : null,
         context: context == null ? null : JSON.stringify(context),
         createdAt: item.createdAt,
       });
@@ -6779,6 +6794,7 @@ export function createStore(dbPath: string): Store {
           plan: r.plan,
           steps: parseStringArray(r.steps),
           questions: parseJsonColumn<AttentionItem['questions']>(r.questions) ?? [],
+          planCheck: parseJsonColumn<AttentionItem['planCheck']>(r.planCheck) ?? null,
           createdAt: r.createdAt,
         },
         context: parseJsonColumn<unknown>(r.context) ?? null,

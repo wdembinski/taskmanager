@@ -11,6 +11,7 @@
  * These types cross the UI↔engine boundary — the engine raises items, the UI
  * lists and answers them — so they live in `shared`.
  */
+import type { PlanVerdict } from './planCheck';
 
 /**
  * Why a task is parked: awaiting approval for a tool, an answer to a question, or —
@@ -121,6 +122,12 @@ export interface AttentionItem {
    * `question` path is untouched.
    */
   questions?: AttentionQuestion[];
+  /**
+   * For `plan-approval` items, the five plan-check rules' verdict (`checkPlan`,
+   * `@shared/planCheck`) — computed whether or not auto-approve is on, so the inbox can
+   * show the same checks next to a plan a human approves by hand. Null for other kinds.
+   */
+  planCheck?: PlanVerdict | null;
   /** Epoch ms when the item was raised (inbox sorts oldest-first). */
   createdAt: number;
 }
