@@ -19,6 +19,7 @@
  *    their own opaque parameters to it.
  */
 import type { MergeRequestState } from '@shared/mergeRequest';
+import type { AutoMergeMethod } from '@shared/model';
 import { sanitizeToken } from '@shared/secretToken';
 
 export interface GitHubClientConfig {
@@ -328,6 +329,13 @@ export interface GitHubRepository {
    * on an instance old enough not to report it.
    */
   allow_auto_merge?: boolean | null;
+  /**
+   * Whether GitHub deletes a pull request's head branch itself once it merges — the
+   * repository's "Automatically delete head branches" toggle. The app's own merge on green
+   * reads it to decide whether {@link GitHubClient.deleteBranch} is its job; `null`/absent on
+   * an instance old enough not to report it.
+   */
+  delete_branch_on_merge?: boolean | null;
 }
 
 /** What {@link GitHubClient.enableAutoMerge} reports back about what it actually did. */
@@ -971,6 +979,11 @@ export class GitHubClient {
    * `message`, when given and not blank, becomes `commit_title` (its first line) and
    * `commit_message` (the rest) — never sent for `rebase`, which replays the branch's own
    * commits and has no commit message of its own to set.
+   *
+   * `method`, when given, replaces {@link pickMergeMethod} outright and skips the fresh read —
+   * the app's own merge on green sends the project's chosen `autoMergeMethod`, the same one
+   * {@link enableAutoMerge} would have armed, so a refused method surfaces as GitHub's own
+   * refusal rather than being silently swapped for another.
    */
   async mergePullRequest(
     owner: string,
@@ -978,9 +991,10 @@ export class GitHubClient {
     number: number,
     sha?: string,
     message?: string,
+    method?: AutoMergeMethod,
   ): Promise<GitHubMergeResult> {
-    const pr = await this.getPullRequest(owner, repo, number);
-    const merge_method = pickMergeMethod(pr.base?.repo ?? {});
+    const merge_method =
+      method ?? pickMergeMethod((await this.getPullRequest(owner, repo, number)).base?.repo ?? {});
     const split =
       merge_method !== 'rebase' && message && message.trim() ? splitCommitMessage(message) : null;
     return this.write<GitHubMergeResult>(`${repoPath(owner, repo)}/pulls/${number}/merge`, 'PUT', {
@@ -990,6 +1004,24 @@ export class GitHubClient {
         ? { commit_title: split.title, ...(split.body ? { commit_message: split.body } : {}) }
         : {}),
     });
+  }
+
+  /**
+   * Delete a branch — `DELETE /repos/{owner}/{repo}/git/refs/heads/{ref}`.
+   *
+   * Sent after the app's own merge on green, on a repository that does not delete head
+   * branches itself (`delete_branch_on_merge`). A branch that is already gone answers 404 (or
+   * 422 "Reference does not exist") — that is the outcome asked for, so it resolves rather
+   * than throws; anything else surfaces as a {@link GitHubError} like every other write.
+   */
+  async deleteBranch(owner: string, repo: string, ref: string): Promise<void> {
+    const path = ref.split('/').map(encodeURIComponent).join('/');
+    try {
+      await this.write<unknown>(`${repoPath(owner, repo)}/git/refs/heads/${path}`, 'DELETE');
+    } catch (err) {
+      if (err instanceof GitHubError && (err.status === 404 || err.status === 422)) return;
+      throw err;
+    }
   }
 
   /**

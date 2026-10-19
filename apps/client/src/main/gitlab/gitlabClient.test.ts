@@ -236,6 +236,34 @@ describe('GitLabClient', () => {
     expect(JSON.parse(String(init.body))).toEqual({ squash: true });
   });
 
+  it('sends should_remove_source_branch when asked to delete the source branch', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12, 'deadbeef', {
+      squash: true,
+      shouldRemoveSourceBranch: true,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://gitlab.com/api/v4/projects/42/merge_requests/12/merge');
+    expect(JSON.parse(String(init.body))).toEqual({
+      sha: 'deadbeef',
+      should_remove_source_branch: true,
+      squash: true,
+    });
+  });
+
+  it('leaves should_remove_source_branch out when not asked', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, state: 'merged' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergeMergeRequest(42, 12, 'deadbeef', { shouldRemoveSourceBranch: false });
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ sha: 'deadbeef' });
+  });
+
   it('updates only the description — the refresh-on-push never touches the title', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ iid: 12, description: 'new' }));
     vi.stubGlobal('fetch', fetchMock);
@@ -768,5 +796,27 @@ describe('GitLabClient.getAutoMergeFacts', () => {
     const facts = await client().getAutoMergeFacts('g/p');
 
     expect(facts).toEqual({ onlyAllowMergeIfPipelineSucceeds: null });
+  });
+});
+
+describe('GitLabClient.getProjectMergeSettings', () => {
+  it('reads remove_source_branch_after_merge off GET /projects/:id', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ id: 42, remove_source_branch_after_merge: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const settings = await client().getProjectMergeSettings('g/p');
+
+    expect(settings).toEqual({ removeSourceBranchAfterMerge: true });
+    expect(String(fetchMock.mock.calls[0][0])).toBe('https://gitlab.com/api/v4/projects/g%2Fp');
+  });
+
+  it('reports null on an instance too old to send the field', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ id: 42 })));
+
+    const settings = await client().getProjectMergeSettings('g/p');
+
+    expect(settings).toEqual({ removeSourceBranchAfterMerge: null });
   });
 });

@@ -803,6 +803,68 @@ describe('GitHubClient.mergePullRequest', () => {
     const init = fetchMock.mock.calls[1][1] as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual({ merge_method: 'rebase' });
   });
+
+  it('sends an explicit method as given, without reading the pull request first', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ sha: 'cafe', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergePullRequest('o', 'r', 7, 'deadbeef', 'Add SSO\n\nCloses #3', 'squash');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/o/r/pulls/7/merge');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({
+      sha: 'deadbeef',
+      merge_method: 'squash',
+      commit_title: 'Add SSO',
+      commit_message: 'Closes #3',
+    });
+  });
+
+  it('never sends a message with an explicit rebase', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ sha: 'cafe', merged: true }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().mergePullRequest('o', 'r', 7, undefined, 'Add SSO', 'rebase');
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({ merge_method: 'rebase' });
+  });
+});
+
+describe('GitHubClient.deleteBranch', () => {
+  it('DELETEs /git/refs/heads/:ref, keeping the slashes of a nested branch name', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await client().deleteBranch('o', 'r', 'orch/abc-123');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe('https://api.github.com/repos/o/r/git/refs/heads/orch/abc-123');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+  });
+
+  it.each([404, 422])('resolves when the branch is already gone (%i)', async (status) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ message: 'Reference does not exist' }, status)),
+    );
+
+    await expect(client().deleteBranch('o', 'r', 'feature')).resolves.toBeUndefined();
+  });
+
+  it('surfaces any other refusal as a GitHubError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ message: 'Must have admin rights' }, 403)),
+    );
+
+    await expect(client().deleteBranch('o', 'r', 'feature')).rejects.toMatchObject({
+      status: 403,
+    });
+  });
 });
 
 describe('GitHubClient.getMergeProposal', () => {

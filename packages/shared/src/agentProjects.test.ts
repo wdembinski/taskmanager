@@ -26,6 +26,7 @@ const project = (over: Partial<Project>): Project => ({
   autoCreatePr: false,
   autoMergeOnGreen: false,
   autoMergeMethod: 'squash',
+  autoMergeBy: 'forge',
   autoMergeRequiredChecks: [],
   autoIntegrate: null,
   autoApprovePlans: false,

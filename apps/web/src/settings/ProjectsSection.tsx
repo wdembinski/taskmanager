@@ -66,15 +66,16 @@ function autoMergeCaption(project: Project): string {
     : 'you merge from the card';
 }
 
-/** `Project.autoMergeOnGreen`, in words — off, or on with the strategy and whichever check
- *  names (if any) this project has named for it. */
+/** `Project.autoMergeOnGreen`, in words — off, or on with the strategy, whichever check
+ *  names (if any) this project has named for it, and who merges when it is the app. */
 function autoMergeOnGreenCaption(project: Project): string {
   if (!project.autoMergeOnGreen) return 'off';
   const checks =
     project.autoMergeRequiredChecks.length > 0
       ? ` (${project.autoMergeRequiredChecks.join(', ')})`
       : '';
-  return `on, ${project.autoMergeMethod}${checks}`;
+  const by = project.autoMergeBy === 'app' ? ', merged by Task Manager' : '';
+  return `on, ${project.autoMergeMethod}${checks}${by}`;
 }
 
 export interface ProjectsSectionProps {

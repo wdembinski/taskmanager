@@ -70,7 +70,13 @@ export interface GitLabMergeRequest {
    */
   merge_when_pipeline_succeeds?: boolean | null;
   references?: { full?: string } | null;
-  head_pipeline?: { id?: number; status?: string; web_url?: string } | null;
+  head_pipeline?: { id?: number; status?: string; web_url?: string; sha?: string } | null;
+  /**
+   * Whether THIS merge request deletes its source branch on merge — set by the "Delete source
+   * branch" checkbox when it was opened. The project-wide default is
+   * {@link GitLabClient.getProjectMergeSettings}; either one being on means GitLab cleans up.
+   */
+  force_remove_source_branch?: boolean | null;
   pipeline?: { id?: number; status?: string; web_url?: string } | null;
   reviewers?: Array<{ id: number; username?: string }> | null;
   /**
@@ -180,6 +186,12 @@ export interface GitLabMergeRequestDiffList {
 export interface GitLabAutoMergeFacts {
   /** `GET /projects/:id`'s own merge-on-green setting, or `null` on an instance too old to send it. */
   onlyAllowMergeIfPipelineSucceeds: boolean | null;
+}
+
+/** What {@link GitLabClient.getProjectMergeSettings} answers about a project. */
+export interface GitLabProjectMergeSettings {
+  /** `remove_source_branch_after_merge`, or `null` on an instance too old to send it. */
+  removeSourceBranchAfterMerge: boolean | null;
 }
 
 /** What {@link GitLabClient.createMergeRequest} is asked to open. */
@@ -673,15 +685,20 @@ export class GitLabClient {
    * `options.squash` is set, `squash` plus `squash_commit_message` instead, since a squashed
    * merge request writes a DIFFERENT commit than its merge commit and GitLab keeps the two
    * messages as separate fields.
+   *
+   * `options.shouldRemoveSourceBranch` sends `should_remove_source_branch`, so GitLab deletes
+   * the source branch as part of the merge itself — the app's own merge on green sets it when
+   * neither the merge request nor the project already would.
    */
   mergeMergeRequest(
     projectId: number,
     iid: number,
     sha?: string,
-    options?: { message?: string; squash?: boolean },
+    options?: { message?: string; squash?: boolean; shouldRemoveSourceBranch?: boolean },
   ): Promise<GitLabMergeRequest> {
     const body: Record<string, unknown> = {};
     if (sha) body.sha = sha;
+    if (options?.shouldRemoveSourceBranch) body.should_remove_source_branch = true;
     const message = options?.message && options.message.trim() ? options.message : undefined;
     if (options?.squash) {
       body.squash = true;
@@ -885,5 +902,19 @@ export class GitLabClient {
     return {
       onlyAllowMergeIfPipelineSucceeds: body.only_allow_merge_if_pipeline_succeeds ?? null,
     };
+  }
+
+  /**
+   * Whether this project deletes a merged merge request's source branch by default —
+   * `GET /projects/:id`'s `remove_source_branch_after_merge`. The app's own merge on green
+   * reads it, beside the merge request's own `force_remove_source_branch`, to decide whether
+   * it must ask for the deletion itself.
+   */
+  async getProjectMergeSettings(projectPath: string): Promise<GitLabProjectMergeSettings> {
+    const project = encodeURIComponent(projectPath);
+    const body = await this.request<{ remove_source_branch_after_merge?: boolean | null }>(
+      `/projects/${project}`,
+    );
+    return { removeSourceBranchAfterMerge: body.remove_source_branch_after_merge ?? null };
   }
 }
