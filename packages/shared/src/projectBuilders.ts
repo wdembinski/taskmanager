@@ -132,6 +132,8 @@ export function buildProject(
     autoApprovePlans: input.autoApprovePlans ?? false,
     autoApproveMaxSteps: input.autoApproveMaxSteps ?? 6,
     readyLanes: input.readyLanes ?? DEFAULT_READY_LANES,
+    // Off unless asked for: a card's column is the human's until they opt in.
+    autoDoneOnLand: input.autoDoneOnLand ?? false,
     // New projects are trusted as aligned; legacy projects backfill to false via the
     // store's own migration. A plan carrying `@needs:`/`@contract` is also confirmed
     // aligned on its next sync (see ipc `syncProjectPlan`).

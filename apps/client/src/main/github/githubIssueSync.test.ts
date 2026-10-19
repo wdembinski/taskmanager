@@ -428,6 +428,7 @@ describe('issueToTask — assigning tickets to their own board', () => {
     autoApprovePlans: false,
     autoApproveMaxSteps: 6,
     readyLanes: 3,
+    autoDoneOnLand: false,
     planAligned: true,
     jiraEpicKeys: [],
     ticketPrefix: '',

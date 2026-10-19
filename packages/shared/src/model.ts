@@ -363,6 +363,11 @@ export interface Project {
    */
   readyLanes: number;
   /**
+   * Move the card to Done when its PR/MR is reported merged. See `landedDoneMove.ts`. Off
+   * by default and for every project that predates the field.
+   */
+  autoDoneOnLand: boolean;
+  /**
    * Whether the plan has been reviewed for the team-orchestration features
    * (dependency `@needs:` clauses and, later, a shared contract). Projects that
    * predate those features migrate in as `false` ("needs review") so the UI can
@@ -480,6 +485,8 @@ export interface AddProjectInput {
   autoApproveMaxSteps?: number;
   /** Most cards marked ready at once; 0 = unlimited. Defaults to 3. */
   readyLanes?: number;
+  /** Move the card to Done when its PR/MR is reported merged. Defaults to off. */
+  autoDoneOnLand?: boolean;
   planAligned?: boolean;
   jiraEpicKeys?: string[];
   /**
@@ -532,6 +539,7 @@ export type ProjectPatch = Partial<
     | 'autoApprovePlans'
     | 'autoApproveMaxSteps'
     | 'readyLanes'
+    | 'autoDoneOnLand'
     | 'planAligned'
     | 'jiraEpicKeys'
     // Renaming a prefix re-keys every ticket the project owns, in the same transaction —
