@@ -323,3 +323,9 @@ attachments on whichever card ran it, so the shots show up on the card itself.
 The human approves the shots before the card moves to Done — that approval is the sign-off,
 not a step in this checklist. This never runs in CI: it has no pass/fail verdict of its own,
 only screenshots for a person to look at, so there is nothing for a pipeline to gate on.
+
+Add a screen by adding a file under `scripts/shots/screens/`, not by editing a shared list —
+pick any free numeric prefix (two UI cards picking the same one break the tie by the rest of
+the file name). If the screen needs its own fixture data or boot channels, add a file under
+`scripts/fixtures/shots/` the same way. `scripts/lib/shotModules.mjs` merges every file in
+each directory at import time.
