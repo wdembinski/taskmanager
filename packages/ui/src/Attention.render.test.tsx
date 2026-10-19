@@ -75,4 +75,114 @@ describe('InboxItem', () => {
 
     expect(html).not.toContain('data-attachment-gallery');
   });
+
+  it('shows a passing plan-check verdict for a plan-approval item', () => {
+    const html = render(
+      <InboxItem
+        item={item({
+          id: 'item-1',
+          taskId: 'task-1',
+          kind: 'plan-approval',
+          planCheck: {
+            pass: true,
+            checks: [
+              {
+                id: 'open-questions',
+                label: 'No open question',
+                pass: true,
+                detail: 'no open questions',
+              },
+              {
+                id: 'critical-files',
+                label: 'Critical files listed, no overlap',
+                pass: true,
+                detail: '2 files listed, no overlap',
+              },
+              { id: 'step-count', label: 'At most 6 steps', pass: true, detail: '1 step' },
+              {
+                id: 'spec-read',
+                label: 'Spec read',
+                pass: true,
+                detail: 'the ticket names no spec',
+              },
+              {
+                id: 'acceptance',
+                label: 'Every step has agent-checkable acceptance',
+                pass: true,
+                detail: '1 step checked',
+              },
+            ],
+          },
+        })}
+        onAnswer={async () => {}}
+        onDismiss={async () => {}}
+      />,
+    );
+
+    expect(html).toContain('data-plan-check-pass="true"');
+    expect(html).toContain('No open question');
+    expect(html).toContain('Critical files listed, no overlap');
+    expect(html).toContain('At most 6 steps');
+    expect(html).toContain('Spec read');
+    expect(html).toContain('Every step has agent-checkable acceptance');
+  });
+
+  it('shows the failing detail for a failing plan-check verdict', () => {
+    const html = render(
+      <InboxItem
+        item={item({
+          id: 'item-1',
+          taskId: 'task-1',
+          kind: 'plan-approval',
+          planCheck: {
+            pass: false,
+            checks: [
+              {
+                id: 'open-questions',
+                label: 'No open question',
+                pass: true,
+                detail: 'no open questions',
+              },
+              {
+                id: 'critical-files',
+                label: 'Critical files listed, no overlap',
+                pass: false,
+                detail: 'no Critical files section',
+              },
+              { id: 'step-count', label: 'At most 6 steps', pass: true, detail: '1 step' },
+              {
+                id: 'spec-read',
+                label: 'Spec read',
+                pass: true,
+                detail: 'the ticket names no spec',
+              },
+              {
+                id: 'acceptance',
+                label: 'Every step has agent-checkable acceptance',
+                pass: true,
+                detail: '1 step checked',
+              },
+            ],
+          },
+        })}
+        onAnswer={async () => {}}
+        onDismiss={async () => {}}
+      />,
+    );
+
+    expect(html).toContain('data-plan-check-pass="false"');
+    expect(html).toContain('no Critical files section');
+  });
+
+  it('shows no plan-check block for an item without one', () => {
+    const html = render(
+      <InboxItem
+        item={item({ id: 'item-1', taskId: 'task-1', kind: 'plan-approval' })}
+        onAnswer={async () => {}}
+        onDismiss={async () => {}}
+      />,
+    );
+
+    expect(html).not.toContain('data-plan-check');
+  });
 });

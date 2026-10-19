@@ -38,6 +38,7 @@ import { draftKey, useDraft } from './drafts';
 import { gateTrustChoices, gateTrustWaitingText } from './gateStepView';
 import { useGateTrustHost } from './gateTrustHost';
 import { PaneLoading } from './PaneLoading';
+import { PlanCheckVerdict } from './PlanCheckVerdict';
 import { byTask } from './taskDetailHost';
 import { useTransport } from './transport';
 import { useInitialLoad, type InitialLoad } from './useInitialLoad';
@@ -223,6 +224,9 @@ export function InboxItem({
         <Caption1 className={styles.reason}>
           Steps: {item.steps!.map((s, i) => `${i + 1}. ${s}`).join(' · ')}
         </Caption1>
+      )}
+      {item.kind === 'plan-approval' && item.planCheck && (
+        <PlanCheckVerdict verdict={item.planCheck} />
       )}
       {(item.kind === 'merge-conflict' || item.kind === 'task-failed') && item.worktreePath && (
         <Caption1 className={styles.path} title={item.worktreePath}>
