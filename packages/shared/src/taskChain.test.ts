@@ -7,6 +7,7 @@ import {
   chainComponent,
   chainDecline,
   chainWorkUnderWay,
+  dependencyLists,
   incomingLinks,
   isLinkGate,
   linkSatisfied,
@@ -332,6 +333,92 @@ describe('awaitingMerge', () => {
     const byId = index(landed, written, d);
     expect(blockedBy(d, links, byId).map((t) => t.id)).toEqual(['c']);
     expect(awaitingMerge(d, links, byId).map((t) => t.id)).toEqual(['c']);
+  });
+});
+
+describe('dependencyLists', () => {
+  it('gives a card nobody chained two empty lists', () => {
+    const a = task({ id: 'a' });
+    expect(dependencyLists(a, [link('x', 'y')], index(a))).toEqual({ blockedBy: [], blocks: [] });
+  });
+
+  it('puts arrows INTO the card under blockedBy and arrows OUT under blocks', () => {
+    const b = task({ id: 'b', ticketKey: 'TM-2' });
+    const a = task({ id: 'a', ticketKey: 'TM-1' });
+    const c = task({ id: 'c', ticketKey: 'TM-3' });
+    const lists = dependencyLists(b, [link('a', 'b'), link('b', 'c')], index(a, b, c));
+    expect(lists.blockedBy.map((r) => [r.linkId, r.taskId, r.key])).toEqual([
+      ['a->b', 'a', 'TM-1'],
+    ]);
+    expect(lists.blocks.map((r) => [r.linkId, r.taskId, r.key])).toEqual([['b->c', 'c', 'TM-3']]);
+  });
+
+  it('reads merged and satisfied off the predecessor, in both lists', () => {
+    const b = task({ id: 'b' });
+    const landed = task({ id: 'a', status: 'done', landedAt: 1 });
+    const open = task({ id: 'c', status: 'in-review' });
+    const into = dependencyLists(b, [link('a', 'b'), link('c', 'b')], index(landed, open, b));
+    expect(into.blockedBy.map((r) => [r.taskId, r.merged, r.satisfied])).toEqual([
+      ['a', true, true],
+      ['c', false, false],
+    ]);
+    const out = dependencyLists(open, [link('c', 'b')], index(open, b)).blocks;
+    expect(out.map((r) => [r.taskId, r.merged, r.satisfied])).toEqual([['b', false, false]]);
+  });
+
+  it('reads a stacked arrow as satisfied while its predecessor is unmerged', () => {
+    const b = task({ id: 'b' });
+    const written = task({ id: 'a', status: 'in-review' });
+    const [row] = dependencyLists(b, [link('a', 'b', 'stacked')], index(written, b)).blockedBy;
+    expect(row).toMatchObject({ gate: 'stacked', satisfied: true, merged: false });
+  });
+
+  it('keeps a row whose other card is gone, marked missing', () => {
+    const b = task({ id: 'b' });
+    const [row] = dependencyLists(b, [link('ghost', 'b')], index(b)).blockedBy;
+    expect(row).toEqual({
+      linkId: 'ghost->b',
+      taskId: 'ghost',
+      task: undefined,
+      key: '',
+      gate: 'after-merge',
+      satisfied: false,
+      merged: false,
+      missing: true,
+    });
+  });
+
+  it('sorts by key numerically, keyless rows last', () => {
+    const z = task({ id: 'z' });
+    const byId = index(
+      z,
+      task({ id: 'p', ticketKey: 'TM-10' }),
+      task({ id: 'q', ticketKey: 'TM-9' }),
+      task({ id: 'r', externalKey: 'ABC-1' }),
+      task({ id: 's' }),
+    );
+    const links = ['s', 'p', 'q', 'r'].map((id) => link(id, 'z'));
+    expect(dependencyLists(z, links, byId).blockedBy.map((r) => r.key)).toEqual([
+      'ABC-1',
+      'TM-9',
+      'TM-10',
+      '',
+    ]);
+  });
+
+  it('leaves blockedBy and awaitingMerge answering as before on a diamond', () => {
+    // a splits into b and c; both feed d. b is written but unmerged, c has not started.
+    const a = task({ id: 'a', status: 'done', landedAt: 1 });
+    const b = task({ id: 'b', status: 'in-review' });
+    const c = task({ id: 'c' });
+    const d = task({ id: 'd' });
+    const links = [link('a', 'b'), link('a', 'c'), link('c', 'd'), link('b', 'd')];
+    const byId = index(a, b, c, d);
+    expect(blockedBy(d, links, byId).map((t) => t.id)).toEqual(['c', 'b']);
+    expect(awaitingMerge(d, links, byId).map((t) => t.id)).toEqual(['b']);
+    expect(blockedBy(b, links, byId)).toEqual([]);
+    expect(dependencyLists(d, links, byId).blockedBy.map((r) => r.taskId)).toEqual(['b', 'c']);
+    expect(dependencyLists(a, links, byId).blocks.map((r) => r.satisfied)).toEqual([true, true]);
   });
 });
 
