@@ -283,6 +283,113 @@ export function readyToReleaseGiven(
 }
 
 /**
+ * One arrow read from one end of it — a row of a card's "Blocked by" or "Blocks" list.
+ *
+ * `task` is the card at the OTHER end. `satisfied` and `merged` are both about the
+ * PREDECESSOR (the arrow's `from` card), whichever list the row sits in: a "Blocks" row
+ * says whether this card has released that one, a "Blocked by" row whether that one has
+ * released this card. `satisfied` is {@link linkSatisfied} — the engine's own answer, so a
+ * `stacked` arrow reads as met while its predecessor is still unmerged.
+ */
+export interface DependencyRow {
+  /** The arrow's id — what removing the row unlinks. */
+  linkId: string;
+  /** The card at the other end of the arrow. */
+  taskId: string;
+  /** That card, or `undefined` when it is gone ({@link missing}). */
+  task?: Task;
+  /** `ticketKey ?? externalKey`, or `''` for a card with neither (or a missing one). */
+  key: string;
+  gate: LinkGate;
+  /** Whether the arrow's gate is met — see {@link linkSatisfied}. */
+  satisfied: boolean;
+  /** Whether the predecessor's work has landed (`landedAt != null`). */
+  merged: boolean;
+  /** The other card no longer exists; the row is still shown so it can be removed. */
+  missing: boolean;
+}
+
+/** A card's dependencies, both ways round. See {@link dependencyLists}. */
+export interface DependencyLists {
+  /** Every arrow INTO the card — what has to happen first. */
+  blockedBy: DependencyRow[];
+  /** Every arrow OUT of the card — what waits for it. */
+  blocks: DependencyRow[];
+}
+
+/** A card's key, the way the issue list shows it. */
+function dependencyKey(task: Task | undefined): string {
+  return task?.ticketKey ?? task?.externalKey ?? '';
+}
+
+/** `link` as a row naming the card at its `otherId` end. */
+function dependencyRow(
+  link: TaskLink,
+  otherId: string,
+  byId: ReadonlyMap<string, Task>,
+): DependencyRow {
+  const task = byId.get(otherId);
+  const from = byId.get(link.fromTaskId);
+  return {
+    linkId: link.id,
+    taskId: otherId,
+    task,
+    key: dependencyKey(task),
+    gate: link.gate,
+    satisfied: linkSatisfied(link, from),
+    merged: from?.landedAt != null,
+    missing: !task,
+  };
+}
+
+/** Keys in numeric order (`TM-9` before `TM-10`); keyless rows last, by title then id. */
+const KEY_ORDER = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+
+function byDependencyKey(a: DependencyRow, b: DependencyRow): number {
+  if (a.key !== b.key) {
+    if (!a.key) return 1;
+    if (!b.key) return -1;
+    return KEY_ORDER.compare(a.key, b.key);
+  }
+  return (
+    KEY_ORDER.compare(a.task?.title ?? '', b.task?.title ?? '') ||
+    KEY_ORDER.compare(a.taskId, b.taskId)
+  );
+}
+
+/**
+ * Every arrow touching `task`, split by direction — the ONE list the Links section, the
+ * board's chips and the engine all read, so "Blocked by" can never disagree with what is
+ * actually holding the card.
+ *
+ * Each list is sorted by key. A card nobody has chained gets two empty lists.
+ */
+export function dependencyLists(
+  task: Pick<Task, 'id'>,
+  links: readonly TaskLink[],
+  byId: ReadonlyMap<string, Task>,
+): DependencyLists {
+  return {
+    blockedBy: incomingRows(task, links, byId).sort(byDependencyKey),
+    blocks: outgoingLinks(links, task.id)
+      .map((l) => dependencyRow(l, l.toTaskId, byId))
+      .sort(byDependencyKey),
+  };
+}
+
+/**
+ * The "Blocked by" rows in LINK order — what {@link blockedBy} and {@link awaitingMerge}
+ * filter, so their answers keep the order they have always had.
+ */
+function incomingRows(
+  task: Pick<Task, 'id'>,
+  links: readonly TaskLink[],
+  byId: ReadonlyMap<string, Task>,
+): DependencyRow[] {
+  return incomingLinks(links, task.id).map((l) => dependencyRow(l, l.fromTaskId, byId));
+}
+
+/**
  * The predecessors this card is still waiting on — what its chip names, so "waiting on"
  * says WHOM rather than merely that it is waiting.
  *
@@ -295,12 +402,9 @@ export function blockedBy(
   links: readonly TaskLink[],
   byId: ReadonlyMap<string, Task>,
 ): Task[] {
-  const waiting: Task[] = [];
-  for (const link of incomingLinks(links, task.id)) {
-    const from = byId.get(link.fromTaskId);
-    if (from && !linkSatisfied(link, from)) waiting.push(from);
-  }
-  return waiting;
+  return incomingRows(task, links, byId).flatMap((row) =>
+    row.task && !row.satisfied ? [row.task] : [],
+  );
 }
 
 /** A board column as it reads inside a waiting card's reason. */
@@ -355,13 +459,17 @@ export function awaitingMerge(
   links: readonly TaskLink[],
   byId: ReadonlyMap<string, Task>,
 ): Task[] {
-  const held: Task[] = [];
-  for (const link of incomingLinks(links, task.id)) {
-    const from = byId.get(link.fromTaskId);
-    if (!from || linkSatisfied(link, from)) continue;
-    if (linkSatisfied({ ...link, gate: 'stacked' }, from)) held.push(from);
-  }
-  return held;
+  return incomingRows(task, links, byId).flatMap((row) => {
+    if (!row.task || row.satisfied) return [];
+    const stacked: TaskLink = {
+      id: row.linkId,
+      fromTaskId: row.taskId,
+      toTaskId: task.id,
+      gate: 'stacked',
+      createdAt: 0,
+    };
+    return linkSatisfied(stacked, row.task) ? [row.task] : [];
+  });
 }
 
 /**
