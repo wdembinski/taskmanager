@@ -10,10 +10,12 @@
  *
  * The upshot, from the board's side:
  *
- *   - a card left in TO DO stays in TO DO while its agent works, and after it finishes;
+ *   - a card left in TO DO stays in TO DO while its agent works, and after it finishes,
+ *     unless the run began with a start of the card (below, or the chain's own start);
  *   - a run that finishes, fails, is stopped or is retried changes no column;
- *   - a drag, the detail pane's dropdown, or starting an agent on a TO DO card ({@link
- *     assignmentMovesCard}) are the only things that ever move a card.
+ *   - a drag, the detail pane's dropdown, starting an agent on a TO DO card ({@link
+ *     assignmentMovesCard}), or pressing Start on a TO DO card (`handStartMove.ts`) are the
+ *     only things that ever move a card.
  *
  * The rule has a second half, {@link humanStatusPatch}: because the run only BORROWED the
  * field, the human can still move the card while the run holds it — the move is written to

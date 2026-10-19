@@ -84,6 +84,7 @@ import {
   restingStatus,
 } from '@shared/board';
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
+import { moveHandStartedCard, startSucceeded, type HandStartMoveDeps } from './handStartMove';
 import { preserveLocalTrust } from './gateTrust';
 import { toMoveActivity, transitionThenRecord } from './moveActivity';
 import { AutomationRunner } from './automationRunner';
@@ -1187,8 +1188,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('scheduler:activeRuns', async () => scheduler.activeRuns());
   handle('scheduler:states', async () => scheduler.schedulerStates());
   handle('scheduler:integrating', async () => scheduler.integratingTaskIds());
+  // The column move a human start makes (`handStartMove.ts`): Start, Run this step and
+  // Release now all move a card resting in TO DO to IN PROGRESS once the run has begun. The
+  // forge half is the same write a drag fires. `writeMoveToForge` and `preBlockMarker` are
+  // `const`s declared further down this scope; these closures only run at IPC time, after
+  // the scope has finished initializing, as `task:assignAgent` relies on too.
+  const handStartMove: HandStartMoveDeps = {
+    getTask: (id) => store.getTask(id),
+    writeForgeMove: async (card) => {
+      const move = resolveMove(card, 'in-progress');
+      if (move.noop) return {};
+      const outcome = await writeMoveToForge(card, move, 'in-progress');
+      return { preBlockStatus: preBlockMarker(move, outcome), ...(outcome?.patch ?? {}) };
+    },
+    updateTask: (id, patch) => store.updateTask(id, patch),
+    recordStatusChange: (projectId, id, from, to) =>
+      store.recordStatusChange(projectId, id, from, to),
+    addComment: (projectId, id, body) => {
+      store.addComment(projectId, id, body);
+    },
+    emit: (task) => send('task:changed', { task, runId: null }),
+    warn: (text) => send('board:notice', { intent: 'warning', text }),
+  };
   handle('task:run', async (taskId) => {
     const outcome = scheduler.startTaskNow(taskId);
+    // Only a start that began a run moves the card — never a refusal, the limit park included.
+    if (startSucceeded(outcome)) await moveHandStartedCard(handStartMove, taskId);
     // The engine names the wall it hit; one map turns that into the sentence the human
     // reads. This used to guess — "already running, or a usage limit" — for all six
     // reasons at once, which meant a signed-out account was reported as a usage limit and
@@ -4347,7 +4372,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   // The refusal comes back as a sentence rather than as a rejected promise: "a usage limit
   // is holding everything" is something to tell the human, not an error — the same reasoning
   // as `LinkResult`.
-  handle('chain:releaseNow', async (taskId) => scheduler.releaseChainNow(taskId));
+  // A successful release is a human start, so the card gets the hand-start move afterwards
+  // (`handStartMove.ts`) — from TO DO only; a released BLOCKED card stays Blocked.
+  handle('chain:releaseNow', async (taskId) => {
+    const refusal = scheduler.releaseChainNow(taskId);
+    if (refusal === null) await moveHandStartedCard(handStartMove, taskId);
+    return refusal;
+  });
   // ---------------------------------------------------------------------------
 
   // --- Attachments -----------------------------------------------------------

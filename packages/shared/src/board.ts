@@ -125,8 +125,9 @@ export function isBoardCard(task: Task): boolean {
  * then it is what the run borrowed it from (see {@link Task.preRunStatus}).
  *
  * This, not `status`, is what the board and every "what state is this card in" control
- * must read: a card left in TO DO stays in TO DO while its agent works, and the spinner,
- * the glyph and the run strip are what say the agent is working.
+ * must read: a card rests where it was put while its agent works — any start of a TO DO card
+ * moves it to IN PROGRESS, and nothing else moves it — and the spinner, the glyph and the run
+ * strip are what say the agent is working.
  */
 export function restingStatus(task: Pick<Task, 'status' | 'preRunStatus'>): TaskStatus {
   if (isRunStatus(task.status) && task.preRunStatus) return task.preRunStatus;
