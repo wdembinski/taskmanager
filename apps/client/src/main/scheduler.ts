@@ -44,6 +44,7 @@ import {
 import { logMain } from './log';
 import { hasRepo, resolveRunModel } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
+import { DEFAULT_READY_LANES, openPrTaskIds } from '@shared/readyLanes';
 import { variantWorkOwner } from '@shared/variants';
 import {
   forgeName,
@@ -1683,6 +1684,9 @@ export class Scheduler {
       limitActive: () => this.workIsHeld,
       inFlight: (id) => this.inFlight.has(id),
       branchOf: (task) => this.branchFor(task),
+      projectTasks: (projectId) => this.store.getTasks(projectId),
+      laneCap: (projectId) => this.store.getProject(projectId)?.readyLanes ?? DEFAULT_READY_LANES,
+      openPrTaskIds: () => openPrTaskIds(this.store.listMergeRequests()),
       now: () => Date.now(),
     });
     this.gateSteps = new GateStepRunner<LandingContext>({
@@ -5351,6 +5355,11 @@ export class Scheduler {
         // `heldLandings` is keyed by the PARENT — so this is a no-op for one.)
         if (exitedTask && !exitedTask.parentTaskId) this.landHeld(run.taskId);
         this.pumpAllActive(); // a slot freed up — advance every queue, not just this one
+        // …and a ready LANE may have, too: this is the moment the run leaves `inFlight`, so
+        // the card stops holding its project's lane HERE, not where it settled a few lines up
+        // (`chain.workWritten` runs while the card is still in flight). A card the cap queued
+        // starts now — see `ChainRunner.reconsider`.
+        this.reconsiderChains('lane-freed');
         // This run may have been what a PR/MR conflict drive was waiting on — the worktree
         // may be free now, or (a chain between steps) about to be claimed by the next one
         // regardless; either way `redriveForgeConflicts` re-asks `worktreeBusy` itself.

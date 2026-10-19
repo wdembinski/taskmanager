@@ -37,9 +37,15 @@
  *    hundred. The one deliberate exception is a card still waiting on another arrow, where
  *    "not yet" is the chain working as drawn and the card's own chip already says whom it
  *    waits for.
+ *
+ * And one limit on all of it: a project's **ready lanes** (`@shared/readyLanes`). Both start
+ * paths ask that one function which of a project's releasable cards fit, so the engine starts
+ * exactly the cards the board marks ready and queues the ones it marks queued. Only the
+ * human's **Release now** goes past it, as it goes past every other gate.
  */
 import { restingStatus } from '@shared/board';
 import type { Task } from '@shared/model';
+import { compareLaneOrder, readyLanesByProject, type LanePlan } from '@shared/readyLanes';
 import {
   blockedBy,
   chainDecline,
@@ -78,6 +84,12 @@ export interface ChainRunnerDeps {
   inFlight(taskId: string): boolean;
   /** The branch a card's worktree is on — the start point a `stacked` successor cuts from. */
   branchOf(task: Task): string;
+  /** Every card filed under a project, steps included — what a lane count is taken over. */
+  projectTasks(projectId: string): Task[];
+  /** The project's ready-lane cap (`Project.readyLanes`). `0` = unlimited. */
+  laneCap(projectId: string): number;
+  /** The cards with an open PR/MR — a card in review with one still holds its lane. */
+  openPrTaskIds(): ReadonlySet<string>;
   now(): number;
 }
 
@@ -102,7 +114,7 @@ type ReleaseCause = 'landed' | 'written';
  * record of which part of it — which is why each trigger carries its own sentence.
  */
 export type ChainTrigger =
-  'boot' | 'limit-lifted' | 'links-changed' | 'card-changed' | 'decision-cleared';
+  'boot' | 'limit-lifted' | 'links-changed' | 'card-changed' | 'decision-cleared' | 'lane-freed';
 
 /**
  * What a card's timeline says when a re-ask started it.
@@ -129,6 +141,9 @@ const TRIGGER_NOTE: Record<ChainTrigger, string> = {
   'decision-cleared':
     'Started when its open decision was cleared: everything it was chained to wait for had ' +
     'already finished.',
+  'lane-freed':
+    'Started when a ready lane freed up: everything it was chained to wait for had already ' +
+    'finished, and it was next in line.',
 };
 
 /**
@@ -156,7 +171,9 @@ const ABANDONED: ReadonlySet<Task['status']> = new Set(['stopped', 'cancelled'])
 type Decline =
   | ChainDecline
   /** The engine itself refused the start — a limit, or a run that beat us to it. */
-  | 'refused';
+  | 'refused'
+  /** Its turn came, but every ready lane of its project is taken — see `@shared/readyLanes`. */
+  | 'lane-limit';
 
 /** How a card is named in another card's timeline: its ticket key when it has one. */
 function name(task: Task): string {
@@ -192,6 +209,19 @@ export class ChainRunner {
    * the links it is keyed by. The double-START is prevented by `runTask`, not by this.
    */
   private readonly announced = new Set<string>();
+
+  /**
+   * The cards already told they are **queued** behind the lane limit, each with the start
+   * keys (`<link>:<cause>`) of the arrows that queued it — empty for a re-ask.
+   *
+   * Keyed by CARD rather than by arrow, unlike `announced`: the queue is the project's, not
+   * any arrow's, so a card waiting for a lane is told once however many passes find it still
+   * waiting. Cleared when the card starts, so a card queued again later is told again. The
+   * arrow keys go into `announced` at that start, because the arrow did, in effect, start the
+   * card — without them the next poll of the same merged MR would report the card's own run
+   * as a decline.
+   */
+  private readonly queued = new Map<string, string[]>();
 
   constructor(private readonly deps: ChainRunnerDeps) {}
 
@@ -257,17 +287,25 @@ export class ChainRunner {
     if (!task.agentProjectId) {
       return 'That card is not assigned to an agent, so there is nothing to start. Assign it first.';
     }
-    const waiting = blockedBy(task, this.deps.links(), this.index());
+    const links = this.deps.links();
+    const waiting = blockedBy(task, links, this.index(links));
+    // Asked before the start, which takes a lane of its own. The cap is ignored here exactly
+    // as the gates are — the human chose — but a card that was queued says it jumped the queue.
+    const wasQueued = this.lanePlan(task.projectId, links).queued.has(task.id);
     if (!this.deps.runTask(taskId)) {
       return 'The engine could not start that card — it may already be running, or held by a usage limit.';
     }
+    this.queued.delete(task.id);
+    const jumped = wasQueued
+      ? ` It also went past the project's ready-lane limit: ${this.lanesTaken(task)}`
+      : '';
     this.deps.addComment(
       task.projectId,
       task.id,
-      waiting.length > 0
+      (waiting.length > 0
         ? `Released by hand, without waiting for ${waiting.map(name).join(', ')}. ` +
-            `The chain still records the ordering — this run simply went ahead of it.`
-        : 'Started by hand from its chain.',
+          `The chain still records the ordering — this run simply went ahead of it.`
+        : 'Started by hand from its chain.') + jumped,
     );
     return null;
   }
@@ -301,17 +339,34 @@ export class ChainRunner {
     const links = this.deps.links();
     if (links.length === 0) return;
     const byId = this.index(links);
+    const candidates = new Map<string, Task[]>();
     for (const id of new Set(links.map((l) => l.toTaskId))) {
       const task = byId.get(id);
       // `declineReason` is every guard `release` applies rolled into one — its own work
       // done or under way, no agent, parked out of the chain's reach.
       if (!task || this.declineReason(task)) continue;
       if (!readyToReleaseGiven(task, links, byId, null)) continue;
-      if (!this.deps.runTask(task.id)) continue;
-      // Only now, and only here: the APP started this card, so the APP moves it. Order
-      // matters — see `ChainRunnerDeps.markInProgress`.
-      this.deps.markInProgress(task.id);
-      this.deps.addComment(task.projectId, task.id, TRIGGER_NOTE[trigger] + MOVED_NOTE);
+      const group = candidates.get(task.projectId);
+      if (group) group.push(task);
+      else candidates.set(task.projectId, [task]);
+    }
+    // Lanes are per project and taken in the board's order — priority, then ticket number —
+    // so the cards that start are exactly the ones the board marks ready.
+    for (const group of candidates.values()) {
+      for (const task of group.sort(compareLaneOrder)) {
+        // Re-asked per card: each start takes a lane, and a refused one leaves it free.
+        const lane = this.lane(task, links);
+        if (!lane.fits) {
+          this.noteQueued(task, lane.plan);
+          continue;
+        }
+        if (!this.deps.runTask(task.id)) continue;
+        this.startedFromQueue(task.id);
+        // Only now, and only here: the APP started this card, so the APP moves it. Order
+        // matters — see `ChainRunnerDeps.markInProgress`.
+        this.deps.markInProgress(task.id);
+        this.deps.addComment(task.projectId, task.id, TRIGGER_NOTE[trigger] + MOVED_NOTE);
+      }
     }
   }
 
@@ -421,6 +476,15 @@ export class ChainRunner {
         this.noteDecline(from, to, link, cause, said, why);
         continue;
       }
+      // Its turn has come, but the project's lanes may all be taken. Asked per start, so two
+      // releases in one loop cannot both take the last lane.
+      if (!this.lane(to, links).fits) {
+        this.noteDecline(from, to, link, cause, said, 'lane-limit');
+        const keys = this.queued.get(to.id) ?? [];
+        if (!keys.includes(said)) keys.push(said);
+        this.queued.set(to.id, keys);
+        continue;
+      }
       // A refusal from the engine is a decline like any other — it is the case where the
       // card looked perfectly startable, so a silent `continue` here is the one a human
       // would spend an evening on.
@@ -429,6 +493,7 @@ export class ChainRunner {
         continue;
       }
       this.announced.add(said);
+      this.startedFromQueue(to.id);
       // The start was automatic, so the move comes with it — see `reconsider` for the twin.
       this.deps.markInProgress(to.id);
       this.deps.addComment(to.projectId, to.id, this.releaseNote(from, to, link, cause, null));
@@ -486,9 +551,11 @@ export class ChainRunner {
         ? 'Started automatically'
         : why === 'needs-decision'
           ? 'Waiting on a decision'
-          : why === 'no-agent' || why === 'resting'
-            ? 'Ready to start'
-            : 'Not started';
+          : why === 'lane-limit'
+            ? 'Queued'
+            : why === 'no-agent' || why === 'resting'
+              ? 'Ready to start'
+              : 'Not started';
     const because =
       cause === 'landed'
         ? `${name(from)} has landed, and this card was chained to run after it.`
@@ -534,7 +601,80 @@ export class ChainRunner {
           ' Nothing was started: the engine refused the run, so something else has it — most ' +
           'likely a run that started a moment earlier, or a usage limit.'
         );
+      case 'lane-limit':
+        return ` Nothing was started yet: ${this.lanesTaken(to)} It starts by itself when one frees up.`;
     }
+  }
+
+  /** The half-sentence every queued card's note shares: how many lanes, all of them taken. */
+  private lanesTaken(to: Task): string {
+    const cap = this.deps.laneCap(to.projectId);
+    return `all ${cap} of this project's ready lane${cap === 1 ? ' is' : 's are'} taken.`;
+  }
+
+  /**
+   * Tell a card a re-ask found that it is queued — once, until it starts. A card a landing
+   * already queued has been told, by that landing's own note.
+   */
+  private noteQueued(task: Task, plan: LanePlan): void {
+    if (this.queued.has(task.id) || plan.cap === 0) return;
+    this.queued.set(task.id, []);
+    this.deps.addComment(
+      task.projectId,
+      task.id,
+      `Queued (lane limit): everything this card was chained to wait for has finished, but ` +
+        `${this.lanesTaken(task)} It starts by itself when one frees up.`,
+    );
+  }
+
+  /** A card left the queue by starting: the arrows that queued it count as having started it. */
+  private startedFromQueue(taskId: string): void {
+    for (const key of this.queued.get(taskId) ?? []) this.announced.add(key);
+    this.queued.delete(taskId);
+  }
+
+  /**
+   * One project's lanes as they stand this instant — `running` is the engine's own
+   * `inFlight`, read live, so a start a moment ago already holds its lane.
+   *
+   * The cards are the project's own plus every card at either end of an arrow, so a
+   * predecessor filed under another project still reads as satisfied; only this project's
+   * plan is read back.
+   */
+  private lanePlan(projectId: string, links: readonly TaskLink[]): LanePlan {
+    const cards = new Map(this.deps.projectTasks(projectId).map((t) => [t.id, t]));
+    for (const [id, t] of this.index(links)) if (!cards.has(id)) cards.set(id, t);
+    const all = [...cards.values()];
+    const running = new Set(all.filter((t) => this.deps.inFlight(t.id)).map((t) => t.id));
+    const plans = readyLanesByProject(
+      all,
+      links,
+      running,
+      (id) => this.deps.laneCap(id),
+      this.deps.openPrTaskIds(),
+    );
+    return plans.get(projectId) ?? { ready: new Set(), queued: new Set(), occupied: 0, cap: 0 };
+  }
+
+  /**
+   * Whether this card fits in a free lane of its project right now.
+   *
+   * Ranked against the plan's candidates PLUS this card, rather than looked up in
+   * `plan.ready`: a release asks at the instant it watched the predecessor finish, before the
+   * board's copy of it has caught up (see `readyToReleaseGiven`), so the plan may not count
+   * this card as a candidate yet. Ranking it in by hand is the answer the plan gives a moment
+   * later.
+   */
+  private lane(task: Task, links: readonly TaskLink[]): { fits: boolean; plan: LanePlan } {
+    const plan = this.lanePlan(task.projectId, links);
+    if (plan.cap === 0) return { fits: true, plan };
+    const pool = new Map<string, Task>([[task.id, task]]);
+    for (const id of [...plan.ready, ...plan.queued]) {
+      const t = this.deps.getTask(id);
+      if (t) pool.set(id, t);
+    }
+    const rank = [...pool.values()].sort(compareLaneOrder).findIndex((t) => t.id === task.id);
+    return { fits: rank < Math.max(0, plan.cap - plan.occupied), plan };
   }
 
   /**
