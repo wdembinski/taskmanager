@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { restingStatus } from '@shared/board';
 import type { Project, Task, TaskActivityEntry, TaskStatus } from '@shared/model';
+import { releasePrompt } from '@shared/releaseOnDone';
+import type { TaskLink } from '@shared/taskChain';
 import {
   landedDoneDecision,
   landedDoneWarned,
+  landThenMoveToDone,
   moveLandedCardToDone,
   type LandedDoneMoveDeps,
+  type LandThenMoveDeps,
   type LandedMr,
 } from './landedDoneMove';
 
@@ -315,5 +319,74 @@ describe('landedDoneDecision', () => {
       move: false,
       reason: 'human-moved',
     });
+  });
+});
+
+describe('landThenMoveToDone', () => {
+  it('stamps landedAt before the Done write, so the move never asks to release', async () => {
+    const card = task({ id: 'c' });
+    const successor = task({ id: 's', status: 'pending' });
+    const h = harness([card, successor]);
+    const order: string[] = [];
+    const before = { ...h.byId.get('c')! };
+    const deps: LandThenMoveDeps = {
+      ...h.deps,
+      noteWorkLanded: (id) => {
+        order.push('landed');
+        Object.assign(h.byId.get(id)!, { landedAt: LANDED_AT });
+      },
+      updateTask: (id, patch) => {
+        order.push(`update:${h.byId.get(id)!.landedAt}`);
+        return h.deps.updateTask(id, patch);
+      },
+      logError: () => {},
+    };
+
+    const moved = await landThenMoveToDone(deps, 'c', github);
+
+    expect(order).toEqual(['landed', `update:${LANDED_AT}`]);
+    expect(moved?.status).toBe('done');
+    const links: TaskLink[] = [
+      { id: 'c->s', fromTaskId: 'c', toTaskId: 's', gate: 'after-merge', createdAt: 0 },
+    ];
+    // The same pair a human drag would be asked about — but this card has landed.
+    expect(
+      releasePrompt({
+        origin: 'human',
+        before,
+        after: moved!,
+        links,
+        byId: h.byId,
+        mergeRequests: [],
+      }),
+    ).toBeNull();
+  });
+
+  it('still stamps the landing when no merged row names the card, and logs a failed move', async () => {
+    const h = harness([task({ id: 'c' })], { forgeFails: true });
+    const landed: string[] = [];
+    const logged: string[] = [];
+    const deps: LandThenMoveDeps = {
+      ...h.deps,
+      noteWorkLanded: (id) => {
+        landed.push(id);
+        Object.assign(h.byId.get(id)!, { landedAt: LANDED_AT });
+      },
+      logError: (message) => logged.push(message),
+    };
+
+    expect(await landThenMoveToDone(deps, 'c', undefined)).toBeNull();
+    expect(landed).toEqual(['c']);
+    h.nothingCalled();
+
+    // A throwing dep below the move (not the forge write, which warns) is logged, not thrown.
+    const throwing: LandThenMoveDeps = {
+      ...deps,
+      activity: () => {
+        throw new Error('db gone');
+      },
+    };
+    expect(await landThenMoveToDone(throwing, 'c', github)).toBeNull();
+    expect(logged).toEqual(['Moving landed card c to Done failed']);
   });
 });

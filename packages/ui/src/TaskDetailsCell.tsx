@@ -36,6 +36,8 @@ import {
 } from '@fluentui/react-components';
 import { DeleteRegular, DismissRegular } from '@fluentui/react-icons';
 import type { BoardScope } from '@tm/shared/ipc';
+import type { MergeRequest } from '@tm/shared/mergeRequest';
+import type { TaskLink } from '@tm/shared/taskChain';
 import type { ManualStatus, Task } from '@tm/shared/model';
 import { restingStatus } from '@tm/shared/board';
 import { insertAttachmentRef, type TaskAttachment } from '@tm/shared/attachments';
@@ -44,6 +46,7 @@ import type { PriorityDisplay } from '@tm/shared/settings';
 import { AttachmentStrip } from './AttachmentStrip';
 import { draftKey, useDraft } from './drafts';
 import { PriorityGlyph } from './PriorityGlyph';
+import { useReleaseOnDone } from './ReleaseWaitingDialog';
 import { MANUAL_STATUS_OPTIONS, STATUS_LABEL } from './taskStatus';
 import { FoldToggle } from './FoldToggle';
 import { trackerName } from './tracker';
@@ -132,7 +135,19 @@ export interface TaskDetailsCellProps {
    * same guarantee `moveTask` gives its own callers on the board.
    */
   onStatusSet?: (status: ManualStatus) => void;
+  /**
+   * The board's links, task index and this card's merge requests — what a move to Done reads
+   * to ask whether to release the cards chained after it (`@tm/shared/releaseOnDone`).
+   * Without them a move asks nothing, which is the right answer for a card with no arrows.
+   */
+  chainLinks?: readonly TaskLink[];
+  chainTasksById?: ReadonlyMap<string, Task>;
+  mergeRequests?: readonly MergeRequest[];
 }
+
+const NO_LINKS: readonly TaskLink[] = [];
+const NO_TASKS: ReadonlyMap<string, Task> = new Map();
+const NO_MRS: readonly MergeRequest[] = [];
 
 export function TaskDetailsCell({
   task,
@@ -142,8 +157,12 @@ export function TaskDetailsCell({
   onTaskChanged,
   onEdited,
   onStatusSet,
+  chainLinks = NO_LINKS,
+  chainTasksById = NO_TASKS,
+  mergeRequests = NO_MRS,
 }: TaskDetailsCellProps): JSX.Element {
   const transport = useTransport();
+  const { askAfterMove, dialog: releaseDialog } = useReleaseOnDone();
   const styles = useStyles();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -261,9 +280,12 @@ export function TaskDetailsCell({
     if (next === resting) return;
     setError(null);
     try {
-      onTaskChanged(await transport.invoke('task:setStatus', task.id, next));
+      const after = await transport.invoke('task:setStatus', task.id, next);
+      onTaskChanged(after);
       onStatusSet?.(next);
       onEdited?.();
+      // After the move, never instead of it — see `useReleaseOnDone`.
+      askAfterMove(task, after, chainLinks, chainTasksById, mergeRequests);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -664,6 +686,7 @@ export function TaskDetailsCell({
           </Dialog>
         </>
       )}
+      {releaseDialog}
     </div>
   );
 }

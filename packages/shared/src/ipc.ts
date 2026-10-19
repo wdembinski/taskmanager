@@ -1782,6 +1782,14 @@ export interface IpcApi {
    */
   'chain:releaseNow': (taskId: string) => Promise<string | null>;
   /**
+   * Release the cards an `after-merge` arrow out of a Done card is holding, by marking that
+   * card landed without a merge — for a card moved to Done by hand, whose branch never merged
+   * through the app (or which never had one). Files a note on its timeline and starts every
+   * successor that is now ready. Resolves to the refusal sentence when nothing was released
+   * (the card is missing, already landed, or not Done), or null once it was.
+   */
+  'chain:releaseLanded': (taskId: string) => Promise<string | null>;
+  /**
    * Fetch the user's JIRA issues (per the configured JQL) and reconcile them into the
    * Personal board, preserving internal-only state. Returns the board's full task list.
    */

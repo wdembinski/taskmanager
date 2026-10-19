@@ -47,6 +47,22 @@ describe('chainStates', () => {
     expect(state?.blocked).toBeNull();
   });
 
+  it('gives one wait reason per holding arrow, naming a Done card that never landed', () => {
+    const a = task({ id: 'a', title: 'Sign-off', externalKey: 'TM-7', status: 'done' });
+    const c = task({ id: 'c', title: 'Write the API', status: 'in-review' });
+    const b = task({ id: 'b', agentProjectId: 'repo' });
+    const state = chainStates([link('a', 'b'), link('c', 'b')], index(a, b, c)).get('b');
+    expect(state?.waitReasons).toEqual([
+      'Waits for TM-7 to merge (Done, not landed)',
+      'Waits for Write the API to merge (In Review)',
+    ]);
+  });
+
+  it('has no wait reasons once every arrow is satisfied', () => {
+    const b = task({ id: 'b', agentProjectId: 'repo' });
+    expect(chainStates([link('a', 'b')], index(landed, b)).get('b')?.waitReasons).toEqual([]);
+  });
+
   it('separates a predecessor that has finished from one that has not started', () => {
     const written = task({ id: 'a', status: 'in-review' });
     const b = task({ id: 'b', agentProjectId: 'repo' });

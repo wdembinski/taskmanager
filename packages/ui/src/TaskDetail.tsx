@@ -1357,6 +1357,8 @@ export function TaskDetail({
         // The same list the `<MergeRequests>` section below renders — so the Create PR
         // slot and the row it would duplicate can never disagree about whether one is open.
         mergeRequests={mergeRequests}
+        chainLinks={chainLinks}
+        tasksById={chainTasksById}
         onOpenTask={onOpenTask}
         onTaskChanged={(updated) => {
           onStatusChanged?.(updated);
@@ -1410,6 +1412,9 @@ export function TaskDetail({
             onTaskChanged={(updated) => onStatusChanged?.(updated)}
             onStatusSet={(status) => onStatusSet?.(task.id, status)}
             onEdited={() => void loadActivity()}
+            chainLinks={chainLinks}
+            chainTasksById={chainTasksById}
+            mergeRequests={mergeRequests}
           />
           {isNativeTicket(task) && (
             <TaskTicketSection

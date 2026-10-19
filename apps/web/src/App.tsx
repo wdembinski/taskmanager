@@ -587,7 +587,7 @@ function SignedInBoardView({
             (boardIsReady(board.syncProgress) ? (
               <BoardScreen
                 state={board.state}
-                onMoveTask={(taskId, column) => void board.moveTask(taskId, column)}
+                onMoveTask={(taskId, column) => board.moveTask(taskId, column)}
                 onStatusNoted={board.noteStatus}
                 // The open-card rotation round trip (F3.7): seeded once from whatever card
                 // the hash route named when this wide layout mounted, and written back on

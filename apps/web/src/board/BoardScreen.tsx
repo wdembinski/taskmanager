@@ -56,6 +56,7 @@ import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@tm/ui/board/shelvedCards';
 import { chainStates } from '@tm/ui/board/chainStates';
 import { AddTaskDialog } from '@tm/ui/AddTaskDialog';
+import { useReleaseOnDone } from '@tm/ui/ReleaseWaitingDialog';
 import { GitGraphPane } from '@tm/ui/GitGraphPane';
 import { TaskDetailHost } from '@tm/ui/TaskDetailHostView';
 import { useTicketRegistries } from '@tm/ui/projects/useTicketRegistries';
@@ -121,7 +122,7 @@ export interface BoardScreenProps {
   state: CloudBoardState;
   /** A card dropped into a column, or moved there from the compact board's "Move to"
    *  sheet — sent as `task:move`, not `task:setStatus`. */
-  onMoveTask: (taskId: string, column: BoardColumn) => void;
+  onMoveTask: (taskId: string, column: BoardColumn) => Promise<Task>;
   /**
    * A status change the DETAIL PANE has already sent for itself: record the same pending
    * overlay a drag gets, without putting a second identical command on the wire.
@@ -646,6 +647,7 @@ export function BoardScreen({
     [linkDrag, extras, reportError, setSelectedTaskId],
   );
 
+  const { askAfterMove, dialog: releaseDialog } = useReleaseOnDone();
   /** A card dropped into a column, on either the wide board or the compact one. */
   const handleDropInColumn = useCallback(
     (taskId: string, dropColumn: BoardColumn) => {
@@ -657,12 +659,33 @@ export function BoardScreen({
       ) {
         return;
       }
-      onMoveTask(taskId, dropColumn);
+      const before = tasksById.get(taskId);
+      // After the move, never instead of it: a human's move into Done may ask whether to
+      // release the cards chained after this one (`@tm/ui/ReleaseWaitingDialog`). A refused
+      // move asks nothing — the board's pending overlay already rolled it back.
+      onMoveTask(taskId, dropColumn).then(
+        (after) => {
+          if (before) {
+            askAfterMove(before, after, extras.chainLinks, tasksById, extras.mergeRequests);
+          }
+        },
+        () => {},
+      );
       // The drag that returns a shelved card to a column is the toggle's other click — see
       // `MyTasks.tsx`'s own `onDropInColumn`.
       if (shelvedIds.has(taskId)) toggleShelved(taskId);
     },
-    [hiddenColumns, pendingTaskIds, onMoveTask, shelvedIds, toggleShelved],
+    [
+      hiddenColumns,
+      pendingTaskIds,
+      onMoveTask,
+      shelvedIds,
+      toggleShelved,
+      tasksById,
+      askAfterMove,
+      extras.chainLinks,
+      extras.mergeRequests,
+    ],
   );
 
   /**
@@ -1089,6 +1112,7 @@ export function BoardScreen({
         // is a normal thing to do, and the list shortens under you as each goes back.
         onRestore={(taskId) => extras.restoreTask(taskId).catch(reportError)}
       />
+      {releaseDialog}
     </div>
   );
 }

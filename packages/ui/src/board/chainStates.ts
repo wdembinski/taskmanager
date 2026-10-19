@@ -23,6 +23,8 @@ import {
   awaitingMerge,
   blockedBy,
   chainDecline,
+  incomingLinks,
+  waitReason,
   type ChainDecline,
   type TaskLink,
 } from '@tm/shared/taskChain';
@@ -41,6 +43,13 @@ export interface ChainState {
    * noun and its verb can never come from two different readings of the board.
    */
   mergeHeld: Task[];
+  /**
+   * Why each arrow still holds this card, one line per arrow (`waitReason`) — what the
+   * waiting chip's tooltip says. Built in the same pass as {@link waitingOn}, so the chip and
+   * its tooltip name the same cards. Says "(Done, not landed)" for a predecessor a human
+   * moved to Done whose branch never merged: the one hold no column explains.
+   */
+  waitReasons: string[];
   /**
    * Every predecessor has finished **and the engine would start this card** — the window
    * between the chain opening and the card actually moving. Worth saying out loud because
@@ -91,6 +100,7 @@ function keyOf(task: Task | undefined, fallbackId: string): string {
 const UNCHAINED: Omit<ChainState, 'fileHold'> = {
   waitingOn: [],
   mergeHeld: [],
+  waitReasons: [],
   ready: false,
   blocked: null,
   queued: false,
@@ -167,6 +177,9 @@ export function chainStates(
     byTask.set(id, {
       waitingOn,
       mergeHeld: awaitingMerge(task, links, tasksById),
+      waitReasons: incomingLinks(links, id)
+        .map((l) => waitReason(l, tasksById.get(l.fromTaskId)))
+        .filter((r): r is string => r !== null),
       // A held candidate is in neither `ready` nor `queued` (`LanePlan.fileHeld`).
       ready: startable && !queued && !fileHold,
       blocked: decline,

@@ -317,6 +317,8 @@ const useStyles = makeStyles({
   /** The "+2" tail — outside the truncating span and unshrinkable, so a long first title
    *  cannot eat the only part of the chip that says there is more than one dependency. */
   chainChipMore: { flexShrink: 0, whiteSpace: 'nowrap' },
+  /** The waiting chip's tooltip: one `waitReason` line per arrow still holding the card. */
+  waitReasons: { display: 'flex', flexDirection: 'column', gap: '2px' },
   /** The chip for a card whose turn has come and which the chain could not start — emphasis
    *  by WEIGHT rather than hue, so it does not compete with the things that move. */
   chainChipHeld: {
@@ -524,6 +526,9 @@ export interface TaskCardProps {
   /** The subset of {@link waitingOn} that is waiting on nothing but a **human** pressing
    *  Merge (`awaitingMerge`), so the chip can say so. */
   mergeHeld?: readonly Task[];
+  /** Why each arrow still holds this card, one line each (`waitReason`, via `chainStates`)
+   *  — the waiting chip's tooltip. Absent, the chip falls back to naming the cards. */
+  waitReasons?: readonly string[];
   /** Every predecessor has finished and nothing has started yet. */
   chainReady?: boolean;
   /** Its turn has come and the engine would start it, but its project's ready lanes are all
@@ -616,6 +621,7 @@ export function TaskCard({
   onLinkEnd,
   waitingOn = [],
   mergeHeld = [],
+  waitReasons = [],
   chainReady = false,
   chainQueued = false,
   chainBlocked = null,
@@ -694,26 +700,51 @@ export function TaskCard({
    */
   const waitingNames = waitingOn.map((t) => t.externalKey || t.title);
   const namedIsMergeHeld = waitingOn.length > 0 && mergeHeld.some((t) => t.id === waitingOn[0].id);
+  // One line per arrow saying whom it waits for and why — "(Done, not landed)" included,
+  // the one hold no column on the board explains. The names-only sentence is the fallback
+  // for a caller that passes no reasons.
+  const withWaitReasons = (chip: JSX.Element): JSX.Element =>
+    waitReasons.length ? (
+      <Tooltip
+        relationship="description"
+        content={
+          <div className={styles.waitReasons}>
+            {waitReasons.map((r) => (
+              <span key={r}>{r}</span>
+            ))}
+          </div>
+        }
+      >
+        {chip}
+      </Tooltip>
+    ) : (
+      chip
+    );
   const chainChip = linkChips ? null : waitingOn.length ? (
-    <span
-      className={styles.chainChip}
-      title={
-        waitingOn.length > 1
-          ? `Waiting on all of: ${waitingOn.map((t) => t.title).join(', ')}`
-          : namedIsMergeHeld
-            ? `${waitingNames[0]} has finished — merge its branch and this card starts by itself.`
-            : `Waiting on ${waitingOn[0].title} — chained to run after it`
-      }
-    >
-      <LinkRegular className={styles.chainChipIcon} />
-      <span className={styles.chainChipText}>
-        waiting on {waitingNames[0]}
-        {namedIsMergeHeld && ' to merge'}
-      </span>
-      {waitingNames.length > 1 && (
-        <span className={styles.chainChipMore}>+{waitingNames.length - 1}</span>
-      )}
-    </span>
+    withWaitReasons(
+      <span
+        className={styles.chainChip}
+        data-waiting-on=""
+        title={
+          waitReasons.length
+            ? undefined
+            : waitingOn.length > 1
+              ? `Waiting on all of: ${waitingOn.map((t) => t.title).join(', ')}`
+              : namedIsMergeHeld
+                ? `${waitingNames[0]} has finished — merge its branch and this card starts by itself.`
+                : `Waiting on ${waitingOn[0].title} — chained to run after it`
+        }
+      >
+        <LinkRegular className={styles.chainChipIcon} />
+        <span className={styles.chainChipText}>
+          waiting on {waitingNames[0]}
+          {namedIsMergeHeld && ' to merge'}
+        </span>
+        {waitingNames.length > 1 && (
+          <span className={styles.chainChipMore}>+{waitingNames.length - 1}</span>
+        )}
+      </span>,
+    )
   ) : fileHold ? (
     // After `waitingOn` — an arrow still unsatisfied is the stronger reason — and ahead of
     // `ready`, which a held card never is. Monochrome at held weight like the lane chip: the

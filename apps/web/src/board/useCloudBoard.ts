@@ -91,7 +91,7 @@ export interface CloudBoardApi {
   transport: HttpTransport;
   /** A card moved to `column` — sent as `task:move`, with the same optimistic overlay
    *  a status change gets. */
-  moveTask: (taskId: string, column: BoardColumn) => Promise<void>;
+  moveTask: (taskId: string, column: BoardColumn) => Promise<Task>;
   /** Record a status change the detail pane already sent — see the implementation. */
   noteStatus: (taskId: string, status: ManualStatus) => void;
   // No `createTask` here any more: the shared add-task dialog calls `task:create` on the
@@ -241,7 +241,7 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
         }),
       );
       try {
-        await transport.invoke('task:move', taskId, column);
+        return await transport.invoke('task:move', taskId, column);
       } catch (e) {
         setState((s) => clearPendingStatusChange(s, commandId));
         throw e;

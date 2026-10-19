@@ -17,8 +17,8 @@
  * by TITLE within one project's parsed plan and re-derived from the file on every sync.
  * These are edges between arbitrary cards, drawn by a human, that survive a re-sync.
  */
-import { hasAgentWorked, isRunStatus, restingStatus } from './board';
-import type { Task, TaskStatus } from './model';
+import { columnForTask, hasAgentWorked, isRunStatus, restingStatus } from './board';
+import type { BoardColumn, Task, TaskStatus } from './model';
 
 /**
  * What "after" means for one link.
@@ -301,6 +301,37 @@ export function blockedBy(
     if (from && !linkSatisfied(link, from)) waiting.push(from);
   }
   return waiting;
+}
+
+/** A board column as it reads inside a waiting card's reason. */
+const WAIT_COLUMN_LABEL: Record<BoardColumn, string> = {
+  todo: 'To Do',
+  'in-progress': 'In Progress',
+  'in-review': 'In Review',
+  blocked: 'Blocked',
+  done: 'Done',
+};
+
+/**
+ * Why one link still holds its card, as one line a human can act on — or `null` when the
+ * link is satisfied and holds nothing.
+ *
+ * Names the predecessor (its ticket key — a native `ticketKey` or a tracker's `externalKey` —
+ * else its title), what it has to do, and the column
+ * it rests in. A predecessor in Done that has not landed says so outright — "(Done, not
+ * landed)" — because that is the case no column on the board explains: the card looks
+ * finished and the chain still waits for a merge that may never come.
+ */
+export function waitReason(link: TaskLink, from: Task | undefined): string | null {
+  if (!from || linkSatisfied(link, from)) return null;
+  const name = from.ticketKey || from.externalKey || from.title;
+  const column = columnForTask(from);
+  const where =
+    column === 'done' && link.gate === 'after-merge'
+      ? `${WAIT_COLUMN_LABEL.done}, not landed`
+      : WAIT_COLUMN_LABEL[column];
+  const what = link.gate === 'after-merge' ? 'to merge' : 'to stop working';
+  return `Waits for ${name} ${what} (${where})`;
 }
 
 /**
