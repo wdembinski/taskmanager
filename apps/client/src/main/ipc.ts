@@ -50,6 +50,7 @@ import type {
 import {
   hasPlan,
   hasRepo,
+  isAutoMergeMethod,
   isFilingProject,
   isManualStatus,
   isPersonalBoard,
@@ -226,9 +227,12 @@ import {
   forgeName,
   mrIsSettled,
   mrReadyToMerge,
+  mrRef,
   type ForgeProvider,
   type MergeRequest,
 } from '@shared/mergeRequest';
+import { autoMergeLanded, mergedByAutoMergeNote } from '@shared/autoMerge';
+import { formatSignOff } from '@shared/visualSignOff';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -243,7 +247,7 @@ import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
-import { fetchRef, git, gitPreflight, pushBranch } from './git';
+import { fetchRef, git, gitPreflight, pushBranch, remoteUrl } from './git';
 import { emptyGitGraph } from '@shared/gitGraph';
 import { cardBranchesFor, readGitGraph } from './gitGraph';
 import { listClaudeSessions } from './claudeSessions';
@@ -257,6 +261,8 @@ import {
   tokenizedUrl,
   type CreatePrDeps,
 } from './forge/createPr';
+import { applyVisualSignOff, collectAutoMergePrerequisites } from './forge/autoMerge';
+import { autoMergeGitLabPrerequisites, autoMergePrerequisites } from '@shared/autoMerge';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
@@ -1094,6 +1100,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       !isUsableModel(patch.planningModel)
     ) {
       throw new Error(`Not a usable model: ${patch.planningModel}`);
+    }
+    // Same relayed-write guard as the model checks above: a browser can name any string.
+    if (patch.autoMergeMethod !== undefined && !isAutoMergeMethod(patch.autoMergeMethod)) {
+      throw new Error(`Not a usable merge method: ${patch.autoMergeMethod}`);
     }
     await retireRunStateIfTargetChanged(id, patch);
     const updated = store.updateProject(id, patch);
@@ -2289,7 +2299,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('gitlab:testConnection', async () => {
     try {
       const me = await buildGitLabClient().getMe();
-      return { ok: true, displayName: me.username, message: `Connected as ${me.username}.` };
+      // A missing prerequisite never turns this connection red — `ok` stays about the token
+      // alone, so a failure gathering them (an unreachable project, a 403) is swallowed here
+      // rather than letting it mask the successful `getMe` above.
+      let prerequisites: { project: string; missing: string[] }[] | undefined;
+      try {
+        const found = await collectAutoMergePrerequisites({
+          listProjects: () => store.listProjects(),
+          settings: store.getSettings(),
+          provider: 'gitlab',
+          remoteUrl: (cwd, host) => remoteUrl(cwd, 'origin', host),
+          prerequisitesFor: async (project, owner, repo) => {
+            const facts = await buildGitLabClient().getAutoMergeFacts(`${owner}/${repo}`);
+            return autoMergeGitLabPrerequisites(project, {
+              pipelineMustSucceed: facts.onlyAllowMergeIfPipelineSucceeds,
+            });
+          },
+        });
+        if (found.length > 0) prerequisites = found;
+      } catch (e) {
+        logMain('GitLab auto-merge prerequisite check failed', e);
+      }
+      return {
+        ok: true,
+        displayName: me.username,
+        message: `Connected as ${me.username}.`,
+        ...(prerequisites ? { prerequisites } : {}),
+      };
     } catch (e) {
       logMain('GitLab test connection failed', e);
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
@@ -2576,7 +2612,30 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       // own card orange later, without a request of its own. Keyed by base URL, so pointing
       // the app at another instance re-discovers rather than mis-attributing.
       store.saveGitHubIdentity(githubIdentityFrom(me, store.getSettings().github.baseUrl));
-      return { ok: true, displayName: me.login, message: `Connected as ${me.login}.` };
+      // Same non-fatal rule as GitLab's own handler above: `ok` stays about the token, so a
+      // missing prerequisite — or a failure finding out — never turns this connection red.
+      let prerequisites: { project: string; missing: string[] }[] | undefined;
+      try {
+        const found = await collectAutoMergePrerequisites({
+          listProjects: () => store.listProjects(),
+          settings: store.getSettings(),
+          provider: 'github',
+          remoteUrl: (cwd, host) => remoteUrl(cwd, 'origin', host),
+          prerequisitesFor: async (project, owner, repo, base) => {
+            const facts = await buildGitHubClient().getAutoMergeFacts(owner, repo, base);
+            return autoMergePrerequisites(project, facts);
+          },
+        });
+        if (found.length > 0) prerequisites = found;
+      } catch (e) {
+        logMain('GitHub auto-merge prerequisite check failed', e);
+      }
+      return {
+        ok: true,
+        displayName: me.login,
+        message: `Connected as ${me.login}.`,
+        ...(prerequisites ? { prerequisites } : {}),
+      };
     } catch (e) {
       logMain('GitHub test connection failed', e);
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
@@ -2627,6 +2686,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   });
 
   handle('task:createPullRequest', async (taskId) => openPullRequest(createPrDeps(), taskId));
+
+  /**
+   * A human's verdict on the card panel's own "Visual sign-off" section
+   * (`VisualSignOff.tsx`'s `submitVisualSignOff`) — posts the same kind of comment
+   * `task:addComment` does, then hands off to `applyVisualSignOff` to arm or withdraw
+   * auto-merge, the same non-fatal way `requestAutoMerge` already does from a push.
+   */
+  handle('task:visualSignOff', async (taskId, status, screens) => {
+    const task = store.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    const body =
+      status === 'approved'
+        ? formatSignOff('approved')
+        : formatSignOff('needs-changes', screens ?? []);
+    const entry = store.addComment(task.projectId, taskId, body);
+    if (!entry) throw new Error('A comment needs some text.');
+    send('project:tasksChanged', {
+      projectId: task.projectId,
+      tasks: store.getTasks(task.projectId),
+    });
+    await applyVisualSignOff(createPrDeps(), taskId, status);
+    return entry;
+  });
 
   // The scheduler opens the same PR, through the same function, when a card finishes with
   // "Open a PR when finished" on — so it is handed the deps rather than growing its own way
@@ -3068,7 +3150,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // A merged MR is this app's only way of learning that a reviewed branch actually landed
     // — nobody here ran the merge. It is what a chain's `after-merge` gate waits for, so it
     // is handed to the engine before the board is told anything (see `Task.landedAt`).
-    for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    for (const taskId of landedTaskIds(upserts)) {
+      // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
+      // why this card landed with nobody clicking Merge, same as a failed pipeline already
+      // names `prWatcher`'s own `fix-pipeline` note.
+      if (autoMergeLanded(store.getTaskActivity(taskId))) {
+        const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
+        const task = store.getTask(taskId);
+        if (mr && task) {
+          prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
+        }
+      }
+      scheduler.noteWorkLanded(taskId);
+    }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
@@ -3245,7 +3339,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // The same hand-off GitLab's sync makes, and the reason `after-merge` chain gates work on
     // a GitHub repository at all: nobody here ran the merge, so a merged PR is this app's
     // only way of learning that a reviewed branch landed (see `Task.landedAt`).
-    for (const taskId of landedTaskIds(upserts)) scheduler.noteWorkLanded(taskId);
+    for (const taskId of landedTaskIds(upserts)) {
+      // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
+      // why this card landed with nobody clicking Merge, same as a failed pipeline already
+      // names `prWatcher`'s own `fix-pipeline` note.
+      if (autoMergeLanded(store.getTaskActivity(taskId))) {
+        const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
+        const task = store.getTask(taskId);
+        if (mr && task) {
+          prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
+        }
+      }
+      scheduler.noteWorkLanded(taskId);
+    }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());

@@ -101,6 +101,7 @@ import { pullRequestId } from '../github/githubPrSync';
 import { GitLabClient } from '../gitlab/gitlabClient';
 import { mergeRequestId } from '../gitlab/gitlabSync';
 import { REMOTE_BASE_REF } from '../worktreeManager';
+import { requestAutoMerge } from './autoMerge';
 import { forgeBaseUrl } from './baseUrl';
 import { parseRemoteUrl, pickForge } from './remoteUrl';
 
@@ -605,6 +606,13 @@ export async function openPullRequest(
       `Pushed "${live.branch}" to ${target.host} — ${mrRef(alreadyOpen)} was already open for ` +
         `it and now carries this work: ${alreadyOpen.webUrl}${resyncNote}`,
     );
+    await requestAutoMerge(deps, {
+      project,
+      owner,
+      mr: { provider: alreadyOpen.provider, projectPath: target.path, number: alreadyOpen.number },
+      token: target.token,
+      settings,
+    });
     return { url: alreadyOpen.webUrl, ref: mrRef(alreadyOpen), existed: true };
   }
 
@@ -661,6 +669,13 @@ export async function openPullRequest(
       : `Pushed "${live.branch}" to ${target.host} and opened ${ref} against ` +
         `\`${live.base}\` — ${created.webUrl}`) + resyncNote,
   );
+  await requestAutoMerge(deps, {
+    project,
+    owner,
+    mr: { provider: created.provider, projectPath: target.path, number: created.number },
+    token: target.token,
+    settings,
+  });
 
   return { url: created.webUrl, ref, existed: created.existed };
 }

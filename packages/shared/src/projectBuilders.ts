@@ -117,6 +117,13 @@ export function buildProject(
     // Off unless asked for, for the same reason: pushing a branch to somebody's forge
     // and opening a pull request on it is not something to start doing by surprise.
     autoCreatePr: input.autoCreatePr ?? false,
+    // Merge-on-green has no `AddProjectInput` field of its own yet — a brand-new project
+    // always starts off, on the squash strategy this repo's own PRs already land with, and
+    // with no checks named. Turning it on happens from the edit drawer, same as the three
+    // booleans above did before `AddProjectInput` grew fields for them.
+    autoMergeOnGreen: false,
+    autoMergeMethod: 'squash',
+    autoMergeRequiredChecks: [],
     // `null` unless the caller ruled: a new project inherits the app-wide switch and
     // keeps inheriting it, rather than freezing today's value into the row.
     autoIntegrate: input.autoIntegrate ?? null,

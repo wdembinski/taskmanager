@@ -66,6 +66,17 @@ function autoMergeCaption(project: Project): string {
     : 'you merge from the card';
 }
 
+/** `Project.autoMergeOnGreen`, in words — off, or on with the strategy and whichever check
+ *  names (if any) this project has named for it. */
+function autoMergeOnGreenCaption(project: Project): string {
+  if (!project.autoMergeOnGreen) return 'off';
+  const checks =
+    project.autoMergeRequiredChecks.length > 0
+      ? ` (${project.autoMergeRequiredChecks.join(', ')})`
+      : '';
+  return `on, ${project.autoMergeMethod}${checks}`;
+}
+
 export interface ProjectsSectionProps {
   /** Already resolved and ordered by the caller — see `selectAgentProjects`. */
   projects: Project[];
@@ -100,6 +111,7 @@ export function ProjectsSection({ projects }: ProjectsSectionProps): JSX.Element
             <Fact label="Base branch">{baseBranchCaption(project)}</Fact>
             <Fact label="Runs on">{execTargetLabel(project.target)}</Fact>
             <Fact label="Merge after work">{autoMergeCaption(project)}</Fact>
+            <Fact label="Merge on green">{autoMergeOnGreenCaption(project)}</Fact>
             <Fact label="Release after merge">{project.autoRelease ? 'on' : 'off'}</Fact>
           </div>
 

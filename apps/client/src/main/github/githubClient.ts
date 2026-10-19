@@ -196,6 +196,18 @@ export interface GitHubPullRequest {
    * real merge base, which is exactly what reading through the API avoids.
    */
   base?: { ref?: string; sha?: string; repo?: GitHubRepoRef | null } | null;
+  /**
+   * The GraphQL global node id — what {@link GitHubClient.enableAutoMerge} and
+   * {@link GitHubClient.disableAutoMerge} must send as `pullRequestId`, since neither
+   * mutation accepts the REST `number`.
+   */
+  node_id?: string;
+  /**
+   * Set once auto-merge is armed on this pull request, null otherwise. Tri-state the same
+   * way `mergeable` is: its mere PRESENCE (not its contents) is what
+   * {@link GitHubClient.enableAutoMerge} reads to decide the call is already a no-op.
+   */
+  auto_merge?: { merge_method: string } | null;
 }
 
 /**
@@ -283,12 +295,51 @@ export interface GitHubBranchProtection {
     dismiss_stale_reviews?: boolean;
     require_code_owner_reviews?: boolean;
   } | null;
+  /**
+   * The classic (pre-ruleset) way a branch names its required checks. `contexts` is the
+   * deprecated plain-string list; `checks` is what replaced it, one object per check with
+   * room for an `app_id` nothing here reads. {@link GitHubClient.getAutoMergeFacts} reads
+   * both, since an instance can carry either depending on when the rule was last edited.
+   */
+  required_status_checks?: {
+    contexts?: string[];
+    checks?: Array<{ context?: string }>;
+  } | null;
+}
+
+/**
+ * One rule of `GET /repos/{owner}/{repo}/rules/branches/{branch}` — the modern repository
+ * RULESET a branch inherits, as opposed to the classic branch-protection rule above. The two
+ * can disagree, and a repository that migrated to rulesets may carry its required checks
+ * only here. {@link GitHubClient.getAutoMergeFacts} is the only reader.
+ */
+interface GitHubBranchRule {
+  type?: string;
+  parameters?: { required_status_checks?: Array<{ context?: string }> };
 }
 
 /** `GET /repos/{owner}/{repo}` — just enough to resolve a search row's owner/repo to an id. */
 export interface GitHubRepository {
   id: number;
   full_name: string;
+  /**
+   * Whether the repository permits auto-merge to be armed at all — a repository-wide
+   * setting the owner toggles independently of any individual pull request. `null`/absent
+   * on an instance old enough not to report it.
+   */
+  allow_auto_merge?: boolean | null;
+}
+
+/** What {@link GitHubClient.enableAutoMerge} reports back about what it actually did. */
+export type GitHubAutoMergeOutcome = 'already' | 'enabled' | 'merged';
+
+/** What {@link GitHubClient.getAutoMergeFacts} answers about a repository and its base branch. */
+export interface GitHubAutoMergeFacts {
+  allowAutoMerge: boolean | null;
+  /** `null` means unreadable (see `protectionReadable`), never "no checks are required". */
+  requiredChecks: string[] | null;
+  /** False when the classic branch-protection read came back 403 — gated to repo admins. */
+  protectionReadable: boolean;
 }
 
 /**
@@ -1220,5 +1271,139 @@ export class GitHubClient {
    */
   getRepository(owner: string, repo: string): Promise<GitHubRepository> {
     return this.request<GitHubRepository>(repoPath(owner, repo));
+  }
+
+  /**
+   * Arm auto-merge — GraphQL's `enablePullRequestAutoMerge`, the only route to it, since
+   * REST has no field for "merge this once checks pass" short of polling and merging by
+   * hand the moment they do.
+   *
+   * **Idempotent.** A fresh {@link getPullRequest} decides first: a non-null `auto_merge`
+   * means some earlier call (ours or a human's) already armed it, and `'already'` is
+   * reported rather than re-sending a mutation GitHub would refuse anyway.
+   *
+   * **The "clean status" fallback.** GitHub refuses `enablePullRequestAutoMerge` outright
+   * when the pull request is already mergeable right now — its own wording calls this
+   * "clean status" — because auto-merge exists for a PR that is still waiting on something.
+   * That refusal is not a failure to report, it is the signal to do the merge directly, so
+   * the plain {@link mergePullRequest} PUT is sent instead and `'merged'` is reported.
+   *
+   * Any other refusal (insufficient permissions, branch protection GitHub itself will not
+   * let auto-merge skip) propagates as the {@link GitHubError} {@link graphql} already
+   * throws, carrying GitHub's own message.
+   */
+  async enableAutoMerge(
+    owner: string,
+    repo: string,
+    number: number,
+    method: 'merge' | 'squash' | 'rebase',
+  ): Promise<GitHubAutoMergeOutcome> {
+    const pr = await this.getPullRequest(owner, repo, number);
+    if (pr.auto_merge) return 'already';
+    const mergeMethod = method === 'squash' ? 'SQUASH' : method === 'rebase' ? 'REBASE' : 'MERGE';
+    try {
+      await this.graphql<{ enablePullRequestAutoMerge?: { pullRequest?: { number?: number } } }>(
+        `mutation($id: ID!, $m: PullRequestMergeMethod!) {
+          enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $m}) {
+            pullRequest { number }
+          }
+        }`,
+        { id: pr.node_id, m: mergeMethod },
+      );
+      return 'enabled';
+    } catch (err) {
+      if (!(err instanceof GitHubError) || !/clean status/i.test(err.message)) throw err;
+      await this.write<GitHubMergeResult>(`${repoPath(owner, repo)}/pulls/${number}/merge`, 'PUT', {
+        merge_method: method,
+      });
+      return 'merged';
+    }
+  }
+
+  /**
+   * Disarm auto-merge — GraphQL's `disablePullRequestAutoMerge`. A no-op when the pull
+   * request has none armed, read off the same `auto_merge` field {@link enableAutoMerge}
+   * checks, so a card that is merely withdrawing a hold it never actually placed does not
+   * send a mutation GitHub would answer with nothing to disarm.
+   */
+  async disableAutoMerge(owner: string, repo: string, number: number): Promise<void> {
+    const pr = await this.getPullRequest(owner, repo, number);
+    if (!pr.auto_merge) return;
+    await this.graphql<{ disablePullRequestAutoMerge?: { clientMutationId?: string | null } }>(
+      `mutation($id: ID!) {
+        disablePullRequestAutoMerge(input: {pullRequestId: $id}) {
+          clientMutationId
+        }
+      }`,
+      { id: pr.node_id },
+    );
+  }
+
+  /**
+   * Everything a caller needs to decide whether arming auto-merge even makes sense: whether
+   * the repository allows it at all, and what checks `base` requires — read from TWO places,
+   * because GitHub itself keeps required checks in two places that can disagree:
+   *
+   *  - the classic `required_status_checks` on {@link getBranchProtection} (`contexts`, the
+   *    deprecated plain-string list, plus `checks[].context`, what replaced it) — **403**
+   *    means this repository's rules are admin-only to read, which flips
+   *    `protectionReadable` to false and makes `requiredChecks` an honest `null` rather than
+   *    an empty list that would read as "nothing is required"; **404** means the branch
+   *    carries no classic protection at all, which is read as zero classic checks, not as a
+   *    failure;
+   *  - `GET /rules/branches/{base}`, the modern repository RULESET a branch can inherit
+   *    instead of or alongside classic protection — read only when the classic call did not
+   *    403, since an instance that hides branch protection from us has no reason to show its
+   *    rulesets either, and a ruleset found in spite of that would just be a different
+   *    half-answer wearing a `protectionReadable: true` it has not earned.
+   *
+   * The two check lists are merged into one deduplicated set — a required check is required
+   * however the repository happens to have recorded it.
+   */
+  async getAutoMergeFacts(
+    owner: string,
+    repo: string,
+    base: string,
+  ): Promise<GitHubAutoMergeFacts> {
+    const repository = await this.getRepository(owner, repo);
+    const allowAutoMerge = repository.allow_auto_merge ?? null;
+
+    const checks = new Set<string>();
+    let protectionReadable = true;
+    try {
+      const protection = await this.getBranchProtection(owner, repo, base);
+      for (const context of protection.required_status_checks?.contexts ?? []) {
+        checks.add(context);
+      }
+      for (const check of protection.required_status_checks?.checks ?? []) {
+        if (check.context) checks.add(check.context);
+      }
+    } catch (err) {
+      if (!(err instanceof GitHubError)) throw err;
+      if (err.status === 403) protectionReadable = false;
+      else if (err.status !== 404) throw err;
+    }
+
+    if (protectionReadable) {
+      try {
+        const rules = await this.request<GitHubBranchRule[]>(
+          `${repoPath(owner, repo)}/rules/branches/${encodeURIComponent(base)}`,
+        );
+        for (const rule of Array.isArray(rules) ? rules : []) {
+          if (rule?.type !== 'required_status_checks') continue;
+          for (const check of rule.parameters?.required_status_checks ?? []) {
+            if (check.context) checks.add(check.context);
+          }
+        }
+      } catch (err) {
+        if (!(err instanceof GitHubError) || (err.status !== 404 && err.status !== 403)) throw err;
+      }
+    }
+
+    return {
+      allowAutoMerge,
+      requiredChecks: protectionReadable ? Array.from(checks) : null,
+      protectionReadable,
+    };
   }
 }

@@ -19,6 +19,7 @@ import {
   type AddProjectInput,
   type DiscoveredModel,
   hasPlan,
+  isAutoMergeMethod,
   type Milestone,
   type MilestoneInput,
   type MilestonePatch,
@@ -315,6 +316,14 @@ interface ProjectRow {
   autoRelease: number;
   /** The project's open-a-PR preference as 0/1. See `Project.autoCreatePr`. */
   autoCreatePr: number;
+  /** The project's merge-on-green preference as 0/1. See `Project.autoMergeOnGreen`. */
+  autoMergeOnGreen: number;
+  /** The merge strategy for `autoMergeOnGreen`. See `Project.autoMergeMethod`; cast and
+   *  validated on read in `rowToProject` — an unknown value falls back to `'squash'`. */
+  autoMergeMethod: string;
+  /** JSON array of required check names. See `Project.autoMergeRequiredChecks`; NULL reads
+   *  back as `[]`, same as `jiraEpicKeys`. */
+  autoMergeRequiredChecks: string | null;
   /** The project's auto-merge preference as 0/1; NULL = follow the app-wide setting. */
   autoIntegrate: number | null;
   /** The project's auto-approve-plans preference as 0/1. See `Project.autoApprovePlans`. */
@@ -1653,6 +1662,12 @@ export function createStore(dbPath: string): Store {
       writeBackPlan         INTEGER NOT NULL DEFAULT 0,
       autoRelease           INTEGER NOT NULL DEFAULT 0,
       autoCreatePr          INTEGER NOT NULL DEFAULT 0,
+      -- Merge-on-green (per-project). See Project.autoMergeOnGreen / autoMergeMethod /
+      -- autoMergeRequiredChecks. The method's default matches the squash strategy this
+      -- repo's own PRs already land with.
+      autoMergeOnGreen        INTEGER NOT NULL DEFAULT 0,
+      autoMergeMethod         TEXT NOT NULL DEFAULT 'squash',
+      autoMergeRequiredChecks TEXT,
       autoIntegrate         INTEGER,
       autoApprovePlans      INTEGER NOT NULL DEFAULT 0,
       autoApproveMaxSteps   INTEGER NOT NULL DEFAULT 6,
@@ -2415,6 +2430,19 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN archivedAt INTEGER`);
   }
 
+  // Migrate databases created before merge-on-green. 0/'squash'/NULL on every existing row —
+  // nothing auto-merged anything before this column existed, and 'squash' is the strategy
+  // every PR this repo's own pipeline has ever cut already lands with.
+  if (!projectColumns.some((c) => c.name === 'autoMergeOnGreen')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoMergeOnGreen INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!projectColumns.some((c) => c.name === 'autoMergeMethod')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoMergeMethod TEXT NOT NULL DEFAULT 'squash'`);
+  }
+  if (!projectColumns.some((c) => c.name === 'autoMergeRequiredChecks')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoMergeRequiredChecks TEXT`);
+  }
+
   // A safety net for the `kind` column's retirement: a project's capabilities now come
   // from its fields (`hasPlan`/`hasRepo`/`ownsTickets` in `@shared/model`), not from this
   // legacy label, so a plan project with a real directory but a blank `planPath` would
@@ -3068,8 +3096,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeRequiredChecks, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeRequiredChecks, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -4267,6 +4295,12 @@ export function createStore(dbPath: string): Store {
       writeBackPlan: r.writeBackPlan !== 0,
       autoRelease: r.autoRelease !== 0,
       autoCreatePr: r.autoCreatePr !== 0,
+      autoMergeOnGreen: r.autoMergeOnGreen !== 0,
+      // Cast-and-validate: a value this build does not recognize (an older/corrupt row, or a
+      // future app's method it doesn't know yet) falls back to the safe default rather than
+      // handing an unchecked string to a forge call.
+      autoMergeMethod: isAutoMergeMethod(r.autoMergeMethod) ? r.autoMergeMethod : 'squash',
+      autoMergeRequiredChecks: parseStringArray(r.autoMergeRequiredChecks),
       // NULL stays null: a real third state ("this project has not ruled"), which follows
       // the app-wide setting. Collapsing it to false here would pin every project to
       // "never merge" the first time it was read.
@@ -4324,6 +4358,9 @@ export function createStore(dbPath: string): Store {
       writeBackPlan: project.writeBackPlan ? 1 : 0,
       autoRelease: project.autoRelease ? 1 : 0,
       autoCreatePr: project.autoCreatePr ? 1 : 0,
+      autoMergeOnGreen: project.autoMergeOnGreen ? 1 : 0,
+      autoMergeMethod: project.autoMergeMethod,
+      autoMergeRequiredChecks: JSON.stringify(project.autoMergeRequiredChecks ?? []),
       autoIntegrate:
         project.autoIntegrate === null || project.autoIntegrate === undefined
           ? null
@@ -5451,6 +5488,8 @@ export function createStore(dbPath: string): Store {
         writeBackPlan: project.writeBackPlan ? 1 : 0,
         autoRelease: project.autoRelease ? 1 : 0,
         autoCreatePr: project.autoCreatePr ? 1 : 0,
+        autoMergeOnGreen: project.autoMergeOnGreen ? 1 : 0,
+        autoMergeRequiredChecks: JSON.stringify(project.autoMergeRequiredChecks),
         autoIntegrate: project.autoIntegrate === null ? null : project.autoIntegrate ? 1 : 0,
         autoApprovePlans: project.autoApprovePlans ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
@@ -5561,6 +5600,18 @@ export function createStore(dbPath: string): Store {
       if (patch.autoCreatePr !== undefined) {
         sets.push(`autoCreatePr = @autoCreatePr`);
         params.autoCreatePr = patch.autoCreatePr ? 1 : 0;
+      }
+      if (patch.autoMergeOnGreen !== undefined) {
+        sets.push(`autoMergeOnGreen = @autoMergeOnGreen`);
+        params.autoMergeOnGreen = patch.autoMergeOnGreen ? 1 : 0;
+      }
+      if (patch.autoMergeMethod !== undefined) {
+        sets.push(`autoMergeMethod = @autoMergeMethod`);
+        params.autoMergeMethod = patch.autoMergeMethod;
+      }
+      if (patch.autoMergeRequiredChecks !== undefined) {
+        sets.push(`autoMergeRequiredChecks = @autoMergeRequiredChecks`);
+        params.autoMergeRequiredChecks = JSON.stringify(patch.autoMergeRequiredChecks);
       }
       if (patch.autoRelease !== undefined) {
         sets.push(`autoRelease = @autoRelease`);

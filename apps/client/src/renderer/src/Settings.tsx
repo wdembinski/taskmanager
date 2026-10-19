@@ -29,6 +29,7 @@ import {
   makeStyles,
   MessageBar,
   MessageBarBody,
+  MessageBarTitle,
   Option,
   ProgressBar,
   Radio,
@@ -181,6 +182,14 @@ const useStyles = makeStyles({
     marginLeft: '28px',
   },
   actions: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '4px' },
+  // One auto-merge prerequisite warning's own missing-items list, under its MessageBarTitle.
+  prereqList: {
+    margin: '4px 0 0',
+    paddingLeft: '20px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
   /** Several related switches on one line, rather than three stacked Fields. */
   switchRow: { display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' },
   // The update state, its progress bar and its button, stacked as one block.
@@ -1686,6 +1695,18 @@ export function Settings({
               <MessageBarBody>{gitlabTest.message}</MessageBarBody>
             </MessageBar>
           )}
+          {gitlabTest?.prerequisites?.map((prereq) => (
+            <MessageBar key={prereq.project} intent="warning">
+              <MessageBarBody>
+                <MessageBarTitle>{prereq.project}</MessageBarTitle>
+                <ul className={styles.prereqList}>
+                  {prereq.missing.map((item, i) => (
+                    <li key={i}>{item}</li>
+                  ))}
+                </ul>
+              </MessageBarBody>
+            </MessageBar>
+          ))}
         </div>
       ) : section === 'github' ? (
         <div className={styles.pane}>
@@ -1912,6 +1933,18 @@ export function Settings({
               <MessageBarBody>{githubTest.message}</MessageBarBody>
             </MessageBar>
           )}
+          {githubTest?.prerequisites?.map((prereq) => (
+            <MessageBar key={prereq.project} intent="warning">
+              <MessageBarBody>
+                <MessageBarTitle>{prereq.project}</MessageBarTitle>
+                <ul className={styles.prereqList}>
+                  {prereq.missing.map((item, i) => (
+                    <li key={i}>{item}</li>
+                  ))}
+                </ul>
+              </MessageBarBody>
+            </MessageBar>
+          ))}
         </div>
       ) : section === 'linear' ? (
         <div className={styles.pane}>
