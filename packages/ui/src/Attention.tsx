@@ -36,6 +36,7 @@ import { invokeAttentionAnswer } from './attentionAnswer';
 import { Markdown } from './chat/MarkdownView';
 import { draftKey, useDraft } from './drafts';
 import { gateTrustChoices, gateTrustWaitingText } from './gateStepView';
+import { InboxDecisionsView, useInboxDecisions } from './InboxDecisions';
 import { useGateTrustHost } from './gateTrustHost';
 import { PaneLoading } from './PaneLoading';
 import { PlanCheckVerdict } from './PlanCheckVerdict';
@@ -461,9 +462,18 @@ export function useAttentionItems(): AttentionItems {
   return { items, initial, answer, dismiss, attachmentsByTask };
 }
 
-export function Attention(): JSX.Element {
+export interface AttentionProps {
+  /** Opens a card from a decision's title — absent prints the title as plain text. */
+  onOpenTask?: (taskId: string) => void;
+}
+
+export function Attention({ onOpenTask }: AttentionProps = {}): JSX.Element {
   const styles = useStyles();
   const { items, initial, answer, dismiss, attachmentsByTask } = useAttentionItems();
+  // Open owner decisions sit above the attention list — their own load, so a slow or failed
+  // `board:tasks()` never holds the list back (see `InboxDecisions.tsx`'s own header).
+  const decisions = useInboxDecisions();
+  const decisionGroups = decisions.groups ?? [];
 
   if (items === null) {
     return (
@@ -476,7 +486,7 @@ export function Attention(): JSX.Element {
     );
   }
 
-  if (items.length === 0) {
+  if (items.length === 0 && decisionGroups.length === 0) {
     return (
       <Body1 className={styles.empty}>
         Nothing needs you right now. When a task asks a question or hits a risky action, it appears
@@ -487,6 +497,7 @@ export function Attention(): JSX.Element {
 
   return (
     <div className={styles.root}>
+      <InboxDecisionsView groups={decisionGroups} onAnswer={decisions.answer} onOpen={onOpenTask} />
       {items.map((item) => (
         <InboxItem
           key={item.id}

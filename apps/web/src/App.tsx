@@ -650,7 +650,14 @@ function SignedInBoardView({
               }}
             />
           )}
-          {screen === 'attention' && <Attention />}
+          {screen === 'attention' && (
+            <Attention
+              onOpenTask={(taskId) => {
+                setScreen('mytasks');
+                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+              }}
+            />
+          )}
           {/* The mirrored `projects` rows, which this hook already holds for the board — so the
             Settings screen's Projects tab still lists what is configured when no desktop is
             awake to answer its own `agentProject:list`. */}
