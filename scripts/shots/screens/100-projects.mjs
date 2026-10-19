@@ -49,6 +49,42 @@ export default [
     mockup: null,
   },
   {
+    // "Who merges on green" only renders once "Merge on green" is ON, in the row beside
+    // "Merge method" and "Required checks". Picking "Task Manager" proves the dropdown's
+    // options and its read-back label; the hint under the row explains when to pick it.
+    name: 'project-form-merge-by-light',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [
+      { click: 'Projects' },
+      { click: 'Edit' },
+      { click: 'Merge on green' },
+      { scrollToSelector: '[data-auto-merge-by]' },
+      { click: 'Who merges on green' },
+      { click: 'Task Manager' },
+    ],
+    expect: '[data-auto-merge-by]',
+    mockup: 'v10-13-projects-light.svg',
+  },
+  {
+    // No dark projects mockup exists, so this row has none.
+    name: 'project-form-merge-by-dark',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'dark',
+    setup: [
+      { click: 'Projects' },
+      { click: 'Edit' },
+      { click: 'Merge on green' },
+      { scrollToSelector: '[data-auto-merge-by]' },
+      { click: 'Who merges on green' },
+      { click: 'Task Manager' },
+    ],
+    expect: '[data-auto-merge-by]',
+    mockup: null,
+  },
+  {
     // The web cannot edit repo settings — Settings → Projects shows them as read-only facts,
     // "Move to Done when its PR lands" among them. No mockup draws the web's Settings screen.
     name: 'web-settings-projects-light',
