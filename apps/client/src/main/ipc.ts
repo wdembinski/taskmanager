@@ -85,6 +85,7 @@ import {
 } from '@shared/board';
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { moveHandStartedCard, startSucceeded, type HandStartMoveDeps } from './handStartMove';
+import { moveLandedCardToDone, type LandedDoneMoveDeps } from './landedDoneMove';
 import { preserveLocalTrust } from './gateTrust';
 import { toMoveActivity, transitionThenRecord } from './moveActivity';
 import { AutomationRunner } from './automationRunner';
@@ -1212,6 +1213,33 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     },
     emit: (task) => send('task:changed', { task, runId: null }),
     warn: (text) => send('board:notice', { intent: 'warning', text }),
+  };
+  // The column move a landed PR makes (`landedDoneMove.ts`), for a project with "Move to
+  // Done when its PR lands" on. Both forge syncs call it after `noteWorkLanded`; the forge
+  // half is the same write a drag into DONE fires, under the same scope rule as above.
+  const landedDoneMove: LandedDoneMoveDeps = {
+    getTask: (id) => store.getTask(id),
+    getProject: (id) => store.getProject(id),
+    getSubtasks: (id) => store.getSubtasks(id),
+    openPrTaskIds: () => openPrTaskIds(store.listMergeRequests()),
+    activity: (id) => store.getTaskActivity(id),
+    writeForgeMove: async (card) => {
+      const move = resolveMove(card, 'done');
+      if (move.noop) return {};
+      const outcome = await writeMoveToForge(card, move, 'done');
+      return { preBlockStatus: preBlockMarker(move, outcome), ...(outcome?.patch ?? {}) };
+    },
+    updateTask: (id, patch) => store.updateTask(id, patch),
+    recordStatusChange: (projectId, id, from, to) =>
+      store.recordStatusChange(projectId, id, from, to),
+    addComment: (projectId, id, body) => {
+      store.addComment(projectId, id, body);
+    },
+    emit: (task) => send('task:changed', { task, runId: null }),
+    warn: (text) => send('board:notice', { intent: 'warning', text }),
+    dismissAttention: (id) => {
+      scheduler.dismissAttentionForCard(id);
+    },
   };
   handle('task:run', async (taskId) => {
     const outcome = scheduler.startTaskNow(taskId);
@@ -3188,14 +3216,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
       // why this card landed with nobody clicking Merge, same as a failed pipeline already
       // names `prWatcher`'s own `fix-pipeline` note.
+      const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
       if (autoMergeLanded(store.getTaskActivity(taskId))) {
-        const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
         const task = store.getTask(taskId);
         if (mr && task) {
           prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
         }
       }
       scheduler.noteWorkLanded(taskId);
+      // After the landing is stamped and the chain has released, never before — the chain
+      // never waits on this column move, and a failure here must not stop the sync.
+      if (mr) {
+        try {
+          await moveLandedCardToDone(landedDoneMove, taskId, mr);
+        } catch (e) {
+          logMain(`Moving landed card ${taskId} to Done failed`, e);
+        }
+      }
     }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
@@ -3378,14 +3415,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
       // why this card landed with nobody clicking Merge, same as a failed pipeline already
       // names `prWatcher`'s own `fix-pipeline` note.
+      const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
       if (autoMergeLanded(store.getTaskActivity(taskId))) {
-        const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
         const task = store.getTask(taskId);
         if (mr && task) {
           prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
         }
       }
       scheduler.noteWorkLanded(taskId);
+      // After the landing is stamped and the chain has released, never before — the chain
+      // never waits on this column move, and a failure here must not stop the sync.
+      if (mr) {
+        try {
+          await moveLandedCardToDone(landedDoneMove, taskId, mr);
+        } catch (e) {
+          logMain(`Moving landed card ${taskId} to Done failed`, e);
+        }
+      }
     }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.

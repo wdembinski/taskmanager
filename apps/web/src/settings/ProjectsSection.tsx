@@ -45,7 +45,7 @@ const useStyles = makeStyles({
   path: { color: tokens.colorNeutralForeground3, fontFamily: 'ui-monospace, Consolas, monospace' },
   facts: { display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '8px' },
   factRow: { display: 'flex', gap: '6px' },
-  factLabel: { color: tokens.colorNeutralForeground3, minWidth: '132px' },
+  factLabel: { color: tokens.colorNeutralForeground3, minWidth: '184px' }, // fits "Move to Done when its PR lands"
   epics: { display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' },
   hint: { color: tokens.colorNeutralForeground3 },
 });
@@ -86,7 +86,7 @@ export function ProjectsSection({ projects }: ProjectsSectionProps): JSX.Element
   const styles = useStyles();
 
   return (
-    <div className={styles.list}>
+    <div className={styles.list} data-web-projects>
       {projects.map((project) => (
         <Card key={project.id} className={styles.card}>
           <div className={styles.headerText}>
@@ -112,6 +112,9 @@ export function ProjectsSection({ projects }: ProjectsSectionProps): JSX.Element
             <Fact label="Runs on">{execTargetLabel(project.target)}</Fact>
             <Fact label="Merge after work">{autoMergeCaption(project)}</Fact>
             <Fact label="Merge on green">{autoMergeOnGreenCaption(project)}</Fact>
+            <Fact label="Move to Done when its PR lands">
+              {project.autoDoneOnLand ? 'on' : 'off'}
+            </Fact>
             <Fact label="Release after merge">{project.autoRelease ? 'on' : 'off'}</Fact>
           </div>
 

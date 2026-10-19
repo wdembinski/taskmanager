@@ -27,6 +27,7 @@ function project(overrides: Partial<Project> = {}): Project {
     autoApprovePlans: false,
     autoApproveMaxSteps: 6,
     readyLanes: 3,
+    autoDoneOnLand: false,
     planAligned: true,
     jiraEpicKeys: [],
     ticketPrefix: '',

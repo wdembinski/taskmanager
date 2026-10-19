@@ -656,9 +656,12 @@ Usage limits behave exactly as they do for plan tasks: the task parks as
 **A running agent never moves a card, and never stops you moving one.** The one move is
 the start itself: any start of a To Do card — **Start**, **Run this step**, **Release now**,
 assign + start, or the chain's own start — moves it to In Progress, and nothing else moves
-a card. A card resting in any other column stays there while its agent works, and after it
-finishes; that a run is happening is said by the spinner, the agent glyph and the run strip,
-not by the column.
+a card — with one narrow exception: a project with **Move to Done when its PR lands** on
+moves a card to Done from the forge sync once its GitHub PR or GitLab MR is reported merged
+(`landedDoneMove.ts`), unless you moved it since or another PR on it is still open. A card
+resting in any other column stays there while its agent works, and after it finishes;
+that a run is happening is said by the spinner, the agent glyph and the run strip, not by
+the column.
 
 The reverse holds too, and is the same rule read the other way: you can drag a card to any
 column — or pick a state in the detail pane — **while its agent is mid-run**, including a
@@ -1011,7 +1014,10 @@ sends you hunting through three other cards' logs.
   or your **Start**, **Run this step** or **Release now**. The move is said on the card's
   timeline, and the card comes back to In Progress when the run settles. A card resting in
   any other column stays where you put it — a released Blocked card stays Blocked — and
-  nothing else moves a card: not a decline, not a run finishing.
+  nothing else moves a card: not a decline, not a run finishing. The one narrow exception
+  is a project with **Move to Done when its PR lands** on, where the forge sync moves a
+  landed card to Done (`landedDoneMove.ts`). The chain never reads that move: successors
+  start on `landedAt`, not on the column.
 - A predecessor you **stopped or cancelled** releases nothing: whatever state its branch is
   in, that is not "carry on with the next one". A **usage limit** holds a release exactly as
   it holds everything else — and nothing is lost, because `landedAt` is on disk and the
