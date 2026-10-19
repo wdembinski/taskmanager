@@ -271,6 +271,7 @@ export const RELAY_POLICY: {
   'task:setAgentOptions': 'relay',
   'task:activity': 'relay',
   'task:addComment': 'relay',
+  'task:visualSignOff': 'relay',
   'task:deleteComment': 'relay',
   'task:attachSession': 'relay',
   'task:history': 'relay',

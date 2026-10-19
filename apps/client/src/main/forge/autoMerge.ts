@@ -17,13 +17,16 @@ import {
   autoMergeFailedNote,
   autoMergeNeedsChangesNote,
 } from '@shared/autoMerge';
-import { mrRef, type ForgeProvider } from '@shared/mergeRequest';
+import { mrRef, type ForgeProvider, type MergeRequest } from '@shared/mergeRequest';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
+import type { SignOffStatus } from '@shared/visualSignOff';
 import { latestVisualState, shotPairs } from '@shared/visualSignOff';
+import { hostFor } from '../exec';
 import { GitHubClient } from '../github/githubClient';
 import { GitLabClient } from '../gitlab/gitlabClient';
 import { forgeBaseUrl } from './baseUrl';
+import { openMergeRequestFor, resolveForgeGitTarget } from './createPr';
 
 /** What {@link requestAutoMerge} and {@link disableAutoMerge} need from the world around
  *  them — a strict subset of `CreatePrDeps`, so `openPullRequest` can hand its own deps
@@ -162,6 +165,91 @@ export async function disableAutoMerge(
       opts.project.id,
       opts.owner.id,
       autoMergeDisableFailedNote(ref, err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
+/** What {@link applyVisualSignOff} needs from the world around it — built from the same
+ *  pieces as `createPrDeps()` (`ipc.ts`), since it resolves a card's forge target the exact
+ *  same way `openPullRequest` does. */
+export interface VisualSignOffDeps extends AutoMergeDeps {
+  getTask(taskId: string): Task | undefined;
+  getProject(projectId: string): Project | undefined;
+  getSettings(): AppSettings;
+  listMergeRequests(): MergeRequest[];
+  /** What the card's worktree IS on disk right now, or null — `WorktreeManager.inspect`. */
+  inspect(
+    project: Project,
+    ownerTaskId: string,
+    branchName?: string,
+  ): Promise<{ cwd: string; branch: string; base: string } | null>;
+  tokenFor(provider: ForgeProvider): string | null;
+}
+
+/**
+ * The forge-side half of a human's Approve/Needs-changes press on the card panel's own
+ * Visual sign-off section (`packages/ui/src/VisualSignOff.tsx`'s `submitVisualSignOff`,
+ * via `ipc.ts`'s `task:visualSignOff`).
+ *
+ * `approved` calls {@link requestAutoMerge} — called AFTER the sign-off comment has already
+ * landed on the card's timeline, so the decision it reads off `latestVisualState` is this
+ * verdict, and a UI card's own gate now answers `'enable'`. `needs-changes` calls
+ * {@link disableAutoMerge} directly, withdrawing any hold immediately rather than waiting for
+ * the next push to notice.
+ *
+ * Does nothing when the project's own "merge on green" is off, or when the card has no open
+ * pull/merge request — there is nothing to arm or withdraw either way. Non-fatal, the same
+ * rule as {@link requestAutoMerge}'s own forge call: a refusal (no token, no origin remote,
+ * the forge itself refusing) becomes a timeline note, never a throw back to the button.
+ */
+export async function applyVisualSignOff(
+  deps: VisualSignOffDeps,
+  taskId: string,
+  status: SignOffStatus,
+): Promise<void> {
+  const task = deps.getTask(taskId);
+  if (!task) return;
+  const project = deps.getProject(task.agentProjectId ?? '');
+  if (!project || !project.autoMergeOnGreen) return;
+
+  const mr = openMergeRequestFor(deps.listMergeRequests(), taskId);
+  if (!mr) return;
+
+  try {
+    const settings = deps.getSettings();
+    const live = await deps.inspect(project, taskId, task.agentBranch ?? undefined);
+    if (!live) return;
+    const host = hostFor(project.target);
+    const target = await resolveForgeGitTarget(project, live.cwd, host, settings, deps.tokenFor);
+    const mrTarget: AutoMergeTarget = {
+      provider: mr.provider,
+      projectPath: target.path,
+      number: mr.number,
+    };
+
+    if (status === 'approved') {
+      await requestAutoMerge(deps, {
+        project,
+        owner: task,
+        mr: mrTarget,
+        token: target.token,
+        settings,
+      });
+    } else {
+      await disableAutoMerge(deps, {
+        project,
+        owner: task,
+        mr: mrTarget,
+        token: target.token,
+        settings,
+      });
+    }
+  } catch (err) {
+    deps.note(
+      project.id,
+      taskId,
+      `Could not ${status === 'approved' ? 'enable' : 'disable'} auto-merge: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
     );
   }
 }

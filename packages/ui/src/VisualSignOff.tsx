@@ -50,12 +50,12 @@ import {
 import { attachmentUrl, type TaskAttachment } from '@tm/shared/attachments';
 import type { TaskActivityEntry } from '@tm/shared/model';
 import {
-  formatSignOff,
   latestVisualState,
   shotPairs,
   type ShotPair,
+  type SignOffStatus,
 } from '@tm/shared/visualSignOff';
-import { useTransport } from './transport';
+import { useTransport, type Transport } from './transport';
 
 const useStyles = makeStyles({
   root: {
@@ -100,6 +100,20 @@ export interface VisualSignOffProps {
 }
 
 type Busy = 'approve' | 'needs-changes' | null;
+
+/**
+ * Posts a human's verdict through `task:visualSignOff` — the one channel both buttons below
+ * call, so a recording transport can prove each one reaches it with the right status (and,
+ * for `needs-changes`, the right screens) without rendering anything.
+ */
+export function submitVisualSignOff(
+  transport: Transport,
+  taskId: string,
+  status: SignOffStatus,
+  screens?: readonly string[],
+): Promise<TaskActivityEntry> {
+  return transport.invoke('task:visualSignOff', taskId, status, screens);
+}
 
 /** `transport.attachmentUrl?.(a) ?? attachmentUrl(a.id)` — `AttachmentStrip.tsx`'s own
  *  expression, so an image preview resolves the same way everywhere it is used. */
@@ -171,7 +185,7 @@ export function VisualSignOff({
     setBusy('approve');
     setError(null);
     try {
-      await transport.invoke('task:addComment', taskId, formatSignOff('approved'));
+      await submitVisualSignOff(transport, taskId, 'approved');
       await refreshActivity();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -184,7 +198,7 @@ export function VisualSignOff({
     setBusy('needs-changes');
     setError(null);
     try {
-      await transport.invoke('task:addComment', taskId, formatSignOff('needs-changes', screens));
+      await submitVisualSignOff(transport, taskId, 'needs-changes', screens);
       await refreshActivity();
       onNeedsChanges(`Needs changes on: ${screens.join(', ')} — `);
     } catch (e) {

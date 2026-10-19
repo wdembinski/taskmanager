@@ -71,6 +71,7 @@ import type { AttentionAnswer, AttentionItem } from './attention';
 import type { AuthState } from './auth';
 import type { LimitState } from './limit';
 import type { MergeRequest } from './mergeRequest';
+import type { SignOffStatus } from './visualSignOff';
 import type {
   DiffContextResult,
   DiffFileResult,
@@ -802,6 +803,18 @@ export interface IpcApi {
   'task:activity': (taskId: string) => Promise<TaskActivityEntry[]>;
   /** Add a human progress comment to a task; returns the created timeline entry. */
   'task:addComment': (taskId: string, body: string) => Promise<TaskActivityEntry>;
+  /**
+   * A human's verdict on the card's own "Visual sign-off" panel (`@shared/visualSignOff`) —
+   * posts the same kind of comment `task:addComment` does (`formatSignOff`), then, when the
+   * card's project has "merge on green" on, asks the forge to arm auto-merge (`approved`) or
+   * withdraw it (`needs-changes`) on the card's open pull/merge request. `screens` names the
+   * rows flagged by a `needs-changes` verdict; omitted (or ignored) for `approved`.
+   */
+  'task:visualSignOff': (
+    taskId: string,
+    status: SignOffStatus,
+    screens?: readonly string[],
+  ) => Promise<TaskActivityEntry>;
   /** Delete one comment by its id. */
   'task:deleteComment': (commentId: number) => Promise<void>;
   /**

@@ -232,6 +232,7 @@ import {
   type MergeRequest,
 } from '@shared/mergeRequest';
 import { autoMergeLanded, mergedByAutoMergeNote } from '@shared/autoMerge';
+import { formatSignOff } from '@shared/visualSignOff';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import type { TaskAttachment } from '@shared/attachments';
 import {
@@ -260,6 +261,7 @@ import {
   tokenizedUrl,
   type CreatePrDeps,
 } from './forge/createPr';
+import { applyVisualSignOff } from './forge/autoMerge';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
@@ -2634,6 +2636,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   });
 
   handle('task:createPullRequest', async (taskId) => openPullRequest(createPrDeps(), taskId));
+
+  /**
+   * A human's verdict on the card panel's own "Visual sign-off" section
+   * (`VisualSignOff.tsx`'s `submitVisualSignOff`) — posts the same kind of comment
+   * `task:addComment` does, then hands off to `applyVisualSignOff` to arm or withdraw
+   * auto-merge, the same non-fatal way `requestAutoMerge` already does from a push.
+   */
+  handle('task:visualSignOff', async (taskId, status, screens) => {
+    const task = store.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    const body =
+      status === 'approved'
+        ? formatSignOff('approved')
+        : formatSignOff('needs-changes', screens ?? []);
+    const entry = store.addComment(task.projectId, taskId, body);
+    if (!entry) throw new Error('A comment needs some text.');
+    send('project:tasksChanged', {
+      projectId: task.projectId,
+      tasks: store.getTasks(task.projectId),
+    });
+    await applyVisualSignOff(createPrDeps(), taskId, status);
+    return entry;
+  });
 
   // The scheduler opens the same PR, through the same function, when a card finishes with
   // "Open a PR when finished" on — so it is handed the deps rather than growing its own way
