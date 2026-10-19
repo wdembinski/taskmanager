@@ -955,6 +955,20 @@ export interface Task {
    */
   parentTaskId?: string | null;
   /**
+   * The repo-relative files this card is expected to touch — what keeps two cards that
+   * edit the same files from running at the same time (see `@shared/fileOverlap`).
+   *
+   * Written at plan approval from the plan's Critical files section (to the plan's
+   * *owner* card), then widened on landing with the files the branch actually changed:
+   * the union, never a replacement, so a glob in the plan keeps covering work not yet
+   * written. Entries are normalised by `normalizePath` and may be globs (`*`, `**`, `?`).
+   *
+   * `null`, absent or empty all mean "no known files": such a card never overlaps
+   * anything and is never held. A step never carries its own — a step's files are its
+   * parent's. Optional so a `Task` literal need not spell it out.
+   */
+  plannedFiles?: string[] | null;
+  /**
    * The step's brief: one phase of the approved plan, or whatever the human typed when
    * writing the step by hand. This is what the runner hands the agent as the work to do
    * — deliberately distinct from `externalDescription`, which stays JIRA's own text.

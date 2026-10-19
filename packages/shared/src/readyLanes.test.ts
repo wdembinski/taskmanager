@@ -257,3 +257,51 @@ describe('readyLanesByProject', () => {
     expect(sorted(plans.get('B')!.ready)).toEqual(['b1']);
   });
 });
+
+describe('readyLanes — same files', () => {
+  it('leaves the first of two overlapping candidates ready and holds the second by it', () => {
+    const { cards, links } = board(
+      releasable('first', { ticketKey: 'TM-1', plannedFiles: ['src/a.ts', 'src/b.ts'] }),
+      releasable('second', { ticketKey: 'TM-2', plannedFiles: ['src/*.ts'] }),
+    );
+    const plan = readyLanes(cards, links, none, 3);
+    expect(sorted(plan.ready)).toEqual(['first']);
+    expect(plan.queued.size).toBe(0);
+    expect(plan.fileHeld.get('second')).toEqual({ byTaskId: 'first', files: ['src/*.ts'] });
+  });
+
+  it('holds a candidate whose files overlap a running card', () => {
+    const { cards, links } = board(
+      task({ id: 'live', plannedFiles: ['src/a.ts'] }),
+      releasable('a', { plannedFiles: ['src/a.ts'] }),
+    );
+    const plan = readyLanes(cards, links, new Set(['live']), 3);
+    expect(plan.ready.size).toBe(0);
+    expect(plan.fileHeld.get('a')?.byTaskId).toBe('live');
+  });
+
+  it('gives a held card no lane, so the next free card takes it', () => {
+    const { cards, links } = board(
+      releasable('first', { ticketKey: 'TM-1', plannedFiles: ['src/a.ts'] }),
+      releasable('held', { ticketKey: 'TM-2', plannedFiles: ['src/a.ts'] }),
+      releasable('other', { ticketKey: 'TM-3', plannedFiles: ['src/z.ts'] }),
+      releasable('last', { ticketKey: 'TM-4' }),
+    );
+    const plan = readyLanes(cards, links, none, 2);
+    expect(sorted(plan.ready)).toEqual(['first', 'other']);
+    expect(sorted(plan.queued)).toEqual(['last']);
+    expect([...plan.fileHeld.keys()]).toEqual(['held']);
+  });
+
+  it('holds nothing against a queued candidate', () => {
+    const { cards, links } = board(
+      releasable('first', { ticketKey: 'TM-1' }),
+      releasable('queuedA', { ticketKey: 'TM-2', plannedFiles: ['src/a.ts'] }),
+      releasable('queuedB', { ticketKey: 'TM-3', plannedFiles: ['src/a.ts'] }),
+    );
+    const plan = readyLanes(cards, links, none, 1);
+    expect(sorted(plan.ready)).toEqual(['first']);
+    expect(sorted(plan.queued)).toEqual(['queuedA', 'queuedB']);
+    expect(plan.fileHeld.size).toBe(0);
+  });
+});

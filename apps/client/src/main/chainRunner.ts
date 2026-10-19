@@ -653,7 +653,15 @@ export class ChainRunner {
       (id) => this.deps.laneCap(id),
       this.deps.openPrTaskIds(),
     );
-    return plans.get(projectId) ?? { ready: new Set(), queued: new Set(), occupied: 0, cap: 0 };
+    return (
+      plans.get(projectId) ?? {
+        ready: new Set(),
+        queued: new Set(),
+        fileHeld: new Map(),
+        occupied: 0,
+        cap: 0,
+      }
+    );
   }
 
   /**
