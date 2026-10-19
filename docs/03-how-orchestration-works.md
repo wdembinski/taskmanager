@@ -534,6 +534,48 @@ branch already has history it doesn't recognise. `git push --force-with-lease` i
 through anyway, leased against the branch's own tip on the remote, fetched moments before —
 never against a stale local record of what used to be there.
 
+### Merging on green
+
+A pull request the app opened can merge itself once its checks pass: the project's
+**Merge on green** switch, with a **Merge method** and an optional list of **Required
+checks** beside it. A card with UI changes still waits for a human to press **Approve**
+on its screenshots, whoever does the merging.
+
+**Who merges on green** decides who that is:
+
+| Choice | What happens |
+| --- | --- |
+| **Forge (auto-merge)** — the default | The PR is armed with the forge's own auto-merge (GitHub auto-merge, GitLab *merge when pipeline succeeds*), and the forge merges it later, whether or not the app is open. |
+| **Task Manager** | The forge is never asked. The app merges the PR itself, with a plain merge call, once it is green. |
+
+The second exists because the first is not always available. A private repository on
+GitHub Free refuses auto-merge (and every ruleset) with a 403, yet still accepts a plain
+merge — without this, such a PR could only wait for a human.
+
+**The fallback is automatic, and recorded on the card.** With the forge chosen, a refusal
+that means *this forge cannot auto-merge here* — a 403, or a message about the plan, the
+repository's visibility or auto-merge not being allowed — does not just leave a failure
+note. It leaves one note starting *Auto-merge is not available on #n — …; Task Manager
+will merge it itself once it is green*, and from then on that card is merged by the app.
+The project setting is not rewritten: the note on the timeline is the record, which
+survives a restart and changes nobody's settings behind their back
+(`effectiveAutoMergeBy` in `packages/shared/src/appMerge.ts`). A 401 or a network error is
+not a plan problem, and stays an ordinary failure note.
+
+**Every fact is read again right before the merge.** When a sync sees the PR's pipeline
+pass, the app re-fetches the PR (open, not a draft, mergeable, not behind or conflicted),
+its head commit and every check on that commit, and only merges if all of it agrees — no
+check still running, none failed, every required check present and green, and the visual
+sign-off approved on a UI card. The merge carries the head sha those checks were read for,
+so a push that lands in between makes the forge refuse rather than merge a commit nobody
+checked. A refusal names its reason on the card's timeline; the merge itself is noted as
+*Merged by Task Manager*. Each head is tried once per session, so a refused PR is not
+re-asked on every sync — a new push, or pressing **Approve**, is what tries again.
+
+> **Only while the app runs.** The forge's auto-merge works with the app closed; Task
+> Manager's does not — it acts during the app's own PR syncs. A PR that goes green while
+> the app is closed is merged on the first sync after it opens again, not before.
+
 ### Releasing after the merge
 
 A merge is not always the end of the job. If a repo knows how to release itself, the
