@@ -904,6 +904,14 @@ export function BoardScreen({
                   );
                 }}
                 chainStateOf={(t) => chainState.get(t.id)}
+                // A file hold's "Make this an arrow" — `chain:link` through the relay, exactly
+                // as a drawn arrow goes. The compact board draws no arrows, so it has no button.
+                onMakeArrow={(fromTaskId, toTaskId) => {
+                  void extras
+                    .drawLink(fromTaskId, toTaskId)
+                    .then((refusal) => refusal && setError(refusal))
+                    .catch(reportError);
+                }}
                 linkChipsOf={linkChipsOf}
                 selectedTaskId={selectedTaskId}
                 draggingId={draggingId}

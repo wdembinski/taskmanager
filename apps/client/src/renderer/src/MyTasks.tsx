@@ -1657,6 +1657,8 @@ export function MyTasks({
               onLinkTo={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
               onLinkArm={armLink}
               chainStateOf={(t) => chainState.get(t.id)}
+              // A file hold's "Make this an arrow" — the same after-merge arrow a drag draws.
+              onMakeArrow={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
               linkChipsOf={linkChipsOf}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}

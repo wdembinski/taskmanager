@@ -36,8 +36,10 @@ import {
   BugRegular,
   CircleRegular,
   ClockRegular,
+  DocumentMultipleRegular,
   FlagRegular,
   FlashRegular,
+  LinkAddRegular,
   LinkRegular,
   MoreHorizontalRegular,
   NoteRegular,
@@ -60,7 +62,9 @@ import {
   runPhase,
 } from '@tm/shared/board';
 import { formatElapsed } from '@tm/shared/elapsed';
+import { MAX_SHOWN_FILES } from '@tm/shared/fileOverlap';
 import type { ChainDecline } from '@tm/shared/taskChain';
+import type { ChainFileHold } from './chainStates';
 import type { LinkChips } from './linkChips';
 import type { RunPurpose } from '@tm/shared/scheduler';
 import { delegatedAgentName } from '@tm/shared/tickets';
@@ -320,6 +324,34 @@ const useStyles = makeStyles({
     border: `1px solid ${tokens.colorNeutralStroke1}`,
   },
   chainChipIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
+  /** The file-hold chip wraps rather than truncating: the paths ARE the explanation, and an
+   *  ellipsis would cut exactly the part that says which files. */
+  fileHoldChip: { alignItems: 'flex-start' },
+  /** Down to the first line's centre, now the chip can be taller than one line. */
+  fileHoldIcon: { marginTop: '2px' },
+  fileHoldText: { whiteSpace: 'normal', overflowWrap: 'anywhere' },
+  /**
+   * "Make this an arrow" inside the file-hold chip — subtle, so the chip still reads as a
+   * standing fact, and unshrinkable, so a long file list cannot squeeze the one action out.
+   */
+  fileHoldArrow: {
+    flexShrink: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '0 2px',
+    marginRight: '-4px',
+    border: 'none',
+    borderRadius: '3px',
+    backgroundColor: 'transparent',
+    color: tokens.colorNeutralForeground3,
+    cursor: 'pointer',
+    fontSize: '12px',
+    ':hover': {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+      color: tokens.colorNeutralForeground1,
+    },
+    ':focus-visible': { outline: `1px solid ${tokens.colorStrokeFocus2}` },
+  },
   /** The needs/unblocks row (F13.20) — what `chainChip` says with an arrow and a chip, said
    *  instead in plain words once Off has turned that arrow off. */
   linkChipsRow: {
@@ -499,6 +531,12 @@ export interface TaskCardProps {
   chainQueued?: boolean;
   /** Its turn has come and the engine would **not** start it, with the reason. */
   chainBlocked?: ChainDecline | null;
+  /** Another active card in its project touches the same files (`ChainState.fileHold`), so
+   *  neither auto-start path starts this one until that card is done. */
+  fileHold?: ChainFileHold;
+  /** Turn {@link fileHold} into a permanent after-merge arrow from the holder to this card.
+   *  Absent on a board that cannot draw arrows, which is also what hides the button. */
+  onMakeArrow?: (fromTaskId: string) => void;
   /** Where this card sits in its chain — folded into the status line as the lowest-priority
    *  fallback by `cardParts` when nothing else is worth a line. */
   chainPosition?: ChainPosition;
@@ -581,6 +619,8 @@ export function TaskCard({
   chainReady = false,
   chainQueued = false,
   chainBlocked = null,
+  fileHold,
+  onMakeArrow,
   chainPosition,
   onLinkTo,
   onLinkArm,
@@ -672,6 +712,45 @@ export function TaskCard({
       </span>
       {waitingNames.length > 1 && (
         <span className={styles.chainChipMore}>+{waitingNames.length - 1}</span>
+      )}
+    </span>
+  ) : fileHold ? (
+    // After `waitingOn` — an arrow still unsatisfied is the stronger reason — and ahead of
+    // `ready`, which a held card never is. Monochrome at held weight like the lane chip: the
+    // overlap is a standing fact until the holder is done (memory *board-colour-budget*).
+    <span
+      className={mergeClasses(styles.chainChip, styles.chainChipHeld, styles.fileHoldChip)}
+      title={
+        `${fileHold.byKey} is working on the same files (${fileHold.files.join(', ')}) — ` +
+        'this card starts once it is done, so the two branches cannot conflict.'
+      }
+      data-file-hold=""
+    >
+      <DocumentMultipleRegular
+        className={mergeClasses(styles.chainChipIcon, styles.fileHoldIcon)}
+      />
+      <span className={styles.fileHoldText}>
+        waits for {fileHold.byKey} (same files:{' '}
+        {fileHold.files.slice(0, MAX_SHOWN_FILES).join(', ')}
+        {fileHold.files.length > MAX_SHOWN_FILES && ', …'})
+      </span>
+      {onMakeArrow && (
+        <button
+          type="button"
+          className={styles.fileHoldArrow}
+          title={`Turn this into a permanent after-merge arrow from ${fileHold.byKey}`}
+          aria-label="Make this an arrow"
+          data-file-hold-arrow=""
+          draggable={false}
+          // The card selects on click and Enter — the button is not a way into the card.
+          onClick={(e) => {
+            e.stopPropagation();
+            onMakeArrow(fileHold.byTaskId);
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <LinkAddRegular />
+        </button>
       )}
     </span>
   ) : chainReady ? (
