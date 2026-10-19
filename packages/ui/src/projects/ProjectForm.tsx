@@ -142,6 +142,8 @@ export function ProjectForm({
   const [autoCreatePr, setAutoCreatePr] = useState(false);
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
+  const [autoApprovePlans, setAutoApprovePlans] = useState(false);
+  const [autoApproveMaxSteps, setAutoApproveMaxSteps] = useState(6);
   /**
    * The app-wide merge switch as it stands. Read in both modes — setting this repo's
    * switch to what the app already says stores `null`, which is how it goes back to
@@ -201,6 +203,8 @@ export function ProjectForm({
       setAutoRelease(project.autoRelease);
       setAutoCreatePr(project.autoCreatePr);
       setAutoIntegrate(project.autoIntegrate);
+      setAutoApprovePlans(project.autoApprovePlans);
+      setAutoApproveMaxSteps(project.autoApproveMaxSteps);
       setModel(project.defaultModel);
       setPlanningModel(project.planningModel);
       setPermMode(project.defaultPermissionMode);
@@ -220,6 +224,8 @@ export function ProjectForm({
       setUseWorktrees(true); // default on; only engages for git repos
       setAutoRelease(false); // releasing is opt-in, always
       setAutoIntegrate(null); // and merging follows the app until this project says otherwise
+      setAutoApprovePlans(false); // auto-approving a plan is opt-in, always
+      setAutoApproveMaxSteps(6);
       setWriteBackPlan(false); // moot here — this dialog always adds plan-less (see save())
       setInstructions('');
       void transport.invoke('settings:get').then((s) => {
@@ -305,6 +311,8 @@ export function ProjectForm({
           autoRelease,
           autoCreatePr,
           autoIntegrate,
+          autoApprovePlans,
+          autoApproveMaxSteps,
           writeBackPlan,
           instructions,
         });
@@ -333,6 +341,8 @@ export function ProjectForm({
           autoRelease,
           autoCreatePr,
           autoIntegrate,
+          autoApprovePlans,
+          autoApproveMaxSteps,
           writeBackPlan,
           instructions,
         });
@@ -576,6 +586,35 @@ export function ProjectForm({
               />
             </Field>
           )}
+
+          {/* Offered on every project — a plan has nothing to do with a repo or worktrees,
+              so a plan-less ticket project can turn this on just as well. */}
+          <Field hint="When a plan passes every plan check (no open question, critical files that overlap no active card, few enough steps, the spec read, agent-checkable acceptance) it is approved without waiting in the Inbox.">
+            <Switch
+              checked={autoApprovePlans}
+              label="Approve clean plans automatically"
+              onChange={(_e, d) => setAutoApprovePlans(d.checked)}
+            />
+          </Field>
+
+          <Field
+            label="Most steps an auto-approved plan may have"
+            data-auto-approve-plans
+            hint="A plan that splits into more steps than this is left in the Inbox for a human, even if every other check passes."
+          >
+            <SpinButton
+              min={1}
+              max={50}
+              value={autoApproveMaxSteps}
+              disabled={!autoApprovePlans}
+              onChange={(_e, d) => {
+                const n = d.value ?? Number(d.displayValue);
+                if (Number.isFinite(n)) {
+                  setAutoApproveMaxSteps(Math.max(1, Math.min(50, Math.round(n as number))));
+                }
+              }}
+            />
+          </Field>
 
           {/* Only meaningful for a plan-driven project (see `hasPlan`) — this drawer always
               adds plan-less (see `save()`), so an add form never has one to tick, and only a

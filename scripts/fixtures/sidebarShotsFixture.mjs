@@ -35,6 +35,8 @@ const project = (id, name, ticketPrefix, over = {}) => ({
   autoRelease: false,
   autoCreatePr: false,
   autoIntegrate: null,
+  autoApprovePlans: false,
+  autoApproveMaxSteps: 6,
   planAligned: true,
   jiraEpicKeys: [],
   ticketPrefix,

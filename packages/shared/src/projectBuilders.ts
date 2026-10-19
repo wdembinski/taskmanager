@@ -120,6 +120,9 @@ export function buildProject(
     // `null` unless the caller ruled: a new project inherits the app-wide switch and
     // keeps inheriting it, rather than freezing today's value into the row.
     autoIntegrate: input.autoIntegrate ?? null,
+    // Off unless asked for: a project approves its own plans only once a human opts in.
+    autoApprovePlans: input.autoApprovePlans ?? false,
+    autoApproveMaxSteps: input.autoApproveMaxSteps ?? 6,
     // New projects are trusted as aligned; legacy projects backfill to false via the
     // store's own migration. A plan carrying `@needs:`/`@contract` is also confirmed
     // aligned on its next sync (see ipc `syncProjectPlan`).

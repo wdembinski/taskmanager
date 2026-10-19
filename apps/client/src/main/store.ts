@@ -317,6 +317,10 @@ interface ProjectRow {
   autoCreatePr: number;
   /** The project's auto-merge preference as 0/1; NULL = follow the app-wide setting. */
   autoIntegrate: number | null;
+  /** The project's auto-approve-plans preference as 0/1. See `Project.autoApprovePlans`. */
+  autoApprovePlans: number;
+  /** The most steps an auto-approved plan may have. See `Project.autoApproveMaxSteps`. */
+  autoApproveMaxSteps: number;
   planAligned: number;
   /**
    * A derived legacy label (`'plan' | 'agent' | 'ticket'`), written on every insert for
@@ -1650,6 +1654,8 @@ export function createStore(dbPath: string): Store {
       autoRelease           INTEGER NOT NULL DEFAULT 0,
       autoCreatePr          INTEGER NOT NULL DEFAULT 0,
       autoIntegrate         INTEGER,
+      autoApprovePlans      INTEGER NOT NULL DEFAULT 0,
+      autoApproveMaxSteps   INTEGER NOT NULL DEFAULT 6,
       planAligned           INTEGER NOT NULL DEFAULT 0,
       kind                  TEXT NOT NULL DEFAULT 'plan',
       jiraEpicKeys          TEXT,
@@ -2353,6 +2359,15 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN autoIntegrate INTEGER`);
   }
 
+  // Migrate databases created before a project could approve its own clean plans. 0/6 =
+  // off for every existing project, so nothing starts auto-approving until a human opts in.
+  if (!projectColumns.some((c) => c.name === 'autoApprovePlans')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoApprovePlans INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!projectColumns.some((c) => c.name === 'autoApproveMaxSteps')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoApproveMaxSteps INTEGER NOT NULL DEFAULT 6`);
+  }
+
   // Migrate databases created before a project could plan on a different model than it runs
   // on. Deliberately no `NOT NULL DEFAULT`: NULL is the value that means "same as execution",
   // so every existing project plans exactly as it did until a human names a model.
@@ -3041,8 +3056,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoIntegrate, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoIntegrate, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -4243,6 +4258,8 @@ export function createStore(dbPath: string): Store {
       // "never merge" the first time it was read.
       autoIntegrate:
         r.autoIntegrate === null || r.autoIntegrate === undefined ? null : r.autoIntegrate !== 0,
+      autoApprovePlans: r.autoApprovePlans !== 0,
+      autoApproveMaxSteps: r.autoApproveMaxSteps ?? 6,
       planAligned: r.planAligned !== 0,
       jiraEpicKeys: parseStringArray(r.jiraEpicKeys),
       // NULL — "this project has no prefix" — presents as '' for the same reason `color`
@@ -4299,6 +4316,8 @@ export function createStore(dbPath: string): Store {
           : project.autoIntegrate
             ? 1
             : 0,
+      autoApprovePlans: project.autoApprovePlans ? 1 : 0,
+      autoApproveMaxSteps: project.autoApproveMaxSteps,
       planAligned: project.planAligned ? 1 : 0,
       // A derived legacy label — see `addProject`'s own insert for the same derivation.
       // `rowToProject` never reads this back; it exists only for whatever outside this
@@ -5419,6 +5438,7 @@ export function createStore(dbPath: string): Store {
         autoRelease: project.autoRelease ? 1 : 0,
         autoCreatePr: project.autoCreatePr ? 1 : 0,
         autoIntegrate: project.autoIntegrate === null ? null : project.autoIntegrate ? 1 : 0,
+        autoApprovePlans: project.autoApprovePlans ? 1 : 0,
         planAligned: project.planAligned ? 1 : 0,
         // A derived legacy label — nothing in this build reads it back (`rowToProject`
         // skips it), kept only for whatever outside this build still looks at the column.
@@ -5537,6 +5557,17 @@ export function createStore(dbPath: string): Store {
       if (patch.autoIntegrate !== undefined) {
         sets.push(`autoIntegrate = @autoIntegrate`);
         params.autoIntegrate = patch.autoIntegrate === null ? null : patch.autoIntegrate ? 1 : 0;
+      }
+      if (patch.autoApprovePlans !== undefined) {
+        sets.push(`autoApprovePlans = @autoApprovePlans`);
+        params.autoApprovePlans = patch.autoApprovePlans ? 1 : 0;
+      }
+      if (patch.autoApproveMaxSteps !== undefined) {
+        sets.push(`autoApproveMaxSteps = @autoApproveMaxSteps`);
+        params.autoApproveMaxSteps = Math.max(
+          1,
+          Math.min(50, Math.round(patch.autoApproveMaxSteps)),
+        );
       }
       if (patch.planAligned !== undefined) {
         sets.push(`planAligned = @planAligned`);
