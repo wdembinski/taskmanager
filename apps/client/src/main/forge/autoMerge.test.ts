@@ -18,6 +18,8 @@ import { formatSignOff } from '@shared/visualSignOff';
 import {
   applyVisualSignOff,
   collectAutoMergePrerequisites,
+  requestAutoMerge,
+  type AutoMergeDeps,
   type AutoMergePrerequisiteDeps,
   type AutoMergePrerequisiteProject,
   type VisualSignOffDeps,
@@ -187,6 +189,7 @@ function depsFor(opts: {
     note: (_projectId, _taskId, body) => {
       opts.notes.push(body);
     },
+    appMergeAttempts: new Map(),
   };
 }
 
@@ -429,5 +432,84 @@ describe('collectAutoMergePrerequisites', () => {
 
     await collectAutoMergePrerequisites(deps);
     expect(seen).toEqual([{ owner: 'group', repo: 'sub/proj' }]);
+  });
+});
+
+describe('requestAutoMerge — falling back to the app', () => {
+  /** A GitHub stub whose PR read succeeds and whose auto-merge mutation answers `status`
+   *  with `message`. */
+  function stubRefusal(status: number, message: string) {
+    const calls: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = (async (url: unknown, init?: { method?: string }) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      calls.push({ url: u, method });
+      if (method === 'GET' && /\/pulls\/\d+$/.test(u)) {
+        return new Response(
+          JSON.stringify({ number: PR_NUMBER, state: 'open', node_id: 'PR_x', auto_merge: null }),
+          { status: 200 },
+        );
+      }
+      if (method === 'POST' && u.endsWith('/graphql')) {
+        return new Response(JSON.stringify({ message }), {
+          status,
+          statusText: status === 403 ? 'Forbidden' : 'Unauthorized',
+        });
+      }
+      throw new Error(`unexpected fetch ${method} ${u}`);
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  function run(project: Partial<Project>, notes: string[]) {
+    const deps: AutoMergeDeps = {
+      listAttachments: () => [],
+      listActivity: () => [],
+      note: (_p, _t, body) => {
+        notes.push(body);
+      },
+    };
+    return requestAutoMerge(deps, {
+      project: {
+        id: 'agent-1',
+        autoMergeOnGreen: true,
+        autoMergeMethod: 'squash',
+        autoMergeBy: 'forge',
+        ...project,
+      },
+      owner: { id: 'owner-1' },
+      mr: { provider: 'github', projectPath: 'acme/checkout', number: PR_NUMBER },
+      token: TOKEN,
+      settings: { github: { baseUrl: 'https://api.github.com' } } as unknown as AppSettings,
+    });
+  }
+
+  it('writes the app-fallback note on a 403 "Upgrade to GitHub Pro" refusal', async () => {
+    stubRefusal(
+      403,
+      'Upgrade to GitHub Pro or make this repository public to enable this feature.',
+    );
+    const notes: string[] = [];
+    await run({}, notes);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toMatch(/^Auto-merge is not available on #42 — /);
+    expect(notes[0]).toContain('Task Manager will merge it itself once it is green.');
+  });
+
+  it('keeps the generic failure note on a 401', async () => {
+    stubRefusal(401, 'Bad credentials');
+    const notes: string[] = [];
+    await run({}, notes);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).not.toMatch(/^Auto-merge is not available/);
+    expect(notes[0]).toContain('Bad credentials');
+  });
+
+  it('never calls enableAutoMerge in app mode, and notes the mode once', async () => {
+    const calls = stubRefusal(403, 'unused');
+    const notes: string[] = [];
+    await run({ autoMergeBy: 'app' }, notes);
+    expect(calls).toEqual([]);
+    expect(notes).toEqual(['Task Manager will merge #42 itself once its checks pass.']);
   });
 });

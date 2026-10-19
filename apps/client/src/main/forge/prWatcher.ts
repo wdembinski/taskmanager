@@ -7,17 +7,21 @@
  * `MergeRequest.lastActedSha` — so this file only has to decide HOW to carry out whichever
  * action it returned, never whether to.
  *
- * Gated entirely on `features.prAutoResolve` (default OFF, see its own doc): nobody is
- * opted into the app force-pushing their branches, or a forge rebasing their branch,
- * without asking first.
+ * Its own actions are gated entirely on `features.prAutoResolve` (default OFF, see its own
+ * doc): nobody is opted into the app force-pushing their branches, or a forge rebasing their
+ * branch, without asking first. The app-merge pass that runs before them is NOT — its opt-in
+ * is the project's own "Merge on green" (see {@link appMergePass}).
  */
+import type { TaskAttachment } from '@shared/attachments';
+import { effectiveAutoMergeBy } from '@shared/appMerge';
 import type { ForgeProvider, MergeRequest, PrWatchAction } from '@shared/mergeRequest';
 import { forgeName, mrRef, prWatchAction } from '@shared/mergeRequest';
-import type { ChatRefusal, ChatSendResult, Task } from '@shared/model';
+import type { ChatRefusal, ChatSendResult, Project, Task, TaskActivityEntry } from '@shared/model';
 import type { RunPurpose } from '@shared/scheduler';
 import type { AppSettings } from '@shared/settings';
 import { GitHubClient } from '../github/githubClient';
 import { GitLabClient } from '../gitlab/gitlabClient';
+import { attemptAppMerge } from './appMerge';
 import { forgeBaseUrl } from './baseUrl';
 
 /** What {@link watchMergeRequests} needs from the world around it. */
@@ -45,6 +49,15 @@ export interface PrWatcherDeps {
   note(projectId: string, taskId: string, body: string): void;
   /** Remember that this MR's head commit has already been acted on, and which action it was. */
   markActed(mrId: string, headSha: string, action: PrWatchAction): void;
+  /** The card's agent project — whose "Merge on green" settings the app-merge pass reads. */
+  getProject(projectId: string): Project | undefined;
+  listAttachments(taskId: string): TaskAttachment[];
+  listActivity(taskId: string): TaskActivityEntry[];
+  /**
+   * `mrId → headSha` the app already merged or was refused on this session — one map, held
+   * in `ipc.ts`'s closure, shared with the Approve handler. See `forge/appMerge.ts`.
+   */
+  appMergeAttempts: Map<string, string>;
 }
 
 /**
@@ -57,17 +70,86 @@ export async function watchMergeRequests(
   mrs: readonly MergeRequest[],
   deps: PrWatcherDeps,
 ): Promise<void> {
+  // Rows the app-merge pass already dealt with — merged, or handed to the conflict ladder /
+  // forge rebase — are left out of the loop below, so one sync never acts on one row twice.
+  const handled = new Set<string>();
+  for (const mr of mrs) {
+    if (await appMergePass(mr, deps)) handled.add(mr.id);
+  }
   if (!deps.getSettings().features.prAutoResolve) return;
-  for (const mr of mrs) await watchOne(mr, deps);
+  for (const mr of mrs) {
+    if (!handled.has(mr.id)) await watchOne(mr, deps);
+  }
+}
+
+/** The card a row acts on behalf of — `openedForTaskId` when set (see its own doc on
+ *  `MergeRequest`), else the sync's guess. */
+function taskFor(mr: MergeRequest, deps: PrWatcherDeps): Task | undefined {
+  const taskId = mr.openedForTaskId ?? mr.taskId;
+  return taskId ? deps.getTask(taskId) : undefined;
+}
+
+/**
+ * Merge `mr` from the app when it is a candidate: open, not a draft, its pipeline passed on a
+ * known head, its card's project has "Merge on green" on with the app as the merger (the
+ * setting, or the fallback note on the card's timeline), and this session has not already
+ * merged or been refused on that head. Returns whether the row was dealt with — merged, or
+ * handed to the conflict ladder / a forge rebase. A failure to even ask reads as not dealt
+ * with, so the gated loop still looks at the row.
+ *
+ * Not gated on `features.prAutoResolve`: that flag is about the app rewriting branches, and
+ * this pass never does unless it is on — a `conflict`/`behind` refusal is only handed to the
+ * existing hand-offs then. Errors are noted on the card, like {@link watchOne}'s, and the head
+ * is not remembered, so the next sync tries again.
+ */
+async function appMergePass(mr: MergeRequest, deps: PrWatcherDeps): Promise<boolean> {
+  if (mr.state !== 'opened' || mr.draft || mr.pipelineStatus !== 'success' || !mr.headSha) {
+    return false;
+  }
+  if (deps.appMergeAttempts.get(mr.id) === mr.headSha) return false;
+  const task = taskFor(mr, deps);
+  if (!task) return false;
+  const project = deps.getProject(task.agentProjectId ?? '');
+  if (!project?.autoMergeOnGreen) return false;
+  if (effectiveAutoMergeBy(project.autoMergeBy, deps.listActivity(task.id)) !== 'app') {
+    return false;
+  }
+
+  try {
+    const token = deps.tokenFor(mr.provider);
+    if (!token)
+      throw new Error(`No ${forgeName(mr.provider)} token is saved — add one in Settings.`);
+    const outcome = await attemptAppMerge(deps, {
+      project,
+      task,
+      mr,
+      token,
+      settings: deps.getSettings(),
+    });
+    if (outcome.kind === 'merged') return true;
+    if (outcome.kind !== 'refused' || !deps.getSettings().features.prAutoResolve) return false;
+    if (outcome.reason === 'conflict') {
+      deps.resolveForgeConflict(task.id, mr);
+      return true;
+    }
+    if (outcome.reason === 'behind') {
+      await forgeRebase(mr, deps);
+      deps.note(task.projectId, task.id, forgeRebaseNote(mr));
+      return true;
+    }
+    return false;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    deps.note(task.projectId, task.id, `Could not merge ${mrRef(mr)}: ${message}`);
+    return false;
+  }
 }
 
 async function watchOne(mr: MergeRequest, deps: PrWatcherDeps): Promise<void> {
   // `openedForTaskId` is authoritative when set — see its own doc on `MergeRequest`. A sync
   // can only ever GUESS `taskId` from the MR's own text, and a guess that misses leaves
   // nobody here to act on behalf of.
-  const taskId = mr.openedForTaskId ?? mr.taskId;
-  if (!taskId) return;
-  const task = deps.getTask(taskId);
+  const task = taskFor(mr, deps);
   if (!task) return; // the card is gone — nothing to note, no worktree to rebase
 
   const action = prWatchAction(mr, {
@@ -105,11 +187,7 @@ async function act(
       return;
     case 'forge-rebase':
       await forgeRebase(mr, deps);
-      deps.note(
-        task.projectId,
-        task.id,
-        `${mrRef(mr)} had fallen behind "${mr.targetBranch}" — asked ${forgeName(mr.provider)} to rebase it.`,
-      );
+      deps.note(task.projectId, task.id, forgeRebaseNote(mr));
       return;
     case 'resolve-conflicts':
       // Fire-and-forget: the ladder fetches, rebases and force-with-lease pushes in the
@@ -132,6 +210,10 @@ async function act(
       deps.note(task.projectId, task.id, `${mrRef(mr)}'s pipeline passed.`);
       return;
   }
+}
+
+function forgeRebaseNote(mr: MergeRequest): string {
+  return `${mrRef(mr)} had fallen behind "${mr.targetBranch}" — asked ${forgeName(mr.provider)} to rebase it.`;
 }
 
 /** Ask the forge to rebase this MR's branch — the same call the manual `mr:rebase` button makes. */
