@@ -653,9 +653,12 @@ Usage limits behave exactly as they do for plan tasks: the task parks as
 
 ### Where the card sits while it works
 
-**A running agent never moves a card, and never stops you moving one.** A card left in
-TO DO stays in TO DO while its agent works, and after it finishes; that a run is happening
-is said by the spinner, the agent glyph and the run strip, not by the column.
+**A running agent never moves a card, and never stops you moving one.** The one move is
+the start itself: any start of a To Do card — **Start**, **Run this step**, **Release now**,
+assign + start, or the chain's own start — moves it to In Progress, and nothing else moves
+a card. A card resting in any other column stays there while its agent works, and after it
+finishes; that a run is happening is said by the spinner, the agent glyph and the run strip,
+not by the column.
 
 The reverse holds too, and is the same rule read the other way: you can drag a card to any
 column — or pick a state in the detail pane — **while its agent is mid-run**, including a
@@ -1003,13 +1006,12 @@ sends you hunting through three other cards' logs.
   does the work — and, with it, which repository an agent is turned loose in — is a decision the
   tool does not make for you. A chained card nobody assigned is therefore a chain that stops,
   which is why the card wears `needs an agent` from the moment its turn comes.
-- **The only column a chain writes is the one it starts a card into.** Where a card sits
-  stays yours, exactly as it is for every other run — with one exception, and it is what
-  makes the rule honest: a card the **app** starts by itself is moved to In Progress, because
-  nobody was here to move it and a card being worked on that still reads To Do is a lie. The
-  move is said on the card's timeline, and the card comes back to In Progress when the run
-  settles. Nothing else moves a card: not a decline, not a run finishing, and not **Release
-  now** — there you are looking at the board and already chose the column.
+- **Any start of a To Do card moves it to In Progress; nothing else moves a card.** A card
+  being worked on that still reads To Do is a lie, whoever started it: the chain's own start,
+  or your **Start**, **Run this step** or **Release now**. The move is said on the card's
+  timeline, and the card comes back to In Progress when the run settles. A card resting in
+  any other column stays where you put it — a released Blocked card stays Blocked — and
+  nothing else moves a card: not a decline, not a run finishing.
 - A predecessor you **stopped or cancelled** releases nothing: whatever state its branch is
   in, that is not "carry on with the next one". A **usage limit** holds a release exactly as
   it holds everything else — and nothing is lost, because `landedAt` is on disk and the

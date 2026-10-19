@@ -28,6 +28,7 @@
  * the run settles — the same end state `markInProgress` reaches from the other side.
  */
 import type { Task, TaskStatus } from '@shared/model';
+import type { RunOutcome } from '@shared/scheduler';
 import { assignmentMovesCard, humanStatusPatch } from './cardStatusGuard';
 
 /** Everything the move needs from the world, so it can be exercised without Electron. */
@@ -42,6 +43,14 @@ export interface HandStartMoveDeps {
   emit(task: Task): void;
   /** `send('board:notice', { intent: 'warning', text })` */
   warn(text: string): void;
+}
+
+/**
+ * Whether a start actually began a run — the only start that moves a column. Every refusal,
+ * including the `limit` park `task:run` returns rather than throws, is false.
+ */
+export function startSucceeded(outcome: RunOutcome): boolean {
+  return 'runId' in outcome;
 }
 
 /** What the moved card's timeline says — once, because the move happens once. */

@@ -11,13 +11,13 @@
  *
  * Five rules run through all of it, and they are worth stating once:
  *
- *  - **The only column a chain writes is the one it starts a card into.** Where a card SITS
- *    is the human's, exactly as it is for every other run (see `@shared/board`'s
- *    `restingStatus`) — with one exception, and it is the exception that makes the rule
- *    honest: when the APP starts a card by itself it also moves it to IN PROGRESS, because
- *    nobody was here to move it and a card being worked on that still reads TO DO is a lie.
- *    Everything else moves nothing — a decline, a settle, and the human's own **Release
- *    now**, where the person pressing the button already chose the column.
+ *  - **Any start of a To Do card moves it to In Progress; nothing else moves a card.** A
+ *    card being worked on that still reads TO DO is a lie. The chain's automatic start does
+ *    it through `markInProgress`; a human **Start**, **Run this step** and **Release now** do
+ *    it through `moveHandStartedCard` (`handStartMove.ts`, wired in `ipc.ts`). Where a card
+ *    resting anywhere else SITS stays the human's, exactly as it is for every other run (see
+ *    `@shared/board`'s `restingStatus`): a start never moves it, and a decline or a settle
+ *    moves nothing.
  *  - **`landedAt` is the durable fact, and the release is the perishable one.** A release
  *    that could not happen — a usage limit, an app that closed — is not lost, because the
  *    landing is on disk and {@link ChainRunner.reconsider} can re-ask the question at any
@@ -241,10 +241,9 @@ export class ChainRunner {
    * and for those, refusing to start is not a safeguard, it is an obstacle. So this skips
    * the gates entirely and says so on the timeline, naming what was still outstanding.
    *
-   * The one thing it does NOT do is move the card, and that is the difference between this
-   * and every automatic start: a card the app starts is moved to IN PROGRESS because nobody
-   * was there to do it, and here somebody is — looking at the board, having chosen where
-   * this card sits. Moving it out from under them would be the tool arguing.
+   * It files only its own note and moves no column itself. The `chain:releaseNow` ipc
+   * handler applies the hand-start move afterwards (`moveHandStartedCard`), which moves a
+   * card resting in TO DO to IN PROGRESS — and only that: a Blocked card stays Blocked.
    *
    * Returns a sentence saying why nothing started, or null once a run is under way.
    */

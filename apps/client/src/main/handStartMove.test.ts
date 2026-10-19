@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { restingStatus } from '@shared/board';
 import { PERSONAL_PROJECT_ID, type Task, type TaskStatus } from '@shared/model';
-import { HAND_START_NOTE, moveHandStartedCard, type HandStartMoveDeps } from './handStartMove';
+import { RUN_REFUSAL_MESSAGE, type RunRefusal } from '@shared/scheduler';
+import {
+  HAND_START_NOTE,
+  moveHandStartedCard,
+  startSucceeded,
+  type HandStartMoveDeps,
+} from './handStartMove';
 
 const task = (over: Partial<Task> & { id: string }): Task => ({
   projectId: PERSONAL_PROJECT_ID,
@@ -148,5 +154,21 @@ describe('moveHandStartedCard', () => {
     expect(h.warnings[0]).toContain('TM-1');
     expect(h.warnings[0]).toContain('The run started anyway.');
     expect(h.comments).toEqual([{ id: 'c', body: HAND_START_NOTE }]);
+  });
+});
+
+describe('startSucceeded', () => {
+  it('is true only for a start that began a run', () => {
+    expect(startSucceeded({ runId: 'r1' })).toBe(true);
+  });
+
+  it('is false for every refusal', () => {
+    const refusals = Object.keys(RUN_REFUSAL_MESSAGE) as RunRefusal[];
+    expect(refusals.length).toBeGreaterThan(0);
+    for (const refused of refusals) expect(startSucceeded({ refused })).toBe(false);
+  });
+
+  it('is false for the limit park task:run returns instead of throwing', () => {
+    expect(startSucceeded({ refused: 'limit' })).toBe(false);
   });
 });
