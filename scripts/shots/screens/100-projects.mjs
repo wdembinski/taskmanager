@@ -2,6 +2,43 @@
  * The Projects admin screen's merge-on-green setting (this ticket's step 1) — see
  * `ui-shots.mjs`'s header doc for the row shape.
  */
+import { PROJECTS } from '../../fixtures/boardShotsFixture.mjs';
+
+/**
+ * The fixture's projects with the first one — the one "Edit" opens — set to Merge on green
+ * AND Visual sign-off by AI reviewer, on the default 2 rounds: both controls render only
+ * while merge on green is on, and the rounds field only while the switch is.
+ */
+const AI_SIGN_OFF_PROJECTS = PROJECTS.map((entry, i) =>
+  i === 0
+    ? {
+        ...entry,
+        project: {
+          ...entry.project,
+          autoMergeOnGreen: true,
+          autoVisualSignOff: true,
+          autoVisualSignOffMaxRounds: 2,
+        },
+      }
+    : entry,
+);
+
+/** The "Visual sign-off by AI reviewer" switch and its "Max automatic fix rounds" field. */
+const aiSignOffRow = (scheme, mockup) => ({
+  name: `project-form-ai-signoff-${scheme}`,
+  app: 'client',
+  viewport: { width: 1280, height: 900 },
+  scheme,
+  setup: [
+    { click: 'Projects' },
+    { click: 'Edit' },
+    { scrollToSelector: '[data-auto-visual-sign-off]' },
+  ],
+  expect: '[data-auto-visual-sign-off] input[role="switch"]:checked',
+  mockup,
+  channelOverrides: { 'project:list': AI_SIGN_OFF_PROJECTS },
+});
+
 export default [
   {
     // "Projects" is the small icon-row link under the team header (`Sidebar.tsx`), not a
@@ -48,6 +85,9 @@ export default [
     expect: '[data-auto-done-on-land]',
     mockup: null,
   },
+  aiSignOffRow('light', 'v10-13-projects-light.svg'),
+  // No dark projects mockup exists, so this row has none.
+  aiSignOffRow('dark', null),
   {
     // "Who merges on green" only renders once "Merge on green" is ON, in the row beside
     // "Merge method" and "Required checks". Picking "Task Manager" proves the dropdown's

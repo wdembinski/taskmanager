@@ -210,6 +210,8 @@ function makeProject(id, name) {
     autoApproveMaxSteps: 6,
     readyLanes: 3,
     autoDoneOnLand: false,
+    autoVisualSignOff: false,
+    autoVisualSignOffMaxRounds: 2,
     autoMergeBy: 'forge',
     planAligned: true,
     jiraEpicKeys: [],

@@ -27,6 +27,20 @@ export const AI_REVIEW_RUBRIC = [
   "- shell or styling differences outside the ticket's scope (old layout vs a newer mockup) are NOT a mismatch — note them, don't fail on them.",
 ].join('\n');
 
+/** `Project.autoVisualSignOffMaxRounds`'s default: two automatic fix rounds. */
+export const DEFAULT_AI_REVIEW_MAX_ROUNDS = 2;
+/** The most automatic fix rounds a project may allow. */
+export const MAX_AI_REVIEW_MAX_ROUNDS = 10;
+
+/**
+ * Clamp a stored or submitted round cap to 0..{@link MAX_AI_REVIEW_MAX_ROUNDS}, rounding a
+ * fraction. 0 is real (review once, never fix); only a non-number falls back to the default.
+ */
+export function clampAiReviewMaxRounds(n: number | null | undefined): number {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return DEFAULT_AI_REVIEW_MAX_ROUNDS;
+  return Math.max(0, Math.min(MAX_AI_REVIEW_MAX_ROUNDS, Math.round(n)));
+}
+
 /** The prefix of the note a review run leaves as it starts. */
 export const AI_REVIEW_STARTED_PREFIX = 'AI visual review started';
 /** The prefix of a needs-changes note — one per automatic fix round. */

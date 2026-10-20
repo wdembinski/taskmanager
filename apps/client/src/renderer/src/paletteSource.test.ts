@@ -54,6 +54,8 @@ const project = (over: Partial<Project> = {}): Project => ({
   autoApproveMaxSteps: 6,
   readyLanes: 3,
   autoDoneOnLand: false,
+  autoVisualSignOff: false,
+  autoVisualSignOffMaxRounds: 2,
   planAligned: true,
   jiraEpicKeys: [],
   ticketPrefix: '',

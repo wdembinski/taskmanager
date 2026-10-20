@@ -242,6 +242,7 @@ import { autoMergeLanded, mergedByAutoMergeNote } from '@shared/autoMerge';
 import { formatSignOff } from '@shared/visualSignOff';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import { openPrTaskIds } from '@shared/readyLanes';
+import { MAX_AI_REVIEW_MAX_ROUNDS } from '@shared/aiVisualReview';
 import type { TaskAttachment } from '@shared/attachments';
 import {
   addAttachments,
@@ -1115,6 +1116,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     }
     if (patch.autoMergeBy !== undefined && !isAutoMergeBy(patch.autoMergeBy)) {
       throw new Error(`Not a usable merger: ${patch.autoMergeBy}`);
+    }
+    if (
+      patch.autoVisualSignOffMaxRounds !== undefined &&
+      !(
+        Number.isInteger(patch.autoVisualSignOffMaxRounds) &&
+        patch.autoVisualSignOffMaxRounds >= 0 &&
+        patch.autoVisualSignOffMaxRounds <= MAX_AI_REVIEW_MAX_ROUNDS
+      )
+    ) {
+      throw new Error(
+        `Max automatic fix rounds must be a whole number from 0 to ${MAX_AI_REVIEW_MAX_ROUNDS}: ${patch.autoVisualSignOffMaxRounds}`,
+      );
     }
     await retireRunStateIfTargetChanged(id, patch);
     const updated = store.updateProject(id, patch);

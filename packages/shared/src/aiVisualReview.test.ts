@@ -13,6 +13,8 @@ import {
   aiReviewRoundsSoFar,
   aiReviewStartedNote,
   aiReviewSuperseded,
+  clampAiReviewMaxRounds,
+  DEFAULT_AI_REVIEW_MAX_ROUNDS,
   parseAiReviewVerdict,
   type AiReviewVerdict,
 } from './aiVisualReview';
@@ -252,5 +254,17 @@ describe('the AI approval arms auto-merge through the human gate', () => {
     expect(autoMergeAwaitAiReviewNote('#12')).toBe(
       'Auto-merge is waiting for visual sign-off on #12 — the AI reviewer is checking the shots.',
     );
+  });
+});
+
+describe('clampAiReviewMaxRounds', () => {
+  it('keeps 0..10, rounds a fraction, clamps the rest and defaults a non-number to 2', () => {
+    expect(clampAiReviewMaxRounds(0)).toBe(0);
+    expect(clampAiReviewMaxRounds(10)).toBe(10);
+    expect(clampAiReviewMaxRounds(2.6)).toBe(3);
+    expect(clampAiReviewMaxRounds(-4)).toBe(0);
+    expect(clampAiReviewMaxRounds(99)).toBe(10);
+    expect(clampAiReviewMaxRounds(undefined)).toBe(DEFAULT_AI_REVIEW_MAX_ROUNDS);
+    expect(clampAiReviewMaxRounds(Number.NaN)).toBe(2);
   });
 });

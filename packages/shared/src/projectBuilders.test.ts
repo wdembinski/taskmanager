@@ -20,6 +20,8 @@ describe('buildProject', () => {
     expect(project.autoMergeMethod).toBe('squash');
     expect(project.autoMergeBy).toBe('forge');
     expect(project.autoMergeRequiredChecks).toEqual([]);
+    expect(project.autoVisualSignOff).toBe(false);
+    expect(project.autoVisualSignOffMaxRounds).toBe(2);
     expect(project.autoIntegrate).toBeNull();
     expect(project.autoApprovePlans).toBe(false);
     expect(project.autoApproveMaxSteps).toBe(6);
@@ -32,6 +34,20 @@ describe('buildProject', () => {
     expect(project.target).toEqual(DEFAULT_SETTINGS.defaultExecTarget);
     expect(project.instructions).toBe('');
     expect(project.color).toBe('');
+  });
+
+  it('takes the AI sign-off settings from the input, clamping the round cap to 0..10', () => {
+    const on = buildProject(
+      { path: '/home/me/app', autoVisualSignOff: true, autoVisualSignOffMaxRounds: 0 },
+      DEFAULT_SETTINGS,
+    );
+    expect(on.autoVisualSignOff).toBe(true);
+    expect(on.autoVisualSignOffMaxRounds).toBe(0);
+    const tooMany = buildProject(
+      { path: '/home/me/app', autoVisualSignOffMaxRounds: 99 },
+      DEFAULT_SETTINGS,
+    );
+    expect(tooMany.autoVisualSignOffMaxRounds).toBe(10);
   });
 
   it('honors an explicit `null` planningModel instead of falling back to the default', () => {
