@@ -15,6 +15,7 @@ import {
   readyToRelease,
   readyToReleaseGiven,
   successorsOf,
+  waitReason,
   wouldCycle,
   type LinkGate,
   type TaskLink,
@@ -428,5 +429,32 @@ describe('chainDecline', () => {
   it('lets work under way outrank an open decision — the release is moot either way', () => {
     const flagged = task({ id: 'b', agentProjectId: 'r', decisionQuestion: 'Which plan?' });
     expect(chainDecline(flagged, true)).toBe('in-flight');
+  });
+});
+
+describe('waitReason', () => {
+  it('names an unlanded Done predecessor as Done, not landed', () => {
+    const from = task({ id: 'a', title: 'Gate', externalKey: 'TM-1', status: 'done' });
+    expect(waitReason(link('a', 'b'), from)).toBe('Waits for TM-1 to merge (Done, not landed)');
+  });
+
+  it("prefers a native ticket's key", () => {
+    const from = task({ id: 'a', ticketKey: 'TM-9', externalKey: 'JIRA-1', status: 'blocked' });
+    expect(waitReason(link('a', 'b'), from)).toBe('Waits for TM-9 to merge (Blocked)');
+  });
+
+  it('falls back to the title and names the board column', () => {
+    const from = task({ id: 'a', title: 'Write the API', status: 'in-review' });
+    expect(waitReason(link('a', 'b'), from)).toBe('Waits for Write the API to merge (In Review)');
+  });
+
+  it('reads the resting column of a running card, not the run', () => {
+    const from = task({ id: 'a', status: 'running', preRunStatus: 'pending' });
+    expect(waitReason(link('a', 'b', 'stacked'), from)).toBe('Waits for a to stop working (To Do)');
+  });
+
+  it('says nothing about a satisfied or unknown predecessor', () => {
+    expect(waitReason(link('a', 'b'), task({ id: 'a', status: 'done', landedAt: 5 }))).toBeNull();
+    expect(waitReason(link('a', 'b'), undefined)).toBeNull();
   });
 });

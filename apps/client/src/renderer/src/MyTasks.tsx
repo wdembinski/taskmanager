@@ -73,6 +73,7 @@ import { PaneLoading } from '@ui/PaneLoading';
 import { useTicketRegistries } from '@ui/projects/useTicketRegistries';
 import { TaskDetailHost } from '@ui/TaskDetailHostView';
 import { useInitialLoad } from '@ui/useInitialLoad';
+import { useReleaseOnDone } from '@ui/ReleaseWaitingDialog';
 import { KanbanColumn } from '@ui/board/KanbanColumn';
 import { useBoardLayoutStyles } from '@ui/board/boardLayout';
 import { currentSprintName } from '@ui/board/currentSprint';
@@ -1012,6 +1013,7 @@ export function MyTasks({
     [setCurrentSprintOnly, setBoardScope],
   );
 
+  const { askAfterMove, dialog: releaseDialog } = useReleaseOnDone();
   const moveTask = useCallback(
     async (taskId: string, column: BoardColumn) => {
       const task = tasks?.find((t) => t.id === taskId);
@@ -1020,13 +1022,17 @@ export function MyTasks({
       const prev = task;
       patchTask(optimisticMove(task, column)); // optimistic
       try {
-        patchTask(await window.api.invoke('task:move', taskId, column));
+        const moved = await window.api.invoke('task:move', taskId, column);
+        patchTask(moved);
+        // After the move, never instead of it: a human's drag into Done may ask whether to
+        // release the cards chained after this one (`@ui/ReleaseWaitingDialog`).
+        askAfterMove(prev, moved, links, tasksById, mergeRequests);
       } catch (e) {
         patchTask(prev); // rollback (e.g. JIRA transition unavailable)
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [tasks, patchTask],
+    [tasks, patchTask, askAfterMove, links, tasksById, mergeRequests],
   );
 
   /**
@@ -1866,6 +1872,7 @@ export function MyTasks({
         // list shortens under you as each goes back. It closes when you close it.
         onRestore={restoreCard}
       />
+      {releaseDialog}
     </div>
   );
 }

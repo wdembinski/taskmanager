@@ -89,6 +89,9 @@ import { useSkillOptions } from './useSkillOptions';
 import { useWorkflowOptions } from './useWorkflowOptions';
 import { applyOutcome, predictApplyRefusal, reconcileSelection } from './workflowPickerState';
 import { useTransport } from './transport';
+import { useReleaseOnDone } from './ReleaseWaitingDialog';
+import { releasableByHand } from '@tm/shared/releaseOnDone';
+import { incomingLinks, waitReason, type TaskLink } from '@tm/shared/taskChain';
 import { UNREAD_ORANGE as ASK_ORANGE } from '@tm/shared/accent';
 
 const useStyles = makeStyles({
@@ -151,6 +154,8 @@ const useStyles = makeStyles({
   step: { display: 'flex', gap: '6px' },
   stepIndex: { color: tokens.colorNeutralForeground4, minWidth: '18px' },
   choices: { display: 'flex', flexWrap: 'wrap', gap: '6px' },
+  /** One line per arrow or per held card — a plain list, set in the panel's own caption ink. */
+  reasons: { margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '2px' },
   /** Whose ask this is, when it belongs to a step rather than to the card. */
   stepOwner: { color: ASK_ORANGE },
   answerRow: { display: 'flex', alignItems: 'flex-end', gap: '8px' },
@@ -234,7 +239,17 @@ export interface TaskAgentPanelProps {
    * is exactly how a card ends up offering to create one it is displaying underneath.
    */
   mergeRequests?: readonly MergeRequest[];
+  /**
+   * Every link on the board and the board's task index — what names, one line per arrow,
+   * why this card waits (`waitReason`), and what a Done card that never landed still holds
+   * (`releasableByHand`), which is when **Release waiting cards** is offered.
+   */
+  chainLinks?: readonly TaskLink[];
+  tasksById?: ReadonlyMap<string, Task>;
 }
+
+const NO_LINKS: readonly TaskLink[] = [];
+const NO_TASKS: ReadonlyMap<string, Task> = new Map();
 
 export function TaskAgentPanel({
   task,
@@ -251,8 +266,17 @@ export function TaskAgentPanel({
   waitingOn = [],
   mergeHeld = [],
   mergeRequests = [],
+  chainLinks = NO_LINKS,
+  tasksById = NO_TASKS,
 }: TaskAgentPanelProps): JSX.Element {
   const transport = useTransport();
+  const { offer: offerRelease, dialog: releaseDialog } = useReleaseOnDone();
+  // One line per arrow still holding this card, naming whom and why (`waitReason`).
+  const waitReasons = incomingLinks(chainLinks, task.id)
+    .map((l) => waitReason(l, tasksById.get(l.fromTaskId)))
+    .filter((r): r is string => r !== null);
+  // A Done card that never landed, still holding cards chained after it.
+  const releasable = releasableByHand(task, chainLinks, tasksById);
   const trustHost = useGateTrustHost();
   const styles = useStyles();
   const modelLabel = useModelLabels();
@@ -1171,12 +1195,28 @@ export function TaskAgentPanel({
               ? 'Waiting on another card'
               : `Waiting on ${waitingOn.length} other cards`}
           </Text>
-          <Caption1 className={styles.hint}>
-            This card is chained to run after{' '}
-            {waitingOn.map((t) => t.externalKey || t.title).join(', ')}, and starts by itself when{' '}
-            {waitingOn.length === 1 ? 'it is' : 'they are'} done. Release it now to go ahead anyway
-            — the chain keeps the ordering either way.
-          </Caption1>
+          {waitReasons.length > 0 ? (
+            <>
+              <Caption1 className={styles.hint}>
+                This card starts by itself when nothing below holds it. Release it now to go ahead
+                anyway — the chain keeps the ordering either way.
+              </Caption1>
+              <ul className={styles.reasons}>
+                {waitReasons.map((r) => (
+                  <li key={r}>
+                    <Caption1>{r}</Caption1>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <Caption1 className={styles.hint}>
+              This card is chained to run after{' '}
+              {waitingOn.map((t) => t.externalKey || t.title).join(', ')}, and starts by itself when{' '}
+              {waitingOn.length === 1 ? 'it is' : 'they are'} done. Release it now to go ahead
+              anyway — the chain keeps the ordering either way.
+            </Caption1>
+          )}
           {/* The part that is actually YOURS to do. Named separately from the sentence above
               because "starts by itself when it is done" is true and, for a card that finished
               days ago and is sitting in review, deeply misleading: nothing further is going to
@@ -1213,6 +1253,35 @@ export function TaskAgentPanel({
           </div>
         </div>
       )}
+
+      {/* Done by hand, never landed: the cards chained after it wait for a merge that this
+          app will never see. The same dialog a move to Done asks with, Release leading. */}
+      {releasable.length > 0 && !isStep && (
+        <div className={styles.blocked} data-release-waiting="">
+          <Text weight="semibold">
+            {releasable.length === 1
+              ? '1 card waits for this card to merge'
+              : `${releasable.length} cards wait for this card to merge`}
+          </Text>
+          <ul className={styles.reasons}>
+            {releasable.map((t) => (
+              <li key={t.id}>
+                <Caption1>
+                  {t.ticketKey || t.externalKey
+                    ? `${t.ticketKey || t.externalKey} — ${t.title}`
+                    : t.title}
+                </Caption1>
+              </li>
+            ))}
+          </ul>
+          <div className={styles.choices}>
+            <Button disabled={busy} onClick={() => offerRelease(task, releasable, 'release')}>
+              Release waiting cards
+            </Button>
+          </div>
+        </div>
+      )}
+      {releaseDialog}
 
       {/* The chain stopped and its inbox item is gone (items live in the scheduler, so a
           restart loses them). Nothing here can resolve it, but the step can be re-run —

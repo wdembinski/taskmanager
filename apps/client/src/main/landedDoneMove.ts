@@ -157,3 +157,37 @@ export async function moveLandedCardToDone(
   deps.dismissAttention(card.id);
   return updated;
 }
+
+/** {@link LandedDoneMoveDeps}, plus the landing itself and somewhere to report a failed move. */
+export interface LandThenMoveDeps extends LandedDoneMoveDeps {
+  /** `scheduler.noteWorkLanded` — stamps `landedAt` and releases the chain. */
+  noteWorkLanded(taskId: string): void;
+  /** `logMain` — a failed move must not stop the sync that reported the merge. */
+  logError(message: string, e: unknown): void;
+}
+
+/**
+ * What both forge syncs do with a merged PR: stamp the landing (and release the chain),
+ * THEN make the column move, never the other way round.
+ *
+ * The order is the point. The move to Done is not a human's, so it must never ask whether
+ * to release the cards waiting on this one — and it never needs to, because by the time the
+ * card reaches Done `landedAt` is already set, and a landed card holds nobody
+ * (`@shared/releaseOnDone`'s `releasePrompt`). Kept in one function so neither call site can
+ * reorder it. `mr` is undefined when the merged row is not filed under this card id, and
+ * then only the landing happens.
+ */
+export async function landThenMoveToDone(
+  deps: LandThenMoveDeps,
+  taskId: string,
+  mr: LandedMr | undefined,
+): Promise<Task | null> {
+  deps.noteWorkLanded(taskId);
+  if (!mr) return null;
+  try {
+    return await moveLandedCardToDone(deps, taskId, mr);
+  } catch (e) {
+    deps.logError(`Moving landed card ${taskId} to Done failed`, e);
+    return null;
+  }
+}

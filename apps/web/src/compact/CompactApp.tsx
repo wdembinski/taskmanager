@@ -194,7 +194,7 @@ export function CompactApp({
         (boardIsReady(board.syncProgress) ? (
           <BoardScreen
             state={board.state}
-            onMoveTask={(taskId, column) => void board.moveTask(taskId, column)}
+            onMoveTask={(taskId, column) => board.moveTask(taskId, column)}
             onStatusNoted={board.noteStatus}
             compact={{
               column: activeColumn,

@@ -3470,6 +3470,21 @@ export class Scheduler {
   }
 
   /**
+   * Mark a Done card landed by hand and release the cards waiting on it — the
+   * `chain:releaseLanded` handler. Then the same re-ask {@link Scheduler.noteWorkLanded}
+   * runs after a merge, so a successor the lane cap queued starts as it would have.
+   * Returns the refusal sentence, or null once released.
+   */
+  releaseLandedByHand(taskId: string): string | null {
+    if (this.disposed) return 'The app is shutting down.';
+    const refusal = this.chain.landedByHand(taskId);
+    if (refusal) return refusal;
+    this.reconsiderChains('lane-freed');
+    this.pumpAllActive();
+    return null;
+  }
+
+  /**
    * Decide one tool use the broker forwarded (a tool the CLI is BLOCKED on).
    * Safe → allow immediately; risky → raise an inbox item and return a promise
    * that stays unresolved until a human answers, holding the tool the whole time.

@@ -314,6 +314,7 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onMoveTo={props.onMoveTask && (() => props.onMoveTask?.(task.id))}
               waitingOn={props.chainStateOf?.(task)?.waitingOn}
               mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
+              waitReasons={props.chainStateOf?.(task)?.waitReasons}
               chainReady={props.chainStateOf?.(task)?.ready}
               chainQueued={props.chainStateOf?.(task)?.queued}
               chainBlocked={props.chainStateOf?.(task)?.blocked}

@@ -53,6 +53,7 @@ import { restingStatus } from '@shared/board';
 import type { Task } from '@shared/model';
 import { fileHolds, holdAgainst, MAX_SHOWN_FILES, type FileHold } from '@shared/fileOverlap';
 import { compareLaneOrder, readyLanesByProject, type LanePlan } from '@shared/readyLanes';
+import { heldSuccessors } from '@shared/releaseOnDone';
 import {
   blockedBy,
   chainDecline,
@@ -267,6 +268,36 @@ export class ChainRunner {
     if (!task) return;
     if (task.landedAt == null) this.deps.setLandedAt(taskId, this.deps.now());
     this.release(taskId, 'landed');
+  }
+
+  /**
+   * Mark a Done card landed **without a merge**, on the human's say-so — the release dialog
+   * after a move to Done, or the panel's **Release waiting cards**.
+   *
+   * A card moved to Done by hand never stamps `landedAt`, so every `after-merge` arrow out
+   * of it waits forever; a card with no branch could never have landed at all. This stamps
+   * it through {@link ChainRunner.landed}, so what follows is exactly what a merge would
+   * have started, and files the one note that says the landing was a human's word rather
+   * than a merge.
+   *
+   * Returns a sentence saying why nothing was released, or null once it was.
+   */
+  landedByHand(taskId: string): string | null {
+    const task = this.deps.getTask(taskId);
+    if (!task) return 'That card no longer exists.';
+    if (task.landedAt != null) return 'That card has already landed, so nothing is waiting on it.';
+    if (restingStatus(task) !== 'done') {
+      return 'That card is not Done. Move it to Done before releasing the cards waiting on it.';
+    }
+    const links = this.deps.links();
+    const n = heldSuccessors(task, links, this.index(links)).length;
+    this.landed(taskId);
+    this.deps.addComment(
+      task.projectId,
+      task.id,
+      `Released ${n} waiting ${n === 1 ? 'card' : 'cards'} by hand: marked landed without a merge.`,
+    );
+    return null;
   }
 
   /**

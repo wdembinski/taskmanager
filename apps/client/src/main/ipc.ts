@@ -86,7 +86,11 @@ import {
 } from '@shared/board';
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { moveHandStartedCard, startSucceeded, type HandStartMoveDeps } from './handStartMove';
-import { moveLandedCardToDone, type LandedDoneMoveDeps } from './landedDoneMove';
+import {
+  landThenMoveToDone,
+  type LandedDoneMoveDeps,
+  type LandThenMoveDeps,
+} from './landedDoneMove';
 import { preserveLocalTrust } from './gateTrust';
 import { toMoveActivity, transitionThenRecord } from './moveActivity';
 import { AutomationRunner } from './automationRunner';
@@ -1219,7 +1223,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     warn: (text) => send('board:notice', { intent: 'warning', text }),
   };
   // The column move a landed PR makes (`landedDoneMove.ts`), for a project with "Move to
-  // Done when its PR lands" on. Both forge syncs call it after `noteWorkLanded`; the forge
+  // Done when its PR lands" on. Both forge syncs reach it through `landThenMoveToDone`; the forge
   // half is the same write a drag into DONE fires, under the same scope rule as above.
   const landedDoneMove: LandedDoneMoveDeps = {
     getTask: (id) => store.getTask(id),
@@ -1244,6 +1248,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     dismissAttention: (id) => {
       scheduler.dismissAttentionForCard(id);
     },
+  };
+  const landThenMove: LandThenMoveDeps = {
+    ...landedDoneMove,
+    noteWorkLanded: (id) => scheduler.noteWorkLanded(id),
+    logError: (message, e) => logMain(message, e),
   };
   handle('task:run', async (taskId) => {
     const outcome = scheduler.startTaskNow(taskId);
@@ -3227,16 +3236,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
           prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
         }
       }
-      scheduler.noteWorkLanded(taskId);
-      // After the landing is stamped and the chain has released, never before — the chain
-      // never waits on this column move, and a failure here must not stop the sync.
-      if (mr) {
-        try {
-          await moveLandedCardToDone(landedDoneMove, taskId, mr);
-        } catch (e) {
-          logMain(`Moving landed card ${taskId} to Done failed`, e);
-        }
-      }
+      // The landing is stamped and the chain released before the column move, never after —
+      // the chain never waits on that move, and a failure there must not stop the sync.
+      await landThenMoveToDone(landThenMove, taskId, mr);
     }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
@@ -3426,16 +3428,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
           prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
         }
       }
-      scheduler.noteWorkLanded(taskId);
-      // After the landing is stamped and the chain has released, never before — the chain
-      // never waits on this column move, and a failure here must not stop the sync.
-      if (mr) {
-        try {
-          await moveLandedCardToDone(landedDoneMove, taskId, mr);
-        } catch (e) {
-          logMain(`Moving landed card ${taskId} to Done failed`, e);
-        }
-      }
+      // The landing is stamped and the chain released before the column move, never after —
+      // the chain never waits on that move, and a failure there must not stop the sync.
+      await landThenMoveToDone(landThenMove, taskId, mr);
     }
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
@@ -4448,6 +4443,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     if (refusal === null) await moveHandStartedCard(handStartMove, taskId);
     return refusal;
   });
+  // Mark a Done card landed by hand, releasing the cards an after-merge arrow holds on it —
+  // the release dialog after a move to Done, and the panel's Release waiting cards. Moves no
+  // column: the card is already Done, and each successor the chain starts is moved by the
+  // chain itself. The refusal comes back as a sentence, as Release now's does.
+  handle('chain:releaseLanded', async (taskId) => scheduler.releaseLandedByHand(taskId));
   // ---------------------------------------------------------------------------
 
   // --- Attachments -----------------------------------------------------------

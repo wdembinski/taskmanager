@@ -68,7 +68,10 @@
  *       card's own text in document order), so a card is addressed by its fixture id instead of
  *       its title, the same reasoning as `issue-row:N`'s own position-not-text sentinel. A
  *       third, `'tab:NAME'`, clicks the visible `[role="tab"]` whose text is exactly `NAME` —
- *       for a tab sharing its name with an earlier button (Settings' "Projects" tab).
+ *       for a tab sharing its name with an earlier button (Settings' "Projects" tab). And
+ *       `'option:NAME'` / `'title:NAME'` click the visible `[role="option"]` whose text, or
+ *       the button whose `title`, is exactly `NAME` — to open a Fluent `Dropdown` named only
+ *       by its title and pick one of its options (the detail pane's State control).
  *     - `{ key: spec }` — dispatches a bubbling `keydown` on `document.activeElement` (or
  *       `document.body`), parsed the same `"mod+k"`/`"shift+mod+k"` way
  *       `packages/ui/src/palette/shortcut.ts`'s own spec is, plus the named keys `space`,
@@ -83,6 +86,8 @@
  *     - `{ scrollToSelector: selector }` — waits for `selector` to appear, then
  *       `scrollIntoView({ block: 'start' })`s it — for a section proven to render (by its own
  *       `expect`) but not necessarily in frame at the top of a long, scrollable detail pane.
+ *     - `{ hover: selector }` — waits for `selector`, then moves the real (CDP) pointer over
+ *       its centre, so a Fluent `Tooltip` opens for the shot (the waiting chip's reasons).
  * - `mockup` — a filename under `docs/plan/feature-roadmap/mockups/`, or `null` where no mockup
  *   draws this exact state (an approximate stand-in mockup is noted per row below instead).
  * - `clip` — `'sidebar'` crops the capture to `nav[aria-label="Sidebar"]`'s own bounding rect
@@ -305,6 +310,26 @@ function boardCardClickExprs(taskId) {
   };
 }
 
+/** `{ click: 'option:NAME' }` / `{ click: 'title:NAME' }` — the first visible element matching
+ *  `selector` whose text (option) or `title` attribute (title) is exactly `name`. An open
+ *  Fluent `Dropdown`'s `[role="option"]` rows are not in `candidates()`, and a plain text
+ *  click on "Done" lands on the board's own DONE column header first; a dropdown button is
+ *  named only by its `title` ("Status"), which other buttons' text may also contain. */
+function exactClickExprs(selector, name, by) {
+  const read = by === 'title' ? `el.getAttribute('title')` : 'window.__tm.textOf(el)';
+  const find = `Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find((el) => window.__tm.visible(el) && ${read} === ${JSON.stringify(name)})`;
+  return {
+    ready: `!!${find}`,
+    click: `(() => {
+      const el = ${find};
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      el.click();
+      return true;
+    })()`,
+  };
+}
+
 /** `{ click: 'tab:NAME' }` — the visible `[role="tab"]` whose text is exactly `NAME`. A plain
  *  text click on "Projects" lands on the sidebar's own Projects link, which comes first in
  *  document order, never on the Settings tab of the same name. */
@@ -327,7 +352,13 @@ async function runSetupStep(cdp, step) {
     const issueRow = /^issue-row:(first|\d+)$/.exec(step.click);
     const boardCard = /^board-card:(.+)$/.exec(step.click);
     const tab = /^tab:(.+)$/.exec(step.click);
-    const { ready, click } = issueRow
+    const option = /^option:(.+)$/.exec(step.click);
+    const titled = /^title:(.+)$/.exec(step.click);
+    const { ready, click } = option
+      ? exactClickExprs('[role="option"]', option[1], 'text')
+      : titled
+        ? exactClickExprs('button, [role="combobox"]', titled[1], 'title')
+        : issueRow
       ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
       : boardCard
         ? boardCardClickExprs(boardCard[1])
@@ -393,6 +424,28 @@ async function runSetupStep(cdp, step) {
       cdp,
       `document.querySelector(${selector}).scrollIntoView({ block: 'start' })`,
     );
+    return;
+  }
+  if (step.hover !== undefined) {
+    // A REAL pointer move over the element's centre, through CDP's own input domain — Fluent's
+    // `Tooltip` opens on pointer-enter, which React derives from `pointerover` and which a
+    // synthetic `dispatchEvent` reaches only half the time. The tooltip's own show delay is
+    // the row's `expect` to wait out.
+    const selector = JSON.stringify(step.hover);
+    await waitFor(
+      async () => (await evaluate(cdp, `!!document.querySelector(${selector})`)) === true,
+      { timeoutMs: 10000, label: `"${step.hover}" to appear before hovering it` },
+    );
+    const point = await evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector(${selector});
+        el.scrollIntoView({ block: 'center' });
+        const r = el.getBoundingClientRect();
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      })()`,
+    );
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y });
     return;
   }
   throw new Error(`unknown setup step: ${JSON.stringify(step)}`);

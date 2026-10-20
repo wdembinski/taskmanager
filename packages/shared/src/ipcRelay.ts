@@ -415,6 +415,7 @@ export const RELAY_POLICY: {
   'chain:unlink': 'relay',
   'chain:setGate': 'relay',
   'chain:releaseNow': 'relay',
+  'chain:releaseLanded': 'relay',
 
   'attachment:list': 'relay',
   'attachment:pick': 'host-only',

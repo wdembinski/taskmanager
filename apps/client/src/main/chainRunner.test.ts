@@ -960,3 +960,58 @@ describe('ChainRunner — file overlap', () => {
     expect(started).toEqual(['b']);
   });
 });
+
+describe('ChainRunner — released by hand from a Done card', () => {
+  it('stamps landedAt, starts the ready successor and files the note with N', () => {
+    const { runner, byId, started, notes } = harness(
+      [
+        task({ id: 'a', status: 'done' }),
+        successor('b'),
+        successor('c'),
+        task({ id: 'd', status: 'done' }),
+      ],
+      [link('a', 'b'), link('a', 'c'), link('a', 'd')],
+    );
+    expect(runner.landedByHand('a')).toBeNull();
+    expect(byId.get('a')?.landedAt).toBe(1_000);
+    expect(started).toEqual(['b', 'c']);
+    expect(notes.filter((n) => n.taskId === 'a').map((n) => n.body)).toEqual([
+      'Released 2 waiting cards by hand: marked landed without a merge.',
+    ]);
+  });
+
+  it('says "card" for one', () => {
+    const { runner, notes } = harness(
+      [task({ id: 'a', status: 'done' }), successor('b')],
+      [link('a', 'b')],
+    );
+    runner.landedByHand('a');
+    expect(notes.find((n) => n.taskId === 'a')?.body).toBe(
+      'Released 1 waiting card by hand: marked landed without a merge.',
+    );
+  });
+
+  it('refuses a second release as already landed', () => {
+    const { runner, started, notes } = harness(
+      [task({ id: 'a', status: 'done' }), successor('b')],
+      [link('a', 'b')],
+    );
+    runner.landedByHand('a');
+    const before = { started: started.length, notes: notes.length };
+    expect(runner.landedByHand('a')).toMatch(/already landed/);
+    expect(started.length).toBe(before.started);
+    expect(notes.length).toBe(before.notes);
+  });
+
+  it('refuses a card that is not Done, and a missing one', () => {
+    const { runner, byId, started, notes } = harness(
+      [task({ id: 'a', status: 'in-review' }), successor('b')],
+      [link('a', 'b')],
+    );
+    expect(runner.landedByHand('a')).toMatch(/not Done/);
+    expect(runner.landedByHand('zz')).toMatch(/no longer exists/);
+    expect(byId.get('a')?.landedAt).toBeUndefined();
+    expect(started).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+});
