@@ -68,6 +68,7 @@ import {
   type ProjectPatch,
   type ProjectWithTasks,
   type Task,
+  type TaskActivityEntry,
   type TaskStatus,
   type TicketInput,
   type TicketLabel,
@@ -239,7 +240,7 @@ import {
   type MergeRequest,
 } from '@shared/mergeRequest';
 import { autoMergeLanded, mergedByAutoMergeNote } from '@shared/autoMerge';
-import { formatSignOff } from '@shared/visualSignOff';
+import { formatSignOff, type SignOffBy, type SignOffStatus } from '@shared/visualSignOff';
 import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
 import { openPrTaskIds } from '@shared/readyLanes';
 import { MAX_AI_REVIEW_MAX_ROUNDS } from '@shared/aiVisualReview';
@@ -270,6 +271,7 @@ import {
   tokenizedUrl,
   type CreatePrDeps,
 } from './forge/createPr';
+import { createAiVisualReviewer, isAiReviewDecision } from './forge/aiVisualReviewer';
 import { applyVisualSignOff, collectAutoMergePrerequisites } from './forge/autoMerge';
 import { autoMergeGitLabPrerequisites, autoMergePrerequisites } from '@shared/autoMerge';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
@@ -2771,6 +2773,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
     },
     now: () => Date.now(),
+    onAwaitSignOff: (projectId, ownerId) => {
+      void reviewer.onAwaitSignOff(projectId, ownerId);
+    },
   });
 
   handle('task:createPullRequest', async (taskId) => openPullRequest(createPrDeps(), taskId));
@@ -2784,18 +2789,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   const appMergeAttempts = new Map<string, string>();
 
   /**
-   * A human's verdict on the card panel's own "Visual sign-off" section
-   * (`VisualSignOff.tsx`'s `submitVisualSignOff`) — posts the same kind of comment
-   * `task:addComment` does, then hands off to `applyVisualSignOff` to arm or withdraw
-   * auto-merge, the same non-fatal way `requestAutoMerge` already does from a push.
+   * Post a visual sign-off on a card's timeline — the same kind of comment `task:addComment`
+   * does — then hand off to `applyVisualSignOff` to arm or withdraw auto-merge, the same
+   * non-fatal way `requestAutoMerge` already does from a push. Shared by the human's own
+   * button and the AI reviewer's approval, so both reach the forge through one path.
    */
-  handle('task:visualSignOff', async (taskId, status, screens) => {
+  const postVisualSignOff = async (
+    taskId: string,
+    status: SignOffStatus,
+    screens: readonly string[],
+    by: SignOffBy,
+  ): Promise<TaskActivityEntry> => {
     const task = store.getTask(taskId);
     if (!task) throw new Error('Task not found.');
     const body =
       status === 'approved'
-        ? formatSignOff('approved')
-        : formatSignOff('needs-changes', screens ?? []);
+        ? formatSignOff('approved', [], by)
+        : formatSignOff('needs-changes', screens);
     const entry = store.addComment(task.projectId, taskId, body);
     if (!entry) throw new Error('A comment needs some text.');
     send('project:tasksChanged', {
@@ -2804,6 +2814,71 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     });
     await applyVisualSignOff({ ...createPrDeps(), appMergeAttempts }, taskId, status);
     return entry;
+  };
+
+  /**
+   * "Visual sign-off by AI reviewer" (`forge/aiVisualReviewer.ts`): reached from
+   * `requestAutoMerge` through `createPrDeps().onAwaitSignOff`. Its session is an auxiliary
+   * one — fresh, read-only, booked as orchestrator spend and killed by the project's Stop.
+   */
+  const reviewer = createAiVisualReviewer({
+    getTask: (id) => store.getTask(id),
+    getProject: (id) => store.getProject(id),
+    listSubtasks: (ownerId) => store.getSubtasks(ownerId),
+    listAttachments: (taskId) => store.attachmentsForTask(taskId),
+    listActivity: (taskId) => store.getTaskActivity(taskId),
+    attachmentPath: (project, attachment) =>
+      hostFor(project.target).toNative(
+        attachmentFile(userData, attachment.taskId, attachment.name),
+      ),
+    cwdFor: async (project, owner) => {
+      const live = await worktrees
+        .inspect(project, owner.id, owner.agentBranch ?? undefined)
+        .catch(() => null);
+      return live?.cwd ?? project.path;
+    },
+    note: (projectId, taskId, body) => {
+      store.addComment(projectId, taskId, body);
+      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    },
+    now: () => Date.now(),
+    startSession: (projectId, request, onResult, onExit) =>
+      scheduler.startAuxiliarySession(projectId, request, {
+        onResult: (event) => onResult(event.resultText),
+        onExit,
+      }),
+    stopRun: (runId) => scheduler.stopAuxiliarySession(runId),
+    signOffApproved: async (ownerId) => {
+      await postVisualSignOff(ownerId, 'approved', [], 'ai');
+    },
+    addFixStep: (ownerId, title, description) => {
+      const owner = store.getTask(ownerId);
+      if (!store.addSubtask(ownerId, { title, description }) || !owner) return;
+      send('project:tasksChanged', {
+        projectId: owner.projectId,
+        tasks: store.getTasks(owner.projectId),
+      });
+    },
+    runCard: (ownerId) => {
+      scheduler.startTaskNow(ownerId);
+    },
+    raiseInbox: (ownerId, question) => {
+      scheduler.setDecision(ownerId, question);
+    },
+  });
+
+  /**
+   * A human's verdict on the card panel's own "Visual sign-off" section
+   * (`VisualSignOff.tsx`'s `submitVisualSignOff`). A human's call always wins over the AI
+   * reviewer's: any review in flight is stopped (its late result is dropped), and an Inbox
+   * question the reviewer raised is withdrawn, since this IS its answer.
+   */
+  handle('task:visualSignOff', async (taskId, status, screens) => {
+    const task = store.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    reviewer.cancel(taskId);
+    if (isAiReviewDecision(task.decisionQuestion)) scheduler.setDecision(taskId, null);
+    return postVisualSignOff(taskId, status, screens ?? [], 'human');
   });
 
   // The scheduler opens the same PR, through the same function, when a card finishes with

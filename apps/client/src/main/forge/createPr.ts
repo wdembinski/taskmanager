@@ -170,6 +170,9 @@ export interface CreatePrDeps {
   /** File a note on the card's timeline. */
   note(projectId: string, taskId: string, body: string): void;
   now(): number;
+  /** `AutoMergeDeps.onAwaitSignOff` — the AI visual reviewer, handed straight through to
+   *  `requestAutoMerge`. */
+  onAwaitSignOff?(projectId: string, ownerId: string): void;
 }
 
 /**

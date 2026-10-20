@@ -292,6 +292,9 @@ export function buildClaudeArgs(
   // Appended to the CLI's own system prompt, so it applies to every turn of the session —
   // including a `--resume`, which a line baked into one prompt would not reach.
   if (contractPath) args.push('--append-system-prompt-file', contractPath);
+  if (req.disallowedTools && req.disallowedTools.length > 0) {
+    args.push('--disallowedTools', req.disallowedTools.join(','));
+  }
   if (gate) {
     args.push('--mcp-config', gate.configPath, '--permission-prompt-tool', PERMISSION_PROMPT_TOOL);
   }

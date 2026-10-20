@@ -59,6 +59,12 @@ export interface StartSessionRequest {
    * leaves every subagent inheriting this session's own model — see `claudeSession.ts`.
    */
   subagentModel?: string | null;
+  /**
+   * Tools the CLI must never offer this session, sent as `--disallowedTools a,b,c` — how a
+   * read-only run (the AI visual reviewer) is kept from editing anything even if it tries.
+   * Absent or empty adds no flag.
+   */
+  disallowedTools?: readonly string[];
 }
 
 /**
