@@ -161,7 +161,7 @@ describe('formatSignOff / parseSignOff', () => {
   it('round-trips an approval with no screens', () => {
     const body = formatSignOff('approved');
     expect(body).toBe('Visual sign-off: approved');
-    expect(parseSignOff(body)).toEqual({ status: 'approved', screens: [] });
+    expect(parseSignOff(body)).toEqual({ status: 'approved', screens: [], by: 'human' });
   });
 
   it('round-trips a needs-changes naming its screens', () => {
@@ -170,7 +170,19 @@ describe('formatSignOff / parseSignOff', () => {
     expect(parseSignOff(body)).toEqual({
       status: 'needs-changes',
       screens: ['board-light', 'settings'],
+      by: 'human',
     });
+  });
+
+  it('round-trips the AI reviewer’s approval, and keeps the human form byte-identical', () => {
+    const ai = formatSignOff('approved', [], 'ai');
+    expect(ai).toBe('Visual sign-off: approved (AI reviewer)');
+    expect(parseSignOff(ai)).toEqual({ status: 'approved', screens: [], by: 'ai' });
+    expect(formatSignOff('approved', [], 'human')).toBe('Visual sign-off: approved');
+  });
+
+  it('rejects an approval with any other suffix', () => {
+    expect(parseSignOff('Visual sign-off: approved (by someone)')).toBeNull();
   });
 
   it('never matches the agent’s own "Visual sign-off from" comment', () => {
@@ -234,5 +246,27 @@ describe('latestVisualState', () => {
       [],
     );
     expect(state.human).toBe('approved');
+  });
+
+  it('says who signed off — nobody while pending, then the human or the AI reviewer', () => {
+    expect(latestVisualState([], []).signedOffBy).toBeNull();
+    expect(latestVisualState([comment(1, formatSignOff('approved'), 0)], []).signedOffBy).toBe(
+      'human',
+    );
+    const ai = latestVisualState([comment(1, formatSignOff('approved', [], 'ai'), 0)], []);
+    expect(ai.human).toBe('approved');
+    expect(ai.signedOffBy).toBe('ai');
+  });
+
+  it('lets a human needs-changes after an AI approval win', () => {
+    const state = latestVisualState(
+      [
+        comment(1, formatSignOff('approved', [], 'ai'), 0),
+        comment(2, formatSignOff('needs-changes', ['board-light']), 1000),
+      ],
+      [],
+    );
+    expect(state.human).toBe('needs-changes');
+    expect(state.signedOffBy).toBe('human');
   });
 });

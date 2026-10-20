@@ -166,34 +166,57 @@ export function shotPairs(attachments: readonly TaskAttachment[]): ShotPairs {
 /** The prefix that tells a human's own sign-off comment apart from the agent's — see
  *  {@link formatVisualSignOffComment}'s `Visual sign-off from "..."`, which this must never
  *  be mistaken for: that one never puts a colon directly after `sign-off`. */
-const HUMAN_SIGNOFF_PREFIX = 'Visual sign-off:';
+export const HUMAN_SIGNOFF_PREFIX = 'Visual sign-off:';
+/** What an AI reviewer's approval adds after `approved` — the only sign-off it ever posts;
+ *  its needs-changes is a note of its own (`aiVisualReview.ts`), never a sign-off. */
+const AI_REVIEWER_SUFFIX = '(AI reviewer)';
 
 export type SignOffStatus = 'approved' | 'needs-changes';
+/** Who posted a sign-off: the human's own button, or the project's AI reviewer. */
+export type SignOffBy = 'human' | 'ai';
 
 /**
  * The comment a human's own Approve/Needs-changes button posts via `task:addComment` —
  * `Visual sign-off: approved`, or `Visual sign-off: needs changes — <screens>` naming which
- * rows they flagged. `screens` is ignored (and may be omitted) for `'approved'`.
+ * rows they flagged. `screens` is ignored (and may be omitted) for `'approved'`. An approval
+ * `by: 'ai'` is `Visual sign-off: approved (AI reviewer)` — still an approval, so it arms
+ * auto-merge through the same gate as the human's.
  */
-export function formatSignOff(status: 'approved'): string;
+export function formatSignOff(
+  status: 'approved',
+  screens?: readonly string[],
+  by?: SignOffBy,
+): string;
 export function formatSignOff(status: 'needs-changes', screens: readonly string[]): string;
-export function formatSignOff(status: SignOffStatus, screens: readonly string[] = []): string {
-  if (status === 'approved') return `${HUMAN_SIGNOFF_PREFIX} approved`;
+export function formatSignOff(
+  status: SignOffStatus,
+  screens: readonly string[] = [],
+  by: SignOffBy = 'human',
+): string {
+  if (status === 'approved') {
+    return by === 'ai'
+      ? `${HUMAN_SIGNOFF_PREFIX} approved ${AI_REVIEWER_SUFFIX}`
+      : `${HUMAN_SIGNOFF_PREFIX} approved`;
+  }
   return `${HUMAN_SIGNOFF_PREFIX} needs changes — ${screens.join(', ')}`;
 }
 
 /** The screens a `needs changes` sign-off named, read back out of {@link formatSignOff}'s own
- *  `, `-joined list. */
+ *  `, `-joined list, and who posted it. */
 export interface ParsedSignOff {
   status: SignOffStatus;
   screens: readonly string[];
+  by: SignOffBy;
 }
 
 /** The inverse of {@link formatSignOff}, or `null` for a comment that is not one. */
 export function parseSignOff(body: string): ParsedSignOff | null {
   if (!body.startsWith(HUMAN_SIGNOFF_PREFIX)) return null;
   const rest = body.slice(HUMAN_SIGNOFF_PREFIX.length).trim();
-  if (rest === 'approved') return { status: 'approved', screens: [] };
+  if (rest === 'approved') return { status: 'approved', screens: [], by: 'human' };
+  if (rest === `approved ${AI_REVIEWER_SUFFIX}`) {
+    return { status: 'approved', screens: [], by: 'ai' };
+  }
   const match = /^needs changes(?: — (.*))?$/.exec(rest);
   if (!match) return null;
   const screens = match[1]
@@ -202,7 +225,7 @@ export function parseSignOff(body: string): ParsedSignOff | null {
         .map((s) => s.trim())
         .filter(Boolean)
     : [];
-  return { status: 'needs-changes', screens };
+  return { status: 'needs-changes', screens, by: 'human' };
 }
 
 /** One screen's agent verdict, as the card panel reads it back off the latest sign-off
@@ -222,6 +245,8 @@ export interface VisualSignOffState {
   human: 'pending' | SignOffStatus;
   /** The screens named by the latest `needs changes` sign-off — empty otherwise. */
   needsChangesScreens: readonly string[];
+  /** Who posted the latest sign-off — `null` while `human` is still `pending`. */
+  signedOffBy: SignOffBy | null;
   rows: ReadonlyMap<string, VisualRowState>;
 }
 
@@ -285,6 +310,7 @@ export function latestVisualState(
   return {
     human: parsedHuman?.status ?? 'pending',
     needsChangesScreens: parsedHuman?.screens ?? [],
+    signedOffBy: parsedHuman?.by ?? null,
     rows,
   };
 }
