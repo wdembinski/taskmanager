@@ -221,12 +221,20 @@ and gates **nothing at all**. Conflating the two would mean marking a ticket "du
 another and having the scheduler refuse to start it — a human recording a fact about two issues
 would accidentally be blocking work.
 
+The one type that *means* a dependency, `blocks`, is therefore not stored as a ticket link
+any more: a dependency lives in the arrows alone, so "Blocked by" can never disagree with what
+is actually holding a card. `ticketLink:add` draws a `blocks` link as an `after-merge` arrow
+(refusing a loop or a step with the arrow's own words, `'cycle' | 'step'`), and the rows stored
+before that rule were converted once at startup — see `blocksLinkMigration.ts`, guarded by
+`migration.blocksToArrows`. The few that could not become an arrow (a loop, a step, a blocker
+Done outside the app that could never land) were kept as `relates`.
+
 `@shared/ticketLinks.ts` owns the vocabulary, six types, each with how it reads from either end
 and whether it's symmetric:
 
 | Type | Outward | Inward | Symmetric |
 | --- | --- | --- | --- |
-| `blocks` | blocks | is blocked by | no |
+| `blocks` | blocks | is blocked by | no — and stored as an order arrow, never a ticket link |
 | `duplicates` | duplicates | is duplicated by | no |
 | `relates` | relates to | relates to | yes |
 | `implements` | implements | is implemented by | no |
@@ -240,7 +248,8 @@ from one end and "is blocked by" from the other, and no two surfaces (the drawer
 a future backlog table) can word the inverse differently, because there is exactly one function
 that does the wording.
 
-`canLinkTickets` returns a refusal **as data** (`'missing' | 'self' | 'duplicate'`), the same
+`canLinkTickets` returns a refusal **as data** (`'missing' | 'self' | 'duplicate'`; the type also
+carries the arrow's `'cycle' | 'step'`, which only the handler's `blocks` path returns), the same
 shape `@shared/taskChain`'s `LinkResult` already uses for the chain of execution — "those two
 already relate that way" is something to tell a human, not an exception to catch. A
 **symmetric** type's mirror (`B relates A` when `A relates B` exists) is refused as a

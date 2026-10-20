@@ -241,7 +241,13 @@ import {
 } from '@shared/mergeRequest';
 import { autoMergeLanded, mergedByAutoMergeNote } from '@shared/autoMerge';
 import { formatSignOff, type SignOffBy, type SignOffStatus } from '@shared/visualSignOff';
-import { canLink, isLinkGate, type LinkResult, type TaskLink } from '@shared/taskChain';
+import {
+  canLink,
+  isLinkGate,
+  type LinkGate,
+  type LinkResult,
+  type TaskLink,
+} from '@shared/taskChain';
 import { openPrTaskIds } from '@shared/readyLanes';
 import { MAX_AI_REVIEW_MAX_ROUNDS } from '@shared/aiVisualReview';
 import type { TaskAttachment } from '@shared/attachments';
@@ -4210,6 +4216,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('ticketLink:list', async () => store.listTicketLinks());
 
   handle('ticketLink:add', async (fromTaskId, toTaskId, type): Promise<TicketLinkResult> => {
+    // A dependency lives in the order arrows alone — a `blocks` ticket link would show in
+    // the Links section and hold nothing, which is how a card once sat chained behind six
+    // others with "Blocked by" empty. So `blocks` is drawn as an `after-merge` arrow, with
+    // the arrow's own refusals (every `LinkRefusal` has a `TicketLinkRefusal` of the same
+    // name), and answers with the ticket links as they stand — it added none.
+    if (type === 'blocks') {
+      const drawn = drawChainLink(fromTaskId, toTaskId);
+      if (drawn.status === 'refused') return drawn;
+      return { status: 'ok', links: store.listTicketLinks() };
+    }
     const links = store.listTicketLinks();
     const refusal = canLinkTickets(links, store.getTask(fromTaskId), store.getTask(toTaskId), type);
     if (refusal) return { status: 'refused', reason: refusal };
@@ -4483,7 +4499,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
 
   handle('chain:links', async () => store.listTaskLinks());
 
-  handle('chain:link', async (fromTaskId, toTaskId, gate): Promise<LinkResult> => {
+  handle('chain:link', async (fromTaskId, toTaskId, gate): Promise<LinkResult> =>
+    drawChainLink(fromTaskId, toTaskId, gate),
+  );
+
+  /**
+   * Draw one order arrow — `chain:link`'s whole body, shared with `ticketLink:add`, which
+   * draws a `blocks` link as an arrow rather than as a ticket link that would hold nothing.
+   */
+  function drawChainLink(fromTaskId: string, toTaskId: string, gate?: LinkGate): LinkResult {
     // The renderer checks this too, while the drag is still in the air — but its copy of
     // the board can be a poll behind, and a cycle that slips through is a chain that can
     // never start. So the answer that counts is computed here, against the real rows.
@@ -4502,7 +4526,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // explains.
     scheduler.reconsiderChains('links-changed');
     return { status: 'ok', links: updated };
-  });
+  }
 
   handle('chain:unlink', async (linkId) => {
     store.deleteTaskLink(linkId);

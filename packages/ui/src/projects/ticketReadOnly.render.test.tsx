@@ -43,7 +43,7 @@ function renderLinks(readOnly: boolean): string {
     id: 'l1',
     fromTaskId: 'main',
     toTaskId: 'other',
-    type: 'blocks',
+    type: 'relates',
     createdAt: 0,
   };
   const tasksById = new Map([[other.id, other]]);

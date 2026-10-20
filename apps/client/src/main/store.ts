@@ -158,6 +158,7 @@ import type { ParsedTask } from './planParser';
 import { type ReviewCommentRow, reviewCommentToRow, rowToReviewComment } from './reviewCommentRows';
 import { splitProjectTag } from './projectTagMigration';
 import { blockOwnerFor, needsBlockOwner } from './blockOwnerMigration';
+import { planBlocksMigration } from './blocksLinkMigration';
 import type { ParkedRun } from './parkedRun';
 import type { SavedWindowState } from './windowState';
 import { reconcileTasks } from './taskReconcile';
@@ -3456,6 +3457,9 @@ export function createStore(dbPath: string): Store {
   /** Guard for the one-shot claim of blocks that predate `preBlockStatus` meaning ownership. */
   const BLOCK_OWNER_KEY = 'migration.blockOwner';
 
+  /** Guard for the one-shot conversion of `blocks` ticket links into order arrows, below. */
+  const BLOCKS_TO_ARROWS_KEY = 'migration.blocksToArrows';
+
   /** Guard for the one-shot copy of `review_comments` into `review_drafts` (F15.4), below. */
   const REVIEW_DRAFTS_COPY_KEY = 'migration.reviewDraftsCopy';
 
@@ -4235,6 +4239,39 @@ export function createStore(dbPath: string): Store {
         claimed++;
       }
       upsertState.run(BLOCK_OWNER_KEY, JSON.stringify({ tasks: claimed }));
+    })();
+  }
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // One-shot: the old `blocks` ticket links become order arrows.
+  //
+  // The arrows are now the one place a dependency lives — the Links section's "Blocked by"
+  // reads them, and `ticketLink:add` turns a new `blocks` into one. A `blocks` row written
+  // before that held nothing and now shows nothing, so each is made an `after-merge` arrow,
+  // or — where an arrow would loop, chain a step, or wait forever on a blocker finished
+  // outside the app — kept as a plain `relates`. `blocksLinkMigration.ts` decides; this
+  // applies, in one transaction, and stores the counts per outcome as the guard's value.
+  //
+  // Guarded because an arrow is something a human can erase: a second pass would redraw it
+  // from any `blocks` row that ever reappeared. Before the cloud-outbox backfill, which must
+  // see the arrows' final shape.
+  if (!selectState.get(BLOCKS_TO_ARROWS_KEY)) {
+    const tasks = (db.prepare(`SELECT * FROM tasks`).all() as TaskRow[]).map(rowToTask);
+    const plan = planBlocksMigration(
+      (selectTicketLinks.all() as TicketLinkRow[]).map(rowToTicketLink),
+      (selectTaskLinks.all() as TaskLinkRow[]).map(rowToTaskLink),
+      new Map(tasks.map((t) => [t.id, t])),
+    );
+    const toRelates = db.prepare(`UPDATE ticket_links SET type = 'relates' WHERE id = ?`);
+    db.transaction(() => {
+      const now = Date.now();
+      for (const arrow of plan.insertArrows) {
+        insertTaskLink.run({ id: randomUUID(), ...arrow, gate: 'after-merge', createdAt: now });
+      }
+      for (const id of plan.deleteTicketLinks) deleteTicketLinkStmt.run(id);
+      for (const id of plan.toRelates) toRelates.run(id);
+      upsertState.run(BLOCKS_TO_ARROWS_KEY, JSON.stringify(plan.counts));
     })();
   }
   // ---------------------------------------------------------------------------
