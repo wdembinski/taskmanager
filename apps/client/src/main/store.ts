@@ -63,6 +63,7 @@ import { buildAdhocTask, buildTicketTask } from '@shared/taskBuilders';
 import type { VariantRowDraft } from '@shared/variants';
 import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
 import { DEFAULT_READY_LANES } from '@shared/readyLanes';
+import { clampAiReviewMaxRounds } from '@shared/aiVisualReview';
 import { normalizePath } from '@shared/fileOverlap';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
@@ -337,6 +338,11 @@ interface ProjectRow {
   /** JSON array of required check names. See `Project.autoMergeRequiredChecks`; NULL reads
    *  back as `[]`, same as `jiraEpicKeys`. */
   autoMergeRequiredChecks: string | null;
+  /** Let an AI reviewer give the visual sign-off, as 0/1. See `Project.autoVisualSignOff`. */
+  autoVisualSignOff: number;
+  /** Most automatic fix rounds that reviewer may add; clamped 0..10 on read. See
+   *  `Project.autoVisualSignOffMaxRounds`. */
+  autoVisualSignOffMaxRounds: number;
   /** The project's auto-merge preference as 0/1; NULL = follow the app-wide setting. */
   autoIntegrate: number | null;
   /** The project's auto-approve-plans preference as 0/1. See `Project.autoApprovePlans`. */
@@ -1695,6 +1701,9 @@ export function createStore(dbPath: string): Store {
       autoMergeMethod         TEXT NOT NULL DEFAULT 'squash',
       autoMergeBy             TEXT NOT NULL DEFAULT 'forge',
       autoMergeRequiredChecks TEXT,
+      -- Visual sign-off by an AI reviewer. See Project.autoVisualSignOff / MaxRounds.
+      autoVisualSignOff          INTEGER NOT NULL DEFAULT 0,
+      autoVisualSignOffMaxRounds INTEGER NOT NULL DEFAULT 2,
       autoIntegrate         INTEGER,
       autoApprovePlans      INTEGER NOT NULL DEFAULT 0,
       autoApproveMaxSteps   INTEGER NOT NULL DEFAULT 6,
@@ -2432,6 +2441,18 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN autoDoneOnLand INTEGER NOT NULL DEFAULT 0`);
   }
 
+  // Migrate databases created before an AI reviewer could give a UI card's visual sign-off.
+  // 0 = off for every existing project: the owner's Approve stays the only sign-off until
+  // they opt in; 2 = the documented default round cap.
+  if (!projectColumns.some((c) => c.name === 'autoVisualSignOff')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN autoVisualSignOff INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!projectColumns.some((c) => c.name === 'autoVisualSignOffMaxRounds')) {
+    db.exec(
+      `ALTER TABLE projects ADD COLUMN autoVisualSignOffMaxRounds INTEGER NOT NULL DEFAULT 2`,
+    );
+  }
+
   // Migrate databases created before a project could plan on a different model than it runs
   // on. Deliberately no `NOT NULL DEFAULT`: NULL is the value that means "same as execution",
   // so every existing project plans exactly as it did until a human names a model.
@@ -3164,8 +3185,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoVisualSignOff, autoVisualSignOffMaxRounds, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoVisualSignOff, @autoVisualSignOffMaxRounds, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -4381,6 +4402,8 @@ export function createStore(dbPath: string): Store {
       // Same cast-and-validate: anything unrecognized keeps asking the forge, as before.
       autoMergeBy: isAutoMergeBy(r.autoMergeBy) ? r.autoMergeBy : 'forge',
       autoMergeRequiredChecks: parseStringArray(r.autoMergeRequiredChecks),
+      autoVisualSignOff: r.autoVisualSignOff !== 0,
+      autoVisualSignOffMaxRounds: clampAiReviewMaxRounds(r.autoVisualSignOffMaxRounds),
       // NULL stays null: a real third state ("this project has not ruled"), which follows
       // the app-wide setting. Collapsing it to false here would pin every project to
       // "never merge" the first time it was read.
@@ -4445,6 +4468,9 @@ export function createStore(dbPath: string): Store {
       // A project pulled from a build that predates the field arrives without it.
       autoMergeBy: project.autoMergeBy ?? 'forge',
       autoMergeRequiredChecks: JSON.stringify(project.autoMergeRequiredChecks ?? []),
+      // A project pulled from a build that predates these fields arrives without them.
+      autoVisualSignOff: project.autoVisualSignOff ? 1 : 0,
+      autoVisualSignOffMaxRounds: clampAiReviewMaxRounds(project.autoVisualSignOffMaxRounds),
       autoIntegrate:
         project.autoIntegrate === null || project.autoIntegrate === undefined
           ? null
@@ -5601,6 +5627,7 @@ export function createStore(dbPath: string): Store {
         autoCreatePr: project.autoCreatePr ? 1 : 0,
         autoMergeOnGreen: project.autoMergeOnGreen ? 1 : 0,
         autoMergeRequiredChecks: JSON.stringify(project.autoMergeRequiredChecks),
+        autoVisualSignOff: project.autoVisualSignOff ? 1 : 0,
         autoIntegrate: project.autoIntegrate === null ? null : project.autoIntegrate ? 1 : 0,
         autoApprovePlans: project.autoApprovePlans ? 1 : 0,
         autoDoneOnLand: project.autoDoneOnLand ? 1 : 0,
@@ -5728,6 +5755,17 @@ export function createStore(dbPath: string): Store {
       if (patch.autoMergeRequiredChecks !== undefined) {
         sets.push(`autoMergeRequiredChecks = @autoMergeRequiredChecks`);
         params.autoMergeRequiredChecks = JSON.stringify(patch.autoMergeRequiredChecks);
+      }
+      if (patch.autoVisualSignOff !== undefined) {
+        sets.push(`autoVisualSignOff = @autoVisualSignOff`);
+        params.autoVisualSignOff = patch.autoVisualSignOff ? 1 : 0;
+      }
+      if (patch.autoVisualSignOffMaxRounds !== undefined) {
+        sets.push(`autoVisualSignOffMaxRounds = @autoVisualSignOffMaxRounds`);
+        // 0 is a real value (review once, never fix), so only a non-number falls back.
+        params.autoVisualSignOffMaxRounds = clampAiReviewMaxRounds(
+          patch.autoVisualSignOffMaxRounds,
+        );
       }
       if (patch.autoRelease !== undefined) {
         sets.push(`autoRelease = @autoRelease`);

@@ -42,6 +42,8 @@ function ticketProject(id: string): Project {
     autoApproveMaxSteps: 6,
     readyLanes: 3,
     autoDoneOnLand: false,
+    autoVisualSignOff: false,
+    autoVisualSignOffMaxRounds: 2,
     planAligned: true,
     jiraEpicKeys: [],
     ticketPrefix: 'TM',

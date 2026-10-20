@@ -75,6 +75,12 @@ export function autoMergeAwaitSignOffNote(ref: string): string {
   );
 }
 
+/** The note left instead of {@link autoMergeAwaitSignOffNote} when the project's AI reviewer
+ *  is about to judge the shots — same prefix, since it is the same hold. */
+export function autoMergeAwaitAiReviewNote(ref: string): string {
+  return `${AUTO_MERGE_AWAIT_SIGN_OFF_PREFIX} on ${ref} — the AI reviewer is checking the shots.`;
+}
+
 /** The note left when a UI card's sign-off flags needs-changes. */
 export function autoMergeNeedsChangesNote(ref: string): string {
   return `${AUTO_MERGE_NEEDS_CHANGES_PREFIX} on ${ref}: visual sign-off flagged needs changes.`;

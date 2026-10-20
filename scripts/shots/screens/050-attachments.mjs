@@ -5,6 +5,7 @@
  */
 import {
   INBOX_QUESTION_ITEM,
+  VISUAL_SIGNOFF_AI_APPROVED_ACTIVITY,
   VISUAL_SIGNOFF_ATTACHMENTS,
   VISUAL_SIGNOFF_STEP_ATTACHMENT,
   VISUAL_SIGNOFF_STEP_TASK,
@@ -30,6 +31,24 @@ export default [
     expect: '[data-visual-signoff]',
     mockup: null,
   },
+  // The same section once the project's AI reviewer approved the shots: `task:activity` for
+  // 13a ends in `Visual sign-off: approved (AI reviewer)`, so the badge names the reviewer.
+  // No mockup draws this section.
+  ...['light', 'dark'].map((scheme) => ({
+    name: `visual-signoff-ai-approved-${scheme}`,
+    app: 'client',
+    viewport: { width: 1280, height: 900 },
+    scheme,
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    expect: '[data-visual-signoff] [data-signoff-by="ai"]',
+    mockup: null,
+    channelOverrides: {
+      'task:activity': {
+        byArgTable: { '13a': VISUAL_SIGNOFF_AI_APPROVED_ACTIVITY },
+        fallback: [],
+      },
+    },
+  })),
   {
     // Proves the Inbox (`Attention.tsx`'s `InboxItem`) shows an agent question's own files
     // inline, not just the card panel's own sections. `attachment:list` is already globally

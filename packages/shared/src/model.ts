@@ -372,6 +372,20 @@ export interface Project {
    */
   autoMergeRequiredChecks: string[];
   /**
+   * Let a fresh, read-only AI review session give a UI card's visual sign-off instead of
+   * waiting for the owner's Approve (see `@shared/aiVisualReview`). Only meaningful with
+   * {@link Project.autoMergeOnGreen} on — the sign-off it gives is what arms auto-merge. A
+   * human's own verdict always wins. Off by default and for every project that predates the
+   * field.
+   */
+  autoVisualSignOff: boolean;
+  /**
+   * How many automatic FIX steps {@link Project.autoVisualSignOff} may add before it stops
+   * and raises the card in the Inbox. 0 = review once, never fix. Defaults to 2; clamped to
+   * 0..10 on read, in `project:update` and in the form.
+   */
+  autoVisualSignOffMaxRounds: number;
+  /**
    * The project's PREFERENCE for auto-merge: when a card's run finishes, merge its branch
    * back into base without waiting to be asked (see `@shared/integrate`).
    *
@@ -525,6 +539,10 @@ export interface AddProjectInput {
   readyLanes?: number;
   /** Move the card to Done when its PR/MR is reported merged. Defaults to off. */
   autoDoneOnLand?: boolean;
+  /** Let an AI reviewer give the visual sign-off. Defaults to off. */
+  autoVisualSignOff?: boolean;
+  /** Most automatic fix rounds the AI reviewer may add; clamped 0..10. Defaults to 2. */
+  autoVisualSignOffMaxRounds?: number;
   planAligned?: boolean;
   jiraEpicKeys?: string[];
   /**
@@ -574,6 +592,8 @@ export type ProjectPatch = Partial<
     | 'autoMergeMethod'
     | 'autoMergeBy'
     | 'autoMergeRequiredChecks'
+    | 'autoVisualSignOff'
+    | 'autoVisualSignOffMaxRounds'
     | 'autoIntegrate'
     | 'autoApprovePlans'
     | 'autoApproveMaxSteps'

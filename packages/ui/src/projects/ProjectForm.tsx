@@ -59,6 +59,11 @@ import { RELEASE_DOC } from '@tm/shared/release';
 import { suggestTicketPrefix } from '@tm/shared/ticketKey';
 import { DEFAULT_READY_LANES } from '@tm/shared/readyLanes';
 import {
+  clampAiReviewMaxRounds,
+  DEFAULT_AI_REVIEW_MAX_ROUNDS,
+  MAX_AI_REVIEW_MAX_ROUNDS,
+} from '@tm/shared/aiVisualReview';
+import {
   execTargetLabel,
   formatExecTarget,
   LOCAL_TARGET,
@@ -173,6 +178,10 @@ export function ProjectForm({
   const [autoMergeRequiredChecks, setAutoMergeRequiredChecks] = useState('');
   const [autoMergeBy, setAutoMergeBy] = useState<AutoMergeBy>('forge');
   const [autoDoneOnLand, setAutoDoneOnLand] = useState(false);
+  const [autoVisualSignOff, setAutoVisualSignOff] = useState(false);
+  const [autoVisualSignOffMaxRounds, setAutoVisualSignOffMaxRounds] = useState(
+    DEFAULT_AI_REVIEW_MAX_ROUNDS,
+  );
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
   const [autoApprovePlans, setAutoApprovePlans] = useState(false);
@@ -241,6 +250,10 @@ export function ProjectForm({
       setAutoMergeRequiredChecks(project.autoMergeRequiredChecks.join(', '));
       setAutoMergeBy(project.autoMergeBy);
       setAutoDoneOnLand(project.autoDoneOnLand);
+      setAutoVisualSignOff(project.autoVisualSignOff ?? false);
+      setAutoVisualSignOffMaxRounds(
+        project.autoVisualSignOffMaxRounds ?? DEFAULT_AI_REVIEW_MAX_ROUNDS,
+      );
       setAutoIntegrate(project.autoIntegrate);
       setAutoApprovePlans(project.autoApprovePlans);
       setAutoApproveMaxSteps(project.autoApproveMaxSteps);
@@ -267,6 +280,8 @@ export function ProjectForm({
       setAutoMergeMethod('squash');
       setAutoMergeRequiredChecks('');
       setAutoDoneOnLand(false); // moving a card for the human is opt-in, always
+      setAutoVisualSignOff(false); // so is a reviewer signing off for them
+      setAutoVisualSignOffMaxRounds(DEFAULT_AI_REVIEW_MAX_ROUNDS);
       setAutoIntegrate(null); // and merging follows the app until this project says otherwise
       setAutoApprovePlans(false); // auto-approving a plan is opt-in, always
       setAutoApproveMaxSteps(6);
@@ -359,6 +374,8 @@ export function ProjectForm({
           autoMergeMethod,
           autoMergeRequiredChecks: parseCommaList(autoMergeRequiredChecks),
           autoMergeBy,
+          autoVisualSignOff,
+          autoVisualSignOffMaxRounds,
           autoDoneOnLand,
           autoIntegrate,
           autoApprovePlans,
@@ -392,6 +409,8 @@ export function ProjectForm({
           autoRelease,
           autoCreatePr,
           autoDoneOnLand,
+          autoVisualSignOff,
+          autoVisualSignOffMaxRounds,
           autoIntegrate,
           autoApprovePlans,
           autoApproveMaxSteps,
@@ -719,6 +738,41 @@ export function ProjectForm({
                 value={autoMergeRequiredChecks}
                 onChange={(_e, d) => setAutoMergeRequiredChecks(d.value)}
                 placeholder="changes, gates, docker, package"
+              />
+            </Field>
+          )}
+
+          {/* Who gives a UI card's visual sign-off. Only meaningful with merge on green: the
+              sign-off is what arms it. A human's own verdict always wins. */}
+          {repo && path && useWorktrees && autoMergeOnGreen && (
+            <Field
+              data-auto-visual-sign-off
+              hint="When a card with UI changes waits for visual sign-off, a fresh read-only review session judges its shots. If they pass, it signs off and the PR merges. If not, it adds a fix step. Your own Approve or Needs changes always wins."
+            >
+              <Switch
+                checked={autoVisualSignOff}
+                label="Visual sign-off by AI reviewer"
+                onChange={(_e, d) => setAutoVisualSignOff(d.checked)}
+              />
+            </Field>
+          )}
+
+          {repo && path && useWorktrees && autoMergeOnGreen && autoVisualSignOff && (
+            <Field
+              label="Max automatic fix rounds"
+              data-auto-visual-sign-off-max-rounds
+              hint="How many fix steps the reviewer may add before it stops and asks you in the Inbox. 0 = review once, never fix."
+            >
+              <SpinButton
+                min={0}
+                max={MAX_AI_REVIEW_MAX_ROUNDS}
+                value={autoVisualSignOffMaxRounds}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n)) {
+                    setAutoVisualSignOffMaxRounds(clampAiReviewMaxRounds(n as number));
+                  }
+                }}
               />
             </Field>
           )}

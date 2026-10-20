@@ -9,10 +9,12 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { PERSONAL_PROJECT_ID, type Task } from '@tm/shared/model';
+import { PERSONAL_PROJECT_ID, type Task, type TaskActivityEntry } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
+import { formatSignOff } from '@tm/shared/visualSignOff';
 import { TransportProvider, type Transport } from './transport';
 import { TaskDetail } from './TaskDetail';
+import { VisualSignOff } from './VisualSignOff';
 
 const desktopTransport: Transport = {
   invoke: () => new Promise(() => {}) as never,
@@ -131,5 +133,49 @@ describe('VisualSignOff, rendered inside TaskDetail', () => {
     expect(desktopWithIndex).toContain('Open all');
     expect(desktopWithout).not.toContain('Open all');
     expect(webWithIndex).not.toContain('Open all');
+  });
+});
+
+describe('VisualSignOff, signed off by the AI reviewer', () => {
+  const comment = (id: number, body: string): TaskActivityEntry => ({
+    kind: 'comment',
+    id,
+    body,
+    createdAt: id,
+  });
+  const needsChangesNote = 'AI visual review: needs changes (round 1 of 2)\n\n- board-light: x';
+  const signOff = (activity: TaskActivityEntry[]): string =>
+    render(
+      <VisualSignOff
+        attachments={shotPairAttachments}
+        activity={activity}
+        onNeedsChanges={() => {}}
+      />,
+    );
+
+  it('names the AI reviewer on the approved badge, with its round line under it', () => {
+    const html = signOff([
+      comment(1, needsChangesNote),
+      comment(2, formatSignOff('approved', [], 'ai')),
+    ]);
+
+    expect(html).toContain('data-signoff-by="ai"');
+    expect(html).toContain('Approved (AI reviewer)');
+    expect(html).toContain('AI review: round 1 of 2');
+  });
+
+  it("keeps a human's approval plain, and drops the AI round line under it", () => {
+    const html = signOff([comment(1, needsChangesNote), comment(2, formatSignOff('approved'))]);
+
+    expect(html).toContain('data-signoff-by="human"');
+    expect(html).not.toContain('AI reviewer');
+    expect(html).not.toContain('data-ai-review-round');
+  });
+
+  it('shows the round line under a still-pending badge', () => {
+    const html = signOff([comment(1, needsChangesNote)]);
+
+    expect(html).toContain('Pending');
+    expect(html).toContain('AI review: round 1 of 2');
   });
 });

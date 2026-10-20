@@ -14,6 +14,8 @@ import type { TaskAttachment } from '@shared/attachments';
 import type { MergeRequest } from '@shared/mergeRequest';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
+import { AI_REVIEW_GAVE_UP_PREFIX } from '@shared/aiVisualReview';
+import { autoMergeAwaitAiReviewNote, autoMergeAwaitSignOffNote } from '@shared/autoMerge';
 import { formatSignOff } from '@shared/visualSignOff';
 import {
   applyVisualSignOff,
@@ -298,6 +300,95 @@ describe('applyVisualSignOff — VisualSignOff Approve enables auto-merge', () =
   });
 });
 
+describe('requestAutoMerge — the AI reviewer hook', () => {
+  const uiShots = [
+    attachment({ id: 'att-1', name: 'board-light.png' }),
+    attachment({ id: 'att-2', name: 'board-light-mockup.png' }),
+  ];
+  const target: Parameters<typeof requestAutoMerge>[1]['mr'] = {
+    provider: 'github',
+    projectPath: 'acme/checkout',
+    number: PR_NUMBER,
+  };
+  const ref = `#${PR_NUMBER}`;
+
+  async function run(opts: {
+    autoVisualSignOff: boolean;
+    activity?: string[];
+    withHook?: boolean;
+  }): Promise<{ notes: string[]; hooked: Array<[string, string]> }> {
+    const notes: string[] = [];
+    const hooked: Array<[string, string]> = [];
+    const deps: AutoMergeDeps = {
+      listAttachments: () => uiShots,
+      listActivity: () =>
+        (opts.activity ?? []).map((body, i) => ({
+          kind: 'comment' as const,
+          id: i + 1,
+          body,
+          createdAt: i + 1,
+        })),
+      note: (_projectId, _taskId, body) => {
+        notes.push(body);
+      },
+      ...(opts.withHook === false
+        ? {}
+        : {
+            onAwaitSignOff: (projectId: string, ownerId: string) => {
+              hooked.push([projectId, ownerId]);
+            },
+          }),
+    };
+    await requestAutoMerge(deps, {
+      project: {
+        id: 'agent-1',
+        autoMergeOnGreen: true,
+        autoMergeMethod: 'squash',
+        autoMergeBy: 'forge',
+        autoVisualSignOff: opts.autoVisualSignOff,
+        autoVisualSignOffMaxRounds: 2,
+      },
+      owner,
+      mr: target,
+      token: TOKEN,
+      settings: {} as AppSettings,
+    });
+    return { notes, hooked };
+  }
+
+  it('hands an awaited sign-off to the AI reviewer and says it is checking', async () => {
+    const calls = stubFetch(null);
+    const { notes, hooked } = await run({ autoVisualSignOff: true });
+    expect(hooked).toEqual([['agent-1', owner.id]]);
+    expect(notes).toEqual([autoMergeAwaitAiReviewNote(ref)]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('leaves the hold to the human, and never calls the hook, with the setting off', async () => {
+    stubFetch(null);
+    const { notes, hooked } = await run({ autoVisualSignOff: false });
+    expect(hooked).toEqual([]);
+    expect(notes).toEqual([autoMergeAwaitSignOffNote(ref)]);
+  });
+
+  it('names the human again once the reviewer has given up', async () => {
+    stubFetch(null);
+    const { notes, hooked } = await run({
+      autoVisualSignOff: true,
+      activity: [`${AI_REVIEW_GAVE_UP_PREFIX} 3 rounds — a human has to look.`],
+    });
+    expect(notes).toEqual([autoMergeAwaitSignOffNote(ref)]);
+    // The reviewer is still told — it is the one that decides not to re-raise the Inbox.
+    expect(hooked).toHaveLength(1);
+  });
+
+  it('names the human when no reviewer is wired', async () => {
+    stubFetch(null);
+    const { notes } = await run({ autoVisualSignOff: true, withHook: false });
+    expect(notes).toEqual([autoMergeAwaitSignOffNote(ref)]);
+  });
+});
+
 function prereqProject(
   over: Partial<AutoMergePrerequisiteProject> & { name: string },
 ): AutoMergePrerequisiteProject {
@@ -475,6 +566,8 @@ describe('requestAutoMerge — falling back to the app', () => {
         autoMergeOnGreen: true,
         autoMergeMethod: 'squash',
         autoMergeBy: 'forge',
+        autoVisualSignOff: false,
+        autoVisualSignOffMaxRounds: 2,
         ...project,
       },
       owner: { id: 'owner-1' },

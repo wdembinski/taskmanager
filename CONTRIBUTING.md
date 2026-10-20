@@ -329,3 +329,36 @@ pick any free numeric prefix (two UI cards picking the same one break the tie by
 the file name). If the screen needs its own fixture data or boot channels, add a file under
 `scripts/fixtures/shots/` the same way. `scripts/lib/shotModules.mjs` merges every file in
 each directory at import time.
+
+### Verification — the AI reviewer's rubric
+
+A project can hand that sign-off to an AI reviewer instead: **Visual sign-off by AI
+reviewer**, in the project's settings, next to auto-merge. While a UI card's PR waits for
+sign-off, a fresh, read-only session judges the shots by this rubric — the same four lines,
+word for word, as `AI_REVIEW_RUBRIC` in `packages/shared/src/aiVisualReview.ts`
+(`aiVisualReview.test.ts` fails if the two drift):
+
+- judge ONLY what this ticket adds or changes; the mockup is the intent for that part, not a pixel spec;
+- every element the ticket asks for is visible, readable and in the right place, in light and dark;
+- nothing clipped, overlapping, empty where it should have content, or showing a raw error/placeholder;
+- shell or styling differences outside the ticket's scope (old layout vs a newer mockup) are NOT a mismatch — note them, don't fail on them.
+
+The reviewer ends its answer with one fenced json block, one entry per screen:
+
+```json
+{
+  "verdict": "approve",
+  "screens": [{ "screen": "<name>", "status": "ok", "reason": "" }],
+  "outOfScope": []
+}
+```
+
+`verdict` is `approve` or `needs-changes`; any screen whose `status` is `mismatch` counts as
+needs-changes, and its `reason` says what to fix. An approval posts
+`Visual sign-off: approved (AI reviewer)`, which arms auto-merge like the human's own
+button. A needs-changes adds a fix step to the card, whose push triggers the next review,
+up to the project's **Max automatic fix rounds**; after that the reviewer stops and raises
+the card in the Inbox.
+
+**A human's Approve or Needs changes always wins.** Pressing either stops a review in
+flight, drops its late result, and starts the count over.

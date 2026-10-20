@@ -1049,6 +1049,8 @@ describe('reconcileJiraTasks — assigning tickets to their own board', () => {
     autoApproveMaxSteps: 6,
     readyLanes: 3,
     autoDoneOnLand: false,
+    autoVisualSignOff: false,
+    autoVisualSignOffMaxRounds: 2,
     planAligned: true,
     jiraEpicKeys: [],
     ticketPrefix: '',

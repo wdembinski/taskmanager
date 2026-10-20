@@ -122,6 +122,28 @@ export const INBOX_QUESTION_ITEM = {
   createdAt: now - 120_000,
 };
 
+/**
+ * The owner card `13a`'s timeline once the project's AI reviewer approved its shots: one
+ * needs-changes round, then the AI's own sign-off — so `VisualSignOff`'s badge reads
+ * "Approved (AI reviewer)" with its "AI review: round 1 of 2" line under it. Only the
+ * `visual-signoff-ai-approved-*` rows serve this (as `task:activity`); every other row keeps
+ * 13a's timeline empty and its badge "Pending".
+ */
+export const VISUAL_SIGNOFF_AI_APPROVED_ACTIVITY = [
+  {
+    kind: 'comment',
+    id: 901,
+    body: 'AI visual review: needs changes (round 1 of 2)\n\n- board-light: the toolbar overlaps the first column',
+    createdAt: now - 20 * 60_000,
+  },
+  {
+    kind: 'comment',
+    id: 902,
+    body: 'Visual sign-off: approved (AI reviewer)',
+    createdAt: now - 5 * 60_000,
+  },
+];
+
 export const CHANNELS = {
   'attachment:list': VISUAL_SIGNOFF_ATTACHMENTS,
 };

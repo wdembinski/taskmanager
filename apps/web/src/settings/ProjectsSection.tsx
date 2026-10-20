@@ -78,6 +78,14 @@ function autoMergeOnGreenCaption(project: Project): string {
   return `on, ${project.autoMergeMethod}${checks}${by}`;
 }
 
+/** `Project.autoVisualSignOff`, in words — off, or on with its round cap. A project from a
+ *  desktop that predates the field arrives without it, and reads as off. */
+function autoVisualSignOffCaption(project: Project): string {
+  if (!project.autoVisualSignOff) return 'off';
+  const rounds = project.autoVisualSignOffMaxRounds;
+  return `on, up to ${rounds} automatic fix round${rounds === 1 ? '' : 's'}`;
+}
+
 export interface ProjectsSectionProps {
   /** Already resolved and ordered by the caller — see `selectAgentProjects`. */
   projects: Project[];
@@ -113,6 +121,7 @@ export function ProjectsSection({ projects }: ProjectsSectionProps): JSX.Element
             <Fact label="Runs on">{execTargetLabel(project.target)}</Fact>
             <Fact label="Merge after work">{autoMergeCaption(project)}</Fact>
             <Fact label="Merge on green">{autoMergeOnGreenCaption(project)}</Fact>
+            <Fact label="Visual sign-off by AI reviewer">{autoVisualSignOffCaption(project)}</Fact>
             <Fact label="Move to Done when its PR lands">
               {project.autoDoneOnLand ? 'on' : 'off'}
             </Fact>

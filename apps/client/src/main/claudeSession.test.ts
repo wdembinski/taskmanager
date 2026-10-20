@@ -317,6 +317,32 @@ describe('buildClaudeArgs', () => {
     expect(args[modeIndex + 1]).toBe('plan');
     expect(args).toContain('--permission-prompt-tool');
   });
+
+  it('passes disallowedTools as one comma-joined --disallowedTools flag', () => {
+    const args = buildClaudeArgs(
+      {
+        prompt: 'x',
+        cwd: 'C:\\work',
+        model: 'haiku',
+        permissionMode: 'plan',
+        disallowedTools: ['Edit', 'Write', 'Bash'],
+      },
+      'session-123',
+    );
+    const index = args.indexOf('--disallowedTools');
+    expect(index).toBeGreaterThan(-1);
+    expect(args[index + 1]).toBe('Edit,Write,Bash');
+  });
+
+  it('adds no --disallowedTools flag when the list is absent or empty', () => {
+    for (const disallowedTools of [undefined, []]) {
+      const args = buildClaudeArgs(
+        { prompt: 'x', cwd: 'C:\\work', model: 'haiku', permissionMode: 'plan', disallowedTools },
+        'session-123',
+      );
+      expect(args).not.toContain('--disallowedTools');
+    }
+  });
 });
 
 describe('encodeUserMessage', () => {

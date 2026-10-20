@@ -10,6 +10,7 @@
  */
 import type { AddProjectInput, Project } from './model';
 import { DEFAULT_READY_LANES } from './readyLanes';
+import { clampAiReviewMaxRounds } from './aiVisualReview';
 import { hostJoin } from './wslPath';
 import { normalizeTicketPrefix, suggestTicketPrefix, uniqueTicketPrefix } from './ticketKey';
 import type { AppSettings } from './settings';
@@ -126,6 +127,9 @@ export function buildProject(
     autoMergeMethod: 'squash',
     autoMergeBy: 'forge',
     autoMergeRequiredChecks: [],
+    // Off unless asked for: a reviewer only signs off for the human once they opt in.
+    autoVisualSignOff: input.autoVisualSignOff ?? false,
+    autoVisualSignOffMaxRounds: clampAiReviewMaxRounds(input.autoVisualSignOffMaxRounds),
     // `null` unless the caller ruled: a new project inherits the app-wide switch and
     // keeps inheriting it, rather than freezing today's value into the row.
     autoIntegrate: input.autoIntegrate ?? null,

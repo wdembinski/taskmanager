@@ -2592,8 +2592,19 @@ export class Scheduler {
    * the user hit Stop. It's a one-shot: because we attach an observer the
    * SessionManager won't auto-close it on `result` (that's reserved for unmanaged
    * runs), so we close it here and prune the registry when it ends.
+   *
+   * `opts.onResult` hands the caller the turn's `result` (the AI visual reviewer reads its
+   * verdict out of `resultText`); `opts.onExit` fires once the process is gone, whether it
+   * produced a result or was stopped first.
    */
-  startAuxiliarySession(projectId: string, request: StartSessionRequest): { runId: string } {
+  startAuxiliarySession(
+    projectId: string,
+    request: StartSessionRequest,
+    opts?: {
+      onResult?(event: Extract<SessionEvent, { kind: 'result' }>): void;
+      onExit?(): void;
+    },
+  ): { runId: string } {
     if (this.disposed) return { runId: '' };
     const { runId } = this.sessions.start(request, {
       onEvent: (event) => {
@@ -2606,6 +2617,8 @@ export class Scheduler {
         }
         if (event.kind === 'result') this.sessions.stop(runId);
         if (event.kind === 'result' || event.kind === 'exited') this.auxRuns.delete(runId);
+        if (event.kind === 'result') opts?.onResult?.(event);
+        if (event.kind === 'exited') opts?.onExit?.();
       },
       // An auxiliary run (e.g. "Align plan") edits files in the project directory,
       // so it has to run on the same machine those files live on.
@@ -2613,6 +2626,13 @@ export class Scheduler {
     });
     this.auxRuns.set(runId, projectId);
     return { runId };
+  }
+
+  /** Terminate one {@link startAuxiliarySession} run — a no-op once it has already ended. */
+  stopAuxiliarySession(runId: string): void {
+    if (!this.auxRuns.has(runId)) return;
+    this.auxRuns.delete(runId);
+    this.sessions.stop(runId);
   }
 
   /**

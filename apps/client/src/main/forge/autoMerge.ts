@@ -16,7 +16,9 @@ import {
   isAutoMergeUnavailable,
 } from '@shared/appMerge';
 import type { TaskAttachment } from '@shared/attachments';
+import { aiReviewNext, clampAiReviewMaxRounds } from '@shared/aiVisualReview';
 import {
+  autoMergeAwaitAiReviewNote,
   autoMergeAwaitSignOffNote,
   autoMergeDecision,
   autoMergeDisableFailedNote,
@@ -45,6 +47,13 @@ export interface AutoMergeDeps {
   listAttachments(taskId: string): TaskAttachment[];
   listActivity(taskId: string): TaskActivityEntry[];
   note(projectId: string, taskId: string, body: string): void;
+  /**
+   * A UI card's auto-merge is held for sign-off and the project's "Visual sign-off by AI
+   * reviewer" is on — the AI reviewer (`aiVisualReviewer.ts`) decides from here whether to
+   * review. Fire-and-forget: the reviewer handles its own failures. Absent in tests and in
+   * any caller that has no reviewer, which then waits for the human as before.
+   */
+  onAwaitSignOff?(projectId: string, ownerId: string): void;
 }
 
 /** The pull/merge request {@link requestAutoMerge}/{@link disableAutoMerge} act on — just
@@ -66,7 +75,15 @@ export interface AutoMergeTarget {
 export async function requestAutoMerge(
   deps: AutoMergeDeps,
   opts: {
-    project: Pick<Project, 'id' | 'autoMergeOnGreen' | 'autoMergeMethod' | 'autoMergeBy'>;
+    project: Pick<
+      Project,
+      | 'id'
+      | 'autoMergeOnGreen'
+      | 'autoMergeMethod'
+      | 'autoMergeBy'
+      | 'autoVisualSignOff'
+      | 'autoVisualSignOffMaxRounds'
+    >;
     owner: Pick<Task, 'id'>;
     mr: AutoMergeTarget;
     token: string;
@@ -89,7 +106,21 @@ export async function requestAutoMerge(
   if (decision === 'off') return;
 
   if (decision === 'await-sign-off') {
-    deps.note(opts.project.id, opts.owner.id, autoMergeAwaitSignOffNote(ref));
+    // The AI reviewer is only named when it is about to look — once it has given up (or with
+    // no reviewer wired at all) the hold is the human's again, and the note says so.
+    const aiReviews =
+      !!deps.onAwaitSignOff &&
+      aiReviewNext({
+        enabled: opts.project.autoVisualSignOff,
+        maxRounds: clampAiReviewMaxRounds(opts.project.autoVisualSignOffMaxRounds),
+        activity,
+      }) === 'review';
+    deps.note(
+      opts.project.id,
+      opts.owner.id,
+      aiReviews ? autoMergeAwaitAiReviewNote(ref) : autoMergeAwaitSignOffNote(ref),
+    );
+    if (opts.project.autoVisualSignOff) deps.onAwaitSignOff?.(opts.project.id, opts.owner.id);
     return;
   }
 
