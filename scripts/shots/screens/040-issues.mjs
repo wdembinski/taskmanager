@@ -18,8 +18,23 @@ const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
           'Which hosting plan do we pay for — the monthly one, or the yearly one at a discount?',
         decisionAskedAt: Date.now() - 2 * 86_400_000,
       }
-    : t,
+    : // Landed, so the "Blocked by" row below reads Done + "merged" (an `after-merge` arrow
+      // is satisfied by `landedAt`, not by the column).
+      t.id === '14a'
+      ? { ...t, landedAt: Date.now() - 86_400_000 }
+      : t,
 );
+
+/**
+ * Two order arrows INTO `'13a'` on top of the fixture's own `13a → 13b`, so the Links
+ * section's "Blocked by" group draws both statuses — `'14a'` (Done, merged) and `'2'` (To Do,
+ * not merged) — and its "Blocks" group draws `'13b'`. Row-local, like `DECISION_TASKS`.
+ */
+const PEEK_CHAIN_LINKS = [
+  ...BOOT_CHANNELS['chain:links'],
+  { id: 'link-peek-1', fromTaskId: '14a', toTaskId: '13a', gate: 'after-merge' },
+  { id: 'link-peek-2', fromTaskId: '2', toTaskId: '13a', gate: 'after-merge' },
+];
 export default [
   {
     // The desktop's own default tab is `'mytasks'` (the Board, `App.tsx`'s own
@@ -54,11 +69,22 @@ export default [
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
+    // The Links section sits below the visual sign-off band, past the pane's fold; the scroll
+    // targets the section's own box (the parent of its "Blocked by" group) rather than the
+    // group itself, so `block: 'start'` keeps the "Links" heading in frame. Known gap: at
+    // 1440x900 that band (`TaskDetail.tsx`'s `cell`, no height floor) gives way to ~20px
+    // once `headBand` reaches its cap, so only the heading shows — a layout defect left for
+    // its own ticket, not something this row can scroll past.
+    setup: [
+      { click: 'Tickets' },
+      { click: 'issue-row:first' },
+      { scrollToSelector: 'div:has(> [data-links-blocked-by])' },
+    ],
     expect: '[data-decision-banner]',
     mockup: 'v9-2-issue-detail-light.svg',
     channelOverrides: {
       'board:tasks': DECISION_TASKS,
+      'chain:links': PEEK_CHAIN_LINKS,
     },
   },
   {
