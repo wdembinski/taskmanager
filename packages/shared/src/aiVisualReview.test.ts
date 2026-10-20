@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { TaskActivityEntry } from './model';
 import { autoMergeAwaitAiReviewNote, autoMergeDecision } from './autoMerge';
@@ -10,6 +13,7 @@ import {
   aiReviewNeedsChangesNote,
   aiReviewNext,
   aiReviewOutcome,
+  aiReviewRoundLine,
   aiReviewRoundsSoFar,
   aiReviewStartedNote,
   aiReviewSuperseded,
@@ -266,5 +270,73 @@ describe('clampAiReviewMaxRounds', () => {
     expect(clampAiReviewMaxRounds(99)).toBe(10);
     expect(clampAiReviewMaxRounds(undefined)).toBe(DEFAULT_AI_REVIEW_MAX_ROUNDS);
     expect(clampAiReviewMaxRounds(Number.NaN)).toBe(2);
+  });
+});
+
+describe('aiReviewRoundLine', () => {
+  it('is null with no AI note', () => {
+    expect(aiReviewRoundLine([])).toBeNull();
+    expect(aiReviewRoundLine([comment(formatSignOff('approved', [], 'ai'), 1)])).toBeNull();
+  });
+
+  it('reads the latest needs-changes note as round n of max', () => {
+    const activity = [
+      comment(aiReviewNeedsChangesNote(1, 2, needsChanges), 1),
+      comment(aiReviewNeedsChangesNote(2, 2, needsChanges), 2),
+    ];
+    expect(aiReviewRoundLine(activity)).toBe('AI review: round 2 of 2');
+  });
+
+  it('keeps the round line under an AI approval that followed it', () => {
+    const activity = [
+      comment(aiReviewNeedsChangesNote(1, 2, needsChanges), 1),
+      comment(formatSignOff('approved', [], 'ai'), 2),
+    ];
+    expect(aiReviewRoundLine(activity)).toBe('AI review: round 1 of 2');
+  });
+
+  it('reads the gave-up note', () => {
+    const activity = [
+      comment(aiReviewNeedsChangesNote(2, 2, needsChanges), 1),
+      comment(aiReviewGaveUpNote(3, needsChanges), 2),
+    ];
+    expect(aiReviewRoundLine(activity)).toBe('AI review: stopped after 3 rounds');
+  });
+
+  it("is null once a human's own sign-off is newer", () => {
+    const activity = [
+      comment(aiReviewGaveUpNote(3, needsChanges), 1),
+      comment(formatSignOff('approved'), 2),
+    ];
+    expect(aiReviewRoundLine(activity)).toBeNull();
+  });
+});
+
+describe("CONTRIBUTING.md's copy of the rubric", () => {
+  const contributing = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'CONTRIBUTING.md'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
+  const heading = "### Verification — the AI reviewer's rubric";
+  const start = contributing.indexOf(heading);
+  // The subsection runs to the next `## ` heading, or to the end of the file.
+  const next = contributing.indexOf('\n## ', start + 1);
+  const section = contributing.slice(start, next === -1 ? undefined : next);
+  const bullets = section.split('\n').filter((l) => l.startsWith('- '));
+  const rubric = AI_REVIEW_RUBRIC.split('\n');
+
+  it('has the subsection under §6', () => {
+    expect(start).toBeGreaterThan(contributing.indexOf('## 6. UI changes'));
+  });
+
+  it('carries every rubric bullet word for word, and no other', () => {
+    expect(bullets).toEqual(rubric);
+    for (const bullet of bullets) expect(rubric).toContain(bullet);
+  });
+
+  it('documents the verdict json and that a human always wins', () => {
+    expect(section).toContain('```json');
+    expect(section).toContain('"outOfScope"');
+    expect(section).toContain("A human's Approve or Needs changes always wins");
   });
 });

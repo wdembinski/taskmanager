@@ -41,19 +41,23 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
+  BotRegular,
   CheckmarkCircleRegular,
   ClockRegular,
   DismissRegular,
   OpenRegular,
   WarningRegular,
 } from '@fluentui/react-icons';
+import { aiReviewRoundLine } from '@tm/shared/aiVisualReview';
 import { attachmentUrl, type TaskAttachment } from '@tm/shared/attachments';
 import type { TaskActivityEntry } from '@tm/shared/model';
 import {
   latestVisualState,
   shotPairs,
   type ShotPair,
+  type SignOffBy,
   type SignOffStatus,
+  type VisualSignOffState,
 } from '@tm/shared/visualSignOff';
 import { useTransport, type Transport } from './transport';
 
@@ -139,11 +143,24 @@ function imageSrc(
   return transport.attachmentUrl?.(a) ?? attachmentUrl(a.id);
 }
 
-function StateBadge({ state }: { state: 'pending' | 'approved' | 'needs-changes' }): JSX.Element {
+function StateBadge({
+  state,
+  by,
+}: {
+  state: VisualSignOffState['human'];
+  by: SignOffBy | null;
+}): JSX.Element {
   if (state === 'approved') {
+    // The AI reviewer's approval keeps the same success tint — only the icon and the words
+    // say who gave it, so the badge spends no colour on a fact that does not move.
     return (
-      <Badge appearance="tint" color="success" icon={<CheckmarkCircleRegular />}>
-        Approved
+      <Badge
+        appearance="tint"
+        color="success"
+        icon={by === 'ai' ? <BotRegular /> : <CheckmarkCircleRegular />}
+        data-signoff-by={by ?? 'human'}
+      >
+        {by === 'ai' ? 'Approved (AI reviewer)' : 'Approved'}
       </Badge>
     );
   }
@@ -190,6 +207,7 @@ export function VisualSignOff({
   const taskId = pairs[0].real.taskId;
   const screens = pairs.map((p) => p.name);
   const state = latestVisualState(activityOverride ?? activity, screens);
+  const roundLine = aiReviewRoundLine(activityOverride ?? activity);
 
   async function refreshActivity(): Promise<void> {
     const fresh = await transport.invoke('task:activity', taskId).catch(() => null);
@@ -235,7 +253,7 @@ export function VisualSignOff({
     <div className={styles.root} data-visual-signoff>
       <div className={styles.head}>
         <Text weight="semibold">Visual sign-off</Text>
-        <StateBadge state={state.human} />
+        <StateBadge state={state.human} by={state.signedOffBy} />
         {/* Rows open their own side-by-side page now, so the contact sheet keeps its own
             link — desktop only, since the web host's dialog is per-row. */}
         {indexHtml && transport.host !== 'web' && (
@@ -268,6 +286,11 @@ export function VisualSignOff({
           Approve
         </Button>
       </div>
+      {roundLine && (
+        <Caption1 className={styles.hint} data-ai-review-round>
+          {roundLine}
+        </Caption1>
+      )}
 
       {error && (
         <MessageBar intent="error">

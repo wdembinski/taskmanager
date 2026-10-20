@@ -14,7 +14,7 @@
  * A human's own sign-off always wins, because the latest `Visual sign-off:` comment does.
  */
 import type { TaskActivityEntry } from './model';
-import { HUMAN_SIGNOFF_PREFIX } from './visualSignOff';
+import { HUMAN_SIGNOFF_PREFIX, parseSignOff } from './visualSignOff';
 
 /**
  * The rubric the reviewer judges by — quoted verbatim in the review prompt and in
@@ -243,6 +243,35 @@ export function aiReviewInboxQuestion(rounds: number): string {
     `AI visual review could not approve after ${countRounds(rounds)} — check the shots and ` +
     `press Approve or Needs changes.`
   );
+}
+
+const NEEDS_CHANGES_ROUND = /\(round (\d+) of (\d+)\)/;
+const GAVE_UP_ROUNDS = /stopped after (\d+ rounds?)/;
+
+/**
+ * The secondary line the card panel's sign-off badge shows — the latest AI needs-changes or
+ * gave-up note, as `AI review: round n of max` or `AI review: stopped after n rounds`. `null`
+ * when there is no such note, or a HUMAN's own sign-off is newer: their call took over, so
+ * the reviewer's progress is history, not the card's state.
+ */
+export function aiReviewRoundLine(activity: readonly TaskActivityEntry[]): string | null {
+  const latest = activity
+    .filter((e): e is Comment => e.kind === 'comment')
+    .filter(
+      (c) =>
+        c.body.startsWith(AI_REVIEW_NEEDS_CHANGES_PREFIX) ||
+        c.body.startsWith(AI_REVIEW_GAVE_UP_PREFIX) ||
+        (c.body.startsWith(HUMAN_SIGNOFF_PREFIX) && parseSignOff(c.body)?.by === 'human'),
+    )
+    .reduce<Comment | null>((max, c) => (!max || c.createdAt >= max.createdAt ? c : max), null);
+  if (!latest || latest.body.startsWith(HUMAN_SIGNOFF_PREFIX)) return null;
+  const heading = latest.body.split('\n')[0];
+  const round = NEEDS_CHANGES_ROUND.exec(heading);
+  if (latest.body.startsWith(AI_REVIEW_NEEDS_CHANGES_PREFIX) && round) {
+    return `AI review: round ${round[1]} of ${round[2]}`;
+  }
+  const gaveUp = GAVE_UP_ROUNDS.exec(heading);
+  return gaveUp ? `AI review: stopped after ${gaveUp[1]}` : null;
 }
 
 /** The note for a review that ended without a readable verdict. */
