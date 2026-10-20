@@ -2763,6 +2763,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('task:createPullRequest', async (taskId) => openPullRequest(createPrDeps(), taskId));
 
   /**
+   * `mrId → headSha` for every head Task Manager already merged, or was refused on, this
+   * session (`forge/appMerge.ts`) — ONE map, shared by the PR watcher and the Approve button,
+   * so a second sync over the same head makes no forge call. In memory on purpose: a restart
+   * re-checks every green PR once.
+   */
+  const appMergeAttempts = new Map<string, string>();
+
+  /**
    * A human's verdict on the card panel's own "Visual sign-off" section
    * (`VisualSignOff.tsx`'s `submitVisualSignOff`) — posts the same kind of comment
    * `task:addComment` does, then hands off to `applyVisualSignOff` to arm or withdraw
@@ -2781,7 +2789,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       projectId: task.projectId,
       tasks: store.getTasks(task.projectId),
     });
-    await applyVisualSignOff(createPrDeps(), taskId, status);
+    await applyVisualSignOff({ ...createPrDeps(), appMergeAttempts }, taskId, status);
     return entry;
   });
 
@@ -2808,6 +2816,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
     },
     markActed: (mrId, headSha, action) => store.markMergeRequestActed(mrId, headSha, action),
+    getProject: (id) => store.getProject(id),
+    listAttachments: (taskId) => store.attachmentsForTask(taskId),
+    listActivity: (taskId) => store.getTaskActivity(taskId),
+    appMergeAttempts,
   });
 
   // The PR/MR conflict ladder's fetch and force-with-lease push (`Scheduler.
@@ -6113,6 +6125,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     },
   ]);
   syncPoller.reschedule();
+  // One forge sweep shortly after boot, whatever the interval: the timer's first tick is a
+  // whole interval away, and a PR that went green while the app was closed should merge
+  // (`forge/appMerge.ts`, from the PR watcher every sync runs) now, not then. Off means off.
+  syncPoller.sweepSoon(['gitlab', 'github'], 15_000);
 
   // F1.8 — the schedule clock, firing through the same `automationRunner` F1.9's tracker
   // sweep already fires through (built right after the scheduler, above). Started further

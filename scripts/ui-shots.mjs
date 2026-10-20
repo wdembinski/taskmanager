@@ -194,10 +194,15 @@ window.__tm = {
     return [this.textOf(el), el.getAttribute('aria-label') || '', el.getAttribute('title') || ''];
   },
   findByText(text, exact) {
-    return this.candidates().find((el) => {
-      if (!this.visible(el)) return false;
-      return this.namesOf(el).some((t) => (exact ? t === text : t.includes(text)));
-    });
+    const matches = (el) =>
+      this.visible(el) && this.namesOf(el).some((t) => (exact ? t === text : t.includes(text)));
+    // An open Dropdown's <Option>s (role="option", project-form-merge-by) are tried only after
+    // every other candidate missed — IssueRow rows are options too, and searched first they
+    // would steal a click meant for a button whose text a row title happens to contain.
+    return (
+      this.candidates().find(matches) ||
+      Array.from(document.querySelectorAll('[role="option"]')).find(matches)
+    );
   },
   clickText(text, exact) {
     const el = this.findByText(text, exact);

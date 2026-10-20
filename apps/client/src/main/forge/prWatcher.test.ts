@@ -10,7 +10,7 @@
  * complements rather than duplicates.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ChatRefusal, ChatSendResult, Task } from '@shared/model';
+import type { ChatRefusal, ChatSendResult, Project, Task } from '@shared/model';
 import type { MergeRequest } from '@shared/mergeRequest';
 import { DEFAULT_SETTINGS, type AppSettings } from '@shared/settings';
 import { watchMergeRequests, type PrWatcherDeps } from './prWatcher';
@@ -108,6 +108,12 @@ function rig(partial: Partial<PrWatcherDeps> = {}): Rig {
     },
     note: (projectId, taskId, body) => notes.push({ projectId, taskId, body }),
     markActed: (mrId, headSha, action) => marked.push({ mrId, headSha, action }),
+    // No project by default — so the app-merge pass never finds a candidate and every test
+    // above it is about the gated loop alone.
+    getProject: () => undefined,
+    listAttachments: () => [],
+    listActivity: () => [],
+    appMergeAttempts: new Map(),
     ...partial,
   };
   return { deps, notes, marked, resolveForgeConflictCalls, chatCalls };
@@ -409,5 +415,148 @@ describe('watchMergeRequests: each row is independent', () => {
 
     expect(notes.find((n) => n.taskId === 'task-a')?.body).toContain('Could not act on');
     expect(notes.find((n) => n.taskId === 'task-b')?.body).toBe("!2's pipeline passed.");
+  });
+});
+
+/** A GitHub stub for the app-merge pass: one PR whose head is `liveSha`, every check green on
+ *  it, and a merge PUT answered with `mergeStatus` (200 merges). Records every call. */
+function stubGitHub(opts: { liveSha: string; mergeStatus?: number; mergeMessage?: string }) {
+  const calls: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  vi.stubGlobal('fetch', async (url: unknown, init?: { method?: string; body?: string }) => {
+    const u = String(url);
+    const method = init?.method ?? 'GET';
+    calls.push({ method, url: u, body: init?.body ? JSON.parse(init.body) : undefined });
+    if (method === 'GET' && /\/pulls\/\d+$/.test(u)) {
+      return json({
+        number: 7,
+        state: 'open',
+        draft: false,
+        mergeable: true,
+        mergeable_state: 'clean',
+        head: { ref: 'feature/x', sha: opts.liveSha, repo: { full_name: 'acme/web' } },
+        base: { ref: 'main', repo: { full_name: 'acme/web' } },
+      });
+    }
+    if (method === 'GET' && u.includes('/check-runs')) {
+      return json({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+    }
+    if (method === 'GET' && /\/commits\/[^/]+\/status/.test(u)) return json({ statuses: [] });
+    if (method === 'PUT' && u.endsWith('/merge')) {
+      const status = opts.mergeStatus ?? 200;
+      return status === 200
+        ? json({ merged: true, sha: 'merged-sha' })
+        : json({ message: opts.mergeMessage ?? 'Pull Request is not mergeable' }, status);
+    }
+    if (method === 'GET' && u.endsWith('/repos/acme/web')) {
+      return json({ delete_branch_on_merge: true });
+    }
+    throw new Error(`unexpected fetch ${method} ${u}`);
+  });
+  return calls;
+}
+
+/** A GitHub row whose pipeline passed on `sha` — an app-merge candidate once its card's
+ *  project merges from the app. */
+function greenRow(sha: string): MergeRequest {
+  return mr({
+    id: 'gh-5-7',
+    provider: 'github',
+    repoId: 5,
+    projectPath: 'acme/web',
+    number: 7,
+    pipelineStatus: 'success',
+    headSha: sha,
+  });
+}
+
+/** A rig whose card belongs to a project with "Merge on green" on and the app as merger. */
+function appRig(prAutoResolve: boolean, partial: Partial<PrWatcherDeps> = {}) {
+  const project = {
+    id: 'agent-1',
+    autoMergeOnGreen: true,
+    autoMergeBy: 'app',
+    autoMergeMethod: 'squash',
+    autoMergeRequiredChecks: [],
+  } as unknown as Project;
+  return rig({
+    getSettings: () => settings(prAutoResolve),
+    getTask: (id) => ({ ...task(id), agentProjectId: 'agent-1' }) as Task,
+    getProject: (id) => (id === 'agent-1' ? project : undefined),
+    appMergeAttempts: new Map(),
+    ...partial,
+  });
+}
+
+const mergePuts = (calls: Array<{ method: string; url: string }>) =>
+  calls.filter((c) => c.method === 'PUT' && c.url.endsWith('/merge'));
+
+describe('watchMergeRequests: the app-merge pass', () => {
+  it('runs with prAutoResolve off, and merges with the checked sha', async () => {
+    const calls = stubGitHub({ liveSha: 'sha-green' });
+    const { deps, notes } = appRig(false);
+
+    await watchMergeRequests([greenRow('sha-green')], deps);
+
+    const puts = mergePuts(calls);
+    expect(puts).toHaveLength(1);
+    expect((puts[0] as { body?: Record<string, unknown> }).body).toMatchObject({
+      sha: 'sha-green',
+      merge_method: 'squash',
+    });
+    expect(notes.map((n) => n.body)).toEqual([
+      'Merged by Task Manager: #7 into main — every check passed.',
+    ]);
+  });
+
+  it('makes no forge call on a second sync over the same sha', async () => {
+    const calls = stubGitHub({ liveSha: 'sha-green' });
+    const { deps } = appRig(false);
+
+    await watchMergeRequests([greenRow('sha-green')], deps);
+    const after = calls.length;
+    await watchMergeRequests([greenRow('sha-green')], deps);
+
+    expect(calls.length).toBe(after);
+    expect(mergePuts(calls)).toHaveLength(1);
+  });
+
+  it('re-arms on a new sha', async () => {
+    const calls = stubGitHub({ liveSha: 'sha-1', mergeStatus: 405 });
+    const { deps } = appRig(false);
+
+    await watchMergeRequests([greenRow('sha-1')], deps);
+    const calls2 = stubGitHub({ liveSha: 'sha-2' });
+    await watchMergeRequests([greenRow('sha-2')], deps);
+
+    expect(mergePuts(calls)).toHaveLength(1);
+    expect(mergePuts(calls2)).toHaveLength(1);
+    expect(deps.appMergeAttempts.get('gh-5-7')).toBe('sha-2');
+  });
+
+  it('hands a conflict refusal to resolveForgeConflict when prAutoResolve is on', async () => {
+    stubGitHub({ liveSha: 'sha-c', mergeStatus: 405, mergeMessage: 'Merge conflict' });
+    const { deps, notes, resolveForgeConflictCalls, marked } = appRig(true);
+
+    await watchMergeRequests([greenRow('sha-c')], deps);
+
+    expect(resolveForgeConflictCalls.map((c) => c.taskId)).toEqual(['task-1']);
+    expect(notes[0]?.body).toContain('Task Manager did not merge #7 (conflict)');
+    // Handled by the pass — the gated loop does not also note "pipeline passed" for it.
+    expect(marked).toEqual([]);
+  });
+
+  it('leaves a forge-merged project alone', async () => {
+    const calls = stubGitHub({ liveSha: 'sha-green' });
+    const project = { id: 'agent-1', autoMergeOnGreen: true, autoMergeBy: 'forge' } as Project;
+    const { deps } = appRig(false, { getProject: () => project });
+
+    await watchMergeRequests([greenRow('sha-green')], deps);
+
+    expect(calls).toEqual([]);
   });
 });

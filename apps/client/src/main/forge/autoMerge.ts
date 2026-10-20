@@ -8,6 +8,13 @@
  * the part of the job that matters. A forge refusal — insufficient permissions, a revoked
  * token, an instance too old to know the field — becomes a timeline note, never a throw.
  */
+import {
+  APP_MERGE_MODE_PREFIX,
+  appMergeModeNote,
+  autoMergeAppFallbackNote,
+  effectiveAutoMergeBy,
+  isAutoMergeUnavailable,
+} from '@shared/appMerge';
 import type { TaskAttachment } from '@shared/attachments';
 import {
   autoMergeAwaitSignOffNote,
@@ -17,13 +24,14 @@ import {
   autoMergeFailedNote,
   autoMergeNeedsChangesNote,
 } from '@shared/autoMerge';
-import { mrRef, type ForgeProvider, type MergeRequest } from '@shared/mergeRequest';
+import { forgeName, mrRef, type ForgeProvider, type MergeRequest } from '@shared/mergeRequest';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { AppSettings } from '@shared/settings';
 import type { SignOffStatus } from '@shared/visualSignOff';
 import { latestVisualState, shotPairs } from '@shared/visualSignOff';
 import type { ExecHost } from '../exec';
 import { hostFor } from '../exec';
+import { attemptAppMerge, type AppMergeDeps } from './appMerge';
 import { GitHubClient } from '../github/githubClient';
 import { GitLabClient } from '../gitlab/gitlabClient';
 import { forgeBaseUrl } from './baseUrl';
@@ -58,7 +66,7 @@ export interface AutoMergeTarget {
 export async function requestAutoMerge(
   deps: AutoMergeDeps,
   opts: {
-    project: Pick<Project, 'id' | 'autoMergeOnGreen' | 'autoMergeMethod'>;
+    project: Pick<Project, 'id' | 'autoMergeOnGreen' | 'autoMergeMethod' | 'autoMergeBy'>;
     owner: Pick<Task, 'id'>;
     mr: AutoMergeTarget;
     token: string;
@@ -67,10 +75,11 @@ export async function requestAutoMerge(
 ): Promise<void> {
   if (!opts.project.autoMergeOnGreen) return;
 
+  const activity = deps.listActivity(opts.owner.id);
   const { pairs } = shotPairs(deps.listAttachments(opts.owner.id));
   const isUiCard = pairs.length > 0;
   const human = latestVisualState(
-    deps.listActivity(opts.owner.id),
+    activity,
     pairs.map((p) => p.name),
   ).human;
 
@@ -87,6 +96,19 @@ export async function requestAutoMerge(
   if (decision === 'needs-changes') {
     await disableAutoMerge(deps, opts);
     deps.note(opts.project.id, opts.owner.id, autoMergeNeedsChangesNote(ref));
+    return;
+  }
+
+  // Task Manager merges this one itself (`forge/appMerge.ts`, from the PR watcher), so the
+  // forge is never asked — on a repo whose forge refuses auto-merge, asking would only fail.
+  if (effectiveAutoMergeBy(opts.project.autoMergeBy, activity) === 'app') {
+    const note = appMergeModeNote(ref);
+    const latest = [...activity]
+      .reverse()
+      .find((e) => e.kind === 'comment' && e.body.startsWith(APP_MERGE_MODE_PREFIX));
+    if (!latest || latest.kind !== 'comment' || latest.body !== note) {
+      deps.note(opts.project.id, opts.owner.id, note);
+    }
     return;
   }
 
@@ -119,10 +141,17 @@ export async function requestAutoMerge(
     if (outcome === 'already') return;
     deps.note(opts.project.id, opts.owner.id, autoMergeEnabledNote(ref, immediate));
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = (err as { status?: unknown } | null)?.status;
+    // A plan/visibility refusal (GitHub Free's 403 on a private repo) is not a failure to
+    // report but the signal to merge from the app — recorded on the card's timeline, which
+    // `effectiveAutoMergeBy` reads from now on.
     deps.note(
       opts.project.id,
       opts.owner.id,
-      autoMergeFailedNote(ref, err instanceof Error ? err.message : String(err)),
+      isAutoMergeUnavailable(typeof status === 'number' ? status : null, message)
+        ? autoMergeAppFallbackNote(ref, message)
+        : autoMergeFailedNote(ref, message),
     );
   }
 }
@@ -174,7 +203,7 @@ export async function disableAutoMerge(
 /** What {@link applyVisualSignOff} needs from the world around it — built from the same
  *  pieces as `createPrDeps()` (`ipc.ts`), since it resolves a card's forge target the exact
  *  same way `openPullRequest` does. */
-export interface VisualSignOffDeps extends AutoMergeDeps {
+export interface VisualSignOffDeps extends AutoMergeDeps, AppMergeDeps {
   getTask(taskId: string): Task | undefined;
   getProject(projectId: string): Project | undefined;
   getSettings(): AppSettings;
@@ -197,7 +226,8 @@ export interface VisualSignOffDeps extends AutoMergeDeps {
  * landed on the card's timeline, so the decision it reads off `latestVisualState` is this
  * verdict, and a UI card's own gate now answers `'enable'`. `needs-changes` calls
  * {@link disableAutoMerge} directly, withdrawing any hold immediately rather than waiting for
- * the next push to notice.
+ * the next push to notice. When Task Manager is the merger (`effectiveAutoMergeBy` is
+ * `'app'`), `approved` calls `attemptAppMerge` instead — the approval may be the last gate.
  *
  * Does nothing when the project's own "merge on green" is off, or when the card has no open
  * pull/merge request — there is nothing to arm or withdraw either way. Non-fatal, the same
@@ -216,6 +246,30 @@ export async function applyVisualSignOff(
 
   const mr = openMergeRequestFor(deps.listMergeRequests(), taskId);
   if (!mr) return;
+
+  if (
+    status === 'approved' &&
+    effectiveAutoMergeBy(project.autoMergeBy, deps.listActivity(taskId)) === 'app'
+  ) {
+    // The human just cleared the one gate a UI card waits on — forget any earlier refusal on
+    // this head (most likely "sign-off pending") and look again right now. Needs no worktree:
+    // every fact is read from the forge.
+    deps.appMergeAttempts.delete(mr.id);
+    try {
+      const token = deps.tokenFor(mr.provider);
+      if (!token) {
+        throw new Error(`No ${forgeName(mr.provider)} token is saved — add one in Settings.`);
+      }
+      await attemptAppMerge(deps, { project, task, mr, token, settings: deps.getSettings() });
+    } catch (err) {
+      deps.note(
+        task.projectId,
+        taskId,
+        `Could not merge ${mrRef(mr)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return;
+  }
 
   try {
     const settings = deps.getSettings();

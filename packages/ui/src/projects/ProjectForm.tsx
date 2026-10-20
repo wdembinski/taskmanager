@@ -43,10 +43,13 @@ import {
 } from '@fluentui/react-components';
 import { DismissRegular } from '@fluentui/react-icons';
 import {
+  AUTO_MERGE_BY,
+  AUTO_MERGE_BY_LABELS,
   AUTO_MERGE_METHODS,
   hasPlan,
   hasRepo,
   ownsTickets,
+  type AutoMergeBy,
   type AutoMergeMethod,
   type GitPreflight,
   type Project,
@@ -168,6 +171,7 @@ export function ProjectForm({
   const [autoMergeOnGreen, setAutoMergeOnGreen] = useState(false);
   const [autoMergeMethod, setAutoMergeMethod] = useState<AutoMergeMethod>('squash');
   const [autoMergeRequiredChecks, setAutoMergeRequiredChecks] = useState('');
+  const [autoMergeBy, setAutoMergeBy] = useState<AutoMergeBy>('forge');
   const [autoDoneOnLand, setAutoDoneOnLand] = useState(false);
   /** `null` = follow the app-wide setting, which is what a repo that never ruled does. */
   const [autoIntegrate, setAutoIntegrate] = useState<boolean | null>(null);
@@ -235,6 +239,7 @@ export function ProjectForm({
       setAutoMergeOnGreen(project.autoMergeOnGreen);
       setAutoMergeMethod(project.autoMergeMethod);
       setAutoMergeRequiredChecks(project.autoMergeRequiredChecks.join(', '));
+      setAutoMergeBy(project.autoMergeBy);
       setAutoDoneOnLand(project.autoDoneOnLand);
       setAutoIntegrate(project.autoIntegrate);
       setAutoApprovePlans(project.autoApprovePlans);
@@ -353,6 +358,7 @@ export function ProjectForm({
           autoMergeOnGreen,
           autoMergeMethod,
           autoMergeRequiredChecks: parseCommaList(autoMergeRequiredChecks),
+          autoMergeBy,
           autoDoneOnLand,
           autoIntegrate,
           autoApprovePlans,
@@ -662,8 +668,28 @@ export function ProjectForm({
             </Field>
           )}
 
+          {/* `'app'` is for a forge that refuses auto-merge (a private repo on GitHub Free):
+              the PR watcher merges it instead, re-reading every fact right before the PUT. A
+              refusal flips a single card to the app on its own (`effectiveAutoMergeBy`); this
+              setting is the project-wide choice. The hint sits under the row so the two
+              dropdowns stay level; "Required checks" takes its own line, since three fields
+              overflow the drawer. */}
           {repo && path && useWorktrees && autoMergeOnGreen && (
             <div className={styles.row}>
+              <Field label="Who merges on green" className={styles.grow} data-auto-merge-by>
+                <Dropdown
+                  aria-label="Who merges on green"
+                  value={AUTO_MERGE_BY_LABELS[autoMergeBy]}
+                  selectedOptions={[autoMergeBy]}
+                  onOptionSelect={(_e, d) => setAutoMergeBy(d.optionValue as AutoMergeBy)}
+                >
+                  {AUTO_MERGE_BY.map((by) => (
+                    <Option key={by} value={by}>
+                      {AUTO_MERGE_BY_LABELS[by]}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
               <Field label="Merge method" className={styles.grow}>
                 <Dropdown
                   aria-label="Merge method"
@@ -678,14 +704,23 @@ export function ProjectForm({
                   ))}
                 </Dropdown>
               </Field>
-              <Field label="Required checks (comma-separated)" className={styles.grow}>
-                <Input
-                  value={autoMergeRequiredChecks}
-                  onChange={(_e, d) => setAutoMergeRequiredChecks(d.value)}
-                  placeholder="changes, gates, docker, package"
-                />
-              </Field>
             </div>
+          )}
+          {repo && path && useWorktrees && autoMergeOnGreen && (
+            <Caption1 className={styles.hint}>
+              Task Manager merges the PR itself once every check is green — for repos where the
+              forge has no auto-merge (a private repo on GitHub Free). Only while the app is
+              running.
+            </Caption1>
+          )}
+          {repo && path && useWorktrees && autoMergeOnGreen && (
+            <Field label="Required checks (comma-separated)">
+              <Input
+                value={autoMergeRequiredChecks}
+                onChange={(_e, d) => setAutoMergeRequiredChecks(d.value)}
+                placeholder="changes, gates, docker, package"
+              />
+            </Field>
           )}
 
           {/* Offered on every project — a plan has nothing to do with a repo or worktrees,

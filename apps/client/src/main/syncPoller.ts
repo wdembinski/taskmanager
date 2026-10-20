@@ -33,6 +33,7 @@ export interface SyncService {
 
 export class SyncPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private soon: ReturnType<typeof setTimeout> | null = null;
   /** Services a sweep must skip because their own back-off has not passed yet. */
   private readonly pausedUntil = new Map<string, number>();
   /** Guards against a slow sweep overlapping the next tick, per service. */
@@ -60,11 +61,26 @@ export class SyncPoller {
     this.timer = setInterval(() => void this.tick(), minutes * 60_000);
   }
 
-  /** Sweep every enabled, non-paused, non-in-flight service once. Exposed for tests; the
-   *  timer calls it. */
-  async tick(): Promise<void> {
+  /**
+   * One sweep of just `ids`, `delayMs` from now — the boot-time catch-up, so a change made
+   * while the app was closed is seen without waiting a whole interval. Skipped while the
+   * interval is 0: a user who switched background sync off gets none at boot either.
+   */
+  sweepSoon(ids: readonly string[], delayMs: number): void {
+    if (this.soon) clearTimeout(this.soon);
+    if (clampSyncInterval(this.store.getSettings().syncIntervalMinutes ?? 0) <= 0) return;
+    this.soon = setTimeout(() => {
+      this.soon = null;
+      void this.tick(ids);
+    }, delayMs);
+  }
+
+  /** Sweep every enabled, non-paused, non-in-flight service once — or only those in `only`.
+   *  Exposed for tests; the timer calls it. */
+  async tick(only?: readonly string[]): Promise<void> {
     const now = Date.now();
     const due = this.services.filter((s) => {
+      if (only && !only.includes(s.id)) return false;
       if (!s.isEnabled(this.store)) return false;
       if (this.inFlight.has(s.id)) return false;
       const until = this.pausedUntil.get(s.id);
@@ -102,5 +118,7 @@ export class SyncPoller {
 
   dispose(): void {
     this.stop();
+    if (this.soon) clearTimeout(this.soon);
+    this.soon = null;
   }
 }
