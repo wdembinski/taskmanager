@@ -126,6 +126,8 @@ export function ProjectsSection({ projects }: ProjectsSectionProps): JSX.Element
               {project.autoDoneOnLand ? 'on' : 'off'}
             </Fact>
             <Fact label="Release after merge">{project.autoRelease ? 'on' : 'off'}</Fact>
+            {/* A desktop that predates the field sends none, which reads as none. */}
+            <Fact label="UI verification command">{project.uiVerifyCommand || 'none'}</Fact>
           </div>
 
           {project.jiraEpicKeys.length > 0 && (

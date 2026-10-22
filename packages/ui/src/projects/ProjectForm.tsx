@@ -200,6 +200,8 @@ export function ProjectForm({
   const [concurrency, setConcurrency] = useState(1);
   const [writeBackPlan, setWriteBackPlan] = useState(false);
   const [instructions, setInstructions] = useState('');
+  /** `''` = this repo has no headless screenshot command; see `Project.uiVerifyCommand`. */
+  const [uiVerifyCommand, setUiVerifyCommand] = useState('');
   const [target, setTarget] = useState<ExecTarget>(LOCAL_TARGET);
   const [distros, setDistros] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
@@ -264,6 +266,7 @@ export function ProjectForm({
       setConcurrency(project.concurrency);
       setWriteBackPlan(project.writeBackPlan);
       setInstructions(project.instructions);
+      setUiVerifyCommand(project.uiVerifyCommand ?? '');
       updateTarget(project.target);
     } else {
       updatePath('');
@@ -288,6 +291,7 @@ export function ProjectForm({
       setReadyLanes(DEFAULT_READY_LANES);
       setWriteBackPlan(false); // moot here — this dialog always adds plan-less (see save())
       setInstructions('');
+      setUiVerifyCommand('');
       void transport.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPlanningModel(s.defaultPlanningModel);
@@ -383,6 +387,7 @@ export function ProjectForm({
           readyLanes,
           writeBackPlan,
           instructions,
+          uiVerifyCommand,
         });
         if (!updated) throw new Error('That project no longer exists.');
         onSaved(updated);
@@ -417,6 +422,7 @@ export function ProjectForm({
           readyLanes,
           writeBackPlan,
           instructions,
+          uiVerifyCommand,
         });
         onSaved(created.project);
       }
@@ -920,6 +926,21 @@ export function ProjectForm({
                 resize="vertical"
                 onChange={(_e, d) => setInstructions(d.value)}
                 placeholder="e.g. The Yocto tree is at /opt/yocto; source oe-init-build-env before any bitbake command."
+              />
+            </Field>
+          )}
+
+          {path && (
+            <Field
+              label="UI verification command"
+              hint="Run by a UI step to screenshot the real UI headlessly. It must write NAME.png, NAME-mockup.png and verdicts.txt into .vipper/attach/. Leave empty if the repo has none: the planner will then propose one."
+            >
+              <Input
+                className={styles.mono}
+                data-ui-verify-command
+                value={uiVerifyCommand}
+                onChange={(_e, d) => setUiVerifyCommand(d.value)}
+                placeholder="e.g. node scripts/ui-shots.mjs --attach"
               />
             </Field>
           )}
