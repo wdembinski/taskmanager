@@ -98,6 +98,10 @@ export default [
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
     expect: 'button[aria-label="Open full screen"]',
+    layoutCheck: {
+      visible: '[data-links-heading]',
+      clear: ['[role="log"][aria-label="Conversation"]'],
+    },
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {

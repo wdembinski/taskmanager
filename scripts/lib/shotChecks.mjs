@@ -25,12 +25,57 @@ export function findDuplicateShots(shots) {
     .map(([hash, names]) => ({ hash, names }));
 }
 
+/** How far past an edge still counts as "on" it, in CSS px — see `layoutProblems`. */
+export const LAYOUT_TOLERANCE_PX = 0.5;
+
+function describeRect({ top, left, bottom, right }) {
+  return `{ top: ${top}, left: ${left}, bottom: ${bottom}, right: ${right} }`;
+}
+
+/**
+ * Why a row's `layoutCheck` target is not laid out in full — empty when it is. Rects are
+ * `{ top, left, bottom, right }` in CSS px, the shape `getBoundingClientRect()` answers.
+ *
+ * `target` must sit fully inside every rect in `clips` (each overflow-clipping ancestor, plus
+ * the viewport): any part past one of them is cut off on screen. It must also not overlap any
+ * rect in `avoid` (an element drawn over or under it) — sharing an edge is not an overlap, so
+ * a heading sitting directly on top of the conversation is fine. Each `clips`/`avoid` entry may
+ * carry a `label` naming it in the reason. Anything within `LAYOUT_TOLERANCE_PX` counts as
+ * fitting — sub-pixel rounding of fractional layout is not a clipped heading.
+ */
+export function layoutProblems({ target, clips = [], avoid = [] }) {
+  const reasons = [];
+  const past = (a, b) => a - b > LAYOUT_TOLERANCE_PX;
+  const px = (n) => `${Math.round(n * 10) / 10}px`;
+  for (const clip of clips) {
+    const cut = [];
+    if (past(clip.top, target.top)) cut.push(`top by ${px(clip.top - target.top)}`);
+    if (past(target.bottom, clip.bottom)) cut.push(`bottom by ${px(target.bottom - clip.bottom)}`);
+    if (past(clip.left, target.left)) cut.push(`left by ${px(clip.left - target.left)}`);
+    if (past(target.right, clip.right)) cut.push(`right by ${px(target.right - clip.right)}`);
+    if (cut.length > 0) {
+      reasons.push(`clipped by ${clip.label ?? describeRect(clip)} (${cut.join(', ')})`);
+    }
+  }
+  for (const other of avoid) {
+    const overlaps =
+      past(target.right, other.left) &&
+      past(other.right, target.left) &&
+      past(target.bottom, other.top) &&
+      past(other.bottom, target.top);
+    if (overlaps) reasons.push(`overlaps ${other.label ?? describeRect(other)}`);
+  }
+  return reasons;
+}
+
 /**
  * Merges every reason a `ui-shots.mjs` run should not be trusted enough to attach into one
  * flat list: a row that failed outright, a row whose `expect` selector never showed up
- * (`result.selectorMissed`), and any shots that came out byte-identical despite different
- * names. `results` is the same array `ui-shots.mjs`'s own loop builds, each entry already
- * carrying `row`, `ok`, `error`, `selectorMissed`, `shotPath` and (once hashed) `hash`.
+ * (`result.selectorMissed`), a row whose `layoutCheck` target is clipped or overlapped
+ * (`result.layoutProblem`, `layoutProblems`' own reasons), and any shots that came out
+ * byte-identical despite different names. `results` is the same array `ui-shots.mjs`'s own
+ * loop builds, each entry already carrying `row`, `ok`, `error`, `selectorMissed`,
+ * `layoutProblem`, `shotPath` and (once hashed) `hash`.
  */
 export function shotProblems(results) {
   const problems = [];
@@ -48,6 +93,13 @@ export function shotProblems(results) {
         kind: 'selectorMissed',
         name: result.row.name,
         selector: result.selectorMissed,
+      });
+    }
+    if (result.layoutProblem && result.layoutProblem.length > 0) {
+      problems.push({
+        kind: 'layout',
+        name: result.row.name,
+        message: result.layoutProblem.join('; '),
       });
     }
   }
