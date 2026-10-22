@@ -4,19 +4,25 @@
  * **One pane in two halves** (the user's call, and the right one): what a card *is* is
  * context you read *while* talking to the agent working it, not an alternative tab.
  *
- *  - **The band** (top, fixed): the ticket's identity — type glyph, title, key, priority
- *    — then the agent controls, the details (status + a foldable, editable description)
- *    and, for a native ticket, its open Type/Epic/Milestone/… fields. On the pane's own
- *    surface and nothing else — no box, no radius, no rules. Capped at 55vh with its OWN
- *    scroll, the largest share of the pane: a reader opened it to see exactly this. Links,
- *    Steps and Chain sit in a second strip right below it, capped at 20vh with its own
- *    scroll in turn, so a long chain can never crowd the conversation out entirely.
- *  - **The conversation** (middle): the only thing that scrolls, unframed — a box around
- *    a chat is a box around the whole pane, which says nothing.
+ *  - **The band** (top): the ticket's identity — type glyph, title, key, priority — then
+ *    the agent controls, the details (status + a foldable, editable description) and, for
+ *    a native ticket, its open Type/Epic/Milestone/… fields. On the pane's own surface and
+ *    nothing else — no box, no radius, no rules. Capped at 55vh with its OWN scroll, the
+ *    largest share of the pane: a reader opened it to see exactly this. Links, Steps and
+ *    Chain sit in a second strip right below it, capped at 20vh with its own scroll in
+ *    turn, so a long chain can never crowd the conversation out entirely.
+ *  - **The conversation** (middle): unframed — a box around a chat is a box around the
+ *    whole pane, which says nothing — with a 120px floor of its own.
  *  - **The bottom band** (fixed): the live-run rows and the composer, on the same surface
  *    and the same inset as the top band. Two bands with the conversation running between
  *    them — the pane is one shape read top to bottom, and the composer floating on the
  *    pane's own colour used to break that for nothing.
+ *
+ * **The bands never shrink.** Each lays out in full up to its cap, whatever the
+ * conversation holds; when band + the conversation's floor outgrow the pane, the whole
+ * region above the composer (`body`) scrolls instead. They used to give way to leave the
+ * conversation its floor, and that is what cut the Links heading in half: the lower strip
+ * was squeezed to ~20px with the empty conversation line right under it.
  *
  * The pane's surface is a step LIGHTER than the board beside it, which is what separates
  * the two halves of the screen — there is no divider between them.
@@ -155,17 +161,18 @@ const useStyles = makeStyles({
    * siblings in a row (this one and `cell`) are not guaranteed to leave it; `vh` is
    * definite against the viewport regardless.
    *
-   * Below that cap, this band GIVES WAY: `flex: '0 1 auto'` lets it shrink once `headBand`,
-   * `cell` and the conversation's own floor (see `scrollWrap`) together outgrow the pane,
-   * rather than holding its content's full height and pushing the conversation to nothing.
-   * `cell` carries a higher shrink weight (`flex: '0 2 auto'`) and gives way first, since a
-   * ticket's own fields — what this band holds — are what a reader wants most.
+   * Below that cap, this band NEVER shrinks: `flex: '0 0 auto'` holds its content's full
+   * height, and when it, `cell` and the conversation's floor (see `scrollWrap`) together
+   * outgrow the pane, `body` scrolls rather than squeezing a band. It used to give way
+   * (`flex: '0 1 auto'`, with `cell` at twice the weight), which squeezed `cell` to ~20px
+   * once this band hit its cap — only the top of the Links heading showed, the empty
+   * conversation line directly under it.
    *
-   * `minHeight: 0` is the second load-bearing line, the same one `scrollWrap` below
-   * already has: a flex item's default `min-height` is `auto`, which in a flex context
-   * resolves to its CONTENT's own min-content size — not 0 — and min-height outranks
-   * max-height when the two conflict. Without it, `maxHeight` was a cap in appearance
-   * only: a ticket's twelve fields kept the box growing to fit regardless.
+   * `minHeight: 0` is the second load-bearing line: a flex item's default `min-height` is
+   * `auto`, which in a flex context resolves to its CONTENT's own min-content size — not
+   * 0 — and min-height outranks max-height when the two conflict. Without it, `maxHeight`
+   * was a cap in appearance only: a ticket's twelve fields kept the box growing to fit
+   * regardless.
    *
    * `boxSizing: 'border-box'` is the third: this element's own default `content-box`
    * sizing applies `maxHeight` to the CONTENT box alone, with `padding` added on top of
@@ -183,7 +190,7 @@ const useStyles = makeStyles({
     gap: '12px',
     padding: '12px',
     boxSizing: 'border-box',
-    flex: '0 1 auto',
+    flex: '0 0 auto',
     minHeight: 0,
     maxHeight: '55vh',
     overflowY: 'auto',
@@ -195,21 +202,18 @@ const useStyles = makeStyles({
    * entirely. `minHeight: 0` and `boxSizing: 'border-box'` for the same two reasons
    * `headBand` has them — see its docstring.
    *
-   * GIVES WAY before `headBand` does: `flex: '0 2 auto'` carries twice `headBand`'s shrink
-   * weight (`flex: '0 1 auto'`), so once the pane is too short for both bands plus the
-   * conversation's own floor (`scrollWrap`'s `minHeight`), this box shrinks first and
-   * furthest — a ticket's own fields in `headBand` are what a reader opened the pane for,
-   * Links/Steps/Chain/Releases are the second thing they want.
+   * NEVER shrinks, like `headBand` (`flex: '0 0 auto'`, see its docstring): Links is this
+   * box's FIRST child, so as long as nothing squeezes it the Links heading and its empty
+   * state or first rows always render in full. It used to give way first and furthest,
+   * which is exactly what cut that heading in half.
    *
-   * `marginBottom`: `root` itself carries no gap between its own children on purpose (see
-   * its own comment) — every OTHER pair of sections already keeps its distance with its
-   * own padding, flush by design. This pair cannot: once this box's content genuinely
-   * overflows its cap, what is visible stops wherever the cap happens to land (mid-row, as
-   * often as not — there is no guarantee the cut lines up with this box's own bottom
-   * padding, which only ever applies once scrolled all the way down), one pixel above
-   * `scrollWrap`'s own first line starting right where the clip did. A whole row's worth
-   * of margin here is what keeps a clipped last row and the conversation's own empty state
-   * from reading as one garbled line of text.
+   * `marginBottom`: `body` carries no gap between its own children on purpose — every
+   * OTHER pair of sections already keeps its distance with its own padding, flush by
+   * design. This pair cannot: once this box's content overflows its cap, what is visible
+   * stops wherever the cap happens to land (mid-row, as often as not — this box's own
+   * bottom padding only applies once scrolled all the way down), right above
+   * `scrollWrap`'s own first line. A row's worth of margin here keeps a clipped last row
+   * and the conversation's empty state from reading as one garbled line of text.
    */
   cell: {
     display: 'flex',
@@ -218,9 +222,9 @@ const useStyles = makeStyles({
     padding: '12px',
     boxSizing: 'border-box',
     marginBottom: '8px',
-    // Shrinks TWICE as readily as `headBand` once the pane runs short — see this
-    // style's own docstring — and only overflows into its own scroll past that.
-    flex: '0 2 auto',
+    // Never shrinks below its content (up to the cap) — see this style's own docstring —
+    // and only overflows into its own scroll past that.
+    flex: '0 0 auto',
     minHeight: 0,
     maxHeight: '20vh',
     overflowY: 'auto',
@@ -230,18 +234,31 @@ const useStyles = makeStyles({
    * positioned against it without affecting layout — the pill floats over the
    * conversation, it does not take a row of its own.
    *
-   * `minHeight: '120px'` is the conversation's OWN floor: enough for the empty-state line
-   * plus the start of one turn. `headBand` and `cell` above both give way (see their own
-   * docstrings) once the pane is shorter than their combined caps, but without a floor
-   * here flexbox would keep shrinking this box too — all the way to the `flex: 1` default
-   * of 0 — before it touched either band's `maxHeight`, since neither band hits ITS cap
-   * until the conversation is already gone. The floor forces the bands to give way first.
+   * `flex: 1` takes whatever `body` has left once the bands are laid out in full;
+   * `minHeight: '120px'` is the conversation's OWN floor below that — enough for the
+   * empty-state line plus the start of one turn. The bands never shrink to protect it
+   * (see `headBand`): when band + floor outgrow the pane, `body` scrolls instead.
    */
   scrollWrap: { position: 'relative', flex: 1, minHeight: '120px' },
   /**
-   * The conversation: unframed, on the pane's own surface, and the ONLY thing that
-   * scrolls — the details band above and the composer below stay put however long the
-   * chat gets.
+   * Everything above the bottom band — `headBand`, `cell`, the error inset and
+   * `scrollWrap` — in one column that scrolls ONLY once band + the conversation's floor
+   * outgrow the pane; when they fit, it never moves. `minHeight: 0` so it takes the
+   * pane's leftover height rather than its content's. It opens at `scrollTop` 0, so the
+   * band is in view on open however long the conversation; auto-scroll targets the inner
+   * `scroll` alone, never this. For the `chat` section it simply holds `scrollWrap`.
+   */
+  body: {
+    display: 'flex',
+    flexDirection: 'column',
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+  },
+  /**
+   * The conversation: unframed, on the pane's own surface, and scrolls on its own — the
+   * composer below stays put however long the chat gets, and the details band above does
+   * too unless the pane is too short for band + floor (see `body`).
    */
   scroll: {
     height: '100%',
@@ -1550,74 +1567,78 @@ export function TaskDetail({
         </div>
       )}
       {decisionBanner}
-      {/* The band, split into two: `headBand` (identity, agent controls, details, the
-          open Ticket fields) and `cell` (Links, Steps, Chain, merge requests) each scroll
-          internally once a card has that much to say, up to their own `maxHeight` cap —
-          and below those caps, both GIVE WAY to leave the conversation (`scrollWrap`) its
-          floor, `cell` first and furthest (see each style's own docstring). Never drawn
-          for the `chat` section: that tab is the conversation alone. */}
-      {section === undefined && (
-        <>
-          <div className={styles.headBand}>{detailsContent}</div>
-          <div className={styles.cell}>
-            {linksContent}
-            {stepsContent}
-            {changesContent}
+      {/* Everything above the bottom band, in one column that scrolls only when band +
+          the conversation's floor outgrow the pane (see `body`). */}
+      <div className={styles.body}>
+        {/* The band, split into two: `headBand` (identity, agent controls, details, the
+            open Ticket fields) and `cell` (Links, Steps, Chain, merge requests) each lay
+            out in full up to their own `maxHeight` cap and scroll internally past it —
+            they never shrink to make room for the conversation (see each style's own
+            docstring). Never drawn for the `chat` section: that tab is the conversation
+            alone. */}
+        {section === undefined && (
+          <>
+            <div className={styles.headBand}>{detailsContent}</div>
+            <div className={styles.cell}>
+              {linksContent}
+              {stepsContent}
+              {changesContent}
+            </div>
+          </>
+        )}
+
+        {error && (
+          <div className={styles.inset}>
+            <MessageBar intent="error">
+              <MessageBarBody>{error}</MessageBarBody>
+            </MessageBar>
           </div>
-        </>
-      )}
+        )}
 
-      {error && (
-        <div className={styles.inset}>
-          <MessageBar intent="error">
-            <MessageBarBody>{error}</MessageBarBody>
-          </MessageBar>
-        </div>
-      )}
-
-      <div className={styles.scrollWrap}>
-        <div
-          className={styles.scroll}
-          ref={scrollRef}
-          onScroll={handleScroll}
-          role="log"
-          aria-label="Conversation"
-        >
-          {showTimelineSkeleton ? (
-            // This load deliberately swallows failures into an empty timeline (see
-            // `loadActivity`'s `.catch`), so there is never an error to show here — the
-            // retry is a no-op because there is nothing this pane would retry.
-            <PaneLoading
-              label="Loading conversation…"
-              error={null}
-              onRetry={() => {}}
-              shape="rows"
-            />
-          ) : turns.length === 0 && !managedByAI ? (
-            <Caption1 className={styles.empty}>
-              Nothing said yet — write a note, or send the agent a message.
-            </Caption1>
-          ) : (
-            <ChatTurns
-              turns={turns}
-              statusKeywords={statusKeywords}
-              onDeleteNote={(id) => void deleteComment(id)}
-            />
+        <div className={styles.scrollWrap}>
+          <div
+            className={styles.scroll}
+            ref={scrollRef}
+            onScroll={handleScroll}
+            role="log"
+            aria-label="Conversation"
+          >
+            {showTimelineSkeleton ? (
+              // This load deliberately swallows failures into an empty timeline (see
+              // `loadActivity`'s `.catch`), so there is never an error to show here — the
+              // retry is a no-op because there is nothing this pane would retry.
+              <PaneLoading
+                label="Loading conversation…"
+                error={null}
+                onRetry={() => {}}
+                shape="rows"
+              />
+            ) : turns.length === 0 && !managedByAI ? (
+              <Caption1 className={styles.empty}>
+                Nothing said yet — write a note, or send the agent a message.
+              </Caption1>
+            ) : (
+              <ChatTurns
+                turns={turns}
+                statusKeywords={statusKeywords}
+                onDeleteNote={(id) => void deleteComment(id)}
+              />
+            )}
+          </div>
+          {hasNewMessages && (
+            <Button
+              className={styles.newMessages}
+              size="small"
+              shape="rounded"
+              appearance="primary"
+              icon={<ChevronDownRegular />}
+              iconPosition="after"
+              onClick={() => scrollToBottom('smooth')}
+            >
+              New messages
+            </Button>
           )}
         </div>
-        {hasNewMessages && (
-          <Button
-            className={styles.newMessages}
-            size="small"
-            shape="rounded"
-            appearance="primary"
-            icon={<ChevronDownRegular />}
-            iconPosition="after"
-            onClick={() => scrollToBottom('smooth')}
-          >
-            New messages
-          </Button>
-        )}
       </div>
 
       {/* The bottom band. The live state sits ABOVE the composer inside it, so it never

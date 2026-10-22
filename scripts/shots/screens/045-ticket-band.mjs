@@ -58,19 +58,29 @@ const STATES = [
   },
   {
     state: 'long-chat',
+    // Band + the conversation's floor outgrow a 1440x900 pane, so the region above the
+    // composer opens scrolled to the top with the conversation below the fold — the same
+    // frame as `visual-signoff-dark`, byte for byte. Scrolling that region to the Links
+    // heading brings the conversation into frame under it, which is what this state proves.
+    scrollTo: '[data-links-heading]',
     channelOverrides: {
       'task:activity': { byArgTable: { [TASK_ID]: LONG_CHAT }, fallback: [] },
     },
   },
 ];
 
-export default STATES.flatMap(({ state, channelOverrides }) =>
+export default STATES.flatMap(({ state, scrollTo, channelOverrides }) =>
   ['light', 'dark'].map((scheme) => ({
     name: `ticket-band-${state}-${scheme}`,
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme,
-    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    setup: [
+      { click: 'Tickets' },
+      { click: 'issue-row:first' },
+      { click: 'Open full screen' },
+      ...(scrollTo === undefined ? [] : [{ scrollToSelector: scrollTo }]),
+    ],
     expect: '[data-links-heading]',
     layoutCheck: {
       visible: '[data-links-heading]',
