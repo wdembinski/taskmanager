@@ -84,6 +84,12 @@ export interface AgentTaskPromptOptions {
    */
   planMode?: boolean;
   /**
+   * The project's UI verification command — run in the worktree to screenshot the real UI
+   * headlessly into `.vipper/attach/`. Only quoted into the plan rules, never executed by
+   * the app; empty or omitted means the project has none. See {@link planScopeLines}.
+   */
+  uiVerifyCommand?: string;
+  /**
    * The files attached to this card (Phase 22), with paths **already native to the
    * machine the run happens on** — the caller translates, this module only formats. See
    * {@link attachmentLines}.
@@ -128,19 +134,24 @@ function planHeadingLines(): string[] {
  * when — never whether a STEP can, and the answer to that is always no.
  *
  * Verification also carries the visual sign-off rule (the "screenshot the real UI
- * headlessly" plan): a step that changes the UI runs `scripts/ui-shots.mjs --attach` as
- * its own verification and says so in its summary, because nothing else in this prompt
- * ever tells the agent a human has to look at a screenshot before the card is Done. A
- * refusal from that command (a duplicate or an unmatched selector) means the shot was
- * never really taken, so it is told to fix the underlying click/selector rather than
- * ignore the exit code — an attached pair the agent never actually looked at is worse
- * than no pair at all. And because nobody but the agent has the real screen and the
- * mockup open side by side at that moment, it is told to render its own verdict per
+ * headlessly" plan): a step that changes the UI runs the project's own UI verification
+ * command (`Project.uiVerifyCommand`) as its verification and says so in its summary,
+ * because nothing else in this prompt ever tells the agent a human has to look at a
+ * screenshot before the card is Done. The command is per project because the outbox
+ * (`.vipper/attach/`) is the contract, not any one script: a hard-coded
+ * `scripts/ui-shots.mjs` pointed every other repo's planner at a file it did not have.
+ * With no command set, the planner is told so and must propose one before it claims UI
+ * work verified. A refusal from that command (a duplicate or an unmatched selector) means
+ * the shot was never really taken, so it is told to fix the underlying click/selector
+ * rather than ignore the exit code — an attached pair the agent never actually looked at
+ * is worse than no pair at all. And because nobody but the agent has the real screen and
+ * the mockup open side by side at that moment, it is told to render its own verdict per
  * screen into `.vipper/attach/verdicts.txt` and repeat those lines in its summary — a
  * human then reads a verdict instead of having to eyeball every pair itself to find the
  * one that drifted.
  */
-function planScopeLines(): string[] {
+function planScopeLines(uiVerifyCommand?: string): string[] {
+  const command = clean(uiVerifyCommand);
   return [
     `Each heading also becomes a separate agent SESSION, run in this worktree. So every`,
     `heading has to be a piece of work someone could do here. Two things therefore do not`,
@@ -158,12 +169,22 @@ function planScopeLines(): string[] {
     '',
     `Verification IS work and does belong, if there is something to verify.`,
     '',
-    `If any step changes the UI, that step's Verification must run`,
-    `\`node scripts/ui-shots.mjs --attach\` (when this project has that script) to`,
-    `screenshot the real UI headlessly next to its mockup — a build or a test run proves`,
-    `the code runs, not that it looks right. If that command refuses to attach (a`,
-    `duplicate shot or a selector that never matched), the shot was never really taken —`,
-    `fix the click or selector it names and re-run it, don't ignore the refusal. Then open`,
+    ...(command
+      ? [
+          `If any step changes the UI, that step's Verification must run`,
+          `\`${command}\` to screenshot the real UI headlessly next to its mockup — a build`,
+          `or a test run proves the code runs, not that it looks right. If that command`,
+          `refuses to attach (a duplicate shot or a selector that never matched), the shot`,
+          `was never really taken — fix the click or selector it names and re-run it, don't`,
+          `ignore the refusal.`,
+        ]
+      : [
+          `This project has no headless screenshot command configured. If any step changes`,
+          `the UI, the plan must first propose one (a step that adds a command writing`,
+          `\`NAME.png\` + \`NAME-mockup.png\` + \`verdicts.txt\` into \`.vipper/attach/\`, see`,
+          `docs/13) — do not claim UI work verified on a build or test run alone.`,
+        ]),
+    `Then open`,
     `each \`<name>.png\` / \`<name>-mockup.png\` pair yourself and write`,
     `\`.vipper/attach/verdicts.txt\`, one line per screen:`,
     `\`<screen>: close|partly|far — <concrete defects>\`, and repeat those lines in your`,
@@ -212,7 +233,7 @@ function planQualityLines(): string[] {
     `  checks X" — turn that into a screenshot plus the visual sign-off described above.`,
     `- **UI work names its proof.** For every screen a step changes, name the screenshot`,
     `  (screen, theme, width), the mockup it is compared with, and the elements that must be`,
-    `  visible in it. If this project has no headless screenshot script, say so under Facts.`,
+    `  visible in it. If this project has no UI verification command, say so under Facts.`,
     `- **Owner decisions are asked, not guessed.** Anything that costs money, needs an account,`,
     `  token or external service, or is a product choice the ticket does not settle: ask with`,
     `  "${NEEDS_INPUT_SENTINEL}" before you finish the plan.`,
@@ -368,7 +389,9 @@ export function buildAgentTaskPrompt(
     '',
     // Worktree mode: the same rule plan tasks get — the orchestrator owns integration.
     ...(branch ? worktreeLines(branch, worktreePath, projectPath) : []),
-    ...(options.planMode ? [...planHeadingLines(), ...planScopeLines()] : []),
+    ...(options.planMode
+      ? [...planHeadingLines(), ...planScopeLines(options.uiVerifyCommand)]
+      : []),
     // Never write to the tracker: that is a hard product decision, not a preference.
     ...(key
       ? [
@@ -449,6 +472,8 @@ export function buildReplanPrompt(
     note?: string;
     slotsLeft: number;
     replacing?: { round: number; titles: readonly string[] };
+    /** The project's UI verification command (see {@link AgentTaskPromptOptions}). */
+    uiVerifyCommand?: string;
   } = { slotsLeft: 0 },
 ): string {
   const note = clean(options.note);
@@ -489,7 +514,7 @@ export function buildReplanPrompt(
     `If nothing meaningful is left to do, say so plainly instead of inventing work.`,
     '',
     ...planHeadingLines(),
-    ...planScopeLines(),
+    ...planScopeLines(options.uiVerifyCommand),
     `When the plan is ready, call ExitPlanMode with it. That is what puts the steps on the`,
     `card for the human to approve — a plan written out in your reply reaches nobody.`,
   ]

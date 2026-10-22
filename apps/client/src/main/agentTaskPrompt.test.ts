@@ -500,10 +500,47 @@ describe('the plan scope rules', () => {
   });
 
   it('tells it that a UI step must screenshot itself and ask for sign-off', () => {
-    const prompt = planned();
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      planMode: true,
+      uiVerifyCommand: 'node scripts/ui-shots.mjs --attach',
+    });
     expect(prompt).toMatch(/ui-shots\.mjs --attach/);
     expect(prompt).toMatch(/needs visual sign-off/);
     expect(prompt).toMatch(/a UI task is not\s+Done until a human has looked/);
+  });
+
+  // The command is per project (the outbox is the contract, not one repo's script): a
+  // hard-coded `ui-shots.mjs` sent every other repo's planner after a file it did not have.
+  it('quotes the project’s own UI verification command verbatim when one is set', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      planMode: true,
+      uiVerifyCommand: '  pnpm shots --attach  ',
+    });
+    expect(prompt).toContain('`pnpm shots --attach`');
+    expect(prompt).not.toMatch(/ui-shots\.mjs/);
+    expect(prompt).not.toMatch(/no headless screenshot command configured/);
+    expect(prompt).toMatch(/shot\s+was never really taken/);
+    expect(prompt).toMatch(/verdicts\.txt/);
+    expect(prompt).toMatch(/needs visual sign-off/);
+    expect(prompt).not.toContain('\n\n\n');
+  });
+
+  it('tells it to propose a command when the project has none', () => {
+    for (const prompt of [
+      planned(),
+      buildAgentTaskPrompt('Checkout service', jiraTask, { planMode: true, uiVerifyCommand: '' }),
+    ]) {
+      expect(prompt).toMatch(/This project has no headless screenshot command configured/);
+      expect(prompt).toMatch(/propose one/);
+      expect(prompt).toContain('.vipper/attach/');
+      expect(prompt).toMatch(/do not claim UI work verified/);
+      expect(prompt).not.toMatch(/ui-shots\.mjs/);
+      // The verdict and sign-off rules hold either way.
+      expect(prompt).toMatch(/verdicts\.txt/);
+      expect(prompt).toMatch(/needs visual sign-off/);
+      expect(prompt).toMatch(/If this project has no UI verification command, say so/);
+      expect(prompt).not.toContain('\n\n\n');
+    }
   });
 
   it('tells it to write a verdict per screen into verdicts.txt', () => {
@@ -513,9 +550,12 @@ describe('the plan scope rules', () => {
     expect(prompt).toMatch(/repeat those lines in your\s+final summary/);
   });
 
-  it('tells it that a ui-shots refusal means the shot was never really taken', () => {
-    const prompt = planned();
-    expect(prompt).toMatch(/shot was never really taken/);
+  it('tells it that a screenshot refusal means the shot was never really taken', () => {
+    const prompt = buildAgentTaskPrompt('Checkout service', jiraTask, {
+      planMode: true,
+      uiVerifyCommand: 'pnpm shots --attach',
+    });
+    expect(prompt).toMatch(/shot\s+was never really taken/);
   });
 
   // The plan-quality rules (2026-10-18): each one is a way an approved plan went wrong on
@@ -556,6 +596,25 @@ describe('the plan scope rules', () => {
     expect(prompt).toMatch(/verdicts\.txt/);
     expect(prompt).toMatch(/close\|partly\|far/);
     expect(prompt).not.toContain('\n\n\n');
+  });
+
+  it('carries the project’s command into a re-plan, or the propose-one rule without it', () => {
+    const withCommand = buildReplanPrompt('Fix the export dialog', ['Add the guard'], {
+      slotsLeft: 3,
+      uiVerifyCommand: 'pnpm shots --attach',
+    });
+    expect(withCommand).toContain('`pnpm shots --attach`');
+    expect(withCommand).not.toMatch(/ui-shots\.mjs/);
+    expect(withCommand).not.toMatch(/no headless screenshot command configured/);
+
+    const without = buildReplanPrompt('Fix the export dialog', ['Add the guard'], {
+      slotsLeft: 3,
+    });
+    expect(without).toMatch(/This project has no headless screenshot command configured/);
+    expect(without).toMatch(/propose one/);
+    expect(without).toContain('.vipper/attach/');
+    expect(without).not.toMatch(/ui-shots\.mjs/);
+    expect(without).toMatch(/needs visual sign-off/);
   });
 });
 

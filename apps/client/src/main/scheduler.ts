@@ -2298,7 +2298,12 @@ export class Scheduler {
       replaceRound != null
         ? { round: replaceRound, titles: roundSteps.map((s) => s.title) }
         : undefined;
-    const prompt = buildReplanPrompt(card.title, existingTitles, { note, slotsLeft, replacing });
+    const prompt = buildReplanPrompt(card.title, existingTitles, {
+      note,
+      slotsLeft,
+      replacing,
+      uiVerifyCommand: project.uiVerifyCommand,
+    });
     // Filed before anything starts, so the timeline records the ask even if the run dies on
     // spawn — and so the human can see what they asked for while the planner is thinking.
     if (note?.trim()) this.store.addChatMessage(card.projectId, card.id, note.trim());
@@ -4786,6 +4791,7 @@ export class Scheduler {
         // for this turn only, and asking the task would tell it the opposite.
         planMode:
           (opts.permissionMode ?? task.agentMode ?? project.defaultPermissionMode) === 'plan',
+        uiVerifyCommand: project.uiVerifyCommand,
         attachments: this.promptAttachments(project, task),
         ...context,
       });
