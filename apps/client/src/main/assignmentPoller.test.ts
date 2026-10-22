@@ -49,6 +49,7 @@ function ticketProject(id: string): Project {
     ticketPrefix: 'TM',
     target: { kind: 'local' },
     instructions: '',
+    uiVerifyCommand: '',
     color: '',
     createdAt: 0,
   };

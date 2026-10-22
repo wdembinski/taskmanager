@@ -49,6 +49,7 @@ const project = (over = {}) => ({
   ticketPrefix: 'FX',
   target: { kind: 'local' },
   instructions: '',
+  uiVerifyCommand: '',
   color: '#0F6CBD',
   createdAt: now,
   ...over,

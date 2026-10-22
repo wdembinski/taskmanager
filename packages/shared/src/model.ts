@@ -471,6 +471,18 @@ export interface Project {
    */
   instructions: string;
   /**
+   * The command a run uses to screenshot this project's UI headlessly, run from the
+   * worktree root — `node scripts/ui-shots.mjs --attach` in this repo — or `''` for none.
+   *
+   * The app never executes it: it is only quoted into the planner's prompt (and the AI
+   * reviewer's fix step), so a UI step's Verification names a command this repo really
+   * has. Whatever it is, it must honour the attachment outbox contract — `NAME.png`,
+   * `NAME-mockup.png` and `verdicts.txt` written into `<worktree>/.vipper/attach/` — see
+   * docs/13. Empty means the planner is told there is no headless path and must propose
+   * one first.
+   */
+  uiVerifyCommand: string;
+  /**
    * The project's colour as a hex string (`#0091FF`), or `''` for none.
    *
    * Purely a board signal: a card tagged with this project wears a stripe of it along
@@ -562,6 +574,8 @@ export interface AddProjectInput {
   /** Defaults to the global `defaultExecTarget`. */
   target?: ExecTarget;
   instructions?: string;
+  /** Headless screenshot command, see {@link Project.uiVerifyCommand}; defaults to `''`. */
+  uiVerifyCommand?: string;
   /** Hex colour for the board stripe; defaults to none. */
   color?: string;
 }
@@ -606,6 +620,7 @@ export type ProjectPatch = Partial<
     | 'ticketPrefix'
     | 'target'
     | 'instructions'
+    | 'uiVerifyCommand'
     | 'color'
   >
 > & {

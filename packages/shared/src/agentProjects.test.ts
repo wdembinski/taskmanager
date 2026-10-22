@@ -40,6 +40,7 @@ const project = (over: Partial<Project>): Project => ({
   ticketPrefix: '',
   target: LOCAL_TARGET,
   instructions: '',
+  uiVerifyCommand: '',
   color: '',
   createdAt: 0,
   ...over,

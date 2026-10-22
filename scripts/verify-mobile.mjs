@@ -218,6 +218,7 @@ function makeProject(id, name) {
     ticketPrefix: '',
     target: { kind: 'local' },
     instructions: '',
+    uiVerifyCommand: '',
     color: '',
     createdAt: Date.now(),
   };

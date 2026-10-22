@@ -125,6 +125,7 @@ const cloudProject = {
   ticketPrefix: 'TM',
   target: { kind: 'local' },
   instructions: '',
+  uiVerifyCommand: '',
   color: '',
   createdAt: 1000,
 };
