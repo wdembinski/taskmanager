@@ -320,6 +320,11 @@ its mockup. The contact sheet lands at `.vipper/shots/index.html` (`--out` to po
 elsewhere); `--attach` also copies the run into `.vipper/attach/`, which the app ingests as
 attachments on whichever card ran it, so the shots show up on the card itself.
 
+That command is this repo's **UI verification command** (Projects → Edit), the one the
+planner quotes into every UI step. The outbox it fills is a contract any repo can implement
+with its own tooling — file names, the `verdicts.txt` format, and what the app does with
+them are in [`docs/13-ui-verification-contract.md`](docs/13-ui-verification-contract.md).
+
 The human approves the shots before the card moves to Done — that approval is the sign-off,
 not a step in this checklist. This never runs in CI: it has no pass/fail verdict of its own,
 only screenshots for a person to look at, so there is nothing for a pipeline to gate on.

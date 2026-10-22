@@ -539,7 +539,9 @@ never against a stale local record of what used to be there.
 A pull request the app opened can merge itself once its checks pass: the project's
 **Merge on green** switch, with a **Merge method** and an optional list of **Required
 checks** beside it. A card with UI changes still waits for a human to press **Approve**
-on its screenshots, whoever does the merging.
+on its screenshots, whoever does the merging. How those screenshots reach the card — the
+project's **UI verification command** and the `.vipper/attach/` outbox it fills — is in
+[13. The UI verification contract](13-ui-verification-contract.md).
 
 **Who merges on green** decides who that is:
 
