@@ -1491,6 +1491,8 @@ export interface Store {
   ): BoardReviewRecord | undefined;
   /** The project's newest review, or `null` when it was never reviewed. */
   getLatestBoardReview(projectId: string): BoardReviewRecord | null;
+  /** One review by id — what an Apply button names — or `undefined` for an unknown id. */
+  getBoardReview(id: string): BoardReviewRecord | undefined;
   /** Record what applying one recommendation did, so it is never applied twice. */
   setBoardReviewApplied(
     id: string,
@@ -7666,6 +7668,8 @@ export function createStore(dbPath: string): Store {
       const row = selectLatestBoardReview.get(projectId) as BoardReviewRow | undefined;
       return row ? rowToBoardReview(row) : null;
     },
+
+    getBoardReview,
 
     setBoardReviewApplied(id, recId, entry) {
       const current = getBoardReview(id);

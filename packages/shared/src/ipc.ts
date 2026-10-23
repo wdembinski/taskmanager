@@ -531,6 +531,15 @@ export interface IpcApi {
   'project:stopReview': (id: string) => Promise<void>;
   /** The project's latest ticket review, or null if it was never reviewed. */
   'project:boardReview': (id: string) => Promise<BoardReviewRecord | null>;
+  /**
+   * Apply ONE recommendation of a stored ticket review — `recId` is the ticket's ref
+   * (`BoardReviewRecommendation.id`). Refused, never thrown, for an already-applied item or
+   * a ticket no longer on the board; the outcome is stored on the review either way.
+   */
+  'project:applyReviewItem': (
+    reviewId: string,
+    recId: string,
+  ) => Promise<{ ok: boolean; message: string }>;
   /** Parse a project's plan file and check its `@needs:` dependencies (resolve + no cycles). */
   'project:validatePlan': (id: string) => Promise<PlanValidation>;
   /**

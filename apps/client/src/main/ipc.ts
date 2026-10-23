@@ -279,6 +279,7 @@ import {
 } from './forge/createPr';
 import { createAiVisualReviewer, isAiReviewDecision } from './forge/aiVisualReviewer';
 import { createBoardReviewer } from './boardReviewer';
+import { applyBoardReviewItem } from './boardReviewApply';
 import { applyVisualSignOff, collectAutoMergePrerequisites } from './forge/autoMerge';
 import { autoMergeGitLabPrerequisites, autoMergePrerequisites } from '@shared/autoMerge';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
@@ -4226,6 +4227,31 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('archive:apply', archiveHandlers['archive:apply']);
   handle('archive:restore', archiveHandlers['archive:restore']);
   handle('archive:list', archiveHandlers['archive:list']);
+
+  // One Apply button of a "Review open tickets" report (`boardReviewApply.ts`). Here rather
+  // than beside `boardReviewer`, because it archives the Dropped epic through the archive
+  // handlers above; `drawChainLink` is the `chain:link` body further down.
+  handle('project:applyReviewItem', async (reviewId, recId) =>
+    applyBoardReviewItem(
+      {
+        store,
+        setDecision: (taskId, question) => scheduler.setDecision(taskId, question),
+        drawLink: (from, to, gate) => drawChainLink(from, to, gate),
+        archiveEpic: (target) => archiveHandlers['archive:apply'](target),
+        addComment: (taskId, body) => {
+          const task = store.getTask(taskId);
+          if (task) store.addComment(task.projectId, taskId, body);
+        },
+        now: () => Date.now(),
+        emitReview: (projectId, review) =>
+          send('project:boardReviewChanged', { projectId, review }),
+        pushTasks: (projectId) =>
+          send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) }),
+      },
+      reviewId,
+      recId,
+    ),
+  );
 
   // --- Ticket links (documentation, not the chain of execution) --------------
   function pushTicketLinks(): TicketLink[] {

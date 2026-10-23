@@ -171,6 +171,7 @@ export const RELAY_POLICY: {
   'project:reviewTickets': 'relay',
   'project:stopReview': 'relay',
   'project:boardReview': 'relay',
+  'project:applyReviewItem': 'relay',
   'project:validatePlan': 'relay',
   'project:gitPreflight': 'relay',
   'project:alignPlan': 'relay',
