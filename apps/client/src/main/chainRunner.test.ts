@@ -1015,3 +1015,136 @@ describe('ChainRunner — released by hand from a Done card', () => {
     expect(notes).toEqual([]);
   });
 });
+
+describe('ChainRunner — a card whose steps have all been taken', () => {
+  /** A step of `parent`, filed where its card is. */
+  const step = (id: string, parent: string, status: Task['status']): Task =>
+    task({ id, parentTaskId: parent, status });
+
+  it('does not re-plan a finished card when a lane frees up', () => {
+    // EM-196: both steps done and its PR open, resting in IN PROGRESS. Its own "Plan
+    // complete" freed the lane, the re-ask found it, and `runTask` — with no pending step to
+    // run — started the card's planner again.
+    const { runner, started, notes } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-progress', sessionId: null, agentPlan: '## Plan' }),
+        step('b1', 'b', 'done'),
+        step('b2', 'b', 'done'),
+      ],
+      [link('a', 'b')],
+    );
+    runner.reconsider('lane-freed');
+    runner.reconsider('boot');
+    expect(started).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+
+  it('does not re-plan a card whose last step is waiting on the human', () => {
+    // TM-471: three steps done, the fourth parked on a question.
+    const { runner, started } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-progress' }),
+        step('b1', 'b', 'done'),
+        step('b2', 'b', 'waiting-input'),
+      ],
+      [link('a', 'b')],
+    );
+    runner.reconsider('lane-freed');
+    expect(started).toEqual([]);
+  });
+
+  it('says why when a landing reaches it', () => {
+    const { runner, started, notes } = harness(
+      [
+        task({ id: 'a' }),
+        task({ ...successor('b'), status: 'in-progress' }),
+        step('b1', 'b', 'done'),
+      ],
+      [link('a', 'b')],
+    );
+    runner.landed('a');
+    expect(started).toEqual([]);
+    expect(notes).toHaveLength(1);
+    expect(notes[0].body).toContain("this card's work is its plan's steps");
+  });
+
+  it('still starts a card with a step waiting its turn — that step is the work', () => {
+    const { runner, started } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-progress' }),
+        step('b1', 'b', 'done'),
+        step('b2', 'b', 'pending'),
+      ],
+      [link('a', 'b')],
+    );
+    runner.reconsider('lane-freed');
+    expect(started).toEqual(['b']);
+  });
+
+  it('does not start a second step beside one that is running', () => {
+    // TM-469: every lane that freed up ran `runTask`, which picked the next pending step
+    // while the first was still running — six steps at once in one worktree.
+    const { runner, started } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-progress' }),
+        step('b1', 'b', 'running'),
+        step('b2', 'b', 'pending'),
+        step('b3', 'b', 'pending'),
+      ],
+      [link('a', 'b')],
+    );
+    runner.reconsider('lane-freed');
+    runner.reconsider('lane-freed');
+    expect(started).toEqual([]);
+  });
+
+  it('does not skip past a step waiting on the human', () => {
+    const { runner, started } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-progress' }),
+        step('b1', 'b', 'waiting-input'),
+        step('b2', 'b', 'pending'),
+      ],
+      [link('a', 'b')],
+    );
+    runner.reconsider('lane-freed');
+    expect(started).toEqual([]);
+  });
+
+  it('does not start a step beside one whose run is reserved but not yet started', () => {
+    const { runner, started } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-progress' }),
+        step('b1', 'b', 'pending'),
+        step('b2', 'b', 'pending'),
+      ],
+      [link('a', 'b')],
+      { inFlight: ['b1'] },
+    );
+    runner.reconsider('lane-freed');
+    expect(started).toEqual([]);
+  });
+
+  it('gives the lane to the next card instead of the finished one', () => {
+    // With one lane, the finished card ranked first and the real candidate queued behind
+    // it for as long as the PR stayed open.
+    const { runner, started } = harness(
+      [
+        task({ id: 'a', landedAt: 5 }),
+        task({ ...successor('b'), status: 'in-progress' }),
+        step('b1', 'b', 'done'),
+        successor('c'),
+      ],
+      [link('a', 'b'), link('a', 'c')],
+      { cap: 1 },
+    );
+    runner.reconsider('lane-freed');
+    expect(started).toEqual(['c']);
+  });
+});

@@ -60,6 +60,7 @@ import {
   chainWorkUnderWay,
   outgoingLinks,
   readyToReleaseGiven,
+  stepsTaken,
   type ChainDecline,
   type TaskLink,
 } from '@shared/taskChain';
@@ -186,7 +187,13 @@ type Decline =
   /** Its turn came, but every ready lane of its project is taken — see `@shared/readyLanes`. */
   | 'lane-limit'
   /** Its turn came, but an active card of its project touches the same files — `@shared/fileOverlap`. */
-  | 'file-overlap';
+  | 'file-overlap'
+  /**
+   * The card has steps and none is the chain's to start — all finished, or one under way or
+   * parked. `runTask` would either fall back to the card's own session and plan the card
+   * again, or start the next step beside the one already running in the same worktree.
+   */
+  | 'steps-taken';
 
 /** How a card is named in another card's timeline: its ticket key when it has one. */
 function name(task: Task): string {
@@ -675,6 +682,12 @@ export class ChainRunner {
         return ` Nothing was started yet: ${this.lanesTaken(to)} It starts by itself when one frees up.`;
       case 'file-overlap':
         return ` Nothing was started yet. ${this.waitsFor(hold)}. ${FREED_NOTE}`;
+      case 'steps-taken':
+        return (
+          " Nothing was started: this card's work is its plan's steps, and none is the " +
+          "chain's to start — they are finished, or one is under way or waiting on you. " +
+          'Starting the card would plan it again or run a second step beside the first.'
+        );
     }
   }
 
@@ -829,7 +842,7 @@ export class ChainRunner {
    * inside `Scheduler.runTask`, are what keep two agents off one card.
    */
   private workUnderWay(task: Task): Decline | null {
-    return chainWorkUnderWay(task, this.deps.inFlight(task.id));
+    return chainWorkUnderWay(task, this.deps.inFlight(task.id)) ?? this.stepsTaken(task);
   }
 
   /**
@@ -842,7 +855,19 @@ export class ChainRunner {
    * card a human then reports as "chained but never started".
    */
   private declineReason(task: Task): Decline | null {
-    return chainDecline(task, this.deps.inFlight(task.id));
+    return chainDecline(task, this.deps.inFlight(task.id)) ?? this.stepsTaken(task);
+  }
+
+  /**
+   * `steps-taken` when the card has steps and none is `pending` (`@shared/taskChain`'s
+   * `stepsTaken`) — the mirror of `Scheduler.nextRunnableStep`, which `runTask` asks
+   * before it falls back to the card itself. Asked last, after the cheap guards, because it
+   * reads the project's tasks.
+   */
+  private stepsTaken(task: Task): Decline | null {
+    if (task.parentTaskId) return null;
+    const steps = this.deps.projectTasks(task.projectId);
+    return stepsTaken(task, steps, (id) => this.deps.inFlight(id)) ? 'steps-taken' : null;
   }
 
   /** The cards at either end of the links, by id — everything a readiness check can ask for. */

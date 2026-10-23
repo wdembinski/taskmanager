@@ -15,6 +15,7 @@ import {
   predecessorsOf,
   readyToRelease,
   readyToReleaseGiven,
+  stepsTaken,
   successorsOf,
   waitReason,
   wouldCycle,
@@ -543,5 +544,37 @@ describe('waitReason', () => {
   it('says nothing about a satisfied or unknown predecessor', () => {
     expect(waitReason(link('a', 'b'), task({ id: 'a', status: 'done', landedAt: 5 }))).toBeNull();
     expect(waitReason(link('a', 'b'), undefined)).toBeNull();
+  });
+});
+
+describe('stepsTaken', () => {
+  const card = task({ id: 'c', status: 'in-progress' });
+  const step = (id: string, status: Task['status'], parent = 'c'): Task =>
+    task({ id, parentTaskId: parent, status });
+
+  it('is false for a card with no steps — the card itself is the work', () => {
+    expect(stepsTaken(card, [task({ id: 'other' })])).toBe(false);
+  });
+
+  it('is true when every step is finished, under way or parked', () => {
+    expect(stepsTaken(card, [step('s1', 'done'), step('s2', 'running')])).toBe(true);
+    expect(stepsTaken(card, [step('s1', 'done'), step('s2', 'waiting-input')])).toBe(true);
+  });
+
+  it('is false while a step waits its turn', () => {
+    expect(stepsTaken(card, [step('s1', 'done'), step('s2', 'pending')])).toBe(false);
+  });
+
+  it('is true while another step is running, parked or reserved, even with one pending', () => {
+    expect(stepsTaken(card, [step('s1', 'running'), step('s2', 'pending')])).toBe(true);
+    expect(stepsTaken(card, [step('s1', 'waiting-input'), step('s2', 'pending')])).toBe(true);
+    expect(stepsTaken(card, [step('s1', 'failed'), step('s2', 'pending')])).toBe(true);
+    const reserved = (id: string) => id === 's1';
+    expect(stepsTaken(card, [step('s1', 'pending'), step('s2', 'pending')], reserved)).toBe(true);
+  });
+
+  it("ignores other cards' steps, and is false for a step itself", () => {
+    expect(stepsTaken(card, [step('x1', 'done', 'other')])).toBe(false);
+    expect(stepsTaken(step('s1', 'done'), [step('s1', 'done')])).toBe(false);
   });
 });
