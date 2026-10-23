@@ -484,6 +484,7 @@ describe('issueToTask — assigning tickets to their own board', () => {
     ticketPrefix: '',
     target: LOCAL_TARGET,
     instructions: '',
+    uiVerifyCommand: '',
     color: '',
     createdAt: 0,
     ...over,

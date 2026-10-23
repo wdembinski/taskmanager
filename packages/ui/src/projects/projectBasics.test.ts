@@ -36,6 +36,7 @@ function project(overrides: Partial<Project> = {}): Project {
     ticketPrefix: '',
     target: { kind: 'local' },
     instructions: '',
+    uiVerifyCommand: '',
     color: '',
     createdAt: 0,
     ...overrides,

@@ -47,6 +47,7 @@ const project = (id, name, ticketPrefix, over = {}) => ({
   ticketPrefix,
   target: { kind: 'local' },
   instructions: '',
+  uiVerifyCommand: '',
   color: '',
   createdAt: now,
   ...over,

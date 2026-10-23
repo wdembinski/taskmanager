@@ -79,6 +79,7 @@ const project = (id: string): Project => ({
   ticketPrefix: '',
   target: LOCAL_TARGET,
   instructions: '',
+  uiVerifyCommand: '',
   color: '',
   createdAt: 0,
 });

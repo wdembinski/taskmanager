@@ -107,19 +107,28 @@ interface Review {
 
 const NO_VERDICT: AiReviewVerdict = { verdict: 'needs-changes', screens: [], outOfScope: [] };
 
-/** The fix step a needs-changes review adds — the reasons, and what to do with them. */
-export function aiReviewFixStepDescription(verdict: AiReviewVerdict): string {
+/**
+ * The fix step a needs-changes review adds — the reasons, and what to do with them.
+ * `uiVerifyCommand` is the project's own screenshot command; empty names it generically.
+ */
+export function aiReviewFixStepDescription(
+  verdict: AiReviewVerdict,
+  uiVerifyCommand?: string,
+): string {
   const reasons = verdict.screens
     .filter((s) => s.status === 'mismatch')
     .map((s) => `- ${s.screen}: ${s.reason || 'flagged, no reason given'}`);
+  const command = (uiVerifyCommand ?? '').trim();
+  const retake = command
+    ? `re-run \`${command}\``
+    : "re-take the shots with the project's screenshot command";
   return [
     'The AI visual reviewer flagged these screens:',
     '',
     ...(reasons.length > 0 ? reasons : ['- (no screen named — see the review note)']),
     '',
-    'Fix ONLY these findings; change nothing else. Then re-run ' +
-      '`node scripts/ui-shots.mjs --attach`, rewrite `verdicts.txt` for the new shots, and ' +
-      'commit.',
+    `Fix ONLY these findings; change nothing else. Then ${retake}, rewrite ` +
+      '`verdicts.txt` for the new shots, and commit.',
   ].join('\n');
 }
 
@@ -170,7 +179,7 @@ export function createAiVisualReviewer(deps: AiVisualReviewerDeps): AiVisualRevi
     deps.addFixStep(
       ownerId,
       `Fix the visual review findings (round ${round})`,
-      aiReviewFixStepDescription(verdict),
+      aiReviewFixStepDescription(verdict, project.uiVerifyCommand),
     );
     deps.runCard(ownerId);
   }

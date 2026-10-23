@@ -104,6 +104,15 @@ describe('buildProject', () => {
     expect(project.color).toBe('#0091FF');
   });
 
+  it('defaults the UI verification command to none, and trims a given one', () => {
+    expect(buildProject({ path: '/home/me/app' }, DEFAULT_SETTINGS).uiVerifyCommand).toBe('');
+    const project = buildProject(
+      { path: '/home/me/app', uiVerifyCommand: '  node scripts/ui-shots.mjs --attach  ' },
+      DEFAULT_SETTINGS,
+    );
+    expect(project.uiVerifyCommand).toBe('node scripts/ui-shots.mjs --attach');
+  });
+
   it('mints a fresh id every call', () => {
     const a = buildProject({ path: '/a' }, DEFAULT_SETTINGS);
     const b = buildProject({ path: '/b' }, DEFAULT_SETTINGS);

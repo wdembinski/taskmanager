@@ -39,6 +39,30 @@ const aiSignOffRow = (scheme, mockup) => ({
   channelOverrides: { 'project:list': AI_SIGN_OFF_PROJECTS },
 });
 
+/** This repo's own screenshot command, the value the "UI verification command" rows show. */
+const UI_VERIFY_COMMAND = 'node scripts/ui-shots.mjs --attach';
+
+/** The fixture's projects with the first one — the one "Edit" opens — carrying that command. */
+const UI_VERIFY_PROJECTS = PROJECTS.map((entry, i) =>
+  i === 0 ? { ...entry, project: { ...entry.project, uiVerifyCommand: UI_VERIFY_COMMAND } } : entry,
+);
+
+/** The "UI verification command" field, directly under "Standing instructions". */
+const uiVerifyRow = (scheme, mockup) => ({
+  name: `project-form-ui-verify-${scheme}`,
+  app: 'client',
+  viewport: { width: 1280, height: 900 },
+  scheme,
+  setup: [
+    { click: 'Projects' },
+    { click: 'Edit' },
+    { scrollToSelector: '[data-ui-verify-command]' },
+  ],
+  expect: `[data-ui-verify-command][value=${JSON.stringify(UI_VERIFY_COMMAND)}]`,
+  mockup,
+  channelOverrides: { 'project:list': UI_VERIFY_PROJECTS },
+});
+
 export default [
   {
     // "Projects" is the small icon-row link under the team header (`Sidebar.tsx`), not a
@@ -88,6 +112,9 @@ export default [
   aiSignOffRow('light', 'v10-13-projects-light.svg'),
   // No dark projects mockup exists, so this row has none.
   aiSignOffRow('dark', null),
+  uiVerifyRow('light', 'v10-13-projects-light.svg'),
+  // No dark projects mockup exists, so this row has none.
+  uiVerifyRow('dark', null),
   {
     // "Who merges on green" only renders once "Merge on green" is ON, in the row beside
     // "Merge method" and "Required checks". Picking "Task Manager" proves the dropdown's
@@ -126,7 +153,7 @@ export default [
   },
   {
     // The web cannot edit repo settings — Settings → Projects shows them as read-only facts,
-    // "Move to Done when its PR lands" among them. No mockup draws the web's Settings screen.
+    // "Move to Done when its PR lands" and "UI verification command" among them. No mockup draws the web's Settings screen.
     name: 'web-settings-projects-light',
     app: 'web',
     viewport: { width: 1440, height: 900 },

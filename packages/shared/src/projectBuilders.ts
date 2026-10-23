@@ -147,6 +147,7 @@ export function buildProject(
     ticketPrefix,
     target: input.target ?? defaults.defaultExecTarget,
     instructions: input.instructions?.trim() ?? '',
+    uiVerifyCommand: input.uiVerifyCommand?.trim() ?? '',
     color: input.color?.trim() ?? '',
     createdAt: Date.now(),
   };

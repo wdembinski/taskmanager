@@ -390,6 +390,8 @@ interface ProjectRow {
   target: string;
   /** Standing per-project instructions; null for projects that predate the field. */
   instructions: string | null;
+  /** Headless UI screenshot command; null for projects that predate the field. */
+  uiVerifyCommand: string | null;
   /** Hex colour for the board stripe; null for projects that predate the field. */
   color: string | null;
   /**
@@ -1724,6 +1726,8 @@ export function createStore(dbPath: string): Store {
       personal              INTEGER NOT NULL DEFAULT 0,
       target                TEXT NOT NULL DEFAULT 'local',
       instructions          TEXT,
+      -- See Project.uiVerifyCommand. NULL reads back as '' = none configured.
+      uiVerifyCommand       TEXT,
       color                 TEXT,
       createdAt             INTEGER NOT NULL,
       -- Bumped by a trigger on every write (see below), never by a call site — the
@@ -2384,6 +2388,13 @@ export function createStore(dbPath: string): Store {
   }
   if (!projectColumns.some((c) => c.name === 'instructions')) {
     db.exec(`ALTER TABLE projects ADD COLUMN instructions TEXT`);
+  }
+
+  // Migrate databases created before a project could name its headless screenshot
+  // command. Nothing is seeded: NULL reads back as '' = "no command configured", and the
+  // planner is told so until the owner sets one in the project's settings.
+  if (!projectColumns.some((c) => c.name === 'uiVerifyCommand')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN uiVerifyCommand TEXT`);
   }
 
   // Migrate databases created before a project could NAME its integration branch. NULL
@@ -3186,8 +3197,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoVisualSignOff, autoVisualSignOffMaxRounds, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoVisualSignOff, @autoVisualSignOffMaxRounds, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoVisualSignOff, autoVisualSignOffMaxRounds, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, uiVerifyCommand, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoVisualSignOff, @autoVisualSignOffMaxRounds, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @uiVerifyCommand, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -4459,6 +4470,7 @@ export function createStore(dbPath: string): Store {
       ticketPrefix: r.ticketPrefix ?? '',
       target: parseExecTarget(r.target),
       instructions: r.instructions ?? '',
+      uiVerifyCommand: r.uiVerifyCommand ?? '',
       color: r.color ?? '',
       // NULL (never scanned) and bad JSON both read back as `[]` — see `parseRepoSkills`.
       repoSkills: parseRepoSkills(r.repoSkills),
@@ -4535,6 +4547,7 @@ export function createStore(dbPath: string): Store {
       personal: 0,
       target: formatExecTarget(project.target),
       instructions: project.instructions,
+      uiVerifyCommand: project.uiVerifyCommand,
       color: project.color,
       createdAt: project.createdAt,
       // `repoSkills` is deliberately absent — see `setProjectRepoSkills`, its one writer.
@@ -5319,7 +5332,7 @@ export function createStore(dbPath: string): Store {
        writeBackPlan = @writeBackPlan, autoRelease = @autoRelease, autoIntegrate = @autoIntegrate,
        planAligned = @planAligned, kind = @kind, jiraEpicKeys = @jiraEpicKeys,
        ticketPrefix = @ticketPrefix, target = @target, instructions = @instructions,
-       color = @color, createdAt = @createdAt
+       uiVerifyCommand = @uiVerifyCommand, color = @color, createdAt = @createdAt
      WHERE id = @id`,
   );
   const updateCloudTaskStmt = db.prepare(
@@ -5851,6 +5864,10 @@ export function createStore(dbPath: string): Store {
       if (patch.instructions !== undefined) {
         sets.push(`instructions = @instructions`);
         params.instructions = patch.instructions.trim();
+      }
+      if (patch.uiVerifyCommand !== undefined) {
+        sets.push(`uiVerifyCommand = @uiVerifyCommand`);
+        params.uiVerifyCommand = patch.uiVerifyCommand.trim();
       }
       if (patch.color !== undefined) {
         sets.push(`color = @color`);

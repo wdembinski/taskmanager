@@ -695,6 +695,43 @@ describe('MirrorService replay to a desktop Client', () => {
     expect(channels).toHaveLength(2);
   });
 
+  it('relays a UI verification command edit to the desktop as project:update', async () => {
+    const { service, store } = buildService();
+    const accountId = 'account-1';
+    const project = buildProject({ path: '/repo', planPath: '' }, DEFAULT_SETTINGS);
+    store.projectRows.push({
+      id: project.id,
+      accountId,
+      data: project,
+      rowVersion: store.nextRowVersion(),
+    });
+    store.clientRows.push({
+      id: 'desktop-1',
+      accountId,
+      name: null,
+      platform: null,
+      appVersion: null,
+      protocolVersion: null,
+      createdAt: new Date(),
+    });
+
+    const edited = await service.updateProject(accountId, project.id, {
+      uiVerifyCommand: '  pnpm shots --attach  ',
+    });
+
+    expect(edited.uiVerifyCommand).toBe('pnpm shots --attach');
+    const board = await service.board(accountId, undefined, undefined, false);
+    expect(board.deltas.projects[0]?.uiVerifyCommand).toBe('pnpm shots --attach');
+
+    expect(store.commandRows).toHaveLength(1);
+    const command = store.commandRows[0]!;
+    expect(command.targetClientId).toBe('desktop-1');
+    expect(command.payload).toMatchObject({
+      channel: 'project:update',
+      args: [project.id, { uiVerifyCommand: expect.any(String) }],
+    });
+  });
+
   it('replays a project delete to a known desktop Client, by the same id', async () => {
     const { service, store } = buildService();
     const accountId = 'account-1';

@@ -46,7 +46,7 @@ interface Session {
   exit(): void;
 }
 
-function harness(opts: { enabled?: boolean; maxRounds?: number } = {}) {
+function harness(opts: { enabled?: boolean; maxRounds?: number; uiVerifyCommand?: string } = {}) {
   let clock = 1_000;
   const activity: TaskActivityEntry[] = [];
   const comment = (body: string) => {
@@ -63,6 +63,7 @@ function harness(opts: { enabled?: boolean; maxRounds?: number } = {}) {
     planningModel: 'opus',
     autoVisualSignOff: opts.enabled ?? true,
     autoVisualSignOffMaxRounds: opts.maxRounds ?? 2,
+    uiVerifyCommand: opts.uiVerifyCommand ?? '',
   } as unknown as Project;
   const owner = {
     id: OWNER,
@@ -186,7 +187,7 @@ describe('createAiVisualReviewer', () => {
   });
 
   it('adds and runs one fix step carrying the reasons on needs-changes', async () => {
-    const h = harness();
+    const h = harness({ uiVerifyCommand: 'pnpm shots --attach' });
     await h.push();
     await h.sessions[0].respond(
       verdictBlock('needs-changes', [
@@ -197,7 +198,8 @@ describe('createAiVisualReviewer', () => {
     expect(h.fixSteps).toHaveLength(1);
     expect(h.fixSteps[0].title).toBe('Fix the visual review findings (round 1)');
     expect(h.fixSteps[0].description).toContain('- board-light: the switch is clipped');
-    expect(h.fixSteps[0].description).toContain('node scripts/ui-shots.mjs --attach');
+    expect(h.fixSteps[0].description).toContain('re-run `pnpm shots --attach`');
+    expect(h.fixSteps[0].description).not.toContain('ui-shots.mjs');
     expect(h.fixSteps[0].description).toContain('verdicts.txt');
     expect(h.ran).toEqual([OWNER]);
     expect(h.signOffs).toHaveLength(0);
@@ -206,6 +208,23 @@ describe('createAiVisualReviewer', () => {
       h.bodies().some((b) => b.startsWith(`${AI_REVIEW_NEEDS_CHANGES_PREFIX} (round 1 of 2)`)),
     ).toBe(true);
     expect(h.bodies().some((b) => b.startsWith('Visual sign-off:'))).toBe(false);
+  });
+
+  it('names no script in the fix step when the project has no UI verification command', async () => {
+    const h = harness();
+    await h.push();
+    await h.sessions[0].respond(
+      verdictBlock('needs-changes', [
+        { screen: 'board-light', status: 'mismatch', reason: 'the switch is clipped' },
+      ]),
+    );
+    await flush();
+    expect(h.fixSteps).toHaveLength(1);
+    expect(h.fixSteps[0].description).toContain(
+      "re-take the shots with the project's screenshot command",
+    );
+    expect(h.fixSteps[0].description).not.toContain('ui-shots.mjs');
+    expect(h.fixSteps[0].description).toContain('verdicts.txt');
   });
 
   it('gives up after the max rounds: the gave-up note, the Inbox once, and no re-raise', async () => {

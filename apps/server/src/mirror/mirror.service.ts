@@ -563,6 +563,8 @@ export class MirrorService {
     }
     if (request.target !== undefined) next.target = request.target;
     if (request.instructions !== undefined) next.instructions = request.instructions.trim();
+    if (request.uiVerifyCommand !== undefined)
+      next.uiVerifyCommand = request.uiVerifyCommand.trim();
     if (request.color !== undefined) next.color = request.color.trim();
 
     await this.dataSource.transaction((manager) =>
