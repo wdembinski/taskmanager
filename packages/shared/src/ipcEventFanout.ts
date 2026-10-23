@@ -130,6 +130,12 @@ export const EVENT_FANOUT = {
   // Review workspace (F15.9) — the whole, already-deduped snapshot, reproducible from
   // `review:queues` (F15.10), like every other whole-list event above.
   'review:queues:changed': { kind: 'replace-last' },
+  // "Review open tickets" — the whole row, one per project, reproducible from
+  // `project:boardReview`.
+  'project:boardReviewChanged': {
+    kind: 'replace-by-key',
+    key: (change: { projectId: string }) => change.projectId,
+  },
 
   'window:maximizedChanged': {
     kind: 'drop',

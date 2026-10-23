@@ -38,11 +38,12 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import { ArchiveRegular } from '@fluentui/react-icons';
+import { ArchiveRegular, ClipboardTaskListLtrRegular } from '@fluentui/react-icons';
 import { hasRepo, ownsTickets, type Project } from '@tm/shared/model';
 import { PaneLoading } from '../PaneLoading';
 import { useInitialLoad } from '../useInitialLoad';
 import { useTransport } from '../transport';
+import { BoardReviewDialog } from './BoardReviewDialog';
 import { ProjectForm } from './ProjectForm';
 import { useArchiveAction } from './useArchiveAction';
 
@@ -69,6 +70,8 @@ export function ProjectAdmin(): JSX.Element {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ open: boolean; project?: Project }>({ open: false });
+  // The project whose "Review open tickets" dialog is open (`BoardReviewDialog`), if any.
+  const [reviewing, setReviewing] = useState<Project | null>(null);
 
   const refresh = useCallback(async () => {
     const all = await transport.invoke('project:list');
@@ -175,6 +178,17 @@ export function ProjectAdmin(): JSX.Element {
                     <Button size="small" onClick={() => setDialog({ open: true, project })}>
                       Edit
                     </Button>
+                    {hasRepo(project) && (
+                      <Button
+                        size="small"
+                        appearance="subtle"
+                        icon={<ClipboardTaskListLtrRegular />}
+                        aria-label={`Review tickets for ${project.name}`}
+                        onClick={() => setReviewing(project)}
+                      >
+                        Review tickets
+                      </Button>
+                    )}
                     {ownsTickets(project) && !project.archivedAt && (
                       <Button
                         size="small"
@@ -196,6 +210,8 @@ export function ProjectAdmin(): JSX.Element {
           ))}
         </div>
       )}
+
+      {reviewing && <BoardReviewDialog project={reviewing} onClose={() => setReviewing(null)} />}
 
       <ProjectForm
         open={dialog.open}

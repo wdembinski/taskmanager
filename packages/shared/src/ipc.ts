@@ -130,6 +130,7 @@ import type {
   WorkflowImportResult,
   WorkflowSaveResult,
 } from './workflow';
+import type { BoardReviewRecord } from './boardReview';
 import type {
   ArchivedListing,
   ArchiveResult,
@@ -520,6 +521,25 @@ export interface IpcApi {
    * Model and mode changes take effect on the next task run.
    */
   'project:update': (id: string, patch: ProjectPatch) => Promise<Project | null>;
+  /**
+   * "Review open tickets" (`@shared/boardReview`): start ONE read-only agent run over the
+   * project's open tickets, or return the one already running. `reviewId` is null, with
+   * `error`, when it was refused (no project, or no repo).
+   */
+  'project:reviewTickets': (id: string) => Promise<{ reviewId: string | null; error?: string }>;
+  /** Stop the project's running ticket review, if any — it settles as failed. */
+  'project:stopReview': (id: string) => Promise<void>;
+  /** The project's latest ticket review, or null if it was never reviewed. */
+  'project:boardReview': (id: string) => Promise<BoardReviewRecord | null>;
+  /**
+   * Apply ONE recommendation of a stored ticket review — `recId` is the ticket's ref
+   * (`BoardReviewRecommendation.id`). Refused, never thrown, for an already-applied item or
+   * a ticket no longer on the board; the outcome is stored on the review either way.
+   */
+  'project:applyReviewItem': (
+    reviewId: string,
+    recId: string,
+  ) => Promise<{ ok: boolean; message: string }>;
   /** Parse a project's plan file and check its `@needs:` dependencies (resolve + no cycles). */
   'project:validatePlan': (id: string) => Promise<PlanValidation>;
   /**
@@ -2050,6 +2070,8 @@ export interface IpcEvents {
    * deleted. Carries the project's full, current task list so the UI can replace it.
    */
   'project:tasksChanged': { projectId: string; tasks: Task[] };
+  /** A project's ticket review started, finished or failed — the row as it now stands. */
+  'project:boardReviewChanged': { projectId: string; review: BoardReviewRecord };
   /**
    * Something happened during a sync that the human should know about but that did not fail
    * anything: JIRA answered a query short so nothing was removed, cards the search left out
