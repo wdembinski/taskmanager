@@ -174,4 +174,45 @@ describe('Sidebar', () => {
     );
     expect(markup).toContain('>1/2<');
   });
+
+  it("shows each This machine row's location after its name, from the model", () => {
+    const machine: SidebarSection = {
+      kind: 'machine',
+      label: 'This machine',
+      location: 'local',
+      projects: [{ id: 'p1', name: 'Personal' }],
+    };
+    const markup = renderToStaticMarkup(
+      <Sidebar {...baseProps} sections={[teamSection(), machine]} />,
+    );
+    expect(markup).toContain('>This machine<');
+    expect(markup).toMatch(
+      /<button[^>]*>(?:(?!<\/button>)[\s\S])*Personal(?:(?!<\/button>)[\s\S])*>local<(?:(?!<\/button>)[\s\S])*<\/button>/,
+    );
+  });
+
+  it('marks only the open ticket selected in the tree', () => {
+    const tree = [
+      ticketNode(),
+      ticketNode({ id: 'ticket:t2', taskId: 't2', label: 'Another thing' }),
+    ];
+    const markup = renderToStaticMarkup(
+      <Sidebar
+        {...baseProps}
+        sections={[teamSection({ tree })]}
+        selectedView={{ kind: 'ticket', taskId: 't1' }}
+      />,
+    );
+    expect(markup).toMatch(/id="sidebar-tree-ticket:t1"[^>]*aria-selected="true"/);
+    expect(markup).not.toMatch(/id="sidebar-tree-ticket:t2"[^>]*aria-selected/);
+    expect(markup.match(/aria-selected="true"/g)).toHaveLength(1);
+  });
+
+  it('keeps the Issues and Projects quick links in the markup, found by name', () => {
+    const markup = renderToStaticMarkup(<Sidebar {...baseProps} />);
+    expect(markup).toContain('aria-label="Issues"');
+    expect(markup).toContain('aria-label="Projects"');
+    // The icon row hides at rest but is not removed — still in the DOM and the tab order.
+    expect(markup).not.toMatch(/aria-label="Issues"[^>]*tabindex="-1"/);
+  });
 });
