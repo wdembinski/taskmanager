@@ -70,7 +70,14 @@ export type SidebarSection =
   | { kind: 'views'; views: SidebarView[] }
   | { kind: 'team'; name: string | undefined; tree: SidebarTreeNode[] }
   | { kind: 'archived'; count: number }
-  | { kind: 'machine'; projects: readonly Pick<Project, 'id' | 'name'>[] }
+  | {
+      kind: 'machine';
+      label: string;
+      /** Shown after each project row. Only `local` until F19's cloud workspaces carry their
+       *  own location through the same field. */
+      location: 'local';
+      projects: readonly Pick<Project, 'id' | 'name'>[];
+    }
   | { kind: 'newIssue'; shortcut: string };
 
 export interface SidebarInput {
@@ -349,7 +356,8 @@ function buildTree(
  * The whole sidebar: workspace picker, the fixed views (Inbox / My issues / Reviews), the
  * team's milestone/epic/ticket tree, Archived, the "This machine" project list and New issue —
  * always in that order, so the renderer (F13.11) never has to branch on section identity to
- * decide where it goes.
+ * decide where it goes. The tail is fixed as `archived → machine → newIssue` (F13.10/F13.11):
+ * New issue is always last, pinned at the bottom.
  */
 export function buildSidebar(input: SidebarInput): SidebarSection[] {
   const foldSet = new Set(input.folds);
@@ -374,7 +382,7 @@ export function buildSidebar(input: SidebarInput): SidebarSection[] {
       tree: buildTree(input.milestones, input.tickets, isMilestoneArchived, foldSet),
     },
     { kind: 'archived', count: input.archivedCount },
-    { kind: 'machine', projects: input.projects },
+    { kind: 'machine', label: 'This machine', location: 'local', projects: input.projects },
     { kind: 'newIssue', shortcut: 'C' },
   ];
 }
