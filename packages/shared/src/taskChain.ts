@@ -552,6 +552,40 @@ export function chainWorkUnderWay(
   return null;
 }
 
+/**
+ * Whether a card's work is **its steps, and the chain has no step to start** — true unless
+ * the card has steps, at least one is `pending`, and every other one is `done` (the next
+ * step's turn has come). `steps` may be a whole project's tasks; anything that is not one
+ * of this card's steps is ignored. `inFlight` names a step whose run is reserved but has
+ * not yet written its status.
+ *
+ * Starting a card with no step to start goes wrong one of two ways:
+ *
+ *  - no step is pending: the scheduler finds none and falls back to the card's own
+ *    session, which in plan mode plans the finished card all over again (EM-196: steps
+ *    done, PR open, re-planned by every lane that freed up);
+ *  - a step is running or parked on the human: the scheduler starts the NEXT pending step
+ *    beside it, in the same worktree, so every freed lane added one more (TM-469 ran all
+ *    six steps at once).
+ */
+export function stepsTaken(
+  task: Task,
+  steps: Iterable<Task>,
+  inFlight: (id: string) => boolean = () => false,
+): boolean {
+  if (task.parentTaskId) return false;
+  let any = false;
+  let pending = false;
+  for (const s of steps) {
+    if (s.parentTaskId !== task.id) continue;
+    any = true;
+    if (inFlight(s.id)) return true;
+    if (s.status === 'pending') pending = true;
+    else if (s.status !== 'done') return true;
+  }
+  return any && !pending;
+}
+
 /** See {@link ChainDecline}. */
 export function chainDecline(task: Task, inFlight: boolean): ChainDecline | null {
   const working = chainWorkUnderWay(task, inFlight);

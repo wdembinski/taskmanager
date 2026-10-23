@@ -305,3 +305,33 @@ describe('readyLanes — same files', () => {
     expect(plan.fileHeld.size).toBe(0);
   });
 });
+
+describe('readyLanes — a card whose steps have all been taken', () => {
+  it('is not a candidate: its steps are done and only the merge is left', () => {
+    const { cards, links } = board(
+      releasable('a', { status: 'in-progress' }),
+      task({ id: 'a1', parentTaskId: 'a', status: 'done' }),
+      releasable('b'),
+    );
+    const plan = readyLanes(cards, links, none, 1);
+    expect(sorted(plan.ready)).toEqual(['b']);
+    expect(plan.queued.size).toBe(0);
+  });
+
+  it('is not a candidate while one of its steps is running', () => {
+    const { cards, links } = board(
+      releasable('a', { status: 'in-progress' }),
+      task({ id: 'a1', parentTaskId: 'a', status: 'pending' }),
+      task({ id: 'a2', parentTaskId: 'a', status: 'pending' }),
+    );
+    expect(readyLanes(cards, links, new Set(['a1']), 3).ready.has('a')).toBe(false);
+  });
+
+  it('is still a candidate while a step waits its turn', () => {
+    const { cards, links } = board(
+      releasable('a', { status: 'in-progress' }),
+      task({ id: 'a1', parentTaskId: 'a', status: 'pending' }),
+    );
+    expect(sorted(readyLanes(cards, links, none, 3).ready)).toEqual(['a']);
+  });
+});

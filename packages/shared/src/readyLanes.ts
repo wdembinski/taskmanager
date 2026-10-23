@@ -21,7 +21,7 @@ import { holdAgainst, isActiveHolder, liveStepParents, type FileHold } from './f
 import type { MergeRequest } from './mergeRequest';
 import type { Task } from './model';
 import { priorityRank } from './priority';
-import { blockedBy, chainDecline, incomingLinks, type TaskLink } from './taskChain';
+import { blockedBy, chainDecline, incomingLinks, stepsTaken, type TaskLink } from './taskChain';
 import { parseTicketKey } from './ticketKey';
 
 /** A project's lanes when nobody has set them. `0` means unlimited. */
@@ -118,6 +118,9 @@ function planLanes(
     if (incomingLinks(links, task.id).length === 0) continue;
     if (blockedBy(task, links, byId).length > 0) continue;
     if (chainDecline(task, running.has(task.id)) !== null) continue;
+    // Its steps are finished, under way or parked: there is no step to start, so it must not
+    // take a lane.
+    if (stepsTaken(task, byId.values(), (id) => running.has(id))) continue;
     candidates.push(task);
   }
 
