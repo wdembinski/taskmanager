@@ -44,6 +44,7 @@ const DIALOG_FILES = [
   'packages/ui/src/board/ArchivedCardsDialog.tsx',
   'packages/ui/src/palette/CommandPalette.tsx',
   'packages/ui/src/projects/ArchiveMilestoneDialog.tsx',
+  'packages/ui/src/projects/BoardReviewDialog.tsx',
   'packages/ui/src/projects/GraphLinkPicker.tsx',
   'packages/ui/src/projects/NewTicketDialog.tsx',
 ];
