@@ -27,15 +27,16 @@ import {
   Text,
   tokens,
 } from '@fluentui/react-components';
-import { ArchiveRegular } from '@fluentui/react-icons';
+import { ArchiveRegular, ClipboardTaskListLtrRegular } from '@fluentui/react-icons';
 import { PERMISSION_MODE_LABELS } from '@shared/session';
-import { ownsTickets, type Project } from '@shared/model';
+import { hasRepo, ownsTickets, type Project } from '@shared/model';
 import { LOCAL_TARGET, type ExecTarget } from '@shared/execTarget';
 import { pathSuitsHost } from '@shared/wslPath';
 import { useGitPreflight } from '../useGitPreflight';
 import { modelCaption } from '@ui/modelChoice';
 import { useModelLabels } from '@ui/ModelField';
 import { PaneLoading } from '@ui/PaneLoading';
+import { BoardReviewDialog } from '@ui/projects/BoardReviewDialog';
 import { ProjectForm } from '@ui/projects/ProjectForm';
 import { useArchiveAction } from '@ui/projects/useArchiveAction';
 import { useInitialLoad } from '@ui/useInitialLoad';
@@ -71,6 +72,8 @@ export function Projects(): JSX.Element {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ open: boolean; project?: Project }>({ open: false });
+  // The project whose "Review open tickets" dialog is open (`BoardReviewDialog`), if any.
+  const [reviewing, setReviewing] = useState<Project | null>(null);
   // Echoed up from `ProjectForm` (which owns the form's path/target state) on every change,
   // so `useGitPreflight` — host-only, since it calls `window.api` directly — has a current
   // value to run against. See `ProjectForm`'s own header for why this cannot live there.
@@ -196,6 +199,17 @@ export function Projects(): JSX.Element {
                     <Button size="small" onClick={() => setDialog({ open: true, project })}>
                       Edit
                     </Button>
+                    {hasRepo(project) && (
+                      <Button
+                        size="small"
+                        appearance="subtle"
+                        icon={<ClipboardTaskListLtrRegular />}
+                        aria-label={`Review tickets for ${project.name}`}
+                        onClick={() => setReviewing(project)}
+                      >
+                        Review tickets
+                      </Button>
+                    )}
                     {ownsTickets(project) && !project.archivedAt && (
                       <Button
                         size="small"
@@ -226,6 +240,8 @@ export function Projects(): JSX.Element {
           ))}
         </div>
       )}
+
+      {reviewing && <BoardReviewDialog project={reviewing} onClose={() => setReviewing(null)} />}
 
       <ProjectForm
         open={dialog.open}
