@@ -19,4 +19,15 @@ export default [
     setup: null,
     mockup: 'v9-7b-board-dark.svg',
   },
+  {
+    // The only row with full transparency: proves the CSS glass panes render translucent
+    // (every other row stays on 'reduced' so its panes are opaque and deterministic).
+    name: 'board-light-glass',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    transparency: 'full',
+    setup: null,
+    mockup: 'v9-7-board-light.svg',
+  },
 ];

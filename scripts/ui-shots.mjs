@@ -54,6 +54,10 @@
  *   drawn inside `v9-4-mobile-light.svg`/`v9-5-mobile-dark.svg`, not the SVG's own (wider) canvas.
  * - `scheme` — `'light'` or `'dark'`, fed to the same `appearance` setting
  *   `shots-board.mjs`'s `clientInitScript` already threads through.
+ * - `transparency` — the `transparency` setting the row boots with. Omit it for `'reduced'`
+ *   (opaque panes, so every other row's pixels stay deterministic); `'full'` turns the CSS glass
+ *   on (`resolveAppearance` picks `css` wherever `backdrop-filter` is supported, which headless
+ *   Chrome is), proving the translucent panes actually render.
  * - `setup` — `null` for a screen's resting state, otherwise an ordered list of steps the driver
  *   replays before the shot:
  *     - `{ click: text }` — click the first visible element whose accessible name (text content,
@@ -248,7 +252,11 @@ function clientInitScript(defaultSettings, row, attachmentUrls) {
   const stub = buildApiStub({
     defaultSettings,
     fixture,
-    settingsOverrides: { appearance: row.scheme, transparency: 'reduced', fontSizePx: 14 },
+    settingsOverrides: {
+      appearance: row.scheme,
+      transparency: row.transparency ?? 'reduced',
+      fontSizePx: 14,
+    },
     attachmentUrls,
   });
   return `${PAGE_HELPERS_SRC}\n${stub}`;
