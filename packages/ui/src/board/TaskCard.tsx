@@ -8,8 +8,9 @@
  * The Steps and Merge requests sections, the chain/link chips' old home in a footer row, and
  * the sprint/points/label chips are gone — F13.24 moves what is still needed into the F12
  * peek. What survives unchanged: the attention ring, selection, the link handle and drop
- * states, drag, dimmed, the hover-revealed "More actions" menu with Stop/Resume, the variants
- * badge, the automation-origin flash, the needs/unblocks row, and the tracker link on the key.
+ * states, drag, dimmed, Stop/Resume, the "More actions" menu (revealed on hover or focus,
+ * always shown on the touch board), the variants badge, the automation-origin flash, the
+ * needs/unblocks row, and the tracker link on the key.
  *
  * The card itself has NO frame — the fill is brighter than the column, which is edge enough.
  * The only frames are rings painted outside the box: orange for unread ticket comments or an
@@ -116,6 +117,13 @@ const useStyles = makeStyles({
     // exactly one atomic class deciding the handle's opacity and no insertion-order race
     // with the base rule on the handle itself.
     '&:hover [data-chain-handle]': { opacity: 1, pointerEvents: 'auto' },
+    // The "More actions" menu is the same idea (the v9 mockup draws no "…" on a card at
+    // rest), but it is also reachable from the keyboard: focus anywhere inside the card
+    // shows it, so Tab can land on it while it is still at opacity 0.
+    '&:hover [data-card-menu], &:focus-within [data-card-menu]': {
+      opacity: 1,
+      pointerEvents: 'auto',
+    },
     // `dimmed` toggles opacity alone; the transition lives here so it plays whichever
     // direction the state changes, same split `AgentGlyph.layer`/`.hidden` makes.
     transitionProperty: 'opacity',
@@ -248,6 +256,25 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     ':hover': { color: tokens.colorNeutralForeground1 },
   },
+  /**
+   * The "More actions" trigger's rest state: invisible and unclickable until the card is
+   * hovered or holds focus (`card`'s `[data-card-menu]` rule), and kept visible while its own
+   * menu is open — the pointer has left the card for the popover by then. Opacity, not
+   * `display: none`, so the button stays in the tab order.
+   */
+  cardMenu: {
+    opacity: 0,
+    pointerEvents: 'none',
+    transitionProperty: 'opacity',
+    transitionDuration: '120ms',
+    transitionTimingFunction: 'ease-in-out',
+    '@media (prefers-reduced-motion: reduce)': { transitionDuration: '0ms' },
+    '&[aria-expanded="true"]': { opacity: 1, pointerEvents: 'auto' },
+    ':focus-visible': { opacity: 1, pointerEvents: 'auto' },
+  },
+  /** The touch board (`onMoveTo` set) has no hover to reveal the menu with, and "Move to…" is
+   *  its only way to change a card's column — there the menu is always shown. */
+  menuAlways: { opacity: 1, pointerEvents: 'auto' },
   /** The card's one status line — see `cardParts.CardStatusLine`. */
   statusLine: { display: 'flex', flexDirection: 'column', gap: '4px' },
   runRow: { display: 'flex', alignItems: 'center', gap: '6px' },
@@ -1065,7 +1092,12 @@ export function TaskCard({
               <Menu>
                 <MenuTrigger disableButtonEnhancement>
                   <Button
-                    className={styles.runButton}
+                    className={mergeClasses(
+                      styles.runButton,
+                      styles.cardMenu,
+                      onMoveTo && styles.menuAlways,
+                    )}
+                    data-card-menu=""
                     size="small"
                     appearance="subtle"
                     icon={<MoreHorizontalRegular />}
@@ -1106,9 +1138,7 @@ export function TaskCard({
         </div>
 
         <div className={styles.titleRow}>
-          <Text weight="semibold" className={styles.title}>
-            {task.title}
-          </Text>
+          <Text className={styles.title}>{task.title}</Text>
         </div>
 
         {parts.statusLine && (

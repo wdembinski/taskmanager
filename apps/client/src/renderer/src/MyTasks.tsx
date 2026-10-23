@@ -28,6 +28,7 @@ import {
   mergeClasses,
 } from '@fluentui/react-components';
 import {
+  AddRegular,
   ArchiveRegular,
   ArrowRoutingRegular,
   BranchForkRegular,
@@ -1480,18 +1481,6 @@ export function MyTasks({
                 </Button>
               </OverflowItem>
             )}
-            <OverflowItem id="add" pinned>
-              <Button
-                size="small"
-                appearance="primary"
-                onClick={() => {
-                  setAddColumn(null);
-                  setAddOpen(true);
-                }}
-              >
-                Add task…
-              </Button>
-            </OverflowItem>
             <ToolbarOverflowMenu>
               {/* The scope Dropdown's own options, one `MenuItem` apiece — the fallback for
                   the one control narrow viewports can still force into the menu (`priority`
@@ -1545,6 +1534,21 @@ export function MyTasks({
                 </ToolbarOverflowMenuItem>
               )}
             </ToolbarOverflowMenu>
+            {/* The v9 mockup's brand-filled square "+", the row's LAST control — after the
+              "···" menu, so the one primary action sits at the far right edge. */}
+            <OverflowItem id="add" pinned>
+              <Button
+                size="small"
+                appearance="primary"
+                icon={<AddRegular />}
+                title="Add task"
+                aria-label="Add task"
+                onClick={() => {
+                  setAddColumn(null);
+                  setAddOpen(true);
+                }}
+              />
+            </OverflowItem>
           </div>
         </Overflow>
 

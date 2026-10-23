@@ -36,6 +36,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Caption1, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
+import { AddRegular } from '@fluentui/react-icons';
 import { COLUMN_META, hiddenColumnsSummary } from '@tm/ui/board/boardColumns';
 import { allowedDropColumns, moveSheetOptions } from '@tm/ui/board/moveTargets';
 import { hiddenBoardColumns, withColumnHidden } from '@tm/shared/settings';
@@ -820,13 +821,14 @@ export function BoardScreen({
             <Button
               size="small"
               appearance="primary"
+              icon={<AddRegular />}
+              title="Add task"
+              aria-label="Add task"
               onClick={() => {
                 setAddColumn(null);
                 setAddOpen(true);
               }}
-            >
-              Add task…
-            </Button>
+            />
           }
         />
 
