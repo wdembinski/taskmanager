@@ -250,6 +250,9 @@ export function MyTasks({
   } | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  /** The column whose header "+" opened the add dialog — the new card is moved there.
+   *  Null for every other way in (the header button, the palette), which add to To Do. */
+  const [addColumn, setAddColumn] = useState<BoardColumn | null>(null);
   /**
    * The cards that have LEFT the board — held here rather than fetched when the dialog opens,
    * because the toolbar button is only offered when there are some, and a count that only
@@ -525,6 +528,7 @@ export function MyTasks({
   // The command palette's "Add task" — the same one-shot shape as `openTaskId` below.
   useEffect(() => {
     if (!openAddTask) return;
+    setAddColumn(null);
     setAddOpen(true);
     onOpenAddTaskHandled?.();
   }, [openAddTask, onOpenAddTaskHandled]);
@@ -1477,7 +1481,14 @@ export function MyTasks({
               </OverflowItem>
             )}
             <OverflowItem id="add" pinned>
-              <Button size="small" appearance="primary" onClick={() => setAddOpen(true)}>
+              <Button
+                size="small"
+                appearance="primary"
+                onClick={() => {
+                  setAddColumn(null);
+                  setAddOpen(true);
+                }}
+              >
                 Add task…
               </Button>
             </OverflowItem>
@@ -1634,6 +1645,10 @@ export function MyTasks({
               column={col}
               label={COLUMN_LABEL[col]}
               cards={cardsByColumn.get(col) ?? []}
+              onAddCard={(c) => {
+                setAddColumn(c);
+                setAddOpen(true);
+              }}
               // A native ticket's parent epic, by NAME (Phase 24) — `t.epicTaskId` names
               // another card on this same board.
               epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
@@ -1855,7 +1870,11 @@ export function MyTasks({
         jiraEnabled={jiraEnabled}
         agentProjects={agentProjects}
         dictation={dictation}
-        onClose={() => setAddOpen(false)}
+        column={addColumn ?? undefined}
+        onClose={() => {
+          setAddOpen(false);
+          setAddColumn(null);
+        }}
         onCreated={() => void refresh()}
         // A link that would not draw is reported HERE: the card exists by then, and the
         // dialog it was refused in is already closing.

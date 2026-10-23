@@ -220,12 +220,17 @@ export function BoardScreen({
   const [syncing, setSyncing] = useState(false);
   /** Whether the shared add-task dialog is up — the desktop's own `addOpen`. */
   const [addOpen, setAddOpen] = useState(false);
+  /** The column whose header "+" opened the add dialog — the desktop's own `addColumn`. */
+  const [addColumn, setAddColumn] = useState<BoardColumn | null>(null);
   // The command palette's own entry into an already-mounted board (F9.5) — see
   // `paletteRequest`'s own doc comment for why `initialSelectedTaskId` alone cannot reach this.
   useEffect(() => {
     if (!paletteRequest) return;
     if (paletteRequest.kind === 'select') setSelectedTaskId(paletteRequest.taskId);
-    else setAddOpen(true);
+    else {
+      setAddColumn(null);
+      setAddOpen(true);
+    }
   }, [paletteRequest, setSelectedTaskId]);
   /**
    * When the Removed-cards dialog was opened, or null while it is shut — the timestamp
@@ -812,7 +817,14 @@ export function BoardScreen({
           // sits in a row of small controls, and a default-size button would set the
           // toolbar's height and make the two boards visibly different.
           addTask={
-            <Button size="small" appearance="primary" onClick={() => setAddOpen(true)}>
+            <Button
+              size="small"
+              appearance="primary"
+              onClick={() => {
+                setAddColumn(null);
+                setAddOpen(true);
+              }}
+            >
               Add task…
             </Button>
           }
@@ -884,6 +896,10 @@ export function BoardScreen({
                 column={column}
                 label={COLUMN_LABEL[column]}
                 cards={cardsByColumn.get(column) ?? []}
+                onAddCard={(c) => {
+                  setAddColumn(c);
+                  setAddOpen(true);
+                }}
                 epicNameOf={epicNameOf}
                 assigneeOf={assigneeOf}
                 agentNameOf={agentNameOf}
@@ -1093,7 +1109,11 @@ export function BoardScreen({
         // A browser has no OS file picker and no path for a dropped `File`, so the whole
         // files section is one thing this host cannot do rather than a control to grey out.
         filesEnabled={false}
-        onClose={() => setAddOpen(false)}
+        column={addColumn ?? undefined}
+        onClose={() => {
+          setAddOpen(false);
+          setAddColumn(null);
+        }}
         // The new card itself arrives on the next board poll (the desktop mirrors the write);
         // this re-reads the relayed lists, which is where a chain link drawn at creation is.
         onCreated={extras.refresh}

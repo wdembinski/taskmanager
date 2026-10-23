@@ -12,10 +12,11 @@
  * click-through.
  */
 import type { Automation, AutomationAction, AutomationTrigger } from '@tm/shared/automation';
-import type { Task } from '@tm/shared/model';
+import type { BoardColumn, Task } from '@tm/shared/model';
 import { RUN_REFUSAL_MESSAGE, type ParkedRefusal, type RunRefusal } from '@tm/shared/scheduler';
 import { LINK_REFUSAL_MESSAGE } from '@tm/shared/taskChain';
 import type { AddTaskAssign, AddTaskPlan } from './AddTaskDialog';
+import { COLUMN_META } from './board/boardColumns';
 import type { Transport } from './transport';
 
 /** `useTransport()`'s own call shape — the one thing {@link executeAddTaskSteps} needs
@@ -28,7 +29,7 @@ type StepPlan = Extract<AddTaskPlan, { kind: 'step' }>;
 
 /**
  * One write `addTaskSteps` would otherwise make inline, in the order {@link addTaskSteps}
- * emits them: create, JIRA link, attachments, chain, schedule, assign.
+ * emits them: create, JIRA link, move, attachments, chain, schedule, assign.
  *
  * `create-step` / `create-card` / `create-ticket` are mutually exclusive and always first —
  * nothing else here carries an id of its own, because none exists until whichever of these
@@ -39,12 +40,18 @@ type StepPlan = Extract<AddTaskPlan, { kind: 'step' }>;
  * chain it is a `card`/`ticket`-only step, because `addTaskPlan` refuses a trigger on a step. `assign` is always last — attachments must land before it,
  * because a started agent's first prompt quotes the brief's `@name`s, and the files must
  * already be on disk when that prompt is built rather than racing it.
+ *
+ * `move` files a card added from a column header's "+" into that column (`task:move`). It
+ * follows the JIRA link, so the move transitions the freshly linked ticket too, and comes
+ * before everything else: a card that is going to run should already be where it was put.
+ * A step is never moved — it lives inside its parent, not in a column.
  */
 export type AddTaskStep =
   | { kind: 'create-step'; parentId: string; step: StepPlan['step'] }
   | { kind: 'create-card'; board: string; card: CardPlan['card'] }
   | { kind: 'create-ticket'; board: string; ticket: TicketPlan['ticket'] }
   | { kind: 'link-jira'; ticket: NonNullable<CardPlan['ticket']> }
+  | { kind: 'move'; column: BoardColumn }
   | { kind: 'attach'; paths: string[] }
   | { kind: 'chain-after'; fromTaskId: string }
   | { kind: 'schedule'; trigger: AutomationTrigger; assign: AddTaskAssign; timeZone: string }
@@ -53,11 +60,18 @@ export type AddTaskStep =
 /**
  * Turn a settled plan into the writes `save()` makes today, as data. `extras` carries what
  * `AddTaskPlan` itself does not — the staged files, the chain pick and the time zone a
- * schedule runs in live on the dialog's own state, not on the plan.
+ * schedule runs in live on the dialog's own state, not on the plan; so does `column`, the
+ * column whose header "+" opened the dialog (absent, or `'todo'` — where a new card lands
+ * anyway — means no move).
  */
 export function addTaskSteps(
   plan: Exclude<AddTaskPlan, { kind: 'incomplete' }>,
-  extras: { attachments: readonly string[]; runsAfterId: string | null; timeZone: string },
+  extras: {
+    attachments: readonly string[];
+    runsAfterId: string | null;
+    timeZone: string;
+    column?: BoardColumn;
+  },
 ): AddTaskStep[] {
   const steps: AddTaskStep[] = [];
 
@@ -72,6 +86,10 @@ export function addTaskSteps(
     if (plan.ticket) steps.push({ kind: 'link-jira', ticket: plan.ticket });
   } else {
     steps.push({ kind: 'create-ticket', board: plan.board, ticket: plan.ticket });
+  }
+
+  if (extras.column && extras.column !== 'todo') {
+    steps.push({ kind: 'move', column: extras.column });
   }
 
   if (extras.attachments.length) steps.push({ kind: 'attach', paths: [...extras.attachments] });
@@ -263,6 +281,8 @@ export async function executeAddTaskSteps(
     try {
       if (step.kind === 'link-jira') {
         await invoke('jira:createTask', { ...step.ticket, adoptTaskId: createdId });
+      } else if (step.kind === 'move') {
+        await invoke('task:move', createdId, step.column);
       } else if (step.kind === 'attach') {
         await invoke('attachment:add', createdId, step.paths);
       } else if (step.kind === 'chain-after') {
@@ -295,6 +315,9 @@ export async function executeAddTaskSteps(
         run = runFromAssignError(message);
       } else if (step.kind === 'link-jira') {
         problems.push(`The card was created, but its JIRA ticket was not — ${message}`);
+      } else if (step.kind === 'move') {
+        const label = COLUMN_META.find((c) => c.column === step.column)?.label ?? step.column;
+        problems.push(`The card was created, but it could not be moved to ${label} — ${message}`);
       } else if (step.kind === 'attach') {
         problems.push(
           `The ${created === 'step' ? 'step' : 'card'} was created, but its files were not attached — ${message}`,

@@ -77,7 +77,7 @@ import {
   type HourInterval,
   type ScheduleShape,
 } from '@tm/shared/automation';
-import type { IssueType, Project, Task, TaskType } from '@tm/shared/model';
+import type { BoardColumn, IssueType, Project, Task, TaskType } from '@tm/shared/model';
 import { PERSONAL_PROJECT_ID } from '@tm/shared/model';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
 import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
@@ -95,6 +95,7 @@ import {
   seedNewCardAssign,
 } from './agentPickers';
 import { addTaskSteps, executeAddTaskSteps, outcomeMessage } from './addTaskSteps';
+import { COLUMN_META } from './board/boardColumns';
 // Lives beside the executor that saves it; re-exported so the dialog stays its public home.
 export { attachedAutomation } from './addTaskSteps';
 import { isFileDrag } from './AttachmentStrip';
@@ -549,6 +550,12 @@ export interface AddTaskDialogProps {
    * vanish or invite a second Add. It goes to the board, which is where the new card now is.
    */
   onNotice?: (message: string) => void;
+  /**
+   * The column whose header "+" opened the dialog. A card (never a step) is moved there with
+   * `task:move` right after it is created — see `addTaskSteps`' `move` step. Absent, or
+   * `'todo'`, adds the card where a new card always lands.
+   */
+  column?: BoardColumn;
 }
 
 export function AddTaskDialog({
@@ -565,6 +572,7 @@ export function AddTaskDialog({
   onClose,
   onCreated,
   onNotice,
+  column,
 }: AddTaskDialogProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -970,6 +978,7 @@ export function AddTaskDialog({
         attachments: staged.map((s) => s.path),
         runsAfterId: runsAfter?.id ?? null,
         timeZone,
+        column,
       });
       const result = await executeAddTaskSteps(steps, transport.invoke);
       const msg = outcomeMessage(result);
@@ -987,6 +996,11 @@ export function AddTaskDialog({
   // and start has anything to do beyond the plain Add it is offered alongside.
   const canStartNow = !isStep && agentProjectId !== '';
   const primary = (): void => void save(canStartNow);
+  // Where a card added from a column header's "+" will be moved once it exists.
+  const landsIn =
+    !isStep && column && column !== 'todo'
+      ? COLUMN_META.find((c) => c.column === column)?.label
+      : undefined;
 
   return (
     <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
@@ -1014,6 +1028,7 @@ export function AddTaskDialog({
                   placeholder="What should Claude do?"
                 />
               </Field>
+              {landsIn && <Caption1 className={styles.hint}>Lands in {landsIn}</Caption1>}
               {/* Which project or board the card belongs to — Personal, or any other
                   project. Files it (the stripe a separate Project picker used to set) AND
                   decides where it is written: a project that owns tickets gets a native one

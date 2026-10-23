@@ -15,6 +15,7 @@ import {
   type AddTaskStep,
   type TransportInvoke,
 } from './addTaskSteps';
+import type { BoardColumn } from '@tm/shared/model';
 import { RUN_REFUSAL_MESSAGE, type RunRefusal } from '@tm/shared/scheduler';
 
 const cardPlan = (over: Partial<Extract<AddTaskPlan, { kind: 'card' }>> = {}) =>
@@ -58,6 +59,7 @@ const extras = (
     attachments: readonly string[];
     runsAfterId: string | null;
     timeZone: string;
+    column: BoardColumn;
   }> = {},
 ) => ({
   attachments: [],
@@ -160,6 +162,45 @@ describe('addTaskSteps', () => {
       extras(),
     );
     expect(steps.some((s) => s.kind === 'schedule')).toBe(false);
+  });
+
+  it('moves a card added from a column header into that column, after create and the JIRA link', () => {
+    const steps = addTaskSteps(
+      cardPlan({
+        ticket: { projectKey: 'ABC', issueTypeId: '10001', summary: 'Ship it' },
+        assign: { agentProjectId: 'p-repo', model: null, mode: null },
+      }),
+      extras({ attachments: ['/a.png'], runsAfterId: 'c0', column: 'in-review' }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual([
+      'create-card',
+      'link-jira',
+      'move',
+      'attach',
+      'chain-after',
+      'assign',
+    ]);
+    expect(steps[2]).toEqual({ kind: 'move', column: 'in-review' });
+  });
+
+  it('moves a native ticket too, before its assign', () => {
+    const steps = addTaskSteps(
+      ticketPlan({ assign: { agentProjectId: 'p-billing', model: null, mode: null } }),
+      extras({ column: 'blocked' }),
+    );
+    expect(steps.map((s) => s.kind)).toEqual(['create-ticket', 'move', 'assign']);
+  });
+
+  it('emits no move for To Do, where a new card lands anyway, or with no column', () => {
+    expect(addTaskSteps(cardPlan(), extras({ column: 'todo' })).map((s) => s.kind)).toEqual([
+      'create-card',
+    ]);
+    expect(addTaskSteps(cardPlan(), extras()).some((s) => s.kind === 'move')).toBe(false);
+  });
+
+  it('never moves a step, whatever column the dialog was opened from', () => {
+    const steps = addTaskSteps(stepPlan(), extras({ column: 'in-review' }));
+    expect(steps.map((s) => s.kind)).toEqual(['create-step']);
   });
 });
 
@@ -365,6 +406,53 @@ describe('executeAddTaskSteps', () => {
     expect(result.problems).toEqual([
       'The card was created, but its schedule was not saved — engine offline',
     ]);
+    expect(invoke).not.toHaveBeenCalledWith('task:delete', expect.anything());
+  });
+
+  const moved: AddTaskStep[] = [
+    {
+      kind: 'create-card',
+      board: 'p-repo',
+      card: { title: 'Ship it', type: 'feature', projectTagId: 'p-repo' },
+    },
+    { kind: 'move', column: 'in-review' },
+    {
+      kind: 'assign',
+      assign: { agentProjectId: 'p-repo', model: null, mode: null },
+      start: false,
+    },
+  ];
+
+  it('moves the created card with task:move before assigning it', async () => {
+    const calls: string[] = [];
+    const invoke = vi.fn(async (channel: string) => {
+      calls.push(channel);
+      if (channel === 'task:create') return task({ id: 'new-card' });
+      if (channel === 'task:move') return task({ id: 'new-card', status: 'in-review' });
+      if (channel === 'task:assignAgent') return task({ id: 'new-card' });
+      throw new Error(`unexpected channel ${channel}`);
+    }) as unknown as TransportInvoke;
+
+    const result = await executeAddTaskSteps(moved, invoke);
+    expect(result.problems).toEqual([]);
+    expect(invoke).toHaveBeenCalledWith('task:move', 'new-card', 'in-review');
+    expect(calls).toEqual(['task:create', 'task:move', 'task:assignAgent']);
+  });
+
+  it('keeps the card, warns, and still assigns when the move is refused', async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === 'task:create') return task();
+      if (channel === 'task:move') throw new Error('desktop offline');
+      if (channel === 'task:assignAgent') return task();
+      throw new Error(`unexpected channel ${channel}`);
+    }) as unknown as TransportInvoke;
+
+    const result = await executeAddTaskSteps(moved, invoke);
+    expect(result.created).toBe('card');
+    expect(result.problems).toEqual([
+      'The card was created, but it could not be moved to In Review — desktop offline',
+    ]);
+    expect(result.run).toBe('assigned');
     expect(invoke).not.toHaveBeenCalledWith('task:delete', expect.anything());
   });
 });
