@@ -322,6 +322,51 @@ runs it once at boot and once every hour after, over every live ticket project's
 
 ---
 
+## Review open tickets
+
+**Review open tickets** on a project with a repo starts ONE read-only agent run in that repo
+(`boardReviewer.ts`). It runs in plan mode with every editing tool taken away, is booked as
+orchestrator spend, and the project's Stop kills it. Only one runs per project at a time.
+
+**What it sends** (`boardReviewPrompt.ts`). The prompt has:
+- every open ticket, with its status, epic, milestone, arrows, ticket links and description;
+- the titles of the latest 40 done tickets;
+- the project's epics and milestones;
+- how this orchestrator runs a card (plan, one session per step, after-merge arrows);
+- the rubric (`BOARD_REVIEW_RUBRIC`);
+- the ready-lane cap, which limits how big a wave can be.
+
+Each ticket is named by a ref (`ticketKey ?? externalKey ?? '#<n>'`). The run must end with
+one fenced json report. `parseBoardReviewReport` (`@shared/boardReview`) reads that report
+back onto task ids and stores it as a `board_reviews` row: `done` with the report, or `failed`
+with the parser's error.
+
+**The verdicts.** Every open ticket gets exactly one: `OK | REWRITE | SPLIT | MERGE | DROP |
+REORDER | DECIDE`. The report also lists the files that several tickets touch (hot files) and
+the waves the tickets can run in.
+
+**What each Apply does** (`boardReviewApply.ts`). Nothing in the report is applied on its own.
+Each non-OK verdict gets its own Apply button. Its outcome is stored on the review, and a
+second Apply of the same item is refused.
+
+| Verdict | Apply |
+| --- | --- |
+| REWRITE | Replaces the title and description. Native tickets only. |
+| SPLIT | Creates one ticket per part under the original's epic and milestone, chains the parts with after-merge arrows, and moves the original into Dropped. |
+| MERGE | Moves the ticket into Dropped, with a comment on it and on the ticket that absorbs it. |
+| DROP | Moves the ticket into Dropped, with the reason as a comment. |
+| REORDER | Draws an after-merge arrow from each ticket it must run after. `canLink` refusals are reported. |
+| DECIDE | Marks the ticket Needs decision with the question. |
+
+**Dropped** is an *archived* native epic of the project. Apply uses the existing one, or
+creates and archives it the first time it is needed. Moving a ticket under it hides the
+ticket through `archivedBy`'s epic arm, and restoring the epic brings the ticket back.
+`store.archiveTask` (the board-removal archive) is never called, so a dropped ticket's own
+`archivedAt` stays null. `scripts/verify-board-review.mjs` drives all of this end to end with
+a stub `claude`.
+
+---
+
 ## The relay classification
 
 Phase 24 added 17 new `IpcApi` channels and 4 new `IpcEvents`, and every one of them was
