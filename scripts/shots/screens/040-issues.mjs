@@ -71,10 +71,10 @@ export default [
     scheme: 'light',
     // The Links section sits below the visual sign-off band, past the pane's fold; the scroll
     // targets the section's own box (the parent of its "Blocked by" group) rather than the
-    // group itself, so `block: 'start'` keeps the "Links" heading in frame. Known gap: at
-    // 1440x900 that band (`TaskDetail.tsx`'s `cell`, no height floor) gives way to ~20px
-    // once `headBand` reaches its cap, so only the heading shows — a layout defect left for
-    // its own ticket, not something this row can scroll past.
+    // group itself, so `block: 'start'` keeps the "Links" heading in frame. That band
+    // (`TaskDetail.tsx`'s `cell`) never shrinks: once it and `headBand` outgrow the pane
+    // the region above the composer scrolls instead, so the heading and its rows show in
+    // full.
     setup: [
       { click: 'Tickets' },
       { click: 'issue-row:first' },
@@ -88,16 +88,20 @@ export default [
     },
   },
   {
-    // Same pane as `issue-peek`, at the shorter 1100x800 viewport the give-way layout
-    // (`TaskDetail.tsx`'s `headBand`/`cell`/`scrollWrap`) targets — proves the bands shrink
-    // inside their own boxes rather than overlapping the conversation when the pane is too
-    // short for both at their full caps.
+    // Same pane as `issue-peek`, at the shorter 1100x800 viewport where band + the
+    // conversation's floor outgrow the pane — proves `TaskDetail.tsx`'s `body` scrolls
+    // rather than squeezing `headBand`/`cell`, so the Links heading lays out in full and
+    // clear of the conversation.
     name: 'issue-peek-1100x800',
     app: 'client',
     viewport: { width: 1100, height: 800 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
     expect: 'button[aria-label="Open full screen"]',
+    layoutCheck: {
+      visible: '[data-links-heading]',
+      clear: ['[role="log"][aria-label="Conversation"]'],
+    },
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {

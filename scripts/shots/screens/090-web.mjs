@@ -36,6 +36,11 @@ export default [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
+    // The web renders the desktop's own `TaskDetail`, so the same Ticket band check holds.
+    layoutCheck: {
+      visible: '[data-links-heading]',
+      clear: ['[role="log"][aria-label="Conversation"]'],
+    },
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {

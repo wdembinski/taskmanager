@@ -30,7 +30,8 @@
  * differently-named shots sharing a hash are flagged as duplicates — almost always the same
  * "the click silently missed" bug, caught after the fact instead of by a selector nobody wrote.
  * `--attach` refuses to copy anything, and exits 1, if `shotProblems` found a single problem —
- * a run with a duplicate or a missed selector is not safe to hand to a human as "the real UI".
+ * a run with a duplicate, a missed selector or a failed `layoutCheck` is not safe to hand to a
+ * human as "the real UI". Every problem is printed at the end of a run, attaching or not.
  *
  * Adding a screen is adding a file under `scripts/shots/screens/` — nothing here should need
  * to change for that. Each file's name decides where its rows land in `SCREENS`: a plain `<`
@@ -97,6 +98,14 @@
  *   show a Fluent `Spinner` forever, not just until some promise resolves (`waitForIdle`'s own
  *   doc comment explains the one screen that does, and why this flag exists rather than just
  *   lengthening the wait). Omit it (same as `false`) everywhere else.
+ * - `layoutCheck` — `{ visible: selector, clear: [selector, …] }`, measured after `expect`: the
+ *   first `visible` match must sit fully inside every overflow-clipping ancestor and the
+ *   viewport, and must not overlap the first match of any `clear` selector (sharing an edge is
+ *   fine). Like a missed `expect`, a failure does not throw — `shotChecks.mjs`'s
+ *   `layoutProblems` reasons are recorded as `layoutProblem` and surface as a `layout`
+ *   problem; a `visible` target that never rendered is one too. Proves a heading is laid out
+ *   in full, which a selector that merely matches (a half-clipped heading still matches) and a
+ *   render test (no layout engine) cannot.
  *
  * ## The sidebar is always open
  *
@@ -136,7 +145,7 @@ import {
 } from './lib/cdp.mjs';
 import { startFakeRelay } from './lib/fakeRelay.mjs';
 import * as uiShotsFixture from './fixtures/uiShotsFixture.mjs';
-import { shotProblems } from './lib/shotChecks.mjs';
+import { layoutProblems, shotProblems } from './lib/shotChecks.mjs';
 import { loadScreens } from './lib/shotModules.mjs';
 
 export const SCREENS = await loadScreens();
@@ -364,15 +373,15 @@ async function runSetupStep(cdp, step) {
       : titled
         ? exactClickExprs('button, [role="combobox"]', titled[1], 'title')
         : issueRow
-      ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
-      : boardCard
-        ? boardCardClickExprs(boardCard[1])
-        : tab
-          ? tabClickExprs(tab[1])
-          : {
-            ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
-            click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
-          };
+          ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
+          : boardCard
+            ? boardCardClickExprs(boardCard[1])
+            : tab
+              ? tabClickExprs(tab[1])
+              : {
+                  ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
+                  click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
+                };
     await waitFor(async () => (await evaluate(cdp, ready)) === true, {
       timeoutMs: 10000,
       label: `"${step.click}" to appear`,
@@ -425,10 +434,7 @@ async function runSetupStep(cdp, step) {
       async () => (await evaluate(cdp, `!!document.querySelector(${selector})`)) === true,
       { timeoutMs: 10000, label: `"${step.scrollToSelector}" to appear before scrolling to it` },
     );
-    await evaluate(
-      cdp,
-      `document.querySelector(${selector}).scrollIntoView({ block: 'start' })`,
-    );
+    await evaluate(cdp, `document.querySelector(${selector}).scrollIntoView({ block: 'start' })`);
     return;
   }
   if (step.hover !== undefined) {
@@ -471,6 +477,55 @@ async function sidebarClipRect(cdp) {
   );
   if (!rect) throw new Error('could not find nav[aria-label="Sidebar"] to clip the shot to');
   return rect;
+}
+
+/**
+ * A row's `layoutCheck`, measured in the page: the `visible` target's own rect, the rect of
+ * every ancestor whose computed `overflow-x`/`overflow-y` is not `visible` (each one cuts off
+ * whatever of the target falls outside it), the viewport, and the first match of every `clear`
+ * selector — handed to `shotChecks.mjs`'s pure `layoutProblems`. A target that never rendered
+ * is a problem of its own; a `clear` selector that matches nothing has nothing to overlap.
+ */
+async function measureLayout(cdp, { visible, clear = [] }) {
+  const measured = await evaluate(
+    cdp,
+    `(() => {
+      const rectOf = (el, label) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, left: r.left, bottom: r.bottom, right: r.right, label };
+      };
+      const nameOf = (el) => {
+        const tag = el.tagName.toLowerCase();
+        const role = el.getAttribute('role');
+        const aria = el.getAttribute('aria-label');
+        if (aria) return tag + '[aria-label="' + aria + '"]';
+        if (role) return tag + '[role="' + role + '"]';
+        return el.className && typeof el.className === 'string'
+          ? tag + '.' + el.className.trim().split(/\\s+/)[0]
+          : tag;
+      };
+      const target = document.querySelector(${JSON.stringify(visible)});
+      if (!target) return null;
+      const clips = [];
+      for (let el = target.parentElement; el; el = el.parentElement) {
+        const style = getComputedStyle(el);
+        if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+          clips.push(rectOf(el, nameOf(el)));
+        }
+      }
+      clips.push({
+        top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth,
+        label: 'the viewport',
+      });
+      const avoid = ${JSON.stringify(clear)}
+        .map((selector) => [selector, document.querySelector(selector)])
+        .filter(([, el]) => el && el !== target && !el.contains(target))
+        .map(([selector, el]) => rectOf(el, selector));
+      return { target: rectOf(target, ${JSON.stringify(visible)}), clips, avoid };
+    })()`,
+  );
+  if (!measured) return [`"${visible}" never rendered`];
+  return layoutProblems(measured);
 }
 
 /** Fluent's `Skeleton`/`Spinner` are the only loading affordance most of `packages/ui/src`
@@ -618,6 +673,8 @@ function describeProblem(problem) {
       return `${problem.name} failed: ${problem.message}`;
     case 'selectorMissed':
       return `${problem.name}: selector "${problem.selector}" never matched`;
+    case 'layout':
+      return `${problem.name}: layout — ${problem.message}`;
     case 'duplicate':
       return `${problem.name} is a DUPLICATE of ${problem.otherName} (identical bytes)`;
     default:
@@ -630,28 +687,40 @@ function writeContactSheet(outDir, results, problems) {
     problems.filter((p) => p.kind === 'duplicate').map((p) => [p.name, p.otherName]),
   );
   const rows = results
-    .map(({ row, ok, exceptionCount, error, sideBySidePath, shotPath, selectorMissed }) => {
-      const thumbHref = sideBySidePath ? basename(sideBySidePath) : basename(shotPath ?? '');
-      const thumbImg = shotPath
-        ? `<a href="${thumbHref}"><img src="${basename(shotPath)}" style="max-width:220px;display:block"></a>`
-        : '(no screenshot — the row failed before one was taken)';
-      const statusParts = [
-        ok && exceptionCount === 0
-          ? 'ok'
-          : `FAILED${exceptionCount > 0 ? ` — ${exceptionCount} page exception(s)` : ''}${error ? `: ${escapeHtml(String(error.message ?? error))}` : ''}`,
-      ];
-      if (selectorMissed)
-        statusParts.push(`selector "${escapeHtml(selectorMissed)}" never matched`);
-      if (duplicateOf.has(row.name)) {
-        statusParts.push(`DUPLICATE of ${escapeHtml(duplicateOf.get(row.name))}`);
-      }
-      return `<tr>
+    .map(
+      ({
+        row,
+        ok,
+        exceptionCount,
+        error,
+        sideBySidePath,
+        shotPath,
+        selectorMissed,
+        layoutProblem,
+      }) => {
+        const thumbHref = sideBySidePath ? basename(sideBySidePath) : basename(shotPath ?? '');
+        const thumbImg = shotPath
+          ? `<a href="${thumbHref}"><img src="${basename(shotPath)}" style="max-width:220px;display:block"></a>`
+          : '(no screenshot — the row failed before one was taken)';
+        const statusParts = [
+          ok && exceptionCount === 0
+            ? 'ok'
+            : `FAILED${exceptionCount > 0 ? ` — ${exceptionCount} page exception(s)` : ''}${error ? `: ${escapeHtml(String(error.message ?? error))}` : ''}`,
+        ];
+        if (selectorMissed)
+          statusParts.push(`selector "${escapeHtml(selectorMissed)}" never matched`);
+        if (layoutProblem) statusParts.push(`LAYOUT: ${escapeHtml(layoutProblem.join('; '))}`);
+        if (duplicateOf.has(row.name)) {
+          statusParts.push(`DUPLICATE of ${escapeHtml(duplicateOf.get(row.name))}`);
+        }
+        return `<tr>
         <td>${thumbImg}</td>
         <td>${escapeHtml(row.name)}</td>
         <td>${row.mockup ? escapeHtml(row.mockup) : '(none)'}</td>
         <td>${statusParts.join(' — ')}</td>
       </tr>`;
-    })
+      },
+    )
     .join('\n');
   const banner =
     problems.length > 0
@@ -786,6 +855,7 @@ async function main() {
         mockupPath: null,
         sideBySidePath: null,
         selectorMissed: null,
+        layoutProblem: null,
         hash: null,
       };
       try {
@@ -822,6 +892,11 @@ async function main() {
           } catch {
             result.selectorMissed = row.expect;
           }
+        }
+
+        if (row.layoutCheck) {
+          const reasons = await measureLayout(cdp, row.layoutCheck);
+          if (reasons.length > 0) result.layoutProblem = reasons;
         }
 
         const shotPath = join(outDir, `${row.name}.png`);
@@ -862,6 +937,10 @@ async function main() {
     const problems = shotProblems(results);
     const sheetPath = writeContactSheet(outDir, results, problems);
     console.log(`\ncontact sheet: ${sheetPath}`);
+    if (problems.length > 0) {
+      console.error(`\n${problems.length} problem(s) found:`);
+      for (const problem of problems) console.error(`  - ${describeProblem(problem)}`);
+    }
 
     // `[{ name, mockup, ok, problems[] }]` — the manifest `attachOutbox.ts`'s ingest reads
     // (see the plan's own Decisions on "replace, don't pile up") to know exactly which files
@@ -885,8 +964,7 @@ async function main() {
 
     if (opts.attach) {
       if (problems.length > 0) {
-        console.error(`\n${problems.length} problem(s) found — refusing to attach:`);
-        for (const problem of problems) console.error(`  - ${describeProblem(problem)}`);
+        console.error(`\nrefusing to attach — ${problems.length} problem(s) listed above`);
         process.exitCode = 1;
       } else {
         const attachDir = join(process.cwd(), '.vipper', 'attach');

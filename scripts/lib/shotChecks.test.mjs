@@ -3,7 +3,60 @@
  * no `include` glob change needed for a `.mjs` suite next to a `.mjs` module.
  */
 import { describe, expect, it } from 'vitest';
-import { findDuplicateShots, shotProblems } from './shotChecks.mjs';
+import { findDuplicateShots, layoutProblems, shotProblems } from './shotChecks.mjs';
+
+describe('layoutProblems', () => {
+  const viewport = { top: 0, left: 0, bottom: 900, right: 1440, label: 'the viewport' };
+  const cell = { top: 500, left: 400, bottom: 520, right: 1000, label: 'div.cell' };
+
+  it('is empty for a target fully inside every clip and clear of every avoid rect', () => {
+    const target = { top: 500, left: 400, bottom: 518, right: 440 };
+    const conversation = { top: 600, left: 400, bottom: 800, right: 1000 };
+    expect(layoutProblems({ target, clips: [viewport, cell], avoid: [conversation] })).toEqual([]);
+  });
+
+  it('reports a target half cut off by an overflow-clipping ancestor', () => {
+    const target = { top: 510, left: 400, bottom: 530, right: 440 };
+    expect(layoutProblems({ target, clips: [viewport, cell] })).toEqual([
+      'clipped by div.cell (bottom by 10px)',
+    ]);
+  });
+
+  it('reports a target running past the viewport', () => {
+    const target = { top: 890, left: 1430, bottom: 910, right: 1450 };
+    expect(layoutProblems({ target, clips: [viewport] })).toEqual([
+      'clipped by the viewport (bottom by 10px, right by 10px)',
+    ]);
+  });
+
+  it('reports a target overlapping an avoid rect', () => {
+    const target = { top: 500, left: 400, bottom: 520, right: 440 };
+    const conversation = { top: 510, left: 400, bottom: 800, right: 1000, label: 'Conversation' };
+    expect(layoutProblems({ target, clips: [viewport], avoid: [conversation] })).toEqual([
+      'overlaps Conversation',
+    ]);
+  });
+
+  it('treats touching edges as fine — clip edges and avoid edges alike', () => {
+    const target = { top: 500, left: 400, bottom: 520, right: 1000 };
+    const below = { top: 520, left: 400, bottom: 800, right: 1000 };
+    const beside = { top: 500, left: 1000, bottom: 520, right: 1200 };
+    expect(layoutProblems({ target, clips: [viewport, cell], avoid: [below, beside] })).toEqual([]);
+  });
+
+  it('ignores sub-pixel rounding past an edge', () => {
+    const target = { top: 499.8, left: 400, bottom: 520.3, right: 440 };
+    const conversation = { top: 520, left: 400, bottom: 800, right: 1000 };
+    expect(layoutProblems({ target, clips: [cell], avoid: [conversation] })).toEqual([]);
+  });
+
+  it('names an unlabelled rect by its edges', () => {
+    const target = { top: 0, left: 0, bottom: 20, right: 20 };
+    expect(
+      layoutProblems({ target, avoid: [{ top: 10, left: 10, bottom: 30, right: 30 }] }),
+    ).toEqual(['overlaps { top: 10, left: 10, bottom: 30, right: 30 }']);
+  });
+});
 
 describe('findDuplicateShots', () => {
   it('flags two differently-named shots with the same bytes (same hash)', () => {
@@ -72,6 +125,27 @@ describe('shotProblems', () => {
     expect(shotProblems(results)).toEqual([
       { kind: 'selectorMissed', name: 'settings', selector: '[aria-label="x"]' },
     ]);
+  });
+
+  it('reports a row whose layoutCheck target is clipped or overlapped', () => {
+    const results = [
+      {
+        ...okResult('ticket-band-empty-dark', 'aaa'),
+        layoutProblem: ['clipped by div.cell (bottom by 10px)', 'overlaps Conversation'],
+      },
+    ];
+    expect(shotProblems(results)).toEqual([
+      {
+        kind: 'layout',
+        name: 'ticket-band-empty-dark',
+        message: 'clipped by div.cell (bottom by 10px); overlaps Conversation',
+      },
+    ]);
+  });
+
+  it('does not report an empty layoutProblem', () => {
+    const results = [{ ...okResult('board-light', 'aaa'), layoutProblem: [] }];
+    expect(shotProblems(results)).toEqual([]);
   });
 
   it('reports duplicate shots found among the ok rows', () => {

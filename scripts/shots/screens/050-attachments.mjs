@@ -29,6 +29,12 @@ export default [
     scheme: 'dark',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
     expect: '[data-visual-signoff]',
+    // The sign-off band makes the Ticket band tallest of any full-screen row — the state
+    // most likely to squeeze the Links heading under the conversation.
+    layoutCheck: {
+      visible: '[data-links-heading]',
+      clear: ['[role="log"][aria-label="Conversation"]'],
+    },
     mockup: null,
   },
   // The same section once the project's AI reviewer approved the shots: `task:activity` for

@@ -187,7 +187,9 @@ export function TaskLinksSection({
 
   return (
     <div className={styles.box}>
-      <Text weight="semibold">Links</Text>
+      <Text weight="semibold" data-links-heading="">
+        Links
+      </Text>
       {section ? (
         <>
           {section.blockedBy.length > 0 && (
