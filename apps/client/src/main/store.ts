@@ -64,6 +64,7 @@ import type { VariantRowDraft } from '@shared/variants';
 import { buildProject, normalizeEpicKeys } from '@shared/projectBuilders';
 import { DEFAULT_READY_LANES } from '@shared/readyLanes';
 import { clampAiReviewMaxRounds } from '@shared/aiVisualReview';
+import type { BoardReviewApplied, BoardReviewRecord, BoardReviewReport } from '@shared/boardReview';
 import { normalizePath } from '@shared/fileOverlap';
 import { formatExecTarget, parseExecTarget } from '@shared/execTarget';
 import { hostJoin } from '@shared/wslPath';
@@ -1472,6 +1473,30 @@ export interface Store {
    * `Task.workflowId`.
    */
   deleteWorkflow(id: string): boolean;
+  /** Open a `running` "Review open tickets" row for the project (`@shared/boardReview`). */
+  startBoardReview(projectId: string, at: number): BoardReviewRecord;
+  /**
+   * Settle a running review. A row that is no longer `running` is left alone, so a result
+   * landing after the review already failed cannot overwrite that. Returns the row as it
+   * now stands, or `undefined` for an unknown id.
+   */
+  finishBoardReview(
+    id: string,
+    outcome: {
+      status: 'done' | 'failed';
+      report?: BoardReviewReport;
+      error?: string;
+      finishedAt: number;
+    },
+  ): BoardReviewRecord | undefined;
+  /** The project's newest review, or `null` when it was never reviewed. */
+  getLatestBoardReview(projectId: string): BoardReviewRecord | null;
+  /** Record what applying one recommendation did, so it is never applied twice. */
+  setBoardReviewApplied(
+    id: string,
+    recId: string,
+    entry: BoardReviewApplied,
+  ): BoardReviewRecord | undefined;
   /**
    * Reserve one firing's receipt: `INSERT OR IGNORE` on `UNIQUE(automationId,
    * occurrenceKey)`. Returns `true` if `run` landed, `false` if that occurrence already has
@@ -2345,7 +2370,27 @@ export function createStore(dbPath: string): Store {
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL
     );
+    -- "Review open tickets" runs (@shared/boardReview): one row per run, the latest per
+    -- project is what the Projects panel shows. report and applied are JSON — nothing here
+    -- needs a promoted column to query by. New table, nothing to migrate.
+    CREATE TABLE IF NOT EXISTS board_reviews (
+      id         TEXT PRIMARY KEY,
+      projectId  TEXT NOT NULL,
+      status     TEXT NOT NULL, -- running | done | failed
+      startedAt  INTEGER NOT NULL,
+      finishedAt INTEGER,
+      report     TEXT,          -- BoardReviewReport JSON
+      error      TEXT,
+      applied    TEXT NOT NULL DEFAULT '{}' -- Record<recommendation id, BoardReviewApplied>
+    );
+    CREATE INDEX IF NOT EXISTS idx_board_reviews_project ON board_reviews(projectId, startedAt);
   `);
+
+  // A review's session never outlives the app, so a row still `running` at open was cut off
+  // by a quit or a crash — say so, rather than showing a run that will never finish.
+  db.exec(
+    `UPDATE board_reviews SET status = 'failed', error = 'interrupted' WHERE status = 'running'`,
+  );
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
   // the three v1 edit kinds, applied under the old rule where "applied" was the whole
@@ -5514,6 +5559,52 @@ export function createStore(dbPath: string): Store {
     return row ? rowToWorkflow(row) : undefined;
   }
 
+  interface BoardReviewRow {
+    id: string;
+    projectId: string;
+    status: string;
+    startedAt: number;
+    finishedAt: number | null;
+    report: string | null;
+    error: string | null;
+    applied: string;
+  }
+
+  const insertBoardReview = db.prepare(
+    `INSERT INTO board_reviews (id, projectId, status, startedAt, applied)
+     VALUES (@id, @projectId, 'running', @startedAt, '{}')`,
+  );
+  const selectBoardReview = db.prepare(`SELECT * FROM board_reviews WHERE id = ?`);
+  const selectLatestBoardReview = db.prepare(
+    `SELECT * FROM board_reviews WHERE projectId = ? ORDER BY startedAt DESC, rowid DESC LIMIT 1`,
+  );
+  const finishBoardReviewStmt = db.prepare(
+    `UPDATE board_reviews SET status = @status, report = @report, error = @error,
+       finishedAt = @finishedAt
+     WHERE id = @id AND status = 'running'`,
+  );
+  const updateBoardReviewApplied = db.prepare(
+    `UPDATE board_reviews SET applied = @applied WHERE id = @id`,
+  );
+
+  function rowToBoardReview(r: BoardReviewRow): BoardReviewRecord {
+    return {
+      id: r.id,
+      projectId: r.projectId,
+      status: r.status === 'done' || r.status === 'failed' ? r.status : 'running',
+      startedAt: r.startedAt,
+      finishedAt: r.finishedAt ?? null,
+      report: parseJsonColumn<BoardReviewReport>(r.report),
+      error: r.error ?? null,
+      applied: parseJsonColumn<Record<string, BoardReviewApplied>>(r.applied) ?? {},
+    };
+  }
+
+  function getBoardReview(id: string): BoardReviewRecord | undefined {
+    const row = selectBoardReview.get(id) as BoardReviewRow | undefined;
+    return row ? rowToBoardReview(row) : undefined;
+  }
+
   interface AutomationRunRow {
     id: string;
     automationId: string;
@@ -7552,6 +7643,36 @@ export function createStore(dbPath: string): Store {
 
     deleteWorkflow(id) {
       return deleteWorkflowStmt.run(id).changes > 0;
+    },
+
+    startBoardReview(projectId, at) {
+      const id = randomUUID();
+      insertBoardReview.run({ id, projectId, startedAt: at });
+      return getBoardReview(id) as BoardReviewRecord;
+    },
+
+    finishBoardReview(id, outcome) {
+      finishBoardReviewStmt.run({
+        id,
+        status: outcome.status,
+        report: outcome.report ? JSON.stringify(outcome.report) : null,
+        error: outcome.error ?? null,
+        finishedAt: outcome.finishedAt,
+      });
+      return getBoardReview(id);
+    },
+
+    getLatestBoardReview(projectId) {
+      const row = selectLatestBoardReview.get(projectId) as BoardReviewRow | undefined;
+      return row ? rowToBoardReview(row) : null;
+    },
+
+    setBoardReviewApplied(id, recId, entry) {
+      const current = getBoardReview(id);
+      if (!current) return undefined;
+      const applied = { ...current.applied, [recId]: entry };
+      updateBoardReviewApplied.run({ id, applied: JSON.stringify(applied) });
+      return getBoardReview(id);
     },
 
     reserveAutomationRun(run) {

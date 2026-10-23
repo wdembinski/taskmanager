@@ -278,6 +278,7 @@ import {
   type CreatePrDeps,
 } from './forge/createPr';
 import { createAiVisualReviewer, isAiReviewDecision } from './forge/aiVisualReviewer';
+import { createBoardReviewer } from './boardReviewer';
 import { applyVisualSignOff, collectAutoMergePrerequisites } from './forge/autoMerge';
 import { autoMergeGitLabPrerequisites, autoMergePrerequisites } from '@shared/autoMerge';
 import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
@@ -2872,6 +2873,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       scheduler.setDecision(ownerId, question);
     },
   });
+
+  /**
+   * "Review open tickets" (`boardReviewer.ts`): one read-only auxiliary session per project,
+   * like the AI visual reviewer's — booked as orchestrator spend and killed by the project's
+   * Stop. Its report is only stored; nothing is applied from here.
+   */
+  const boardReviewer = createBoardReviewer({
+    store,
+    startSession: (projectId, request, onResult, onExit) =>
+      scheduler.startAuxiliarySession(projectId, request, {
+        onResult: (event) => onResult(event.resultText),
+        onExit,
+      }),
+    stopSession: (runId) => scheduler.stopAuxiliarySession(runId),
+    now: () => Date.now(),
+    emit: (projectId, review) => send('project:boardReviewChanged', { projectId, review }),
+  });
+  handle('project:reviewTickets', async (id) => boardReviewer.start(id));
+  handle('project:stopReview', async (id) => boardReviewer.stop(id));
+  handle('project:boardReview', async (id) => store.getLatestBoardReview(id));
 
   /**
    * A human's verdict on the card panel's own "Visual sign-off" section
