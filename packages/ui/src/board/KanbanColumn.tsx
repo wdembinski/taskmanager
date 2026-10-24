@@ -9,9 +9,18 @@
  * completely out of the second's way; see `chainDrag`.
  */
 import { useState } from 'react';
-import { Caption1, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
+import {
+  Button,
+  Caption1,
+  Text,
+  makeStyles,
+  mergeClasses,
+  tokens,
+} from '@fluentui/react-components';
+import { AddRegular } from '@fluentui/react-icons';
 import type { Person, Task } from '@tm/shared/model';
 import type { RunPurpose } from '@tm/shared/scheduler';
+import { STATUS_GLYPH } from '../issues/IssueRow';
 import { TaskCard } from './TaskCard';
 import type { AutomationOrigin } from './automationOrigin';
 import type { BoardCard, BoardColumn } from './boardColumns';
@@ -43,9 +52,11 @@ const useStyles = makeStyles({
   },
   // Sticky: the board scrolls as a whole, so without this every column's label would
   // scroll away and you'd lose track of which column you are looking at.
+  // The v9 mockup's header: state glyph, Title-case name, a bare count, and the column's
+  // own "+" pushed to the right edge (`addButton`).
   header: {
     display: 'flex',
-    alignItems: 'baseline',
+    alignItems: 'center',
     gap: '8px',
     // A deeper bottom inset than it looks like it needs: the header is OPAQUE and
     // pinned, so a card sliding under it loses its top edge first — and the top edge is
@@ -56,8 +67,17 @@ const useStyles = makeStyles({
     zIndex: 1,
     backgroundColor: tokens.colorNeutralBackground2,
   },
-  headerLabel: { color: tokens.colorNeutralForeground2, letterSpacing: '0.04em' },
-  count: { color: tokens.colorNeutralForeground3 },
+  // The SHAPE carries the column's state, so the glyph spends no colour — the same faint ink
+  // `IssueRow` draws `STATUS_GLYPH` in.
+  glyph: {
+    display: 'flex',
+    flexShrink: 0,
+    fontSize: '14px',
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+  },
+  headerLabel: { color: tokens.colorNeutralForeground1, fontSize: '13px' },
+  count: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})` },
+  addButton: { marginLeft: 'auto', color: tokens.colorNeutralForeground3 },
   // No scroll of its own — the board's column container owns that. `flex: 1` keeps the
   // empty space below the last card inside the drop zone.
   list: {
@@ -221,6 +241,12 @@ export interface KanbanColumnProps {
   onDragStartTask: (id: string) => void;
   onDragEndTask: () => void;
   onDropInColumn: (taskId: string, column: BoardColumn) => void;
+  /**
+   * Add a card straight into this column, from the "+" at the right of its header. Absent
+   * draws no button — and the compact layout draws no header at all, so it never gets one.
+   * The host opens its own `AddTaskDialog` with `column` set; the column adds nothing itself.
+   */
+  onAddCard?: (column: BoardColumn) => void;
 }
 
 export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
@@ -266,10 +292,24 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
     >
       {!compact && (
         <div className={styles.header} data-board-column-header="">
-          <Text weight="semibold" size={200} className={styles.headerLabel}>
+          <span className={styles.glyph} aria-hidden>
+            {STATUS_GLYPH[props.column]}
+          </span>
+          <Text weight="semibold" size={300} className={styles.headerLabel}>
             {props.label}
           </Text>
-          <Caption1 className={styles.count}>({props.cards.length})</Caption1>
+          <Caption1 className={styles.count}>{props.cards.length}</Caption1>
+          {props.onAddCard && (
+            <Button
+              appearance="subtle"
+              size="small"
+              icon={<AddRegular />}
+              className={styles.addButton}
+              aria-label={`Add a task to ${props.label}`}
+              title={`Add a task to ${props.label}`}
+              onClick={() => props.onAddCard?.(props.column)}
+            />
+          )}
         </div>
       )}
       <div

@@ -358,8 +358,8 @@ describe('hiddenByMessage', () => {
 
   it('column', () => {
     expect(hiddenByMessage(t, { kind: 'column', column: 'done' })).toEqual({
-      text: 'TM-42 is in DONE',
-      action: 'Show DONE',
+      text: 'TM-42 is in Done',
+      action: 'Show Done',
     });
   });
 

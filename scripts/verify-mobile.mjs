@@ -35,7 +35,7 @@
  *    plan" stays on screen, "Re-plan" is disabled with an empty note, and approving records
  *    `{decision:'approve'}`.
  * 4. **Move a card** — Board tab → column switcher → a card's "More actions" → "Move to…" →
- *    "IN REVIEW" ends with the task's column changed on the server and reflected back in the
+ *    "In Review" ends with the task's column changed on the server and reflected back in the
  *    switcher's counts.
  * 5. **Comment on and send a review** — tapping a diff line's gutter button, writing a
  *    comment and saving it calls `review:add` with that line and body; "Send review" calls
@@ -1114,7 +1114,7 @@ async function row4_moveCard(cdp, origin, size) {
 
   await freshLoad(cdp, origin, { size, token: 'good-refresh-token' });
   await tap(cdp, 'Board', { exact: true });
-  await tap(cdp, 'IN PROGRESS (1)', { exact: true, checkSize: false });
+  await tap(cdp, 'In Progress (1)', { exact: true, checkSize: false });
   await waitFor(async () => (await bodyText(cdp)).includes('Move Me'), {
     label: 'card tile visible',
   });
@@ -1123,15 +1123,15 @@ async function row4_moveCard(cdp, origin, size) {
 
   await tap(cdp, 'More actions', { exact: false, checkSize: false });
   await tap(cdp, 'Move to…', { exact: true, checkSize: false });
-  await tap(cdp, 'IN REVIEW', { exact: true });
+  await tap(cdp, 'In Review', { exact: true });
   await screenshot(cdp, `row4-${size.label}-sheet`);
 
   await waitFor(async () => state.tasks.get('task-move-1')?.status === 'in-review', {
     label: 'PATCH /v1/tasks moved the column',
   });
-  check(`${label}: picking "IN REVIEW" moves the task on the server`, true);
-  await tap(cdp, 'IN REVIEW (1)', { exact: true, checkSize: false, timeoutMs: 8000 });
-  check(`${label}: the switcher's IN REVIEW count reflects the move`, true);
+  check(`${label}: picking "In Review" moves the task on the server`, true);
+  await tap(cdp, 'In Review (1)', { exact: true, checkSize: false, timeoutMs: 8000 });
+  check(`${label}: the switcher's In Review count reflects the move`, true);
   await assertNoOverflow(cdp, label);
   await screenshot(cdp, `row4-${size.label}-moved`);
 }

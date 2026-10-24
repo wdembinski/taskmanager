@@ -274,13 +274,6 @@ export function BoardToolbar({
             </Button>
           </OverflowItem>
         )}
-        {/* `addTask` is a `ReactNode` from the host (`BoardScreen.tsx`'s own `<Button>`), not
-            necessarily a single `ReactElement` by its type — `OverflowItem` clones and refs
-            its one child, which a bare `ReactNode` cannot always satisfy, so it is wrapped in
-            a plain `<div>` here rather than passed straight through. */}
-        <OverflowItem id="add" pinned>
-          <div>{addTask}</div>
-        </OverflowItem>
         <ToolbarOverflowMenu>
           {/* The scope Dropdown's own options, one `MenuItem` apiece — the fallback for the
               one control narrow viewports can still force into the menu (`priority` above),
@@ -328,6 +321,15 @@ export function BoardToolbar({
             </ToolbarOverflowMenuItem>
           )}
         </ToolbarOverflowMenu>
+        {/* The row's LAST control, after the "···" menu — the v9 mockup's brand "+" at the far
+            right edge, as `MyTasks` places it. `addTask` is a `ReactNode` from the host
+            (`BoardScreen.tsx`'s own `<Button>`), not necessarily a single `ReactElement` by
+            its type — `OverflowItem` clones and refs its one child, which a bare `ReactNode`
+            cannot always satisfy, so it is wrapped in a plain `<div>` here rather than passed
+            straight through. */}
+        <OverflowItem id="add" pinned>
+          <div>{addTask}</div>
+        </OverflowItem>
       </div>
     </Overflow>
   );

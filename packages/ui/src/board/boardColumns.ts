@@ -33,11 +33,11 @@ export {
 
 /** Display metadata for each column, in left-to-right board order. */
 export const COLUMN_META: ReadonlyArray<{ column: BoardColumn; label: string; order: number }> = [
-  { column: 'todo', label: 'TO DO', order: 0 },
-  { column: 'in-progress', label: 'IN PROGRESS', order: 1 },
-  { column: 'in-review', label: 'IN REVIEW', order: 2 },
-  { column: 'blocked', label: 'BLOCKED', order: 3 },
-  { column: 'done', label: 'DONE', order: 4 },
+  { column: 'todo', label: 'To Do', order: 0 },
+  { column: 'in-progress', label: 'In Progress', order: 1 },
+  { column: 'in-review', label: 'In Review', order: 2 },
+  { column: 'blocked', label: 'Blocked', order: 3 },
+  { column: 'done', label: 'Done', order: 4 },
 ];
 
 /**

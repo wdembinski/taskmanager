@@ -190,6 +190,15 @@ describe('visibleColumns', () => {
       'done',
     ]);
   });
+  it('labels every column in Title case, the same words as STATUS_LABEL', () => {
+    expect(COLUMN_META.map((c) => c.label)).toEqual([
+      'To Do',
+      'In Progress',
+      'In Review',
+      'Blocked',
+      'Done',
+    ]);
+  });
 });
 
 describe('hiddenColumnsSummary', () => {
