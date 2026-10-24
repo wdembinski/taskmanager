@@ -357,7 +357,7 @@ const useStyles = makeStyles({
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
-    padding: '8px 16px 16px',
+    padding: '8px 12px 16px',
     borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   fullHead: { display: 'flex', flexDirection: 'column', gap: '4px' },
@@ -1443,7 +1443,7 @@ export function TaskDetail({
             )}
           </div>
         )}
-        <div className={styles.titleRow}>
+        <div className={styles.titleRow} data-title-row>
           <span className={styles.icon}>{typeIcon(task)}</span>
           {editingTitle ? (
             titleEditor
@@ -1964,7 +1964,6 @@ export function TaskDetail({
               onStatusSet={(status) => onStatusSet?.(task.id, status)}
               onEdited={() => void loadActivity()}
               onModelChange={(model) => void setAgentOptions({ model })}
-              onOpenTask={onOpenTask}
             />
           </aside>
         </div>

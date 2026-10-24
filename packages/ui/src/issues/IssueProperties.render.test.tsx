@@ -114,15 +114,24 @@ describe('IssueProperties', () => {
     expect(status.indexOf('data-property-cell')).toBeGreaterThan(label);
   });
 
-  it('reads label and value, with the Blocked-by card as a link', () => {
+  it('reads label and value, with the Blocked-by card as plain text, not a link', () => {
     const html = render();
     expect(html).toContain('>Status<');
     expect(html).toContain('In Progress');
     expect(html).toContain('M4 · Reach');
     expect(html).toContain('>Blocked by<');
-    expect(html).toContain('TM-68');
-    expect(html).toContain('IPC channels');
+    const blockedBy = rowOf(html, 'blockedBy');
+    expect(blockedBy).toContain('data-blocked-by="b"');
+    expect(blockedBy).toContain('>TM-68<');
+    expect(blockedBy).toContain('>IPC channels<');
+    // v9-2 draws a muted key and a plain title — the Links section is what opens the card.
+    expect(blockedBy).not.toContain('fui-Link');
+    expect(blockedBy).not.toContain('<a ');
     expect(html).toContain('More fields');
+  });
+
+  it('carries the whole value in a title, so a value cut to one line can still be read', () => {
+    expect(rowOf(render(), 'milestone')).toContain('title="M4 · Reach"');
   });
 
   it('at rest, Status is a click target and no Dropdown is drawn', () => {
