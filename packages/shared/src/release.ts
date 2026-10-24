@@ -25,6 +25,15 @@ import type { Project, Task } from './model';
 export const RELEASE_DOC = 'RELEASE.md';
 
 /**
+ * The file a project puts its AI-review instructions in (F16) — the reviewer's counterpart
+ * of `RELEASE_DOC`, a constant for the same reason.
+ *
+ * Read from the BASE commit, never the worktree: the head is the thing under review, and a
+ * change that edits this file must not get to rewrite the rules it is judged by.
+ */
+export const REVIEW_DOC = 'REVIEW.md';
+
+/**
  * Whether a merge of this card should be followed by a release run.
  *
  * Says nothing about whether the project HAS a `RELEASE.md` — that is a fact about the
