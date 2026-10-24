@@ -66,7 +66,9 @@
  *       `[role="option"]` row instead — `IssueRow.tsx`'s rows carry no stable accessible name of
  *       their own (just the fixture's own task title, which a screen map row should not have to
  *       know), so "click a row" is addressed by position, the same way a human would point at
- *       "the first one" without reading its title either. A second sentinel, `'board-card:ID'`,
+ *       "the first one" without reading its title either. `'issue-row:has:TEXT'` clicks the
+ *       first row whose text includes `TEXT` (a ticket key) — for a row whose overrides move
+ *       its card to a different place in the list. A second sentinel, `'board-card:ID'`,
  *       clicks `TaskCard.tsx`'s own `[data-task-id="ID"]` root directly — plain text matching
  *       would otherwise land on its hidden chain-link handle first (`aria-label="Chain from
  *       {title} — …"` also *contains* the card's title, and that handle renders before the
@@ -320,6 +322,23 @@ function issueRowClickExprs(index) {
   };
 }
 
+/** `{ click: 'issue-row:has:TEXT' }` — the first `[role="option"]` row whose text includes
+ *  `TEXT` (a ticket key). For a row whose override moves its card to another status group,
+ *  where its position in the list is no longer the one `issue-row:N` would name. */
+function issueRowHasClickExprs(text) {
+  const find = `Array.from(document.querySelectorAll('[role="option"]')).find((el) => window.__tm.visible(el) && window.__tm.textOf(el).includes(${JSON.stringify(text)}))`;
+  return {
+    ready: `!!${find}`,
+    click: `(() => {
+      const el = ${find};
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      el.click();
+      return true;
+    })()`,
+  };
+}
+
 /** `{ click: 'treeitem:N' }` — the Nth visible `[role="treeitem"]` in the sidebar tree (0-based,
  *  document order, folded children excluded because they are never rendered). A tree ticket's
  *  title also appears on the board and in the issue list, so plain text matching lands there
@@ -394,6 +413,7 @@ function tabClickExprs(name) {
 async function runSetupStep(cdp, step) {
   if (step.click !== undefined) {
     const issueRow = /^issue-row:(first|\d+)$/.exec(step.click);
+    const issueRowHas = /^issue-row:has:(.+)$/.exec(step.click);
     const boardCard = /^board-card:(.+)$/.exec(step.click);
     const treeItem = /^treeitem:(\d+)$/.exec(step.click);
     const tab = /^tab:(.+)$/.exec(step.click);
@@ -403,18 +423,20 @@ async function runSetupStep(cdp, step) {
       ? exactClickExprs('[role="option"]', option[1], 'text')
       : titled
         ? exactClickExprs('button, [role="combobox"]', titled[1], 'title')
-        : issueRow
-          ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
-          : boardCard
-            ? boardCardClickExprs(boardCard[1])
-            : treeItem
-              ? treeItemClickExprs(Number(treeItem[1]))
-              : tab
-                ? tabClickExprs(tab[1])
-                : {
-                    ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
-                    click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
-                  };
+        : issueRowHas
+          ? issueRowHasClickExprs(issueRowHas[1])
+          : issueRow
+            ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
+            : boardCard
+              ? boardCardClickExprs(boardCard[1])
+              : treeItem
+                ? treeItemClickExprs(Number(treeItem[1]))
+                : tab
+                  ? tabClickExprs(tab[1])
+                  : {
+                      ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
+                      click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
+                    };
     await waitFor(async () => (await evaluate(cdp, ready)) === true, {
       timeoutMs: 10000,
       label: `"${step.click}" to appear`,

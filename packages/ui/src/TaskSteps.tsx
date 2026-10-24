@@ -174,6 +174,11 @@ export interface TaskStepsProps {
    * the item parked on it. Optional: without it a gate still shows its status and attempts.
    */
   attention?: AttentionIndex;
+  /**
+   * Start unfolded — the full-screen issue page, which has the room the capped pane lacks
+   * and where the checklist is the page's own "Sub-issues" block. Absent: folded, as below.
+   */
+  defaultOpen?: boolean;
 }
 
 export function TaskSteps({
@@ -182,6 +187,7 @@ export function TaskSteps({
   onOpen,
   onChanged,
   attention,
+  defaultOpen = false,
 }: TaskStepsProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -207,7 +213,7 @@ export function TaskSteps({
    * detail you open when you want it, not the first thing to push the chat off-screen. The
    * count rides in the header, so a folded section still says whether opening it is worth it.
    */
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   /** The re-plan brief box, and the "it's thinking" banner once a turn has started. */
   const [planning, setPlanning] = useState(false);
   /** The re-plan note, drafted per card for the same reason the add-step form is. */
@@ -237,7 +243,7 @@ export function TaskSteps({
     setShowPlan(false);
     setError(null);
     // Folded again on a new card: the fold is the resting state, not a preference to carry.
-    setOpen(false);
+    setOpen(defaultOpen);
     setPlanning(false);
     setPlanStarted(false);
     setReplanTarget(null);

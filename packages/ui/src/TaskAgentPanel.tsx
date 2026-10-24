@@ -246,10 +246,70 @@ export interface TaskAgentPanelProps {
    */
   chainLinks?: readonly TaskLink[];
   tasksById?: ReadonlyMap<string, Task>;
+  /**
+   * Leave the **Start** button out of the header row — for a host that draws it itself from
+   * {@link useStartAction} (the full-screen issue's Run, top right). Absent everywhere else.
+   */
+  hideStart?: boolean;
 }
 
 const NO_LINKS: readonly TaskLink[] = [];
 const NO_TASKS: ReadonlyMap<string, Task> = new Map();
+const NO_STEPS: Task[] = [];
+
+/** What {@link useStartAction} hands back: whether Start is on offer, and pressing it. */
+export interface StartAction {
+  /** {@link canStartWork} — assigned, never run, nothing live. */
+  visible: boolean;
+  /** The `task:run` call is in flight. */
+  busy: boolean;
+  /** The refusal the last press earned, or null. */
+  error: string | null;
+  run: () => void;
+}
+
+/**
+ * The agent panel's own **Start**, as a hook: the panel's header button and the full-screen
+ * issue's Run button both draw from this, so the two can never disagree about when a card can
+ * be started or what pressing it does.
+ *
+ * `subtasks` is the chain the pane shows — for a STEP its siblings, which is why a step is
+ * weighed on its own state alone (the same `ownSteps` rule the panel's Stop follows).
+ *
+ * `task:run` throws for every wall a human has to clear; a usage limit arrives as a
+ * `{ refused }` outcome instead and is not an error — the card's own row already shows the
+ * hold the engine wrote on it.
+ *
+ * `task` may be null (a pane with nothing selected), so a host can call this before its own
+ * empty-state return; nothing is on offer then.
+ */
+export function useStartAction(
+  task: Task | null,
+  subtasks: Task[] = NO_STEPS,
+  liveRunTaskIds?: ReadonlySet<string>,
+): StartAction {
+  const transport = useTransport();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const taskId = task?.id ?? null;
+  // A refusal is a fact about one attempt on one card — it must not follow the selection.
+  useEffect(() => {
+    setBusy(false);
+    setError(null);
+  }, [taskId]);
+  const ownSteps = task?.parentTaskId ? NO_STEPS : subtasks;
+  const visible = task !== null && canStartWork(task, ownSteps, liveRunTaskIds);
+  const run = useCallback(() => {
+    if (taskId === null) return;
+    setBusy(true);
+    setError(null);
+    transport
+      .invoke('task:run', taskId)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  }, [transport, taskId]);
+  return { visible, busy, error, run };
+}
 
 export function TaskAgentPanel({
   task,
@@ -268,6 +328,7 @@ export function TaskAgentPanel({
   mergeRequests = [],
   chainLinks = NO_LINKS,
   tasksById = NO_TASKS,
+  hideStart = false,
 }: TaskAgentPanelProps): JSX.Element {
   const transport = useTransport();
   const { offer: offerRelease, dialog: releaseDialog } = useReleaseOnDone();
@@ -418,8 +479,10 @@ export function TaskAgentPanel({
   // An agent is on the card, nothing is running, and nothing ever ran: it was assigned
   // without being started. Asked of {@link canStartWork} rather than re-derived here, so
   // this panel and the command palette's "Start selected card" (F9.4) can never disagree
-  // about when Start is on offer.
-  const staged = canStartWork(task, ownSteps, liveRunTaskIds);
+  // about when Start is on offer — and through {@link useStartAction}, so the full-screen
+  // issue's Run button cannot disagree with this panel either.
+  const start = useStartAction(task, subtasks, liveRunTaskIds);
+  const staged = start.visible;
   /**
    * Whether to offer Merge: a delegated card that has actually run, in a repo that uses
    * worktrees. Derived here rather than asked of the engine, which would mean an async
@@ -1092,13 +1155,13 @@ export function TaskAgentPanel({
             Link existing MR/PR
           </Button>
         )}
-        {staged && (
+        {staged && !hideStart && (
           <Button
             size="small"
             appearance="primary"
-            disabled={busy}
+            disabled={busy || start.busy}
             title="Start the agent on this card now."
-            onClick={() => void runStep(taskId)}
+            onClick={start.run}
           >
             Start
           </Button>
@@ -1178,9 +1241,9 @@ export function TaskAgentPanel({
         />
       </div>
 
-      {error && (
+      {(error ?? (hideStart ? null : start.error)) && (
         <MessageBar intent="error">
-          <MessageBarBody>{error}</MessageBarBody>
+          <MessageBarBody>{error ?? start.error}</MessageBarBody>
         </MessageBar>
       )}
 

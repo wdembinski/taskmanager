@@ -39,6 +39,57 @@ const PEEK_CHAIN_LINKS = [
   { id: 'link-peek-1', fromTaskId: '14a', toTaskId: '13a', gate: 'after-merge' },
   { id: 'link-peek-2', fromTaskId: '2', toTaskId: '13a', gate: 'after-merge' },
 ];
+
+/**
+ * `'13a'` as the full-screen issue rows want it, after `v9-2-issue-detail-light.svg`: STAGED
+ * (an agent assigned, `pending`, never run — `canStartWork`), so the header's Run button
+ * draws; a description, so the main column opens on text; and a branch, so Built has
+ * something to say. Row-local, like `DECISION_TASKS`.
+ */
+const FULL_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
+  t.id === '13a'
+    ? {
+        ...t,
+        status: 'pending',
+        agentProjectId: t.projectId,
+        workedAt: null,
+        sessionId: null,
+        agentBranch: 'fx-13a-retry-queue',
+        externalDescription:
+          'The retry queue drains in the background, but nobody can see it. Show its depth and ' +
+          'the last failure on the dashboard, refreshed every minute.\n\n' +
+          'Done means: the dashboard card shows the queue depth and the newest failure.',
+        milestoneId: 'ms-mixed',
+        epicTaskId: 'sb-7',
+      }
+    : t,
+);
+
+/** An open MR on `'13a'`'s branch with a staged pipeline, so Built and Tested both draw. */
+const FULL_MERGE_REQUESTS = [
+  ...BOOT_CHANNELS['mr:mergeRequests'],
+  {
+    ...BOOT_CHANNELS['mr:mergeRequests'][0],
+    id: 'mr-13a',
+    taskId: '13a',
+    openedForTaskId: '13a',
+    number: 201,
+    title: 'Wire the retry queue to the dashboard',
+    sourceBranch: 'fx-13a-retry-queue',
+    changesRequested: false,
+    pipelineStatus: 'success',
+    pipelineStages: [
+      { name: 'typecheck', status: 'success' },
+      { name: 'test', status: 'success' },
+      { name: 'build', status: 'success' },
+    ],
+  },
+];
+
+const FULL_OVERRIDES = {
+  'board:tasks': FULL_TASKS,
+  'mr:mergeRequests': FULL_MERGE_REQUESTS,
+};
 export default [
   {
     // The desktop's own default tab is `'mytasks'` (the Board, `App.tsx`'s own
@@ -109,14 +160,18 @@ export default [
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {
-    // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full'.
+    // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full' —
+    // `TaskDetail`'s two-column `layout="full"`: key above a large title, Run top right (the
+    // card is staged, `FULL_TASKS`), the description as text, the steps, Built and Tested.
     name: 'issue-full-screen',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    // By key, not position: `FULL_TASKS` moves the card to the To Do group.
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:has:FX-13a' }, { click: 'Open full screen' }],
     expect: '[data-issue-breadcrumb]',
     mockup: 'v9-2-issue-detail-light.svg',
+    channelOverrides: FULL_OVERRIDES,
   },
   {
     // The same full-screen issue in the dark scheme. There is no dark issue-detail mockup, so
@@ -125,8 +180,10 @@ export default [
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'dark',
-    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    // By key, not position: `FULL_TASKS` moves the card to the To Do group.
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:has:FX-13a' }, { click: 'Open full screen' }],
     expect: '[data-issue-breadcrumb]',
     mockup: 'v9-2-issue-detail-light.svg',
+    channelOverrides: FULL_OVERRIDES,
   },
 ];

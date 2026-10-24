@@ -72,6 +72,21 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground2,
     fontSize: '12px',
   },
+  /**
+   * The full-screen issue's description (`presentation="text"`): the ticket's own words at
+   * body size, uncapped — the main column scrolls, so a box with a scroll of its own inside
+   * it would only be a second scrollbar. Clicking it opens the editor.
+   */
+  textBody: {
+    whiteSpace: 'pre-wrap',
+    color: tokens.colorNeutralForeground1,
+    fontSize: tokens.fontSizeBase300,
+    lineHeight: tokens.lineHeightBase300,
+    cursor: 'text',
+    borderRadius: tokens.borderRadiusMedium,
+    ':hover': { backgroundColor: tokens.colorSubtleBackgroundHover },
+    ':focus-visible': { outline: `2px solid ${tokens.colorStrokeFocus2}` },
+  },
   editRow: { display: 'flex', justifyContent: 'flex-end', gap: '8px' },
   /**
    * The PROJECT's colour, beside its dropdown. Priority used to share this style; it now
@@ -143,6 +158,13 @@ export interface TaskDetailsCellProps {
   chainLinks?: readonly TaskLink[];
   chainTasksById?: ReadonlyMap<string, Task>;
   mergeRequests?: readonly MergeRequest[];
+  /**
+   * `'text'` — the full-screen issue's description: the ticket's text alone, always shown,
+   * with no "Details" heading, no State/Priority/Board row (the property column carries
+   * those) and no fold. Clicking the text edits it, with the same draft and Save as the fold.
+   * Absent everywhere else, which keeps the cell exactly as it was.
+   */
+  presentation?: 'text';
 }
 
 const NO_LINKS: readonly TaskLink[] = [];
@@ -160,11 +182,15 @@ export function TaskDetailsCell({
   chainLinks = NO_LINKS,
   chainTasksById = NO_TASKS,
   mergeRequests = NO_MRS,
+  presentation,
 }: TaskDetailsCellProps): JSX.Element {
   const transport = useTransport();
   const { askAfterMove, dialog: releaseDialog } = useReleaseOnDone();
   const styles = useStyles();
-  const [open, setOpen] = useState(false);
+  const asText = presentation === 'text';
+  const [folded, setOpen] = useState(false);
+  // The text presentation has no fold: its description is always on show.
+  const open = asText || folded;
   const [editing, setEditing] = useState(false);
   /**
    * The description being written, kept as a DRAFT (`./drafts`): opening another card to
@@ -397,9 +423,11 @@ export function TaskDetailsCell({
 
   return (
     <div className={styles.cell}>
-      <div className={styles.row}>
-        <Text weight="semibold">Details</Text>
-      </div>
+      {!asText && (
+        <div className={styles.row}>
+          <Text weight="semibold">Details</Text>
+        </div>
+      )}
 
       {/* The card's headline, with a way to take it back off. It is set by posting a
           status from the composer, and until now there was no way to CLEAR one — an
@@ -425,11 +453,13 @@ export function TaskDetailsCell({
 
       {/* State, priority and project on ONE row. Stacked, each was a full-width row
           carrying a two-word label and a 116px control, so the three of them spent three
-          lines of a narrow pane to say what fits comfortably on one. */}
-      <div className={styles.trio}>
-        <div className={styles.trioCell}>
-          <Caption1 className={styles.hint}>State</Caption1>
-          {/* Where the card RESTS, not `status` — which a live run has borrowed, and
+          lines of a narrow pane to say what fits comfortably on one. Not in the text
+          presentation, whose page draws these in its property column instead. */}
+      {!asText && (
+        <div className={styles.trio}>
+          <div className={styles.trioCell}>
+            <Caption1 className={styles.hint}>State</Caption1>
+            {/* Where the card RESTS, not `status` — which a live run has borrowed, and
               which would have this control announce "Running" as the card's state and
               then quietly change it back. The run says so through the spinner and the run
               strip above; this says where you filed the card, and only you move it.
@@ -438,100 +468,101 @@ export function TaskDetailsCell({
               state you pick is parked and handed back to the card when the run settles
               (`humanStatusPatch`). Disabling it meant a delegated card's state was frozen
               for as long as its agent worked. */}
-          <Dropdown
-            className={styles.trioPicker}
-            size="small"
-            value={STATUS_LABEL[resting]}
-            selectedOptions={[resting]}
-            title="Status"
-            onOptionSelect={(_e, d) => {
-              if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
-            }}
-          >
-            {MANUAL_STATUS_OPTIONS.map((o) => (
-              <Option key={o.value} value={o.value}>
-                {o.label}
-              </Option>
-            ))}
-          </Dropdown>
-        </div>
-
-        {/* For a JIRA card this one really does leave the app: the issue is updated, and
-            a rejection leaves the card alone. */}
-        <div className={styles.trioCell}>
-          <div className={styles.trioLabel}>
-            <Caption1 className={styles.hint}>Priority</Caption1>
-            {/* The same indicator the cards wear. The dropdown beside it spells the name
-                out either way, so this is the redundant half — which is exactly why it is
-                the half that follows the board's setting. */}
-            <PriorityGlyph mode={priorityDisplay} priority={priority} size={16} />
-          </div>
-          <Dropdown
-            className={styles.trioPicker}
-            size="small"
-            value={priority ?? NO_PRIORITY}
-            selectedOptions={[priority ?? NO_PRIORITY]}
-            disabled={busy}
-            // Four different promises, and the card has to make the right one: JIRA's is
-            // written back, GitHub's cannot be (an issue has no priority field at all, so the
-            // value is this app's own and its sync is written to preserve it), Linear's is
-            // read but never written (`linearSync.ts`), and an ad-hoc card's was never
-            // anything else.
-            title={
-              isJira
-                ? 'Also updates the linked JIRA issue'
-                : task.externalSource === 'github'
-                  ? 'Kept in this app — a GitHub issue has no priority to write to'
-                  : task.externalSource === 'linear'
-                    ? 'Read from the linked Linear issue — not written back'
-                    : 'Priority'
-            }
-            onOptionSelect={(_e, d) => {
-              if (d.optionValue)
-                void setPriority(d.optionValue === NO_PRIORITY ? null : d.optionValue);
-            }}
-          >
-            {priorities.map((p) => (
-              <Option key={p} value={p}>
-                {p}
-              </Option>
-            ))}
-            <Option value={NO_PRIORITY}>{NO_PRIORITY}</Option>
-          </Dropdown>
-        </div>
-
-        {/* Which board this card lives on. Moving it here calls `task:setBoard` directly
-            — the same move dragging the card makes — so filing and board membership are
-            one fact with one control, not two that can disagree. Starting an agent on
-            the card is the separate act in the panel above. */}
-        {boards.length > 0 && (
-          <div className={styles.trioCell}>
-            <div className={styles.trioLabel}>
-              <Caption1 className={styles.hint}>Project / Board</Caption1>
-              {board?.color && (
-                <span className={styles.projectSwatch} style={{ backgroundColor: board.color }} />
-              )}
-            </div>
             <Dropdown
               className={styles.trioPicker}
               size="small"
-              value={board?.name ?? ''}
-              selectedOptions={[task.projectId]}
-              disabled={busy || boardMoveRefusal !== null}
-              title={boardMoveRefusal ?? 'Move this card to a different board'}
+              value={STATUS_LABEL[resting]}
+              selectedOptions={[resting]}
+              title="Status"
               onOptionSelect={(_e, d) => {
-                if (d.optionValue) void setBoard(d.optionValue);
+                if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
               }}
             >
-              {boards.map((b) => (
-                <Option key={b.id} value={b.id} text={b.name}>
-                  {b.name}
+              {MANUAL_STATUS_OPTIONS.map((o) => (
+                <Option key={o.value} value={o.value}>
+                  {o.label}
                 </Option>
               ))}
             </Dropdown>
           </div>
-        )}
-      </div>
+
+          {/* For a JIRA card this one really does leave the app: the issue is updated, and
+            a rejection leaves the card alone. */}
+          <div className={styles.trioCell}>
+            <div className={styles.trioLabel}>
+              <Caption1 className={styles.hint}>Priority</Caption1>
+              {/* The same indicator the cards wear. The dropdown beside it spells the name
+                out either way, so this is the redundant half — which is exactly why it is
+                the half that follows the board's setting. */}
+              <PriorityGlyph mode={priorityDisplay} priority={priority} size={16} />
+            </div>
+            <Dropdown
+              className={styles.trioPicker}
+              size="small"
+              value={priority ?? NO_PRIORITY}
+              selectedOptions={[priority ?? NO_PRIORITY]}
+              disabled={busy}
+              // Four different promises, and the card has to make the right one: JIRA's is
+              // written back, GitHub's cannot be (an issue has no priority field at all, so the
+              // value is this app's own and its sync is written to preserve it), Linear's is
+              // read but never written (`linearSync.ts`), and an ad-hoc card's was never
+              // anything else.
+              title={
+                isJira
+                  ? 'Also updates the linked JIRA issue'
+                  : task.externalSource === 'github'
+                    ? 'Kept in this app — a GitHub issue has no priority to write to'
+                    : task.externalSource === 'linear'
+                      ? 'Read from the linked Linear issue — not written back'
+                      : 'Priority'
+              }
+              onOptionSelect={(_e, d) => {
+                if (d.optionValue)
+                  void setPriority(d.optionValue === NO_PRIORITY ? null : d.optionValue);
+              }}
+            >
+              {priorities.map((p) => (
+                <Option key={p} value={p}>
+                  {p}
+                </Option>
+              ))}
+              <Option value={NO_PRIORITY}>{NO_PRIORITY}</Option>
+            </Dropdown>
+          </div>
+
+          {/* Which board this card lives on. Moving it here calls `task:setBoard` directly
+            — the same move dragging the card makes — so filing and board membership are
+            one fact with one control, not two that can disagree. Starting an agent on
+            the card is the separate act in the panel above. */}
+          {boards.length > 0 && (
+            <div className={styles.trioCell}>
+              <div className={styles.trioLabel}>
+                <Caption1 className={styles.hint}>Project / Board</Caption1>
+                {board?.color && (
+                  <span className={styles.projectSwatch} style={{ backgroundColor: board.color }} />
+                )}
+              </div>
+              <Dropdown
+                className={styles.trioPicker}
+                size="small"
+                value={board?.name ?? ''}
+                selectedOptions={[task.projectId]}
+                disabled={busy || boardMoveRefusal !== null}
+                title={boardMoveRefusal ?? 'Move this card to a different board'}
+                onOptionSelect={(_e, d) => {
+                  if (d.optionValue) void setBoard(d.optionValue);
+                }}
+              >
+                {boards.map((b) => (
+                  <Option key={b.id} value={b.id} text={b.name}>
+                    {b.name}
+                  </Option>
+                ))}
+              </Dropdown>
+            </div>
+          )}
+        </div>
+      )}
 
       {rekeyNotice && <Caption1 className={styles.hint}>{rekeyNotice}</Caption1>}
 
@@ -539,28 +570,30 @@ export function TaskDetailsCell({
         <Caption1 className={styles.hint}>Depends on: {task.dependsOn.join(', ')}</Caption1>
       )}
 
-      <div className={styles.row}>
-        {/* The fold's summary counts the FILES, not the words: a description you have read
+      {!asText && (
+        <div className={styles.row}>
+          {/* The fold's summary counts the FILES, not the words: a description you have read
             is worth leaving shut, and the one thing you would still want to know about
             what is behind it is whether the card is carrying something. */}
-        <FoldToggle
-          open={open}
-          onToggle={() => setOpen((v) => !v)}
-          summary={
-            attachments.length > 0
-              ? `${attachments.length} file${attachments.length === 1 ? '' : 's'}`
-              : undefined
-          }
-        >
-          <Caption1>Description</Caption1>
-        </FoldToggle>
-        <span className={styles.grow} />
-        {open && !editing && (
-          <Button size="small" appearance="subtle" onClick={() => setEditing(true)}>
-            Edit
-          </Button>
-        )}
-      </div>
+          <FoldToggle
+            open={open}
+            onToggle={() => setOpen((v) => !v)}
+            summary={
+              attachments.length > 0
+                ? `${attachments.length} file${attachments.length === 1 ? '' : 's'}`
+                : undefined
+            }
+          >
+            <Caption1>Description</Caption1>
+          </FoldToggle>
+          <span className={styles.grow} />
+          {open && !editing && (
+            <Button size="small" appearance="subtle" onClick={() => setEditing(true)}>
+              Edit
+            </Button>
+          )}
+        </div>
+      )}
 
       {error && (
         <MessageBar intent="error">
@@ -610,6 +643,28 @@ export function TaskDetailsCell({
                 </Button>
               </div>
             </>
+          ) : asText ? (
+            // Click-to-edit: the text IS the control, so there is no Edit button beside it.
+            <div
+              className={styles.textBody}
+              role="button"
+              tabIndex={0}
+              title="Edit the description"
+              data-issue-description
+              onClick={() => setEditing(true)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setEditing(true);
+                }
+              }}
+            >
+              {task.externalDescription || (
+                <span className={styles.hint}>
+                  No description yet — click to add one; the agent&apos;s prompt quotes it.
+                </span>
+              )}
+            </div>
           ) : task.externalDescription ? (
             <div className={styles.body}>{task.externalDescription}</div>
           ) : (
