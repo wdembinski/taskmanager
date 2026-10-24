@@ -365,17 +365,26 @@ const useStyles = makeStyles({
     color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
     textDecoration: 'none',
   },
-  fullTitleRow: { display: 'flex', alignItems: 'flex-start', gap: '8px', minWidth: 0 },
+  /** The key on the left and the title's actions at the right — a row of its own above the
+   *  title, as the mockup draws Run and the pencil, so the buttons never squeeze the title. */
+  fullTopRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
+  fullTitleActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    flexShrink: 0,
+    marginLeft: 'auto',
+  },
+  fullTitleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
   fullTitle: {
     flex: 1,
     minWidth: 0,
     margin: 0,
-    fontSize: tokens.fontSizeHero800,
-    lineHeight: tokens.lineHeightHero800,
+    fontSize: tokens.fontSizeHero700,
+    lineHeight: tokens.lineHeightHero700,
     fontWeight: tokens.fontWeightSemibold,
     color: tokens.colorNeutralForeground1,
   },
-  fullTitleActions: { display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 },
   /** The conversation in the main column: its own scroll, capped, so the composer under it
    *  stays reachable without scrolling the whole page past a long chat. */
   fullLogWrap: { position: 'relative', flexShrink: 0 },
@@ -1812,67 +1821,66 @@ export function TaskDetail({
                   )}
                 </div>
               )}
-              {keyText &&
-                (task.externalUrl ? (
-                  <a
-                    className={styles.fullKey}
-                    href={task.externalUrl}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    title={ticketLinkTitle(task) ?? undefined}
-                    data-issue-key
-                  >
-                    <Caption1>{keyText}</Caption1>
-                  </a>
-                ) : (
-                  <Caption1
-                    className={styles.fullKey}
-                    title={task.externalKey ?? undefined}
-                    data-issue-key
-                  >
-                    {keyText}
-                  </Caption1>
-                ))}
+              <div className={styles.fullTopRow} data-issue-top-row>
+                {keyText &&
+                  (task.externalUrl ? (
+                    <a
+                      className={styles.fullKey}
+                      href={task.externalUrl}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      title={ticketLinkTitle(task) ?? undefined}
+                      data-issue-key
+                    >
+                      <Caption1>{keyText}</Caption1>
+                    </a>
+                  ) : (
+                    <Caption1
+                      className={styles.fullKey}
+                      title={task.externalKey ?? undefined}
+                      data-issue-key
+                    >
+                      {keyText}
+                    </Caption1>
+                  ))}
+                <div className={styles.fullTitleActions}>
+                  {onShowOnBoard && (
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<BoardRegular />}
+                      aria-label="Show on board"
+                      title="Show on board"
+                      onClick={() => onShowOnBoard(task.id)}
+                    />
+                  )}
+                  {!editingTitle && (
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<EditRegular />}
+                      aria-label="Edit title"
+                      title="Edit title"
+                      onClick={() => setEditingTitle(true)}
+                    />
+                  )}
+                  {/* The agent panel's own Start, hoisted: drawn only when the card can
+                      be started, never as a disabled placeholder. */}
+                  {start.visible && (
+                    <Button
+                      appearance="primary"
+                      icon={start.busy ? <Spinner size="tiny" /> : <PlayRegular />}
+                      disabled={start.busy}
+                      title="Start the agent on this card now."
+                      onClick={start.run}
+                    >
+                      Run
+                    </Button>
+                  )}
+                </div>
+              </div>
               <div className={styles.fullTitleRow}>
-                {editingTitle ? (
-                  titleEditor
-                ) : (
-                  <>
-                    <h1 className={styles.fullTitle}>{task.title}</h1>
-                    <div className={styles.fullTitleActions}>
-                      <Button
-                        size="small"
-                        appearance="subtle"
-                        onClick={() => setEditingTitle(true)}
-                      >
-                        Edit
-                      </Button>
-                      {onShowOnBoard && (
-                        <Button
-                          size="small"
-                          appearance="subtle"
-                          icon={<BoardRegular />}
-                          onClick={() => onShowOnBoard(task.id)}
-                        >
-                          Show on board
-                        </Button>
-                      )}
-                      {/* The agent panel's own Start, hoisted: drawn only when the card can
-                          be started, never as a disabled placeholder. */}
-                      {start.visible && (
-                        <Button
-                          appearance="primary"
-                          icon={start.busy ? <Spinner size="tiny" /> : <PlayRegular />}
-                          disabled={start.busy}
-                          title="Start the agent on this card now."
-                          onClick={start.run}
-                        >
-                          Run
-                        </Button>
-                      )}
-                    </div>
-                  </>
-                )}
+                {editingTitle ? titleEditor : <h1 className={styles.fullTitle}>{task.title}</h1>}
               </div>
               {editingTitle && tracker && (
                 <Caption1 className={styles.titleHint}>

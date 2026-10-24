@@ -7,6 +7,7 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { makeStyles, tokens } from '@fluentui/react-components';
 import { PERSONAL_PROJECT_ID, type Task } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import { TransportProvider, type Transport } from './transport';
@@ -104,6 +105,54 @@ describe('TaskDetail, layout="full"', () => {
     expect(full).toContain('data-links-heading');
     expect(full).toContain('role="log"');
     expect(full).toContain('data-issue-properties');
+  });
+
+  it('puts Run, Edit and Show on board on the key row above the title, not beside it', () => {
+    const page = render(
+      <TaskDetail
+        task={card}
+        subtasks={steps}
+        mergeRequests={[mr]}
+        layout="full"
+        onShowOnBoard={() => {}}
+      />,
+    );
+    const top = page.indexOf('data-issue-top-row');
+    const h1 = page.indexOf('<h1');
+    expect(top).toBeGreaterThan(-1);
+    for (const action of [
+      '>Run</button>',
+      'aria-label="Edit title"',
+      'aria-label="Show on board"',
+    ]) {
+      const at = page.indexOf(action);
+      expect(at, action).toBeGreaterThan(top);
+      expect(at, action).toBeLessThan(h1);
+    }
+    // The h1 is alone in its row: nothing follows it before that row closes.
+    expect(page).toMatch(/<h1[^>]*>[^<]*<\/h1><\/div>/);
+    // Icon-only: no visible "Edit" / "Show on board" text label.
+    expect(page).not.toMatch(/>Edit<\/button>/);
+    expect(page).not.toMatch(/>Show on board<\/button>/);
+  });
+
+  it('sets the title at Hero700 (28px), not Hero800', () => {
+    const useProbe = makeStyles({
+      hero700: { fontSize: tokens.fontSizeHero700 },
+      hero800: { fontSize: tokens.fontSizeHero800 },
+    });
+    let probe: { hero700: string; hero800: string } = { hero700: '', hero800: '' };
+    function Probe(): null {
+      probe = useProbe();
+      return null;
+    }
+    render(<Probe />);
+    const h1Class = /<h1 class="([^"]*)"/.exec(full)?.[1]?.split(' ') ?? [];
+    // Griffel classes are atomic: the h1 carries the very class a probe gets for the property.
+    const atomic = (cls: string) => cls.split(' ').filter((c) => c.startsWith('f'));
+    expect(atomic(probe.hero700).length).toBeGreaterThan(0);
+    expect(atomic(probe.hero700).every((c) => h1Class.includes(c))).toBe(true);
+    expect(atomic(probe.hero800).some((c) => h1Class.includes(c))).toBe(false);
   });
 
   it('draws no Run once the card has worked', () => {
