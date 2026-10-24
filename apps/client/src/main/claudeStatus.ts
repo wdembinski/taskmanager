@@ -22,7 +22,7 @@ import { hostJoin, localHost, type ExecHost } from './exec';
  * is missing / not runnable. `resolveViaShell` lets Windows resolve `claude.cmd`
  * from PATH the same way a terminal would.
  */
-async function readClaudeVersion(host: ExecHost): Promise<string | null> {
+export async function readClaudeVersion(host: ExecHost): Promise<string | null> {
   const { code, stdout } = await host.exec(process.cwd(), 'claude', ['--version'], {
     resolveViaShell: true,
     timeoutMs: 10_000,
