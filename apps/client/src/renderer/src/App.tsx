@@ -536,21 +536,24 @@ export function App(): JSX.Element {
             }}
           />
         }
+        // Settings is a full-content-card page (v10 mockup): no sidebar tree beside it.
         sidebar={
-          <Sidebar
-            sections={sidebarData.sections}
-            selectedView={sidebarSelectedView}
-            onNavigate={handleSidebarNavigate}
-            onOpenTicket={openTaskOnBoard}
-            onNewIssue={() => {
-              if (tracker.projectId) setNewIssueDialogOpen(true);
-            }}
-            onToggleFold={toggleSidebarFold}
-            projectOptions={tracker.projectOptions}
-            selectedProjectId={tracker.projectId}
-            onSelectProject={tracker.selectProject}
-            loading={!sidebarData.loaded}
-          />
+          tab === 'settings' ? undefined : (
+            <Sidebar
+              sections={sidebarData.sections}
+              selectedView={sidebarSelectedView}
+              onNavigate={handleSidebarNavigate}
+              onOpenTicket={openTaskOnBoard}
+              onNewIssue={() => {
+                if (tracker.projectId) setNewIssueDialogOpen(true);
+              }}
+              onToggleFold={toggleSidebarFold}
+              projectOptions={tracker.projectOptions}
+              selectedProjectId={tracker.projectId}
+              onSelectProject={tracker.selectProject}
+              loading={!sidebarData.loaded}
+            />
+          )
         }
         banners={
           <>

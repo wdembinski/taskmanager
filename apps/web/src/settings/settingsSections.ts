@@ -17,33 +17,107 @@
  * static list) on their own and must render whether or not that read has answered yet. This
  * predicate is the seam that keeps the two sets honest, and is unit-tested directly so the rule
  * cannot quietly drift back to "the whole screen waits".
+ *
+ * It also holds the web's grouped nav (v10 mockup, {@link WEB_SETTINGS_GROUPS}): JIRA and
+ * Linear are one Integrations nav item now, with a provider tab each inside the pane, but they
+ * keep their own ids so {@link resolveWebSettingsNav} can still open either one by name.
  */
+import { SETTINGS_NAV_ICONS, type SettingsNavGroup } from '@tm/ui/settings/SettingsPage';
 
-export type SettingsSection =
+/** The providers drawn as the horizontal tabs inside Integrations, in tab order. */
+export const WEB_SETTINGS_PROVIDERS = [
+  { id: 'jira', title: 'JIRA' },
+  { id: 'linear', title: 'Linear' },
+] as const;
+
+export type WebSettingsProvider = (typeof WEB_SETTINGS_PROVIDERS)[number]['id'];
+
+/** One item of the grouped nav. */
+export type WebSettingsNavSection =
   | 'general'
   | 'board'
   | 'features'
   | 'projects'
-  | 'jira'
-  | 'linear'
-  | 'tokens'
   | 'people'
-  | 'desktop'
   | 'skills'
   | 'workflows'
   | 'promptTemplates'
-  | 'shortcuts';
+  | 'integrations'
+  | 'tokens'
+  | 'appearance'
+  | 'shortcuts'
+  | 'desktop';
+
+/** Anything Settings can be asked to open: a nav item, or a provider inside Integrations. */
+export type SettingsSection = WebSettingsNavSection | WebSettingsProvider;
+
+/** The web's grouped nav (plan Decision 2). The token page is titled "Tokens" here; its own
+ *  heading still reads "Personal access tokens". */
+export const WEB_SETTINGS_GROUPS: Array<
+  SettingsNavGroup & { items: Array<{ id: WebSettingsNavSection }> }
+> = [
+  {
+    heading: 'Workspace',
+    items: [
+      { id: 'general', title: 'General', icon: SETTINGS_NAV_ICONS.general },
+      { id: 'board', title: 'Board', icon: SETTINGS_NAV_ICONS.board },
+      { id: 'features', title: 'Features', icon: SETTINGS_NAV_ICONS.features },
+      { id: 'projects', title: 'Projects', icon: SETTINGS_NAV_ICONS.projects },
+      { id: 'people', title: 'People', icon: SETTINGS_NAV_ICONS.people },
+      { id: 'skills', title: 'Skills', icon: SETTINGS_NAV_ICONS.skills },
+      { id: 'workflows', title: 'Workflows', icon: SETTINGS_NAV_ICONS.workflows },
+      {
+        id: 'promptTemplates',
+        title: 'Prompt templates',
+        icon: SETTINGS_NAV_ICONS.promptTemplates,
+      },
+    ],
+  },
+  {
+    heading: 'Connections',
+    items: [
+      { id: 'integrations', title: 'Integrations', icon: SETTINGS_NAV_ICONS.integrations },
+      { id: 'tokens', title: 'Tokens', icon: SETTINGS_NAV_ICONS.tokens },
+    ],
+  },
+  {
+    heading: 'This machine',
+    items: [
+      { id: 'appearance', title: 'Appearance', icon: SETTINGS_NAV_ICONS.appearance },
+      { id: 'shortcuts', title: 'Shortcuts', icon: SETTINGS_NAV_ICONS.shortcuts },
+      { id: 'desktop', title: 'Desktop only', icon: SETTINGS_NAV_ICONS.desktopOnly },
+    ],
+  },
+];
+
+export interface ResolvedWebSettingsNav {
+  nav: WebSettingsNavSection;
+  /** Set only when the section asked for was a provider. */
+  provider?: WebSettingsProvider;
+}
+
+function isProvider(section: SettingsSection): section is WebSettingsProvider {
+  return WEB_SETTINGS_PROVIDERS.some((p) => p.id === section);
+}
+
+/** A provider id opens Integrations on that provider's tab; any other id is its own nav item. */
+export function resolveWebSettingsNav(section: SettingsSection): ResolvedWebSettingsNav {
+  return isProvider(section) ? { nav: 'integrations', provider: section } : { nav: section };
+}
 
 /**
  * The sections whose form reads `AppSettings`. Everything NOT here draws without it — see the
- * file header for why that distinction is the whole point.
+ * file header for why that distinction is the whole point. Integrations holds the JIRA and
+ * Linear forms; Appearance holds Monochrome code beside the per-browser theme.
  */
 const SECTIONS_NEEDING_SETTINGS: ReadonlySet<SettingsSection> = new Set<SettingsSection>([
   'general',
   'board',
   'features',
+  'integrations',
   'jira',
   'linear',
+  'appearance',
   'promptTemplates',
 ]);
 
