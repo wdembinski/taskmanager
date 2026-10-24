@@ -58,7 +58,12 @@ function answerFromBootChannels(bootChannels, channel, args) {
  * mutation still can.
  */
 function buildState(fixture) {
-  const tasks = new Map(fixture.TASKS.map((t) => [t.id, { ...t }]));
+  // The merged `board:tasks` the desktop target answers from (board + sidebar + archived
+  // tickets), not `boardShotsFixture.mjs`'s `TASKS` alone — or the web's mirror misses every
+  // task another `shots/*.mjs` file contributes, and its status bar counts fewer running.
+  const boardTasks = fixture.BOOT_CHANNELS?.['board:tasks'];
+  const seed = Array.isArray(boardTasks) ? boardTasks : fixture.TASKS;
+  const tasks = new Map(seed.map((t) => [t.id, { ...t }]));
   const projects = new Map(fixture.PROJECTS.map(({ project }) => [project.id, { ...project }]));
   return {
     tasks,

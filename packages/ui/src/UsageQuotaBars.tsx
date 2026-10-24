@@ -26,6 +26,7 @@ import { useEffect, useState } from 'react';
 import { makeStyles, ProgressBar, Tooltip, tokens } from '@fluentui/react-components';
 import type { UsageQuota, UsageQuotas } from '@tm/shared/usage';
 import { formatCountdown } from './countdown';
+import { quotaSegmentLabel } from './shell/statusSegments';
 import { useTransport } from './transport';
 import { formatPct, formatTokens } from './usageFormat';
 
@@ -43,12 +44,6 @@ const QUOTA_LABEL: Record<UsageQuota['id'], string> = {
   weekly: 'This week (7d)',
 };
 
-/** The status bar has room for a word, not a phrase. */
-const QUOTA_SHORT: Record<UsageQuota['id'], string> = {
-  session: 'Session',
-  weekly: 'Week',
-};
-
 const useStyles = makeStyles({
   /** The Performance screen's pair: two stacked rows, each label over bar over numbers. */
   panel: { display: 'flex', flexDirection: 'column', gap: '10px' },
@@ -62,10 +57,10 @@ const useStyles = makeStyles({
   },
   rowBar: { gridColumn: '1 / -1' },
 
-  /** The status-bar pair: label, a short bar, a percent — three times per window. */
+  /** The status-bar pair: the window's width and a short bar, per window. The percentage
+   *  is the tooltip's, not the bar's — v9 draws none. */
   status: { display: 'flex', alignItems: 'center', gap: '10px' },
   statusItem: { display: 'flex', alignItems: 'center', gap: '5px', cursor: 'default' },
-  statusPct: { fontVariantNumeric: 'tabular-nums' },
   /**
    * The bar is drawn in the bar's OWN ink rather than Fluent's brand palette, for the
    * same reason the live/dead dot is: the strip is blue at rest and the app's orange
@@ -73,7 +68,7 @@ const useStyles = makeStyles({
    * with a solid fill keeps the reading where it belongs — fill against track — on either.
    */
   statusTrack: {
-    width: '56px',
+    width: '40px',
     height: '4px',
     borderRadius: '2px',
     backgroundColor: 'var(--tm-status-bar-quota-track)',
@@ -198,13 +193,14 @@ export function UsageQuotaBars({ quotas }: { quotas: UsageQuotas | null }): JSX.
   );
 }
 
-/** One compact reading in the status bar: a word, a bar, a percent. */
+/** One compact reading in the status bar: "5h" or "7d" and a bar. The number itself is
+ *  in the tooltip and the bar's accessible label. */
 function StatusQuota({ quota }: { quota: UsageQuota }): JSX.Element {
   const styles = useStyles();
   return (
     <Tooltip content={describeQuota(quota)} relationship="label" positioning="above">
       <div className={styles.statusItem}>
-        <span>{QUOTA_SHORT[quota.id]}</span>
+        <span>{quotaSegmentLabel(quota.id)}</span>
         <div
           className={styles.statusTrack}
           role="progressbar"
@@ -218,7 +214,6 @@ function StatusQuota({ quota }: { quota: UsageQuota }): JSX.Element {
             style={{ width: `${barValue(quota) * 100}%`, backgroundColor: statusInk(quota.pct) }}
           />
         </div>
-        <span className={styles.statusPct}>{formatPct(quota.pct)}</span>
       </div>
     </Tooltip>
   );

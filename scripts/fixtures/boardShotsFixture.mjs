@@ -184,6 +184,9 @@ const agentRunningParent = task({
   status: 'in-progress',
   agentProjectId: PROJECT_ID,
   workedAt: now - 5 * 60_000,
+  // The status bar's branch segment (mockup v9-7): with nothing selected it names the
+  // most recently started running task's card — `3-s2` below, newer than `sb-4`.
+  agentBranch: 'tm-71-linear-identifiers',
 });
 const agentRunningSteps = [
   task({
@@ -199,6 +202,7 @@ const agentRunningSteps = [
     order: 1,
     title: 'Add the identifier column',
     status: 'running',
+    workedAt: now - 60_000,
   }),
   task({
     id: '3-s3',

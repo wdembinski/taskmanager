@@ -129,6 +129,12 @@ export interface StatusBarTokens {
    *  attention orange it is ever drawn on. */
   dotRing: string;
   /**
+   * The "agents running" dot's fill — the mockup's cyan, in both schemes. Its own token
+   * because the light scheme's fluo cyan (`#07748C`) is unreadable on the bar's blue
+   * gradient; drawn with {@link StatusBarTokens.dotRing} like the live/dead dot.
+   */
+  dotRun: string;
+  /**
    * The ink for anything drawn directly on the bar's own fill — the gradient or the
    * attention orange — without a ring of its own to carry its contrast (unlike
    * {@link StatusBarTokens.dotOk}/{@link StatusBarTokens.dotBad}). Same value as
@@ -155,6 +161,7 @@ const STATUS_BAR: StatusBarTokens = {
   dotOk: '#3FB950',
   dotBad: '#F85149',
   dotRing: 'rgba(0, 0, 0, 0.45)',
+  dotRun: '#22E4FF',
   ink: '#1b1b1b',
   quotaTrack: 'rgba(255, 255, 255, 0.35)',
   quotaOk: '#FFFFFF',
