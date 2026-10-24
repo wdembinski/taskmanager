@@ -663,6 +663,11 @@ export interface ReviewComment {
   acceptedAt?: number | null;
   /** When the human dismissed an AI draft. */
   dismissedAt?: number | null;
+  /**
+   * Anchored to the file, not a line: an AI finding whose range fell outside the hunks. Its
+   * `line` is the range's start and its anchor never resolves, so `markOutdated` skips it.
+   */
+  fileLevel?: boolean;
 }
 
 /** The worktree moved on since the human loaded `diffId`. */
@@ -833,11 +838,13 @@ function normalizeExcerpt(text: string): string {
  * outdated when its anchor no longer resolves (`excerptFor` returns `null`) or resolves to
  * text that no longer matches its stored `excerpt` once both are normalised (CRLF folded to
  * `\n`, trailing whitespace trimmed per line) — so a moved line (same text, new number) reads
- * as outdated, and a reverted edit flips back to `outdated: false`.
+ * as outdated, and a reverted edit flips back to `outdated: false`. A `fileLevel` comment is
+ * never outdated: its anchor is outside the hunks by construction.
  */
 export function markOutdated(comments: ReviewComment[], file: DiffFile): ReviewComment[] {
   return comments.map((comment) => {
     if (comment.path !== file.path || file.tooLarge) return comment;
+    if (comment.fileLevel) return { ...comment, outdated: false };
     const excerpt = excerptFor(file, comment);
     const outdated =
       excerpt === null || normalizeExcerpt(excerpt) !== normalizeExcerpt(comment.excerpt);
