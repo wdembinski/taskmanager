@@ -90,6 +90,30 @@ describe('buildSidebar sections', () => {
     ]);
   });
 
+  it('keeps archived → machine → newIssue as the last three sections', () => {
+    const projects = [{ id: 'p1', name: 'Personal' }];
+    for (const input of [
+      baseInput(),
+      baseInput({ reviewsEnabled: true }),
+      baseInput({ projects }),
+      baseInput({ projects, reviewsEnabled: true }),
+    ]) {
+      const sections = buildSidebar(input);
+      const kinds = sections.map((s) => s.kind);
+      expect(kinds.slice(-3)).toEqual(['archived', 'machine', 'newIssue']);
+      expect(kinds.indexOf('machine')).toBe(kinds.indexOf('archived') + 1);
+      expect(kinds[kinds.length - 1]).toBe('newIssue');
+
+      const machine = sections.find((s) => s.kind === 'machine');
+      expect(machine).toMatchObject({
+        kind: 'machine',
+        label: 'This machine',
+        location: 'local',
+        projects: input.projects,
+      });
+    }
+  });
+
   it('carries attentionCount onto the Inbox view and archivedCount onto Archived', () => {
     const sections = buildSidebar(baseInput({ attentionCount: 5, archivedCount: 3 }));
     const views = sections.find((s) => s.kind === 'views');

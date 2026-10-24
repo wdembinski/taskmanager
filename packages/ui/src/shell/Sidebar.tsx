@@ -14,9 +14,9 @@
  *
  * `onNavigate`'s targets are the destinations F13.11 moved out of the rail's own `interim`
  * group (`shellNav.ts`'s own header): Inbox/My issues/Reviews from the fixed `views` section,
- * Issues/Fleet/Projects from the small icon row under the team header (the mockup's own
- * quick-link row), and a `This machine` project row. A ticket node opens through
- * `onOpenTicket` instead — it is a card, not a screen.
+ * Issues/Fleet/Projects from the small icon row in the team header (revealed on hover or
+ * focus — the v9 header shows only its label at rest), and a `This machine` project row. A
+ * ticket node opens through `onOpenTicket` instead — it is a card, not a screen.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
@@ -123,6 +123,7 @@ const useStyles = makeStyles({
   scroll: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
   section: { display: 'flex', flexDirection: 'column', padding: '2px 8px' },
   row: {
+    position: 'relative',
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
@@ -139,9 +140,21 @@ const useStyles = makeStyles({
     '& svg': { fontSize: '16px', flexShrink: 0, color: 'var(--tm-text-muted)' },
     ':hover': { backgroundColor: 'var(--tm-selected-tint)' },
   },
+  /** Tint plus the 3px accent bar at 60% of the row's height — `IssueRow.tsx`'s own
+   *  `selected`, shared by every row here (views, tree, Archived, This machine). */
   rowSelected: {
-    backgroundColor: 'var(--tm-selected-tint)',
-    '& svg': { color: 'var(--tm-brand)' },
+    backgroundColor: `var(--tm-selected-tint, ${tokens.colorBrandBackground2})`,
+    '& svg': { color: `var(--tm-brand, ${tokens.colorBrandForeground1})` },
+    '::before': {
+      content: '""',
+      position: 'absolute',
+      left: 0,
+      top: '20%',
+      height: '60%',
+      width: '3px',
+      borderRadius: '2px',
+      backgroundColor: `var(--tm-accent-bar, ${tokens.colorBrandForeground1})`,
+    },
   },
   rowLabel: {
     flex: 1,
@@ -150,7 +163,14 @@ const useStyles = makeStyles({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  rowLabelSelected: {
+    fontWeight: tokens.fontWeightSemibold,
+    color: `var(--tm-brand, ${tokens.colorBrandForeground1})`,
+  },
+  rowLabelMilestone: { fontWeight: tokens.fontWeightSemibold },
   rowCount: { color: 'var(--tm-text-muted)' },
+  /** A "This machine" row's trailing location — right-aligned like the Archived count. */
+  rowLocation: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})` },
   /** The Archived row's own label — muted throughout, mockup-kept, unlike the other fixed
    *  view rows above it which read in the ordinary (darker) row text colour. */
   rowLabelMuted: { color: 'var(--tm-text-muted)' },
@@ -159,17 +179,31 @@ const useStyles = makeStyles({
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '10px 8px 4px',
+    // The quick links stay in the DOM and the tab order, only revealed on hover or once
+    // focus is inside the header — the label is all the v9 header shows at rest.
+    '&:hover [data-team-links]': { opacity: 1 },
+    '&:focus-within [data-team-links]': { opacity: 1 },
   },
-  teamName: { color: 'var(--tm-text-muted)', textTransform: 'uppercase', fontSize: '11px' },
+  teamName: {
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground2})`,
+    fontSize: '11px',
+    fontWeight: tokens.fontWeightSemibold,
+  },
   teamSwitcher: {
     minWidth: 0,
-    color: 'var(--tm-text-muted)',
-    textTransform: 'uppercase',
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground2})`,
     fontSize: '11px',
+    fontWeight: tokens.fontWeightSemibold,
     padding: 0,
   },
   emptyTree: { padding: '6px 8px', color: 'var(--tm-text-muted)' },
-  teamLinks: { display: 'flex', gap: '2px' },
+  teamLinks: {
+    display: 'flex',
+    gap: '2px',
+    opacity: 0,
+    transitionProperty: 'opacity',
+    transitionDuration: tokens.durationFast,
+  },
   linkButton: {
     display: 'flex',
     alignItems: 'center',
@@ -193,13 +227,17 @@ const useStyles = makeStyles({
     backgroundColor: 'var(--tm-text-faint)',
     flexShrink: 0,
   },
-  machineHeader: { padding: '10px 8px 4px', color: 'var(--tm-text-muted)', fontSize: '11px' },
+  machineHeader: {
+    padding: '10px 8px 4px',
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground2})`,
+    fontSize: '11px',
+    fontWeight: tokens.fontWeightSemibold,
+  },
   footer: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '8px 12px',
-    borderTop: `1px solid var(--tm-text-faint)`,
     flexShrink: 0,
   },
   footerButton: {
@@ -209,12 +247,16 @@ const useStyles = makeStyles({
     border: 'none',
     background: 'none',
     cursor: 'pointer',
-    color: 'var(--tm-text)',
     font: 'inherit',
+    color: `var(--tm-brand, ${tokens.colorBrandForeground1})`,
+    fontWeight: tokens.fontWeightSemibold,
     padding: 0,
-    '& svg': { fontSize: '16px', color: 'var(--tm-text-muted)' },
+    '& svg': { fontSize: '16px', color: `var(--tm-brand, ${tokens.colorBrandForeground1})` },
   },
-  footerHint: { color: 'var(--tm-text-faint)' },
+  footerHint: {
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+  },
   statusGlyph: {
     display: 'flex',
     alignItems: 'center',
@@ -413,7 +455,11 @@ export function Sidebar({
                   onClick={() => onNavigate(target)}
                 >
                   {VIEW_ICON[view.id]}
-                  <span className={styles.rowLabel}>{view.label}</span>
+                  <span
+                    className={mergeClasses(styles.rowLabel, selected && styles.rowLabelSelected)}
+                  >
+                    {view.label}
+                  </span>
                   {!!view.count && <Caption1 className={styles.rowCount}>{view.count}</Caption1>}
                 </button>
               );
@@ -455,7 +501,7 @@ export function Sidebar({
               ) : (
                 <Caption1 className={styles.teamName}>{team.name ?? 'Team'}</Caption1>
               )}
-              <div className={styles.teamLinks}>
+              <div className={styles.teamLinks} data-team-links="">
                 <button
                   type="button"
                   className={styles.linkButton}
@@ -537,7 +583,14 @@ export function Sidebar({
                       {node.ticketKey && (
                         <Caption1 className={styles.rowCount}>{node.ticketKey}</Caption1>
                       )}
-                      <span className={mergeClasses(styles.rowLabel, done && styles.doneLabel)}>
+                      <span
+                        className={mergeClasses(
+                          styles.rowLabel,
+                          node.kind === 'milestone' && styles.rowLabelMilestone,
+                          done && styles.doneLabel,
+                          selected && styles.rowLabelSelected,
+                        )}
+                      >
                         {node.label}
                       </span>
                       {node.kind !== 'ticket' && (
@@ -567,7 +620,15 @@ export function Sidebar({
               onClick={() => onNavigate({ kind: 'archived' })}
             >
               <ArchiveRegular />
-              <span className={mergeClasses(styles.rowLabel, styles.rowLabelMuted)}>Archived</span>
+              <span
+                className={mergeClasses(
+                  styles.rowLabel,
+                  styles.rowLabelMuted,
+                  sameSelection(selectedView, { kind: 'archived' }) && styles.rowLabelSelected,
+                )}
+              >
+                Archived
+              </span>
               <Caption1 className={styles.rowCount}>{archived.count}</Caption1>
             </button>
           </div>
@@ -575,7 +636,7 @@ export function Sidebar({
 
         {machine?.kind === 'machine' && machine.projects.length > 0 && (
           <div className={styles.section}>
-            <Caption1 className={styles.machineHeader}>This machine</Caption1>
+            <Caption1 className={styles.machineHeader}>{machine.label}</Caption1>
             {machine.projects.map((project) => {
               const selected = sameSelection(selectedView, {
                 kind: 'machineProject',
@@ -586,10 +647,16 @@ export function Sidebar({
                   key={project.id}
                   type="button"
                   className={mergeClasses(styles.row, selected && styles.rowSelected)}
+                  aria-current={selected || undefined}
                   onClick={() => onNavigate({ kind: 'machineProject', projectId: project.id })}
                 >
                   <DesktopRegular />
-                  <span className={styles.rowLabel}>{project.name}</span>
+                  <span
+                    className={mergeClasses(styles.rowLabel, selected && styles.rowLabelSelected)}
+                  >
+                    {project.name}
+                  </span>
+                  <Caption1 className={styles.rowLocation}>{machine.location}</Caption1>
                 </button>
               );
             })}

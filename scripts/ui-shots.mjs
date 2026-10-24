@@ -71,7 +71,11 @@
  *       would otherwise land on its hidden chain-link handle first (`aria-label="Chain from
  *       {title} — …"` also *contains* the card's title, and that handle renders before the
  *       card's own text in document order), so a card is addressed by its fixture id instead of
- *       its title, the same reasoning as `issue-row:N`'s own position-not-text sentinel. A
+ *       its title, the same reasoning as `issue-row:N`'s own position-not-text sentinel.
+ *       `'treeitem:N'` clicks the Nth (0-based) visible `[role="treeitem"]` of the sidebar tree
+ *       (`Sidebar.tsx`), for the same reason: a tree ticket's title also renders on the board,
+ *       which comes first for plain text matching. A folded milestone's or epic's children are
+ *       not rendered, so they do not count. A
  *       third, `'tab:NAME'`, clicks the visible `[role="tab"]` whose text is exactly `NAME` —
  *       for a tab sharing its name with an earlier button (Settings' "Projects" tab). And
  *       `'option:NAME'` / `'title:NAME'` click the visible `[role="option"]` whose text, or
@@ -316,6 +320,24 @@ function issueRowClickExprs(index) {
   };
 }
 
+/** `{ click: 'treeitem:N' }` — the Nth visible `[role="treeitem"]` in the sidebar tree (0-based,
+ *  document order, folded children excluded because they are never rendered). A tree ticket's
+ *  title also appears on the board and in the issue list, so plain text matching lands there
+ *  first; see `SCREENS`' own doc comment. */
+function treeItemClickExprs(index) {
+  const find = `Array.from(document.querySelectorAll('[role="treeitem"]')).filter((el) => window.__tm.visible(el))[${index}]`;
+  return {
+    ready: `!!${find}`,
+    click: `(() => {
+      const el = ${find};
+      if (!el) return false;
+      el.scrollIntoView({ block: 'center' });
+      el.click();
+      return true;
+    })()`,
+  };
+}
+
 /** `{ click: 'board-card:ID' }` — see `SCREENS`' own doc comment on why a board card is
  *  addressed by `TaskCard.tsx`'s own `[data-task-id]`, not by its title text. */
 function boardCardClickExprs(taskId) {
@@ -373,6 +395,7 @@ async function runSetupStep(cdp, step) {
   if (step.click !== undefined) {
     const issueRow = /^issue-row:(first|\d+)$/.exec(step.click);
     const boardCard = /^board-card:(.+)$/.exec(step.click);
+    const treeItem = /^treeitem:(\d+)$/.exec(step.click);
     const tab = /^tab:(.+)$/.exec(step.click);
     const option = /^option:(.+)$/.exec(step.click);
     const titled = /^title:(.+)$/.exec(step.click);
@@ -384,12 +407,14 @@ async function runSetupStep(cdp, step) {
           ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
           : boardCard
             ? boardCardClickExprs(boardCard[1])
-            : tab
-              ? tabClickExprs(tab[1])
-              : {
-                  ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
-                  click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
-                };
+            : treeItem
+              ? treeItemClickExprs(Number(treeItem[1]))
+              : tab
+                ? tabClickExprs(tab[1])
+                : {
+                    ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
+                    click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
+                  };
     await waitFor(async () => (await evaluate(cdp, ready)) === true, {
       timeoutMs: 10000,
       label: `"${step.click}" to appear`,
