@@ -153,13 +153,14 @@ export default [
   },
   {
     // The web cannot edit repo settings — Settings → Projects shows them as read-only facts,
-    // "Move to Done when its PR lands" and "UI verification command" among them. No mockup draws the web's Settings screen.
+    // "Move to Done when its PR lands" and "UI verification command" among them. The grouped
+    // Settings mockup draws the page's chrome and nav, not this pane.
     name: 'web-settings-projects-light',
     app: 'web',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Settings' }, { click: 'tab:Projects' }],
     expect: '[data-web-projects]',
-    mockup: null,
+    mockup: 'v10-19-settings-light.svg',
   },
 ];
