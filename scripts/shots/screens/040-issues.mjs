@@ -61,6 +61,7 @@ const FULL_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
           'Done means: the dashboard card shows the queue depth and the newest failure.',
         milestoneId: 'ms-mixed',
         epicTaskId: 'sb-7',
+        assigneeId: 'person-human',
       }
     : t,
 );
@@ -86,9 +87,15 @@ const FULL_MERGE_REQUESTS = [
   },
 ];
 
+/**
+ * `PEEK_CHAIN_LINKS` too, so the property column's Blocked by row has `14a` and `2` to name —
+ * and an assignee on the card, so every row the mockup prints that this card has data for
+ * draws: Status, Assignee, Model, Milestone, Blocked by.
+ */
 const FULL_OVERRIDES = {
   'board:tasks': FULL_TASKS,
   'mr:mergeRequests': FULL_MERGE_REQUESTS,
+  'chain:links': PEEK_CHAIN_LINKS,
 };
 export default [
   {
@@ -162,7 +169,8 @@ export default [
   {
     // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full' —
     // `TaskDetail`'s two-column `layout="full"`: key above a large title, Run top right (the
-    // card is staged, `FULL_TASKS`), the description as text, the steps, Built and Tested.
+    // card is staged, `FULL_TASKS`), the description as text, the steps, Built and Tested;
+    // and the property column, label over value, with Blocked by naming `14a` and `2`.
     name: 'issue-full-screen',
     app: 'client',
     viewport: { width: 1440, height: 900 },

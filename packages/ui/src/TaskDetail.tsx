@@ -89,6 +89,7 @@ import { AttachmentGallery } from './AttachmentGallery';
 import { FilesSection } from './FilesSection';
 import { TaskAgentPanel, useStartAction } from './TaskAgentPanel';
 import { IssueBuilt, IssueTested } from './issues/IssueBuilt';
+import { IssueProperties } from './issues/IssueProperties';
 import { TaskDetailsCell } from './TaskDetailsCell';
 import { VisualSignOff } from './VisualSignOff';
 import { TaskLinksSection } from './projects/TaskLinksSection';
@@ -1918,10 +1919,28 @@ export function TaskDetail({
             {conversation}
             {footBand}
           </div>
-          {/* The property column. Holds the ticket's own fields for now; the click-to-edit
-              property list replaces it. */}
+          {/* The property column: label over value, each value its own editor on a click.
+              It replaces the Ticket fold here — what the list does not carry is under its
+              "More fields". */}
           <aside className={styles.fullSide} aria-label="Properties" data-issue-properties>
-            {ticketSection}
+            <IssueProperties
+              task={task}
+              tickets={projectTickets}
+              people={people}
+              agentProjects={agentProjects}
+              labels={labels}
+              milestones={milestones}
+              projects={ticketProjects}
+              chainLinks={chainLinks}
+              chainTasksById={chainTasksById}
+              mergeRequests={mergeRequests}
+              readOnly={ticketReadOnly}
+              onTaskChanged={(updated) => onStatusChanged?.(updated)}
+              onStatusSet={(status) => onStatusSet?.(task.id, status)}
+              onEdited={() => void loadActivity()}
+              onModelChange={(model) => void setAgentOptions({ model })}
+              onOpenTask={onOpenTask}
+            />
           </aside>
         </div>
       </div>

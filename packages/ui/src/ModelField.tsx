@@ -195,6 +195,9 @@ export interface ModelFieldProps {
   /** Forwarded to the underlying `Dropdown` — a hover tooltip, for a caller with no `hint`
    *  (no `Field`) to hang one off instead. */
   title?: string;
+  /** Forwarded to the underlying `Dropdown` — the property column's editor opens focused. */
+  autoFocus?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 const useStyles = makeStyles({
@@ -257,6 +260,8 @@ export function ModelField({
   size,
   appearance,
   title,
+  autoFocus,
+  onOpenChange,
 }: ModelFieldProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -341,6 +346,8 @@ export function ModelField({
       size={size}
       appearance={appearance}
       title={title}
+      autoFocus={autoFocus}
+      onOpenChange={onOpenChange && ((_e, data) => onOpenChange(data.open))}
       value={displayValue}
       selectedOptions={[selectedOption]}
       onOptionSelect={(_e, data) => handleSelect(data)}

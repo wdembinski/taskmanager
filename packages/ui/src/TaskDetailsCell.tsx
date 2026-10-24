@@ -171,6 +171,104 @@ const NO_LINKS: readonly TaskLink[] = [];
 const NO_TASKS: ReadonlyMap<string, Task> = new Map();
 const NO_MRS: readonly MergeRequest[] = [];
 
+export interface StatusSetterOptions extends Pick<
+  TaskDetailsCellProps,
+  'onTaskChanged' | 'onEdited' | 'onStatusSet' | 'chainLinks' | 'chainTasksById' | 'mergeRequests'
+> {
+  task: Task;
+  /** A refused move's message, and `null` as a new attempt starts. */
+  onError: (message: string | null) => void;
+}
+
+/**
+ * Move the card to a manual status — the State dropdown's write, shared by this cell and the
+ * full-screen issue's property column so the two cannot drift. `dialog` is the release-on-Done
+ * prompt (`useReleaseOnDone`): render it somewhere that outlives the dropdown, since the
+ * property column closes its editor the moment a status is picked.
+ */
+export function useStatusSetter({
+  task,
+  onTaskChanged,
+  onStatusSet,
+  onEdited,
+  onError,
+  chainLinks = NO_LINKS,
+  chainTasksById = NO_TASKS,
+  mergeRequests = NO_MRS,
+}: StatusSetterOptions): {
+  setStatus: (next: ManualStatus) => Promise<void>;
+  dialog: JSX.Element | null;
+} {
+  const transport = useTransport();
+  const { askAfterMove, dialog } = useReleaseOnDone();
+
+  async function setStatus(next: ManualStatus): Promise<void> {
+    if (next === restingStatus(task)) return;
+    onError(null);
+    try {
+      const after = await transport.invoke('task:setStatus', task.id, next);
+      onTaskChanged(after);
+      onStatusSet?.(next);
+      onEdited?.();
+      // After the move, never instead of it — see `useReleaseOnDone`.
+      askAfterMove(task, after, chainLinks, chainTasksById, mergeRequests);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  return { setStatus, dialog };
+}
+
+export interface StatusDropdownProps {
+  task: Task;
+  onSelect: (next: ManualStatus) => void;
+  className?: string;
+  /** The property column's editor: focused the moment it is swapped in. */
+  autoFocus?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+/**
+ * The State dropdown. Shows where the card RESTS, not `status` — which a live run has
+ * borrowed, and which would have this control announce "Running" as the card's state and
+ * then quietly change it back. The run says so through the spinner and the run strip; this
+ * says where you filed the card, and only you move it.
+ *
+ * Enabled during a run, for the same reason: the run borrowed the field, so the state you
+ * pick is parked and handed back to the card when the run settles (`humanStatusPatch`).
+ * Disabling it meant a delegated card's state was frozen for as long as its agent worked.
+ */
+export function StatusDropdown({
+  task,
+  onSelect,
+  className,
+  autoFocus,
+  onOpenChange,
+}: StatusDropdownProps): JSX.Element {
+  const resting = restingStatus(task);
+  return (
+    <Dropdown
+      className={className}
+      size="small"
+      value={STATUS_LABEL[resting]}
+      selectedOptions={[resting]}
+      title="Status"
+      autoFocus={autoFocus}
+      onOpenChange={onOpenChange && ((_e, d) => onOpenChange(d.open))}
+      onOptionSelect={(_e, d) => {
+        if (d.optionValue) onSelect(d.optionValue as ManualStatus);
+      }}
+    >
+      {MANUAL_STATUS_OPTIONS.map((o) => (
+        <Option key={o.value} value={o.value}>
+          {o.label}
+        </Option>
+      ))}
+    </Dropdown>
+  );
+}
+
 export function TaskDetailsCell({
   task,
   boards = [],
@@ -185,7 +283,6 @@ export function TaskDetailsCell({
   presentation,
 }: TaskDetailsCellProps): JSX.Element {
   const transport = useTransport();
-  const { askAfterMove, dialog: releaseDialog } = useReleaseOnDone();
   const styles = useStyles();
   const asText = presentation === 'text';
   const [folded, setOpen] = useState(false);
@@ -286,7 +383,6 @@ export function TaskDetailsCell({
   const priority = task.externalPriority ?? null;
   // Which board the card is actually ON, not the delegation target.
   const board = boards.find((b) => b.id === task.projectId) ?? null;
-  const resting = restingStatus(task);
 
   /**
    * Why the board picker below is disabled, or null when a move is allowed — the same
@@ -302,20 +398,16 @@ export function TaskDetailsCell({
           ? 'Stop the task before moving it to another board.'
           : null;
 
-  async function setStatus(next: ManualStatus): Promise<void> {
-    if (next === resting) return;
-    setError(null);
-    try {
-      const after = await transport.invoke('task:setStatus', task.id, next);
-      onTaskChanged(after);
-      onStatusSet?.(next);
-      onEdited?.();
-      // After the move, never instead of it — see `useReleaseOnDone`.
-      askAfterMove(task, after, chainLinks, chainTasksById, mergeRequests);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }
+  const { setStatus, dialog: releaseDialog } = useStatusSetter({
+    task,
+    onTaskChanged,
+    onStatusSet,
+    onEdited,
+    onError: setError,
+    chainLinks,
+    chainTasksById,
+    mergeRequests,
+  });
 
   /** Take the headline off the card. The engine reads an empty note as "clear it". */
   async function clearStatusNote(): Promise<void> {
@@ -459,31 +551,12 @@ export function TaskDetailsCell({
         <div className={styles.trio}>
           <div className={styles.trioCell}>
             <Caption1 className={styles.hint}>State</Caption1>
-            {/* Where the card RESTS, not `status` — which a live run has borrowed, and
-              which would have this control announce "Running" as the card's state and
-              then quietly change it back. The run says so through the spinner and the run
-              strip above; this says where you filed the card, and only you move it.
-
-              Enabled during a run, for the same reason: the run borrowed the field, so the
-              state you pick is parked and handed back to the card when the run settles
-              (`humanStatusPatch`). Disabling it meant a delegated card's state was frozen
-              for as long as its agent worked. */}
-            <Dropdown
+            {/* Where the card RESTS — see `StatusDropdown`. */}
+            <StatusDropdown
               className={styles.trioPicker}
-              size="small"
-              value={STATUS_LABEL[resting]}
-              selectedOptions={[resting]}
-              title="Status"
-              onOptionSelect={(_e, d) => {
-                if (d.optionValue) void setStatus(d.optionValue as ManualStatus);
-              }}
-            >
-              {MANUAL_STATUS_OPTIONS.map((o) => (
-                <Option key={o.value} value={o.value}>
-                  {o.label}
-                </Option>
-              ))}
-            </Dropdown>
+              task={task}
+              onSelect={(next) => void setStatus(next)}
+            />
           </div>
 
           {/* For a JIRA card this one really does leave the app: the issue is updated, and
