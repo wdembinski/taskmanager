@@ -154,7 +154,10 @@ export function BacklogSectionView({
   const toggle = (): void => onToggleFold(section.id);
   const addChildEpicId = section.addChildEpicId;
   return (
-    <div className={mergeClasses(styles.group, section.level === 2 && styles.subGroup)}>
+    <div
+      className={mergeClasses(styles.group, section.level === 2 && styles.subGroup)}
+      data-backlog-section-level={section.level}
+    >
       <div className={styles.groupHeader}>
         <button
           type="button"
@@ -391,7 +394,7 @@ export function BacklogTable({
       {tickets.length === 0 ? (
         <Body1 className={styles.empty}>No tickets in this project yet.</Body1>
       ) : (
-        <div className={styles.scroll} role="listbox">
+        <div className={styles.scroll} role="listbox" data-backlog-group-mode={groupMode}>
           {sections.map((section) => (
             <BacklogSectionView
               key={section.id}
