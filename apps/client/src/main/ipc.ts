@@ -82,6 +82,7 @@ import {
   JIRA_BOARD_LIMIT,
   restingStatus,
 } from '@shared/board';
+import { assignmentFilingPatch } from './assignmentFiling';
 import { assignmentMovesCard, assignmentStatusPatch, humanStatusPatch } from './cardStatusGuard';
 import { moveHandStartedCard, startSucceeded, type HandStartMoveDeps } from './handStartMove';
 import {
@@ -1409,8 +1410,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     const task = store.updateTask(taskId, {
       agentProjectId: target.id,
       // Delegating a card to the Billing repo does also say the card is about Billing —
-      // but only when nothing else has said otherwise, so an explicit filing wins.
-      ...(existing.projectTagId ? {} : { projectTagId: target.id }),
+      // but only when the filing isn't a human's. An unfiled card is back-filled; a
+      // *re*assignment moves a filing along with it only while that filing still looks
+      // like the last assignment's own back-fill (see `assignmentFilingPatch`) — an
+      // explicit filing, made before or after any delegation, is left exactly where it is.
+      ...assignmentFilingPatch(existing, target),
       agentMode: input.mode ?? null,
       agentModel: input.model ?? null,
       agentPlanningModel: input.planningModel ?? null,
