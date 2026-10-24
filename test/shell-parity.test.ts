@@ -300,9 +300,7 @@ describe('one shell navigation both hosts render (F13.8)', () => {
     // header) — this list shrinks with it, the same "fixed here rather than imported" reason
     // the comment above already gives.
     const SHELL_NAV_IDS = ['tickets', 'mytasks', 'activity', 'performance', 'automations'];
-    const pattern = new RegExp(
-      `id:\\s*'(?:${SHELL_NAV_IDS.join('|')})'[^}]*?(?:label|icon):`,
-    );
+    const pattern = new RegExp(`id:\\s*'(?:${SHELL_NAV_IDS.join('|')})'[^}]*?(?:label|icon):`);
     const sources = HOST_TREES.flatMap((tree) => filesUnder(tree, /\.tsx?$/)).filter(
       (path) => !/\.test\.tsx?$/.test(path),
     );
@@ -417,7 +415,10 @@ describe("the app's global CSS rules", () => {
     // the OS's own preference is not the same statement as a host declaring the CSS
     // `color-scheme` property (or its JS `colorScheme` key) itself, which is the actual
     // global rule `useGlobalStyles` owns.
-    { pattern: /(?<!prefers-)\bcolor-scheme\s*:|\bcolorScheme\s*:/, what: 'the dark colour-scheme' },
+    {
+      pattern: /(?<!prefers-)\bcolor-scheme\s*:|\bcolorScheme\s*:/,
+      what: 'the dark colour-scheme',
+    },
   ];
 
   /** The two entry documents, which live above those trees and can carry a <style> block. */
@@ -1206,10 +1207,11 @@ describe('Linear: the web reads its settings and does not configure them', () =>
     const source = read(DESKTOP_SETTINGS);
     expect(
       source,
-      `${DESKTOP_SETTINGS} must keep rendering its own section === 'linear' pane. The web's ` +
-        'pane is read-only on the understanding that the desktop is still where Linear is ' +
-        'actually configured — narrowing this away would leave nobody able to.',
-    ).toMatch(/section === 'linear'/);
+      `${DESKTOP_SETTINGS} must keep rendering its own Linear pane (the provider === 'linear' ` +
+        "tab inside Integrations since the v10 regroup). The web's pane is read-only on the " +
+        'understanding that the desktop is still where Linear is actually configured — ' +
+        'narrowing this away would leave nobody able to.',
+    ).toMatch(/provider === 'linear'/);
   });
 
   it('draws the Linear chip and tracker derivation from @tm/ui on both hosts, never a local copy', () => {

@@ -97,6 +97,16 @@ describe('buildDesktopCommands', () => {
     expect(commands.find((c) => c.id === 'settings:jira')?.title).toBe('Settings: JIRA');
   });
 
+  it('offers the regrouped Settings sections and no longer the old Agent profiles one', () => {
+    const commands = buildDesktopCommands(snapshot());
+    expect(commands.find((c) => c.id === 'settings:agentsModels')?.title).toBe(
+      'Settings: Agents and models',
+    );
+    expect(commands.find((c) => c.id === 'settings:updates')).toBeDefined();
+    expect(commands.find((c) => c.id === 'settings:executionTarget')).toBeDefined();
+    expect(commands.find((c) => c.id === 'settings:agentProfiles')).toBeUndefined();
+  });
+
   it("carries each nav row's own SHELL_NAV icon, and SettingsRegular for a Settings section", () => {
     const commands = buildDesktopCommands(snapshot());
     const mytasksIcon = SHELL_NAV.find((entry) => entry.id === 'mytasks')?.icon;

@@ -8,12 +8,14 @@
  * over the `settings:*` IPC channels; the scheduler picks up concurrency/jitter on
  * the next task, so no restart is needed.
  *
- * The vertical nav also hosts the Board pane (the status keywords that colour a card's
- * progress line), the JIRA connection — including the status-name → column map, the
- * only route to the IN REVIEW column — and the Agent profiles pane (the reusable run
- * configurations a ticket can be queued against from the cloud, `@shared/agent`), which
- * manages its own state. Managing the projects themselves (the repositories a My Tasks
- * card can be filed under or delegated to) is its own nav item, `Projects`.
+ * The page is `SettingsPage`'s grouped nav (v10 mockup; `SETTINGS_GROUPS` in
+ * `paletteSource.ts`): Workspace, Connections and This machine. It also hosts the Board pane
+ * (the status keywords that colour a card's progress line), Integrations — one nav item with
+ * a tab per provider, JIRA's including the status-name → column map, the only route to the
+ * IN REVIEW column — and Agents and models, whose defaults sit above the Agent profiles list
+ * (the reusable run configurations a ticket can be queued against from the cloud,
+ * `@shared/agent`), which manages its own state. A provider id still opens its own tab:
+ * see `resolveSettingsNav` in `settingsNav.ts`.
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -87,7 +89,14 @@ import type {
   UpdateTokenStatus,
 } from '@shared/ipc';
 import { cloudAuthHint, cloudTokenPlaceholder } from './cloudAuthHint';
-import { SETTINGS_SECTIONS } from './paletteSource';
+import { SETTINGS_GROUPS } from './paletteSource';
+import {
+  resolveSettingsNav,
+  SETTINGS_PROVIDERS,
+  type SettingsNavSection,
+  type SettingsProvider,
+  type SettingsSection,
+} from './settingsNav';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { isCloudHost } from '@shared/jiraUrl';
 import { ARCHIVE_RETENTION_DAYS, JIRA_BOARD_LIMIT } from '@shared/board';
@@ -140,33 +149,20 @@ import { WorkflowBuilder } from '@ui/WorkflowBuilder';
 import { BASE_FONT_PX, FONT_SIZE_OPTIONS } from '@ui/theme';
 import { validateBranchName } from '@shared/branchName';
 import { useInitialLoad } from '@ui/useInitialLoad';
+import { SettingsPage } from '@ui/settings/SettingsPage';
+
+export type { SettingsSection } from './settingsNav';
 
 const useStyles = makeStyles({
-  // Vertical nav on the left, scrollable content pane on the right.
-  row: { display: 'flex', gap: '16px', flex: 1, minHeight: 0 },
-  nav: {
-    minWidth: '160px',
-    borderRight: `1px solid ${tokens.colorNeutralStroke2}`,
-    paddingRight: '8px',
-  },
-  pane: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '16px',
-    // Full width, capped only where a line of prose stops being readable. At 520 the
-    // pane was a column down the left of a wide window, and the status-map table — which
-    // is the widest thing in here by far — had to wrap to fit a box half the size of the
-    // space available to it.
-    maxWidth: '1100px',
-    width: '100%',
-    // Fill the tab body and scroll internally so long sections never get clipped.
-    flex: 1,
-    minHeight: 0,
-    overflowY: 'auto',
-    paddingRight: '8px',
-    paddingBottom: '8px',
-  },
-  grid: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  // `SettingsPage`'s content column already scrolls, so a pane is just a column.
+  pane: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  // A pane of plain fields is capped at `SettingsRow`'s width (200px label + 16px gap + 360px
+  // value), so no input runs the width of the window (v10 mockup).
+  grid: { display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '576px' },
+  // A pane holding a status-map/label-map editor or a readiness panel gets `SettingsRow`'s
+  // `wide` cap (640px value) instead; its plain fields still take {@link capped}.
+  gridWide: { display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '856px' },
+  capped: { maxWidth: '576px' },
   // The status-map editor: one row per mapping, the name growing to fill the width so
   // long workflow names ("Waiting for code review") stay readable.
   mapList: { display: 'flex', flexDirection: 'column', gap: '6px' },
@@ -222,23 +218,6 @@ const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermiss
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
-
-export type SettingsSection =
-  | 'general'
-  | 'appearance'
-  | 'board'
-  | 'features'
-  | 'jira'
-  | 'gitlab'
-  | 'github'
-  | 'linear'
-  | 'cloud'
-  | 'people'
-  | 'agentProfiles'
-  | 'skills'
-  | 'workflows'
-  | 'promptTemplates'
-  | 'shortcuts';
 
 /** {@link LinearStateType}, spelled for a checkbox label — {@link LINEAR_STATE_TYPE_ORDER}'s order. */
 const LINEAR_STATE_TYPE_LABEL: Record<LinearStateType, string> = {
@@ -316,13 +295,23 @@ export function Settings({
   onInitialSectionHandled,
 }: SettingsProps = {}): JSX.Element {
   const styles = useStyles();
-  const [section, setSection] = useState<SettingsSection>('general');
+  const [section, setSection] = useState<SettingsNavSection>('general');
+  // Which provider tab Integrations shows. Kept apart from `section` so leaving Integrations
+  // and coming back finds the provider you were on.
+  const [provider, setProvider] = useState<SettingsProvider>('jira');
+
+  /** Opens any section id — a provider id selects Integrations on that provider's tab. */
+  const openSection = useCallback((id: SettingsSection): void => {
+    const resolved = resolveSettingsNav(id);
+    setSection(resolved.nav);
+    if (resolved.provider) setProvider(resolved.provider);
+  }, []);
 
   useEffect(() => {
     if (!initialSection) return;
-    setSection(initialSection);
+    openSection(initialSection);
     onInitialSectionHandled?.();
-  }, [initialSection, onInitialSectionHandled]);
+  }, [initialSection, onInitialSectionHandled, openSection]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [jiraStatus, setJiraStatus] = useState<JiraConfigStatus | null>(null);
@@ -421,12 +410,12 @@ export function Settings({
   // prior save) gets its states loaded the moment the Linear tab is open, and a team newly
   // checked in the picker gets them the moment `teamKeys` changes.
   useEffect(() => {
-    if (section !== 'linear' || !settings) return;
+    if (section !== 'integrations' || provider !== 'linear' || !settings) return;
     for (const key of settings.linear.teamKeys) {
       if (!linearStates[key]) void loadLinearStates(key);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadLinearStates` is stable
-  }, [section, settings?.linear.teamKeys]);
+  }, [section, provider, settings?.linear.teamKeys]);
 
   const seed = useCallback(async () => {
     const [appSettings, status] = await Promise.all([
@@ -461,9 +450,13 @@ export function Settings({
     setSaved(false);
   }
 
-  function patchUpdates(change: Partial<UpdateSettings>): void {
-    setSettings((prev) => (prev ? { ...prev, updates: { ...prev.updates, ...change } } : prev));
-    setSaved(false);
+  /** Updates has no Save row — its buttons act immediately — so its one switch persists as it
+   *  flips. Like every Save, it writes the whole form, edits on other panes included. */
+  async function saveUpdates(change: Partial<UpdateSettings>): Promise<void> {
+    if (!settings) return;
+    const next = { ...settings, updates: { ...settings.updates, ...change } };
+    setSettings(next);
+    await window.api.invoke('settings:save', next);
   }
 
   async function saveCloudToken(): Promise<void> {
@@ -849,545 +842,136 @@ export function Settings({
   const ticketStatusesByColumn = nativeStatusesByColumn();
 
   return (
-    <div className={styles.row}>
-      <TabList
-        vertical
-        aria-label="Settings sections"
-        selectedValue={section}
-        onTabSelect={(_e, d) => setSection(d.value as SettingsSection)}
-        className={styles.nav}
-      >
-        {SETTINGS_SECTIONS.map((s) => (
-          <Tab key={s.id} value={s.id}>
-            {s.title}
-          </Tab>
-        ))}
-      </TabList>
-
+    <SettingsPage
+      groups={SETTINGS_GROUPS}
+      selected={section}
+      onSelect={(id) => openSection(id as SettingsSection)}
+    >
       {section === 'people' ? (
         <div className={styles.pane}>
           <PeopleSettings />
         </div>
-      ) : section === 'agentProfiles' ? (
-        <AgentProfiles />
-      ) : section === 'skills' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Skills</Subtitle2>
-          <SkillsSection />
-        </div>
-      ) : section === 'workflows' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Workflows</Subtitle2>
-          <WorkflowBuilder />
-        </div>
-      ) : section === 'promptTemplates' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Prompt templates</Subtitle2>
-          <PromptTemplatesSection
-            templates={settings.promptTemplates}
-            onSave={savePromptTemplates}
-          />
-        </div>
-      ) : section === 'shortcuts' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Keyboard shortcuts</Subtitle2>
-          <KeyboardShortcutsList
-            items={[{ id: 'palette', label: 'Open command palette', spec: 'mod+k' }]}
-            win={window}
-          />
-        </div>
-      ) : section === 'board' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Board</Subtitle2>
-          <Body1 className={styles.hint}>
-            How the My Tasks board reads. Status updates you post on a card show as one line on it —
-            give the words you use most a colour, and a column tells you where everything stands
-            without opening anything.
-          </Body1>
+      ) : section === 'agentsModels' ? (
+        <>
+          <div className={styles.pane}>
+            <Subtitle2>Agents and models</Subtitle2>
 
-          <div className={styles.grid}>
-            <Field
-              label="Columns"
-              hint="Which columns the board draws. Each one lists what actually lands there — a column with nothing mapped to it is safe to hide; one you rely on cannot be hidden if it is the last column standing."
-            >
-              <div className={styles.columnList}>
-                {COLUMN_META.map((c) => {
-                  const checked = !hiddenColumns.includes(c.column);
-                  const isLastVisible = checked && hiddenColumns.length === COLUMN_META.length - 1;
-                  const jiraNames = jiraStatusesByColumn[c.column];
-                  const githubNames = githubLabelRows
-                    .filter((r) => r.column === c.column)
-                    .map((r) => r.name);
-                  const linearNames = Object.entries(linear.stateColumnOverrides)
-                    .filter(([, col]) => col === c.column)
-                    .map(([name]) => name);
-                  const ticketNames = ticketStatusesByColumn[c.column].map((s) => STATUS_LABEL[s]);
-                  return (
-                    <div key={c.column}>
-                      <Checkbox
-                        checked={checked}
-                        disabled={isLastVisible}
-                        label={COLUMN_LABEL[c.column]}
-                        onChange={(_e, d) =>
-                          patch({
-                            board: {
-                              ...settings.board,
-                              hiddenColumns: withColumnHidden(hiddenColumns, c.column, !d.checked),
-                            },
-                          })
-                        }
-                      />
-                      <div className={styles.columnCaptions}>
-                        <Caption1 className={styles.hint}>
-                          {jiraNames.length > 0
-                            ? `JIRA: ${jiraNames.join(', ')}`
-                            : 'No JIRA statuses mapped here'}
-                        </Caption1>
-                        {githubNames.length > 0 && (
-                          <Caption1 className={styles.hint}>
-                            GitHub: {githubNames.join(', ')}
-                          </Caption1>
-                        )}
-                        {linearNames.length > 0 && (
-                          <Caption1 className={styles.hint}>
-                            Linear: {linearNames.join(', ')}
-                          </Caption1>
-                        )}
-                        {ticketNames.length > 0 && (
-                          <Caption1 className={styles.hint}>
-                            Tickets: {ticketNames.join(', ')}
-                          </Caption1>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <Caption1 className={styles.hint}>
-                Change which JIRA status lands in which column from the{' '}
-                <Link onClick={() => setSection('jira')}>JIRA tab’s status map</Link>.
-              </Caption1>
-            </Field>
-
-            <Field
-              label="Status keywords"
-              hint="A status update containing one of these takes its colour. The first match in this list wins, so put the one that matters most at the top. An update matching nothing reads in the card's ordinary colour."
-            >
-              <div className={styles.mapList}>
-                {settings.statusKeywords.map((k, i) => (
-                  <div key={i} className={styles.mapRow}>
-                    <Input
-                      className={styles.mapName}
-                      value={k.keyword}
-                      placeholder="Word to look for, e.g. blocked"
-                      onChange={(_e, d) =>
-                        patch({
-                          statusKeywords: settings.statusKeywords.map((x, j) =>
-                            j === i ? { ...x, keyword: d.value } : x,
-                          ),
-                        })
-                      }
-                    />
-                    <ColorSwatches
-                      value={k.color}
-                      onChange={(color) =>
-                        patch({
-                          statusKeywords: settings.statusKeywords.map((x, j) =>
-                            j === i ? { ...x, color } : x,
-                          ),
-                        })
-                      }
-                    />
-                    <Button
-                      size="small"
-                      appearance="subtle"
-                      icon={<DismissRegular />}
-                      title="Remove this keyword"
-                      onClick={() =>
-                        patch({
-                          statusKeywords: settings.statusKeywords.filter((_x, j) => j !== i),
-                        })
-                      }
-                    />
-                  </div>
-                ))}
-                <div>
-                  <Button
-                    size="small"
-                    icon={<AddRegular />}
-                    onClick={() =>
-                      patch({
-                        statusKeywords: [
-                          ...settings.statusKeywords,
-                          { keyword: '', color: PALETTE[0] },
-                        ],
-                      })
-                    }
-                  >
-                    Add keyword
-                  </Button>
-                </div>
-              </div>
-            </Field>
-
-            <Field
-              label="Auto-archive finished milestones after (weeks)"
-              hint="Once every ticket on a milestone has been done or cancelled for this many weeks, the sweep archives it on its own — restore it any time from Archived. Blank turns auto-archive off."
-            >
-              <Input
-                type="number"
-                min={1}
-                max={520}
-                value={
-                  settings.ticketAutoArchiveWeeks == null
-                    ? ''
-                    : String(settings.ticketAutoArchiveWeeks)
-                }
-                placeholder="Off"
-                onChange={(_e, d) => {
-                  if (d.value === '') {
-                    patch({ ticketAutoArchiveWeeks: null });
-                    return;
-                  }
-                  const n = Number(d.value);
-                  if (Number.isFinite(n)) {
-                    patch({ ticketAutoArchiveWeeks: Math.min(520, Math.max(1, Math.round(n))) });
-                  }
-                }}
-              />
-            </Field>
-          </div>
-
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={save}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
-        </div>
-      ) : section === 'features' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Features</Subtitle2>
-          <Body1 className={styles.hint}>
-            Switches for a handful of independent behaviours. All on out of the box — turn one off
-            if it gets in your way.
-          </Body1>
-
-          <div className={styles.grid}>
-            {FEATURE_SWITCHES.map((f) => (
-              <Field key={f.key} label={f.label} hint={f.hint}>
-                <Switch
-                  checked={settings.features[f.key]}
-                  onChange={(_e, d) =>
-                    patch({ features: { ...settings.features, [f.key]: d.checked } })
-                  }
-                />
-              </Field>
-            ))}
-          </div>
-
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={save}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
-        </div>
-      ) : section === 'general' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Settings</Subtitle2>
-
-          <div className={styles.grid}>
-            <Field
-              label="Interface font size"
-              hint="Scales every size in the app, not just body text. 14 is the default."
-            >
-              <Dropdown
-                value={`${settings.fontSizePx} px`}
-                selectedOptions={[String(settings.fontSizePx)]}
-                onOptionSelect={(_e, d) => patch({ fontSizePx: Number(d.optionValue) })}
-              >
-                {FONT_SIZE_OPTIONS.map((px) => (
-                  <Option key={px} value={String(px)} text={`${px} px`}>
-                    {px === BASE_FONT_PX ? `${px} px (default)` : `${px} px`}
-                  </Option>
-                ))}
-              </Dropdown>
-            </Field>
-
-            <Field
-              label="Branch prefix"
-              hint="Leads every branch an agent works on, e.g. “wd” gives wd/feat/abc-123/add-sso. Leave empty for no prefix — and no leading slash."
-              validationState={prefixError ? 'error' : 'none'}
-              validationMessage={prefixError ?? undefined}
-            >
-              <Input
-                value={settings.branchPrefix}
-                placeholder="none"
-                onChange={(_e, d) => patch({ branchPrefix: d.value })}
-              />
-            </Field>
-
-            <Field
-              label="Merging a finished branch"
-              hint="When off, a finished run leaves its branch alone and the card offers a Merge button — so you merge work you have looked at. Nothing is discarded either way. This is the default: each project can decide for itself in its dialog, and each card on the board, and changing this still moves everything that never disagreed with it."
-            >
-              <Switch
-                checked={settings.autoIntegrate}
-                label={
-                  settings.autoIntegrate
-                    ? 'Merge automatically when a run finishes'
-                    : 'I merge it myself from the card'
-                }
-                onChange={(_e, d) => patch({ autoIntegrate: d.checked })}
-              />
-            </Field>
-
-            <Field
-              label="Toasts"
-              hint="Brief pop-ups when something wants you. Everything they say is also on the board and in the Attention screen, so turning them off loses nothing."
-            >
-              <Switch
-                checked={settings.toastsEnabled}
-                label={settings.toastsEnabled ? 'Show toasts' : 'No toasts'}
-                onChange={(_e, d) => patch({ toastsEnabled: d.checked })}
-              />
-            </Field>
-
-            <Field
-              label="Keep running in the background"
-              hint="Closing the window hides it to the tray (or minimizes it, where there's no tray) instead of quitting, so automations keep firing. Quit is in the tray menu."
-            >
-              <Switch
-                checked={settings.runInBackground}
-                label={settings.runInBackground ? 'Keep running' : 'Quit on close'}
-                onChange={(_e, d) => patch({ runInBackground: d.checked })}
-              />
-            </Field>
-
-            <Field
-              label="Auto-sync interval (minutes)"
-              hint="How often every connected tracker is refreshed in the background — JIRA, GitLab and anything added later share one timer. 0 = off; the Sync button always works. The status bar's ring counts down to the next one."
-            >
-              <SpinButton
-                min={0}
-                max={MAX_SYNC_INTERVAL_MINUTES}
-                value={settings.syncIntervalMinutes}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  // `clampSyncInterval`, not just `Number.isFinite`: `max` only constrains the
-                  // stepper buttons, not a value typed or pasted straight into the field, and
-                  // an unclamped one reaches `SyncPoller` — see its own docstring for why that
-                  // silently turns into a sync that never stops rather than a rejected save.
-                  if (Number.isFinite(n)) patch({ syncIntervalMinutes: clampSyncInterval(n) });
-                }}
-              />
-            </Field>
-
-            <Field
-              label="Priority in the ticket drawer"
-              hint="The board card itself spends no colour on priority; this is the detail pane and peek's own indicator. The sort order honours priority either way."
-            >
-              <Dropdown
-                value={PRIORITY_DISPLAY_LABELS[settings.board.priorityDisplay]}
-                selectedOptions={[settings.board.priorityDisplay]}
-                onOptionSelect={(_e, d) =>
-                  patch({
-                    board: {
-                      ...settings.board,
-                      priorityDisplay: d.optionValue as PriorityDisplay,
-                    },
-                  })
-                }
-              >
-                {(Object.keys(PRIORITY_DISPLAY_LABELS) as PriorityDisplay[]).map((mode) => (
-                  <Option key={mode} value={mode} text={PRIORITY_DISPLAY_LABELS[mode]}>
-                    {PRIORITY_DISPLAY_LABELS[mode]}
-                  </Option>
-                ))}
-              </Dropdown>
-            </Field>
-
-            {/* Both are seeds for the NEXT project added — changing either leaves every
+            <div className={styles.grid}>
+              {/* Both are seeds for the NEXT project added — changing either leaves every
                 existing project exactly as it is, which is why they say "for new projects"
                 where the project dialogs simply say "model". */}
-            <PlanningModelField
-              label="Default planning model for new projects"
-              value={settings.defaultPlanningModel}
-              executionModel={settings.defaultModel}
-              onChange={(m) => patch({ defaultPlanningModel: m })}
-              hint="Planning is the run whose whole output is judgement: it reads a repo and decides what the work is, where a step is handed a brief that already says what to do. Leave it following execution to keep planning priced exactly as it is today."
-            />
+              <PlanningModelField
+                label="Default planning model for new projects"
+                value={settings.defaultPlanningModel}
+                executionModel={settings.defaultModel}
+                onChange={(m) => patch({ defaultPlanningModel: m })}
+                hint="Planning is the run whose whole output is judgement: it reads a repo and decides what the work is, where a step is handed a brief that already says what to do. Leave it following execution to keep planning priced exactly as it is today."
+              />
 
-            <ModelField
-              label="Default steps-execution model for new projects"
-              value={settings.defaultModel}
-              onChange={(defaultModel) => patch({ defaultModel })}
-            />
+              <ModelField
+                label="Default steps-execution model for new projects"
+                value={settings.defaultModel}
+                onChange={(defaultModel) => patch({ defaultModel })}
+              />
 
-            <Field label="Default permission mode for new projects">
-              <Dropdown
-                value={PERMISSION_MODE_LABELS[settings.defaultPermissionMode]}
-                selectedOptions={[settings.defaultPermissionMode]}
-                onOptionSelect={(_e, d) =>
-                  patch({ defaultPermissionMode: d.optionValue as PermissionMode })
-                }
+              <Field label="Default permission mode for new projects">
+                <Dropdown
+                  value={PERMISSION_MODE_LABELS[settings.defaultPermissionMode]}
+                  selectedOptions={[settings.defaultPermissionMode]}
+                  onOptionSelect={(_e, d) =>
+                    patch({ defaultPermissionMode: d.optionValue as PermissionMode })
+                  }
+                >
+                  {MODES.map((m) => (
+                    <Option key={m} value={m}>
+                      {PERMISSION_MODE_LABELS[m]}
+                    </Option>
+                  ))}
+                </Dropdown>
+              </Field>
+
+              <Field
+                label="Default concurrency for new projects"
+                hint="Seeds each new project's concurrency. Existing projects keep their own value (edit it per project). 1 = strictly one at a time."
               >
-                {MODES.map((m) => (
-                  <Option key={m} value={m}>
-                    {PERMISSION_MODE_LABELS[m]}
-                  </Option>
-                ))}
-              </Dropdown>
-            </Field>
+                <SpinButton
+                  min={1}
+                  max={8}
+                  value={settings.concurrency}
+                  onChange={(_e, d) => {
+                    const n = d.value ?? Number(d.displayValue);
+                    if (Number.isFinite(n))
+                      patch({ concurrency: Math.max(1, Math.round(n as number)) });
+                  }}
+                />
+              </Field>
 
-            <Field
-              label="Default concurrency for new projects"
-              hint="Seeds each new project's concurrency. Existing projects keep their own value (edit it per project). 1 = strictly one at a time."
-            >
-              <SpinButton
-                min={1}
-                max={8}
-                value={settings.concurrency}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ concurrency: Math.max(1, Math.round(n as number)) });
-                }}
-              />
-            </Field>
+              <Field
+                label="Max sessions at once (all projects)"
+                hint="Caps how many agent sessions run at the same time across every project — they all share one account's usage limit. 0 = unlimited."
+              >
+                <SpinButton
+                  min={0}
+                  max={20}
+                  value={settings.maxParallelSessions}
+                  onChange={(_e, d) => {
+                    const n = d.value ?? Number(d.displayValue);
+                    if (Number.isFinite(n))
+                      patch({ maxParallelSessions: Math.max(0, Math.round(n as number)) });
+                  }}
+                />
+              </Field>
 
-            <Field
-              label="Max sessions at once (all projects)"
-              hint="Caps how many agent sessions run at the same time across every project — they all share one account's usage limit. 0 = unlimited."
-            >
-              <SpinButton
-                min={0}
-                max={20}
-                value={settings.maxParallelSessions}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ maxParallelSessions: Math.max(0, Math.round(n as number)) });
-                }}
-              />
-            </Field>
-
-            <Field
-              label="Compact context at (%)"
-              hint="Percent of the context window at which the CLI auto-compacts a session's history. Blank keeps the CLI's own default; 70 is a reasonable starting point for a project that runs long chains."
-            >
-              <Input
-                type="number"
-                min={1}
-                max={100}
-                value={
-                  settings.autoCompactPercent == null ? '' : String(settings.autoCompactPercent)
-                }
-                placeholder="CLI default"
-                onChange={(_e, d) => {
-                  if (d.value === '') {
-                    patch({ autoCompactPercent: null });
-                    return;
+              <Field
+                label="Compact context at (%)"
+                hint="Percent of the context window at which the CLI auto-compacts a session's history. Blank keeps the CLI's own default; 70 is a reasonable starting point for a project that runs long chains."
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={
+                    settings.autoCompactPercent == null ? '' : String(settings.autoCompactPercent)
                   }
-                  const n = Number(d.value);
-                  if (Number.isFinite(n)) {
-                    patch({ autoCompactPercent: Math.min(100, Math.max(1, Math.round(n))) });
-                  }
-                }}
+                  placeholder="CLI default"
+                  onChange={(_e, d) => {
+                    if (d.value === '') {
+                      patch({ autoCompactPercent: null });
+                      return;
+                    }
+                    const n = Number(d.value);
+                    if (Number.isFinite(n)) {
+                      patch({ autoCompactPercent: Math.min(100, Math.max(1, Math.round(n))) });
+                    }
+                  }}
+                />
+              </Field>
+
+              <SubagentModelField
+                label="Subagent model"
+                value={settings.subagentModel}
+                onChange={(subagentModel) => patch({ subagentModel })}
+                hint="What a subagent a session spawns runs on. Leave it following the session to keep a delegated lookup priced the same as the work that delegated it."
               />
-            </Field>
+            </div>
 
-            <SubagentModelField
-              label="Subagent model"
-              value={settings.subagentModel}
-              onChange={(subagentModel) => patch({ subagentModel })}
-              hint="What a subagent a session spawns runs on. Leave it following the session to keep a delegated lookup priced the same as the work that delegated it."
-            />
+            <div className={styles.actions}>
+              <Button appearance="primary" onClick={save}>
+                Save
+              </Button>
+              {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+            </div>
+          </div>
+          <AgentProfiles />
+        </>
+      ) : section === 'executionTarget' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Execution target</Subtitle2>
 
-            <Field
-              label="Auto-retry failed tasks"
-              hint="How many times a failed task's agent run is retried automatically before it parks in the inbox for you to resolve. 0 = park on the first failure. Merge/integration failures always park."
-            >
-              <SpinButton
-                min={0}
-                max={5}
-                value={settings.maxAutoRetries}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ maxAutoRetries: Math.max(0, Math.round(n as number)) });
-                }}
-              />
-            </Field>
-
-            <Field
-              label="Resume jitter (seconds)"
-              hint="Random delay added after a usage limit resets, before work resumes."
-            >
-              <SpinButton
-                min={0}
-                max={600}
-                value={Math.round(settings.limitJitterMs / 1000)}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ limitJitterMs: Math.max(0, Math.round(n as number)) * 1000 });
-                }}
-              />
-            </Field>
-
-            {/* The denominators behind the two usage bars' FALLBACK reading (status bar +
-                Performance). The bars now show Claude's own `/usage` percentage whenever
-                the CLI has one; these only matter before the first reading lands, or if
-                the CLI can't be reached. In millions, because the honest unit here is
-                enormous: 96% of the bill is cache reads, so a busy week is billions of
-                tokens and a SpinButton stepping in ones would be unusable. 0 turns the
-                fallback off rather than dividing by zero. */}
-            <Field
-              label="Session token budget (millions)"
-              hint="Fallback for the current-session bar, used only until the CLI's own /usage reading lands: the tokens you consider a full 5-hour window. 0 hides the fallback."
-            >
-              <SpinButton
-                min={0}
-                max={100_000}
-                step={10}
-                value={Math.round(settings.sessionTokenBudget / 1_000_000)}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ sessionTokenBudget: Math.max(0, Math.round(n as number)) * 1_000_000 });
-                }}
-              />
-            </Field>
-
-            <Field
-              label="Weekly token budget (millions)"
-              hint="The same fallback, for the rolling 7 days the weekly bar covers. The default is the measured spend of a heavy week (see docs/08); set it to whatever a week of your own work looks like."
-            >
-              <SpinButton
-                min={0}
-                max={1_000_000}
-                step={100}
-                value={Math.round(settings.weeklyTokenBudget / 1_000_000)}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patch({ weeklyTokenBudget: Math.max(0, Math.round(n as number)) * 1_000_000 });
-                }}
-              />
-            </Field>
-
-            <Field label="Plan write-back">
-              <Switch
-                checked={settings.writeBackPlan}
-                label="Tick completed checkboxes back into a new project's plan file"
-                onChange={(_e, d) => patch({ writeBackPlan: d.checked })}
-              />
-            </Field>
-
+          <div className={styles.gridWide}>
             {distros.length > 0 && (
               <Field
+                className={styles.capped}
                 label="Runs on, for new projects"
                 hint="Where a newly added project executes its Claude sessions, git and worktrees. Existing projects keep their own setting — a project's folder only makes sense on the machine it was picked from."
               >
@@ -1416,20 +1000,20 @@ export function Settings({
             ))}
           </div>
 
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={save}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
-
-          <Body1 className={styles.hint}>
-            These are defaults for <strong>new</strong> projects and global scheduler knobs —
-            existing projects keep their own model, mode, and write-back settings.
-          </Body1>
-
-          {/* Updates. Nothing here is a saved setting, so it sits below the Save row
-              rather than inside it — the buttons act immediately. */}
+          {distros.length > 0 && (
+            <div className={styles.actions}>
+              <Button appearance="primary" onClick={save}>
+                Save
+              </Button>
+              {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+            </div>
+          )}
+        </div>
+      ) : section === 'updates' ? (
+        <div className={styles.pane}>
+          {/* Updates. Nothing here is a saved setting you edit and then save — the buttons
+              act immediately, and so does the one switch (it persists as it flips), which
+              is why this pane has no Save row. */}
           <Subtitle2>Updates</Subtitle2>
           <div className={styles.grid}>
             <Field label={appInfo ? `You are running v${appInfo.version}` : 'Version'}>
@@ -1549,7 +1133,7 @@ export function Settings({
                 <Field label="Use the GitHub CLI's token too">
                   <Switch
                     checked={updates.useGhCliToken}
-                    onChange={(_e, d) => patchUpdates({ useGhCliToken: d.checked })}
+                    onChange={(_e, d) => void saveUpdates({ useGhCliToken: d.checked })}
                     label="Fall back to gh auth token when the GitHub CLI is signed in (broader scopes)"
                   />
                 </Field>
@@ -1557,11 +1141,444 @@ export function Settings({
             )}
           </div>
         </div>
+      ) : section === 'skills' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Skills</Subtitle2>
+          <SkillsSection />
+        </div>
+      ) : section === 'workflows' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Workflows</Subtitle2>
+          <WorkflowBuilder />
+        </div>
+      ) : section === 'promptTemplates' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Prompt templates</Subtitle2>
+          <PromptTemplatesSection
+            templates={settings.promptTemplates}
+            onSave={savePromptTemplates}
+          />
+        </div>
+      ) : section === 'shortcuts' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Keyboard shortcuts</Subtitle2>
+          <KeyboardShortcutsList
+            items={[{ id: 'palette', label: 'Open command palette', spec: 'mod+k' }]}
+            win={window}
+          />
+        </div>
+      ) : section === 'board' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Board</Subtitle2>
+          <Body1 className={styles.hint}>
+            How the My Tasks board reads. Status updates you post on a card show as one line on it —
+            give the words you use most a colour, and a column tells you where everything stands
+            without opening anything.
+          </Body1>
+
+          <div className={styles.gridWide}>
+            <Field
+              label="Columns"
+              hint="Which columns the board draws. Each one lists what actually lands there — a column with nothing mapped to it is safe to hide; one you rely on cannot be hidden if it is the last column standing."
+            >
+              <div className={styles.columnList}>
+                {COLUMN_META.map((c) => {
+                  const checked = !hiddenColumns.includes(c.column);
+                  const isLastVisible = checked && hiddenColumns.length === COLUMN_META.length - 1;
+                  const jiraNames = jiraStatusesByColumn[c.column];
+                  const githubNames = githubLabelRows
+                    .filter((r) => r.column === c.column)
+                    .map((r) => r.name);
+                  const linearNames = Object.entries(linear.stateColumnOverrides)
+                    .filter(([, col]) => col === c.column)
+                    .map(([name]) => name);
+                  const ticketNames = ticketStatusesByColumn[c.column].map((s) => STATUS_LABEL[s]);
+                  return (
+                    <div key={c.column}>
+                      <Checkbox
+                        checked={checked}
+                        disabled={isLastVisible}
+                        label={COLUMN_LABEL[c.column]}
+                        onChange={(_e, d) =>
+                          patch({
+                            board: {
+                              ...settings.board,
+                              hiddenColumns: withColumnHidden(hiddenColumns, c.column, !d.checked),
+                            },
+                          })
+                        }
+                      />
+                      <div className={styles.columnCaptions}>
+                        <Caption1 className={styles.hint}>
+                          {jiraNames.length > 0
+                            ? `JIRA: ${jiraNames.join(', ')}`
+                            : 'No JIRA statuses mapped here'}
+                        </Caption1>
+                        {githubNames.length > 0 && (
+                          <Caption1 className={styles.hint}>
+                            GitHub: {githubNames.join(', ')}
+                          </Caption1>
+                        )}
+                        {linearNames.length > 0 && (
+                          <Caption1 className={styles.hint}>
+                            Linear: {linearNames.join(', ')}
+                          </Caption1>
+                        )}
+                        {ticketNames.length > 0 && (
+                          <Caption1 className={styles.hint}>
+                            Tickets: {ticketNames.join(', ')}
+                          </Caption1>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <Caption1 className={styles.hint}>
+                Change which JIRA status lands in which column from the{' '}
+                <Link onClick={() => openSection('jira')}>JIRA tab’s status map</Link>.
+              </Caption1>
+            </Field>
+
+            <Field
+              label="Status keywords"
+              hint="A status update containing one of these takes its colour. The first match in this list wins, so put the one that matters most at the top. An update matching nothing reads in the card's ordinary colour."
+            >
+              <div className={styles.mapList}>
+                {settings.statusKeywords.map((k, i) => (
+                  <div key={i} className={styles.mapRow}>
+                    <Input
+                      className={styles.mapName}
+                      value={k.keyword}
+                      placeholder="Word to look for, e.g. blocked"
+                      onChange={(_e, d) =>
+                        patch({
+                          statusKeywords: settings.statusKeywords.map((x, j) =>
+                            j === i ? { ...x, keyword: d.value } : x,
+                          ),
+                        })
+                      }
+                    />
+                    <ColorSwatches
+                      value={k.color}
+                      onChange={(color) =>
+                        patch({
+                          statusKeywords: settings.statusKeywords.map((x, j) =>
+                            j === i ? { ...x, color } : x,
+                          ),
+                        })
+                      }
+                    />
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<DismissRegular />}
+                      title="Remove this keyword"
+                      onClick={() =>
+                        patch({
+                          statusKeywords: settings.statusKeywords.filter((_x, j) => j !== i),
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+                <div>
+                  <Button
+                    size="small"
+                    icon={<AddRegular />}
+                    onClick={() =>
+                      patch({
+                        statusKeywords: [
+                          ...settings.statusKeywords,
+                          { keyword: '', color: PALETTE[0] },
+                        ],
+                      })
+                    }
+                  >
+                    Add keyword
+                  </Button>
+                </div>
+              </div>
+            </Field>
+
+            <Field
+              className={styles.capped}
+              label="Auto-archive finished milestones after (weeks)"
+              hint="Once every ticket on a milestone has been done or cancelled for this many weeks, the sweep archives it on its own — restore it any time from Archived. Blank turns auto-archive off."
+            >
+              <Input
+                type="number"
+                min={1}
+                max={520}
+                value={
+                  settings.ticketAutoArchiveWeeks == null
+                    ? ''
+                    : String(settings.ticketAutoArchiveWeeks)
+                }
+                placeholder="Off"
+                onChange={(_e, d) => {
+                  if (d.value === '') {
+                    patch({ ticketAutoArchiveWeeks: null });
+                    return;
+                  }
+                  const n = Number(d.value);
+                  if (Number.isFinite(n)) {
+                    patch({ ticketAutoArchiveWeeks: Math.min(520, Math.max(1, Math.round(n))) });
+                  }
+                }}
+              />
+            </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={save}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+        </div>
+      ) : section === 'features' ? (
+        <div className={styles.pane}>
+          <Subtitle2>Features</Subtitle2>
+          <Body1 className={styles.hint}>
+            Switches for a handful of independent behaviours. All on out of the box — turn one off
+            if it gets in your way.
+          </Body1>
+
+          <div className={styles.grid}>
+            {FEATURE_SWITCHES.map((f) => (
+              <Field key={f.key} label={f.label} hint={f.hint}>
+                <Switch
+                  checked={settings.features[f.key]}
+                  onChange={(_e, d) =>
+                    patch({ features: { ...settings.features, [f.key]: d.checked } })
+                  }
+                />
+              </Field>
+            ))}
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={save}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+        </div>
+      ) : section === 'general' ? (
+        <div className={styles.pane}>
+          <Subtitle2>General</Subtitle2>
+
+          <div className={styles.grid}>
+            <Field
+              label="Branch prefix"
+              hint="Leads every branch an agent works on, e.g. “wd” gives wd/feat/abc-123/add-sso. Leave empty for no prefix — and no leading slash."
+              validationState={prefixError ? 'error' : 'none'}
+              validationMessage={prefixError ?? undefined}
+            >
+              <Input
+                value={settings.branchPrefix}
+                placeholder="none"
+                onChange={(_e, d) => patch({ branchPrefix: d.value })}
+              />
+            </Field>
+
+            <Field
+              label="Merging a finished branch"
+              hint="When off, a finished run leaves its branch alone and the card offers a Merge button — so you merge work you have looked at. Nothing is discarded either way. This is the default: each project can decide for itself in its dialog, and each card on the board, and changing this still moves everything that never disagreed with it."
+            >
+              <Switch
+                checked={settings.autoIntegrate}
+                label={
+                  settings.autoIntegrate
+                    ? 'Merge automatically when a run finishes'
+                    : 'I merge it myself from the card'
+                }
+                onChange={(_e, d) => patch({ autoIntegrate: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Toasts"
+              hint="Brief pop-ups when something wants you. Everything they say is also on the board and in the Attention screen, so turning them off loses nothing."
+            >
+              <Switch
+                checked={settings.toastsEnabled}
+                label={settings.toastsEnabled ? 'Show toasts' : 'No toasts'}
+                onChange={(_e, d) => patch({ toastsEnabled: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Keep running in the background"
+              hint="Closing the window hides it to the tray (or minimizes it, where there's no tray) instead of quitting, so automations keep firing. Quit is in the tray menu."
+            >
+              <Switch
+                checked={settings.runInBackground}
+                label={settings.runInBackground ? 'Keep running' : 'Quit on close'}
+                onChange={(_e, d) => patch({ runInBackground: d.checked })}
+              />
+            </Field>
+
+            <Field
+              label="Auto-sync interval (minutes)"
+              hint="How often every connected tracker is refreshed in the background — JIRA, GitLab and anything added later share one timer. 0 = off; the Sync button always works. The status bar's ring counts down to the next one."
+            >
+              <SpinButton
+                min={0}
+                max={MAX_SYNC_INTERVAL_MINUTES}
+                value={settings.syncIntervalMinutes}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  // `clampSyncInterval`, not just `Number.isFinite`: `max` only constrains the
+                  // stepper buttons, not a value typed or pasted straight into the field, and
+                  // an unclamped one reaches `SyncPoller` — see its own docstring for why that
+                  // silently turns into a sync that never stops rather than a rejected save.
+                  if (Number.isFinite(n)) patch({ syncIntervalMinutes: clampSyncInterval(n) });
+                }}
+              />
+            </Field>
+
+            <Field
+              label="Priority in the ticket drawer"
+              hint="The board card itself spends no colour on priority; this is the detail pane and peek's own indicator. The sort order honours priority either way."
+            >
+              <Dropdown
+                value={PRIORITY_DISPLAY_LABELS[settings.board.priorityDisplay]}
+                selectedOptions={[settings.board.priorityDisplay]}
+                onOptionSelect={(_e, d) =>
+                  patch({
+                    board: {
+                      ...settings.board,
+                      priorityDisplay: d.optionValue as PriorityDisplay,
+                    },
+                  })
+                }
+              >
+                {(Object.keys(PRIORITY_DISPLAY_LABELS) as PriorityDisplay[]).map((mode) => (
+                  <Option key={mode} value={mode} text={PRIORITY_DISPLAY_LABELS[mode]}>
+                    {PRIORITY_DISPLAY_LABELS[mode]}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+
+            <Field
+              label="Auto-retry failed tasks"
+              hint="How many times a failed task's agent run is retried automatically before it parks in the inbox for you to resolve. 0 = park on the first failure. Merge/integration failures always park."
+            >
+              <SpinButton
+                min={0}
+                max={5}
+                value={settings.maxAutoRetries}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patch({ maxAutoRetries: Math.max(0, Math.round(n as number)) });
+                }}
+              />
+            </Field>
+
+            <Field
+              label="Resume jitter (seconds)"
+              hint="Random delay added after a usage limit resets, before work resumes."
+            >
+              <SpinButton
+                min={0}
+                max={600}
+                value={Math.round(settings.limitJitterMs / 1000)}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patch({ limitJitterMs: Math.max(0, Math.round(n as number)) * 1000 });
+                }}
+              />
+            </Field>
+
+            {/* The denominators behind the two usage bars' FALLBACK reading (status bar +
+                Performance). The bars now show Claude's own `/usage` percentage whenever
+                the CLI has one; these only matter before the first reading lands, or if
+                the CLI can't be reached. In millions, because the honest unit here is
+                enormous: 96% of the bill is cache reads, so a busy week is billions of
+                tokens and a SpinButton stepping in ones would be unusable. 0 turns the
+                fallback off rather than dividing by zero. */}
+            <Field
+              label="Session token budget (millions)"
+              hint="Fallback for the current-session bar, used only until the CLI's own /usage reading lands: the tokens you consider a full 5-hour window. 0 hides the fallback."
+            >
+              <SpinButton
+                min={0}
+                max={100_000}
+                step={10}
+                value={Math.round(settings.sessionTokenBudget / 1_000_000)}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patch({ sessionTokenBudget: Math.max(0, Math.round(n as number)) * 1_000_000 });
+                }}
+              />
+            </Field>
+
+            <Field
+              label="Weekly token budget (millions)"
+              hint="The same fallback, for the rolling 7 days the weekly bar covers. The default is the measured spend of a heavy week (see docs/08); set it to whatever a week of your own work looks like."
+            >
+              <SpinButton
+                min={0}
+                max={1_000_000}
+                step={100}
+                value={Math.round(settings.weeklyTokenBudget / 1_000_000)}
+                onChange={(_e, d) => {
+                  const n = d.value ?? Number(d.displayValue);
+                  if (Number.isFinite(n))
+                    patch({ weeklyTokenBudget: Math.max(0, Math.round(n as number)) * 1_000_000 });
+                }}
+              />
+            </Field>
+
+            <Field label="Plan write-back">
+              <Switch
+                checked={settings.writeBackPlan}
+                label="Tick completed checkboxes back into a new project's plan file"
+                onChange={(_e, d) => patch({ writeBackPlan: d.checked })}
+              />
+            </Field>
+          </div>
+
+          <div className={styles.actions}>
+            <Button appearance="primary" onClick={save}>
+              Save
+            </Button>
+            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+          </div>
+
+          <Body1 className={styles.hint}>
+            These are defaults for <strong>new</strong> projects and global scheduler knobs —
+            existing projects keep their own model, mode, and write-back settings.
+          </Body1>
+        </div>
       ) : section === 'appearance' ? (
         <div className={styles.pane}>
           <Subtitle2>Appearance</Subtitle2>
 
           <div className={styles.grid}>
+            <Field
+              label="Interface font size"
+              hint="Scales every size in the app, not just body text. 14 is the default."
+            >
+              <Dropdown
+                value={`${settings.fontSizePx} px`}
+                selectedOptions={[String(settings.fontSizePx)]}
+                onOptionSelect={(_e, d) => patch({ fontSizePx: Number(d.optionValue) })}
+              >
+                {FONT_SIZE_OPTIONS.map((px) => (
+                  <Option key={px} value={String(px)} text={`${px} px`}>
+                    {px === BASE_FONT_PX ? `${px} px (default)` : `${px} px`}
+                  </Option>
+                ))}
+              </Dropdown>
+            </Field>
+
             <Field label="Theme" hint={APPEARANCE_HINT}>
               <Dropdown
                 value={APPEARANCE_OPTIONS.find((o) => o.value === settings.appearance)?.label ?? ''}
@@ -1614,927 +1631,970 @@ export function Settings({
             {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
           </div>
         </div>
-      ) : section === 'gitlab' ? (
+      ) : (
         <div className={styles.pane}>
-          <Subtitle2>GitLab</Subtitle2>
-          <Body1 className={styles.hint}>
-            Puts your open merge requests on the card whose ticket key they name — in the branch,
-            the title or the description. A red pipeline, a review comment or a request for changes
-            then raises the same orange ring an unread ticket comment does, so one board answers “is
-            this actually done?”.
-          </Body1>
+          <TabList
+            aria-label="Integrations"
+            selectedValue={provider}
+            onTabSelect={(_e, d) => setProvider(d.value as SettingsProvider)}
+          >
+            {SETTINGS_PROVIDERS.map((p) => (
+              <Tab key={p.id} value={p.id}>
+                {p.title}
+              </Tab>
+            ))}
+          </TabList>
 
-          <div className={styles.grid}>
-            <Field label="Enable GitLab">
-              <Switch
-                checked={gitlab.enabled}
-                onChange={(_e, d) => patchGitLab({ enabled: d.checked })}
-              />
-            </Field>
+          {provider === 'gitlab' ? (
+            <div className={styles.pane}>
+              <Subtitle2>GitLab</Subtitle2>
+              <Body1 className={styles.hint}>
+                Puts your open merge requests on the card whose ticket key they name — in the
+                branch, the title or the description. A red pipeline, a review comment or a request
+                for changes then raises the same orange ring an unread ticket comment does, so one
+                board answers “is this actually done?”.
+              </Body1>
 
-            <Field
-              label="GitLab URL"
-              hint="gitlab.com or your own instance — e.g. https://gitlab.example.com"
-            >
-              <Input
-                value={gitlab.baseUrl}
-                placeholder="https://gitlab.com"
-                onChange={(_e, d) => patchGitLab({ baseUrl: d.value })}
-              />
-            </Field>
+              <div className={styles.grid}>
+                <Field label="Enable GitLab">
+                  <Switch
+                    checked={gitlab.enabled}
+                    onChange={(_e, d) => patchGitLab({ enabled: d.checked })}
+                  />
+                </Field>
 
-            <Field
-              label="Personal access token"
-              hint={
-                gitlabStatus?.encryptionAvailable === false
-                  ? 'The OS secure store is unavailable, so a token cannot be saved on this machine.'
-                  : gitlabStatus?.plainTextStorage
-                    ? 'No keyring on this machine, so the token is obfuscated on disk rather than kept secret. Needs the read_api scope.'
-                    : `Needs the read_api scope.${gitlabStatus?.hasToken ? ' A token is stored.' : ''}`
-              }
-            >
-              <Input
-                type="password"
-                value={gitlabToken}
-                placeholder={gitlabStatus?.hasToken ? '•••••••• (stored)' : 'glpat-…'}
-                onChange={(_e, d) => setGitlabToken(d.value)}
-              />
-            </Field>
-          </div>
+                <Field
+                  label="GitLab URL"
+                  hint="gitlab.com or your own instance — e.g. https://gitlab.example.com"
+                >
+                  <Input
+                    value={gitlab.baseUrl}
+                    placeholder="https://gitlab.com"
+                    onChange={(_e, d) => patchGitLab({ baseUrl: d.value })}
+                  />
+                </Field>
 
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={() => void save()}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
+                <Field
+                  className={styles.capped}
+                  label="Personal access token"
+                  hint={
+                    gitlabStatus?.encryptionAvailable === false
+                      ? 'The OS secure store is unavailable, so a token cannot be saved on this machine.'
+                      : gitlabStatus?.plainTextStorage
+                        ? 'No keyring on this machine, so the token is obfuscated on disk rather than kept secret. Needs the read_api scope.'
+                        : `Needs the read_api scope.${gitlabStatus?.hasToken ? ' A token is stored.' : ''}`
+                  }
+                >
+                  <Input
+                    type="password"
+                    value={gitlabToken}
+                    placeholder={gitlabStatus?.hasToken ? '•••••••• (stored)' : 'glpat-…'}
+                    onChange={(_e, d) => setGitlabToken(d.value)}
+                  />
+                </Field>
+              </div>
 
-          <div className={styles.actions}>
-            <Button
-              appearance="secondary"
-              disabled={!gitlabToken.trim() || gitlabStatus?.encryptionAvailable === false}
-              onClick={() => void saveGitLabToken()}
-            >
-              Save token
-            </Button>
-            <Button
-              appearance="secondary"
-              disabled={!gitlabStatus?.hasToken}
-              onClick={() => void clearGitLabToken()}
-            >
-              Clear token
-            </Button>
-            <Button appearance="primary" onClick={() => void testGitLab()}>
-              Test connection
-            </Button>
-            {gitlabMsg && <Caption1 className={styles.saved}>{gitlabMsg}</Caption1>}
-          </div>
+              <div className={styles.actions}>
+                <Button appearance="primary" onClick={() => void save()}>
+                  Save
+                </Button>
+                {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+              </div>
 
-          {gitlabTest && (
-            <MessageBar intent={gitlabTest.ok ? 'success' : 'error'}>
-              <MessageBarBody>{gitlabTest.message}</MessageBarBody>
-            </MessageBar>
-          )}
-          {gitlabTest?.prerequisites?.map((prereq) => (
-            <MessageBar key={prereq.project} intent="warning">
-              <MessageBarBody>
-                <MessageBarTitle>{prereq.project}</MessageBarTitle>
-                <ul className={styles.prereqList}>
-                  {prereq.missing.map((item, i) => (
-                    <li key={i}>{item}</li>
-                  ))}
-                </ul>
-              </MessageBarBody>
-            </MessageBar>
-          ))}
-        </div>
-      ) : section === 'github' ? (
-        <div className={styles.pane}>
-          <Subtitle2>GitHub</Subtitle2>
-          <Body1 className={styles.hint}>
-            GitHub can do two jobs here, and they switch on separately. It can be where the board’s
-            cards come from — your issues, mirrored the way JIRA’s are — and it can put your open
-            pull requests on the cards they belong to, so a failing check or a request for changes
-            raises the same orange ring an unread comment does.
-          </Body1>
+              <div className={styles.actions}>
+                <Button
+                  appearance="secondary"
+                  disabled={!gitlabToken.trim() || gitlabStatus?.encryptionAvailable === false}
+                  onClick={() => void saveGitLabToken()}
+                >
+                  Save token
+                </Button>
+                <Button
+                  appearance="secondary"
+                  disabled={!gitlabStatus?.hasToken}
+                  onClick={() => void clearGitLabToken()}
+                >
+                  Clear token
+                </Button>
+                <Button appearance="primary" onClick={() => void testGitLab()}>
+                  Test connection
+                </Button>
+                {gitlabMsg && <Caption1 className={styles.saved}>{gitlabMsg}</Caption1>}
+              </div>
 
-          <div className={styles.grid}>
-            <Field label="Enable GitHub">
-              <Switch
-                checked={github.enabled}
-                onChange={(_e, d) => patchGitHub({ enabled: d.checked })}
-              />
-            </Field>
+              {gitlabTest && (
+                <MessageBar intent={gitlabTest.ok ? 'success' : 'error'}>
+                  <MessageBarBody>{gitlabTest.message}</MessageBarBody>
+                </MessageBar>
+              )}
+              {gitlabTest?.prerequisites?.map((prereq) => (
+                <MessageBar key={prereq.project} intent="warning">
+                  <MessageBarBody>
+                    <MessageBarTitle>{prereq.project}</MessageBarTitle>
+                    <ul className={styles.prereqList}>
+                      {prereq.missing.map((item, i) => (
+                        <li key={i}>{item}</li>
+                      ))}
+                    </ul>
+                  </MessageBarBody>
+                </MessageBar>
+              ))}
+            </div>
+          ) : provider === 'github' ? (
+            <div className={styles.pane}>
+              <Subtitle2>GitHub</Subtitle2>
+              <Body1 className={styles.hint}>
+                GitHub can do two jobs here, and they switch on separately. It can be where the
+                board’s cards come from — your issues, mirrored the way JIRA’s are — and it can put
+                your open pull requests on the cards they belong to, so a failing check or a request
+                for changes raises the same orange ring an unread comment does.
+              </Body1>
 
-            <Field
-              label="Server URL"
-              hint="github.com, or your own GitHub Enterprise Server — e.g. https://github.example.com"
-            >
-              <Input
-                value={github.baseUrl}
-                placeholder="https://api.github.com"
-                onChange={(_e, d) => patchGitHub({ baseUrl: d.value })}
-              />
-            </Field>
+              <div className={styles.gridWide}>
+                <Field className={styles.capped} label="Enable GitHub">
+                  <Switch
+                    checked={github.enabled}
+                    onChange={(_e, d) => patchGitHub({ enabled: d.checked })}
+                  />
+                </Field>
 
-            <Field
-              label="Sync issues onto the board"
-              hint="Mirrors the issues your query matches as cards. Off if your work is tracked somewhere else and GitHub is only where it merges."
-            >
-              <Switch
-                checked={github.syncIssues}
-                onChange={(_e, d) => patchGitHub({ syncIssues: d.checked })}
-              />
-            </Field>
+                <Field
+                  className={styles.capped}
+                  label="Server URL"
+                  hint="github.com, or your own GitHub Enterprise Server — e.g. https://github.example.com"
+                >
+                  <Input
+                    value={github.baseUrl}
+                    placeholder="https://api.github.com"
+                    onChange={(_e, d) => patchGitHub({ baseUrl: d.value })}
+                  />
+                </Field>
 
-            <Field
-              label="Show pull requests on cards"
-              hint="Puts your open PRs on the card whose ticket they name, with their checks and reviews."
-            >
-              <Switch
-                checked={github.syncPullRequests}
-                onChange={(_e, d) => patchGitHub({ syncPullRequests: d.checked })}
-              />
-            </Field>
+                <Field
+                  className={styles.capped}
+                  label="Sync issues onto the board"
+                  hint="Mirrors the issues your query matches as cards. Off if your work is tracked somewhere else and GitHub is only where it merges."
+                >
+                  <Switch
+                    checked={github.syncIssues}
+                    onChange={(_e, d) => patchGitHub({ syncIssues: d.checked })}
+                  />
+                </Field>
 
-            <Field
-              label="Issue query"
-              hint="Which issues become cards, in GitHub's own search syntax — the same box you would type into github.com/issues. Default: the open issues assigned to you, anywhere. Narrow it with `repo:owner/name` or `org:yourcompany`."
-            >
-              <Textarea
-                value={github.issueQuery}
-                resize="vertical"
-                disabled={!github.syncIssues}
-                onChange={(_e, d) => patchGitHub({ issueQuery: d.value })}
-              />
-            </Field>
+                <Field
+                  className={styles.capped}
+                  label="Show pull requests on cards"
+                  hint="Puts your open PRs on the card whose ticket they name, with their checks and reviews."
+                >
+                  <Switch
+                    checked={github.syncPullRequests}
+                    onChange={(_e, d) => patchGitHub({ syncPullRequests: d.checked })}
+                  />
+                </Field>
 
-            <Field
-              label="Label mapping"
-              hint="Which board column each issue LABEL means, matched ignoring case. A GitHub issue has no workflow — it is open or it is closed — so unlike JIRA this map is the only way an issue reaches In Progress, In Review or Blocked at all. Closed always means Done, whatever labels the issue is still wearing."
-            >
-              <div className={styles.mapList}>
-                {labelRows.map((row, i) => (
-                  <div key={i} className={styles.mapRow}>
-                    {/* A plain Input, not the Combobox the JIRA map gets: labels are per
+                <Field
+                  className={styles.capped}
+                  label="Issue query"
+                  hint="Which issues become cards, in GitHub's own search syntax — the same box you would type into github.com/issues. Default: the open issues assigned to you, anywhere. Narrow it with `repo:owner/name` or `org:yourcompany`."
+                >
+                  <Textarea
+                    value={github.issueQuery}
+                    resize="vertical"
+                    disabled={!github.syncIssues}
+                    onChange={(_e, d) => patchGitHub({ issueQuery: d.value })}
+                  />
+                </Field>
+
+                <Field
+                  label="Label mapping"
+                  hint="Which board column each issue LABEL means, matched ignoring case. A GitHub issue has no workflow — it is open or it is closed — so unlike JIRA this map is the only way an issue reaches In Progress, In Review or Blocked at all. Closed always means Done, whatever labels the issue is still wearing."
+                >
+                  <div className={styles.mapList}>
+                    {labelRows.map((row, i) => (
+                      <div key={i} className={styles.mapRow}>
+                        {/* A plain Input, not the Combobox the JIRA map gets: labels are per
                         REPOSITORY and a board can span dozens of them, so there is no
                         instance-wide list to offer the way there is for a workflow's
                         statuses. Typing the label is the honest control. */}
-                    <Input
-                      className={styles.mapName}
-                      value={row.name}
-                      placeholder="GitHub label, e.g. in review"
-                      onChange={(_e, d) =>
-                        patchLabelRows(
-                          labelRows.map((r, j) => (j === i ? { ...r, name: d.value } : r)),
-                        )
-                      }
-                    />
-                    <Dropdown
-                      className={styles.mapColumn}
-                      value={COLUMN_LABEL[row.column]}
-                      selectedOptions={[row.column]}
-                      onOptionSelect={(_e, d) =>
-                        d.optionValue &&
-                        patchLabelRows(
-                          labelRows.map((r, j) =>
-                            j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
-                          ),
-                        )
-                      }
-                    >
-                      {MAPPABLE_COLUMNS.map((c) => (
-                        <Option key={c} value={c}>
-                          {COLUMN_LABEL[c]}
-                        </Option>
-                      ))}
-                    </Dropdown>
-                    <Button
-                      size="small"
-                      appearance="subtle"
-                      icon={<DismissRegular />}
-                      title="Remove this mapping"
-                      onClick={() => patchLabelRows(labelRows.filter((_r, j) => j !== i))}
-                    />
+                        <Input
+                          className={styles.mapName}
+                          value={row.name}
+                          placeholder="GitHub label, e.g. in review"
+                          onChange={(_e, d) =>
+                            patchLabelRows(
+                              labelRows.map((r, j) => (j === i ? { ...r, name: d.value } : r)),
+                            )
+                          }
+                        />
+                        <Dropdown
+                          className={styles.mapColumn}
+                          value={COLUMN_LABEL[row.column]}
+                          selectedOptions={[row.column]}
+                          onOptionSelect={(_e, d) =>
+                            d.optionValue &&
+                            patchLabelRows(
+                              labelRows.map((r, j) =>
+                                j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
+                              ),
+                            )
+                          }
+                        >
+                          {MAPPABLE_COLUMNS.map((c) => (
+                            <Option key={c} value={c}>
+                              {COLUMN_LABEL[c]}
+                            </Option>
+                          ))}
+                        </Dropdown>
+                        <Button
+                          size="small"
+                          appearance="subtle"
+                          icon={<DismissRegular />}
+                          title="Remove this mapping"
+                          onClick={() => patchLabelRows(labelRows.filter((_r, j) => j !== i))}
+                        />
+                      </div>
+                    ))}
+                    <div>
+                      <Button
+                        size="small"
+                        icon={<AddRegular />}
+                        onClick={() =>
+                          patchLabelRows([...labelRows, { name: '', column: 'in-review' }])
+                        }
+                      >
+                        Add mapping
+                      </Button>
+                    </div>
                   </div>
-                ))}
-                <div>
-                  <Button
-                    size="small"
-                    icon={<AddRegular />}
-                    onClick={() =>
-                      patchLabelRows([...labelRows, { name: '', column: 'in-review' }])
-                    }
-                  >
-                    Add mapping
-                  </Button>
-                </div>
-              </div>
-            </Field>
+                </Field>
 
-            {/* The same table JIRA's statuses get, and here it earns its keep for a different
+                {/* The same table JIRA's statuses get, and here it earns its keep for a different
                 reason: the rows worth reading are the LEARNED ones. Nothing else in the app
                 ever shows what a drag taught it, and an entry it got wrong would otherwise
                 keep quietly deciding a column with no way to see it, let alone correct it.
                 Pin turns a guess into a mapping the human owns. */}
-            <Field
-              label="How your labels resolve"
-              hint="Every label this app has an opinion about — the ones you mapped above, and the ones it taught itself when a drag applied one. Shown as if the issue were open, since a closed one is always Done."
-            >
-              <StatusMapViewer
-                rows={buildGitHubLabelRows(github.labelColumnOverrides, github.learnedLabelColumns)}
-                columnLabel={COLUMN_LABEL}
-                nameHeader="Label"
-                categoryHeader={null}
-                emptyText="No labels are mapped yet. Add one above, or drag a card between columns once issue syncing is on and the app will record what it applied."
-                onPin={pinLabel}
-              />
-            </Field>
+                <Field
+                  label="How your labels resolve"
+                  hint="Every label this app has an opinion about — the ones you mapped above, and the ones it taught itself when a drag applied one. Shown as if the issue were open, since a closed one is always Done."
+                >
+                  <StatusMapViewer
+                    rows={buildGitHubLabelRows(
+                      github.labelColumnOverrides,
+                      github.learnedLabelColumns,
+                    )}
+                    columnLabel={COLUMN_LABEL}
+                    nameHeader="Label"
+                    categoryHeader={null}
+                    emptyText="No labels are mapped yet. Add one above, or drag a card between columns once issue syncing is on and the app will record what it applied."
+                    onPin={pinLabel}
+                  />
+                </Field>
 
-            <Field
-              label="Keep finished cards for (days)"
-              hint="The commonest issue query there is says `is:open`, which stops matching an issue the instant you close it — so the card you had just dragged into Done would vanish out of it. A finished card is kept this long past the query instead, and re-read by number each sync, so reopening the issue on github.com still moves the card. 0 = take it off the board as soon as the query drops it."
-            >
-              <SpinButton
-                min={0}
-                max={365}
-                value={github.doneRetentionDays}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patchGitHub({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
-                }}
-              />
-            </Field>
+                <Field
+                  className={styles.capped}
+                  label="Keep finished cards for (days)"
+                  hint="The commonest issue query there is says `is:open`, which stops matching an issue the instant you close it — so the card you had just dragged into Done would vanish out of it. A finished card is kept this long past the query instead, and re-read by number each sync, so reopening the issue on github.com still moves the card. 0 = take it off the board as soon as the query drops it."
+                >
+                  <SpinButton
+                    min={0}
+                    max={365}
+                    value={github.doneRetentionDays}
+                    onChange={(_e, d) => {
+                      const n = d.value ?? Number(d.displayValue);
+                      if (Number.isFinite(n))
+                        patchGitHub({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
+                    }}
+                  />
+                </Field>
 
-            <Field
-              label="Personal access token"
-              hint={
-                githubStatus?.encryptionAvailable === false
-                  ? 'The OS secure store is unavailable, so a token cannot be saved on this machine.'
-                  : githubStatus?.plainTextStorage
-                    ? 'No keyring on this machine, so the token is obfuscated on disk rather than kept secret. Needs the repo scope.'
-                    : `Needs the repo scope — or public_repo, for public repositories only.${
-                        githubStatus?.hasToken ? ' A token is stored.' : ''
-                      }`
-              }
-            >
-              <Input
-                type="password"
-                value={githubToken}
-                placeholder={githubStatus?.hasToken ? '•••••••• (stored)' : 'ghp_…'}
-                onChange={(_e, d) => setGithubToken(d.value)}
-              />
-            </Field>
-          </div>
-
-          {githubStatus?.plainTextStorage && (
-            <MessageBar intent="warning">
-              <MessageBarBody>
-                This machine has no OS keyring (typical on WSL, a headless session, or a minimal
-                desktop), so the token is stored with a fixed built-in key — obfuscated on disk, but
-                readable by anyone who can read your app data. Prefer a token scoped to the minimum
-                you need. To get real encryption instead, install a keyring (e.g.{' '}
-                <code>gnome-keyring</code> / <code>libsecret</code>) and restart the app.
-              </MessageBarBody>
-            </MessageBar>
-          )}
-
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={() => void save()}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
-
-          <div className={styles.actions}>
-            <Button
-              appearance="secondary"
-              disabled={!githubToken.trim() || githubStatus?.encryptionAvailable === false}
-              onClick={() => void saveGitHubToken()}
-            >
-              Save token
-            </Button>
-            <Button
-              appearance="secondary"
-              disabled={!githubStatus?.hasToken}
-              onClick={() => void clearGitHubToken()}
-            >
-              Clear token
-            </Button>
-            <Button appearance="primary" onClick={() => void testGitHub()}>
-              Test connection
-            </Button>
-            {githubMsg && <Caption1 className={styles.saved}>{githubMsg}</Caption1>}
-          </div>
-
-          {githubTest && (
-            <MessageBar intent={githubTest.ok ? 'success' : 'error'}>
-              <MessageBarBody>{githubTest.message}</MessageBarBody>
-            </MessageBar>
-          )}
-          {githubTest?.prerequisites?.map((prereq) => (
-            <MessageBar key={prereq.project} intent="warning">
-              <MessageBarBody>
-                <MessageBarTitle>{prereq.project}</MessageBarTitle>
-                <ul className={styles.prereqList}>
-                  {prereq.missing.map((item, i) => (
-                    <li key={i}>{item}</li>
-                  ))}
-                </ul>
-              </MessageBarBody>
-            </MessageBar>
-          ))}
-        </div>
-      ) : section === 'linear' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Linear</Subtitle2>
-          <Body1 className={styles.hint}>
-            Linear does one job here — it is where cards come from, mirrored from the teams you name
-            below. Unlike JIRA or GitHub it has no cross-team search a personal key can run cheaply,
-            so each team is picked explicitly rather than folded into one query.
-          </Body1>
-
-          <div className={styles.grid}>
-            <Field label="Enable Linear">
-              <Switch
-                checked={linear.enabled}
-                onChange={(_e, d) => patchLinearSettings({ enabled: d.checked })}
-              />
-            </Field>
-
-            <Field
-              label="API key"
-              hint={
-                linearStatus?.encryptionAvailable === false
-                  ? 'The OS secure store is unavailable, so a key cannot be saved on this machine.'
-                  : linearStatus?.plainTextStorage
-                    ? 'No keyring on this machine, so the key is obfuscated on disk rather than kept secret.'
-                    : `Stored encrypted on this machine.${
-                        linearStatus?.hasToken ? ' A key is stored.' : ''
-                      }`
-              }
-            >
-              <Input
-                type="password"
-                value={linearKey}
-                placeholder={linearStatus?.hasToken ? '•••••••• (stored)' : 'lin_api_…'}
-                onChange={(_e, d) => setLinearKey(d.value)}
-              />
-            </Field>
-
-            <Field
-              label="Teams to mirror"
-              hint="Which Linear teams' issues become cards. Save a key above, then load the list — or check a key you already know the team key of."
-            >
-              <div className={styles.actions}>
-                <Button size="small" onClick={() => void loadLinearTeams()}>
-                  Load teams
-                </Button>
+                <Field
+                  className={styles.capped}
+                  label="Personal access token"
+                  hint={
+                    githubStatus?.encryptionAvailable === false
+                      ? 'The OS secure store is unavailable, so a token cannot be saved on this machine.'
+                      : githubStatus?.plainTextStorage
+                        ? 'No keyring on this machine, so the token is obfuscated on disk rather than kept secret. Needs the repo scope.'
+                        : `Needs the repo scope — or public_repo, for public repositories only.${
+                            githubStatus?.hasToken ? ' A token is stored.' : ''
+                          }`
+                  }
+                >
+                  <Input
+                    type="password"
+                    value={githubToken}
+                    placeholder={githubStatus?.hasToken ? '•••••••• (stored)' : 'ghp_…'}
+                    onChange={(_e, d) => setGithubToken(d.value)}
+                  />
+                </Field>
               </div>
-              {linearTeams.error && (
+
+              {githubStatus?.plainTextStorage && (
                 <MessageBar intent="warning">
-                  <MessageBarBody>{linearTeams.error}</MessageBarBody>
+                  <MessageBarBody>
+                    This machine has no OS keyring (typical on WSL, a headless session, or a minimal
+                    desktop), so the token is stored with a fixed built-in key — obfuscated on disk,
+                    but readable by anyone who can read your app data. Prefer a token scoped to the
+                    minimum you need. To get real encryption instead, install a keyring (e.g.{' '}
+                    <code>gnome-keyring</code> / <code>libsecret</code>) and restart the app.
+                  </MessageBarBody>
                 </MessageBar>
               )}
-              <div className={styles.columnList}>
-                {linearTeams.teams.map((t) => (
-                  <Checkbox
-                    key={t.id}
-                    checked={linear.teamKeys.includes(t.key.toUpperCase())}
-                    label={`${t.name} (${t.key})`}
-                    onChange={() => toggleLinearTeam(t.key)}
-                  />
-                ))}
-                {linear.teamKeys
-                  .filter(
-                    (k) => !linearTeams.teams.some((t) => t.key.toUpperCase() === k.toUpperCase()),
-                  )
-                  .map((k) => (
-                    <Checkbox
-                      key={k}
-                      checked
-                      label={`${k} (not loaded)`}
-                      onChange={() => toggleLinearTeam(k)}
-                    />
-                  ))}
+
+              <div className={styles.actions}>
+                <Button appearance="primary" onClick={() => void save()}>
+                  Save
+                </Button>
+                {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
               </div>
-            </Field>
 
-            <Field label="Which issues">
-              <RadioGroup
-                value={linear.assignee}
-                onChange={(_e, d) =>
-                  patchLinearSettings({ assignee: d.value as LinearSettings['assignee'] })
-                }
-              >
-                <Radio value="me" label="Assigned to me" />
-                <Radio value="anyone" label="Anyone on the team" />
-              </RadioGroup>
-            </Field>
-
-            <Field
-              label="Which state types to mirror"
-              hint="Mirroring completed/canceled by default would flood the board with a team's entire history, so those start unchecked."
-            >
-              <div className={styles.switchRow}>
-                {LINEAR_STATE_TYPE_ORDER.map((type) => (
-                  <Checkbox
-                    key={type}
-                    checked={linear.includeStateTypes.includes(type)}
-                    label={LINEAR_STATE_TYPE_LABEL[type]}
-                    onChange={() => toggleLinearStateType(type)}
-                  />
-                ))}
-              </div>
-            </Field>
-
-            <Field
-              label="Advanced filter (optional)"
-              hint="A raw Linear issue filter (its GraphQL filter syntax, as JSON), ANDed onto the fields above."
-              validationState={linearFilterError ? 'error' : 'none'}
-              validationMessage={linearFilterError ?? undefined}
-            >
-              <Textarea
-                value={linearFilterText}
-                resize="vertical"
-                onChange={(_e, d) => onLinearFilterChange(d.value)}
-              />
-            </Field>
-
-            <Field
-              label="State name mapping"
-              hint="Which board column a Linear workflow STATE NAME means, matched ignoring case — overriding the state type's own default column."
-            >
-              <div className={styles.mapList}>
-                {linearOverrideRows.map((row, i) => (
-                  <div key={i} className={styles.mapRow}>
-                    <Input
-                      className={styles.mapName}
-                      value={row.name}
-                      placeholder="Linear state, e.g. in review"
-                      onChange={(_e, d) =>
-                        patchLinearOverrideRows(
-                          linearOverrideRows.map((r, j) => (j === i ? { ...r, name: d.value } : r)),
-                        )
-                      }
-                    />
-                    <Dropdown
-                      className={styles.mapColumn}
-                      value={COLUMN_LABEL[row.column]}
-                      selectedOptions={[row.column]}
-                      onOptionSelect={(_e, d) =>
-                        d.optionValue &&
-                        patchLinearOverrideRows(
-                          linearOverrideRows.map((r, j) =>
-                            j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
-                          ),
-                        )
-                      }
-                    >
-                      {MAPPABLE_COLUMNS.map((c) => (
-                        <Option key={c} value={c}>
-                          {COLUMN_LABEL[c]}
-                        </Option>
-                      ))}
-                    </Dropdown>
-                    <Button
-                      size="small"
-                      appearance="subtle"
-                      icon={<DismissRegular />}
-                      title="Remove this mapping"
-                      onClick={() =>
-                        patchLinearOverrideRows(linearOverrideRows.filter((_r, j) => j !== i))
-                      }
-                    />
-                  </div>
-                ))}
-                <div>
-                  <Button
-                    size="small"
-                    icon={<AddRegular />}
-                    onClick={() =>
-                      patchLinearOverrideRows([
-                        ...linearOverrideRows,
-                        { name: '', column: 'in-review' },
-                      ])
-                    }
-                  >
-                    Add mapping
-                  </Button>
-                </div>
-              </div>
-            </Field>
-
-            {linear.teamKeys.map((teamKey) => {
-              const list = linearStates[teamKey];
-              const rows = buildLinearTargetRows(
-                teamKey,
-                list?.states ?? [],
-                linear.columnTargetStates,
-                linear.learnedStateColumns,
-              );
-              return (
-                <Field
-                  key={teamKey}
-                  label={`${teamKey}’s column → state`}
-                  hint="Which workflow state a drag into each column transitions the issue to, for this team. Blocked never transitions the issue — the move stays local."
+              <div className={styles.actions}>
+                <Button
+                  appearance="secondary"
+                  disabled={!githubToken.trim() || githubStatus?.encryptionAvailable === false}
+                  onClick={() => void saveGitHubToken()}
                 >
-                  {list?.error && (
+                  Save token
+                </Button>
+                <Button
+                  appearance="secondary"
+                  disabled={!githubStatus?.hasToken}
+                  onClick={() => void clearGitHubToken()}
+                >
+                  Clear token
+                </Button>
+                <Button appearance="primary" onClick={() => void testGitHub()}>
+                  Test connection
+                </Button>
+                {githubMsg && <Caption1 className={styles.saved}>{githubMsg}</Caption1>}
+              </div>
+
+              {githubTest && (
+                <MessageBar intent={githubTest.ok ? 'success' : 'error'}>
+                  <MessageBarBody>{githubTest.message}</MessageBarBody>
+                </MessageBar>
+              )}
+              {githubTest?.prerequisites?.map((prereq) => (
+                <MessageBar key={prereq.project} intent="warning">
+                  <MessageBarBody>
+                    <MessageBarTitle>{prereq.project}</MessageBarTitle>
+                    <ul className={styles.prereqList}>
+                      {prereq.missing.map((item, i) => (
+                        <li key={i}>{item}</li>
+                      ))}
+                    </ul>
+                  </MessageBarBody>
+                </MessageBar>
+              ))}
+            </div>
+          ) : provider === 'linear' ? (
+            <div className={styles.pane}>
+              <Subtitle2>Linear</Subtitle2>
+              <Body1 className={styles.hint}>
+                Linear does one job here — it is where cards come from, mirrored from the teams you
+                name below. Unlike JIRA or GitHub it has no cross-team search a personal key can run
+                cheaply, so each team is picked explicitly rather than folded into one query.
+              </Body1>
+
+              <div className={styles.gridWide}>
+                <Field className={styles.capped} label="Enable Linear">
+                  <Switch
+                    checked={linear.enabled}
+                    onChange={(_e, d) => patchLinearSettings({ enabled: d.checked })}
+                  />
+                </Field>
+
+                <Field
+                  className={styles.capped}
+                  label="API key"
+                  hint={
+                    linearStatus?.encryptionAvailable === false
+                      ? 'The OS secure store is unavailable, so a key cannot be saved on this machine.'
+                      : linearStatus?.plainTextStorage
+                        ? 'No keyring on this machine, so the key is obfuscated on disk rather than kept secret.'
+                        : `Stored encrypted on this machine.${
+                            linearStatus?.hasToken ? ' A key is stored.' : ''
+                          }`
+                  }
+                >
+                  <Input
+                    type="password"
+                    value={linearKey}
+                    placeholder={linearStatus?.hasToken ? '•••••••• (stored)' : 'lin_api_…'}
+                    onChange={(_e, d) => setLinearKey(d.value)}
+                  />
+                </Field>
+
+                <Field
+                  label="Teams to mirror"
+                  hint="Which Linear teams' issues become cards. Save a key above, then load the list — or check a key you already know the team key of."
+                >
+                  <div className={styles.actions}>
+                    <Button size="small" onClick={() => void loadLinearTeams()}>
+                      Load teams
+                    </Button>
+                  </div>
+                  {linearTeams.error && (
                     <MessageBar intent="warning">
-                      <MessageBarBody>{list.error}</MessageBarBody>
+                      <MessageBarBody>{linearTeams.error}</MessageBarBody>
                     </MessageBar>
                   )}
-                  {!list && (
-                    <Caption1 className={styles.hint}>Loading {teamKey}’s states…</Caption1>
-                  )}
-                  <div className={styles.mapList}>
-                    {rows.map((row) => (
-                      <div key={row.column} className={styles.mapRow}>
-                        <Caption1 className={styles.mapName}>{COLUMN_LABEL[row.column]}</Caption1>
-                        {row.localOnly ? (
-                          <Caption1 className={styles.hint}>Stays local</Caption1>
-                        ) : (
-                          <>
-                            <Dropdown
-                              className={styles.mapColumn}
-                              value={row.selected || '—'}
-                              selectedOptions={row.selected ? [row.selected] : []}
-                              onOptionSelect={(_e, d) =>
-                                d.optionValue !== undefined &&
-                                setLinearColumnTarget(teamKey, row.column, d.optionValue)
-                              }
-                            >
-                              {row.options.map((s) => (
-                                <Option key={s.id} value={s.name}>
-                                  {s.name}
-                                </Option>
-                              ))}
-                            </Dropdown>
-                            {row.fromLearned && (
-                              <Caption1 className={styles.hint}>Learned from a move</Caption1>
-                            )}
-                          </>
-                        )}
-                      </div>
+                  <div className={styles.columnList}>
+                    {linearTeams.teams.map((t) => (
+                      <Checkbox
+                        key={t.id}
+                        checked={linear.teamKeys.includes(t.key.toUpperCase())}
+                        label={`${t.name} (${t.key})`}
+                        onChange={() => toggleLinearTeam(t.key)}
+                      />
+                    ))}
+                    {linear.teamKeys
+                      .filter(
+                        (k) =>
+                          !linearTeams.teams.some((t) => t.key.toUpperCase() === k.toUpperCase()),
+                      )
+                      .map((k) => (
+                        <Checkbox
+                          key={k}
+                          checked
+                          label={`${k} (not loaded)`}
+                          onChange={() => toggleLinearTeam(k)}
+                        />
+                      ))}
+                  </div>
+                </Field>
+
+                <Field className={styles.capped} label="Which issues">
+                  <RadioGroup
+                    value={linear.assignee}
+                    onChange={(_e, d) =>
+                      patchLinearSettings({ assignee: d.value as LinearSettings['assignee'] })
+                    }
+                  >
+                    <Radio value="me" label="Assigned to me" />
+                    <Radio value="anyone" label="Anyone on the team" />
+                  </RadioGroup>
+                </Field>
+
+                <Field
+                  label="Which state types to mirror"
+                  hint="Mirroring completed/canceled by default would flood the board with a team's entire history, so those start unchecked."
+                >
+                  <div className={styles.switchRow}>
+                    {LINEAR_STATE_TYPE_ORDER.map((type) => (
+                      <Checkbox
+                        key={type}
+                        checked={linear.includeStateTypes.includes(type)}
+                        label={LINEAR_STATE_TYPE_LABEL[type]}
+                        onChange={() => toggleLinearStateType(type)}
+                      />
                     ))}
                   </div>
                 </Field>
-              );
-            })}
 
-            <Field
-              label="Keep finished cards for (days)"
-              hint="The default scope stops matching an issue the moment it finishes, so the card you had just dragged into Done would vanish out of it. A finished card is kept this long instead. 0 = take it off the board as soon as it drops out of scope."
-            >
-              <SpinButton
-                min={0}
-                max={365}
-                value={linear.doneRetentionDays}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patchLinearSettings({ doneRetentionDays: clampRetentionDays(n as number) });
-                }}
-              />
-            </Field>
-          </div>
+                <Field
+                  className={styles.capped}
+                  label="Advanced filter (optional)"
+                  hint="A raw Linear issue filter (its GraphQL filter syntax, as JSON), ANDed onto the fields above."
+                  validationState={linearFilterError ? 'error' : 'none'}
+                  validationMessage={linearFilterError ?? undefined}
+                >
+                  <Textarea
+                    value={linearFilterText}
+                    resize="vertical"
+                    onChange={(_e, d) => onLinearFilterChange(d.value)}
+                  />
+                </Field>
 
-          {linearStatus?.plainTextStorage && (
-            <MessageBar intent="warning">
-              <MessageBarBody>
-                This machine has no OS keyring (typical on WSL, a headless session, or a minimal
-                desktop), so the key is stored with a fixed built-in key — obfuscated on disk, but
-                readable by anyone who can read your app data. To get real encryption instead,
-                install a keyring (e.g. <code>gnome-keyring</code> / <code>libsecret</code>) and
-                restart the app.
-              </MessageBarBody>
-            </MessageBar>
-          )}
+                <Field
+                  label="State name mapping"
+                  hint="Which board column a Linear workflow STATE NAME means, matched ignoring case — overriding the state type's own default column."
+                >
+                  <div className={styles.mapList}>
+                    {linearOverrideRows.map((row, i) => (
+                      <div key={i} className={styles.mapRow}>
+                        <Input
+                          className={styles.mapName}
+                          value={row.name}
+                          placeholder="Linear state, e.g. in review"
+                          onChange={(_e, d) =>
+                            patchLinearOverrideRows(
+                              linearOverrideRows.map((r, j) =>
+                                j === i ? { ...r, name: d.value } : r,
+                              ),
+                            )
+                          }
+                        />
+                        <Dropdown
+                          className={styles.mapColumn}
+                          value={COLUMN_LABEL[row.column]}
+                          selectedOptions={[row.column]}
+                          onOptionSelect={(_e, d) =>
+                            d.optionValue &&
+                            patchLinearOverrideRows(
+                              linearOverrideRows.map((r, j) =>
+                                j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
+                              ),
+                            )
+                          }
+                        >
+                          {MAPPABLE_COLUMNS.map((c) => (
+                            <Option key={c} value={c}>
+                              {COLUMN_LABEL[c]}
+                            </Option>
+                          ))}
+                        </Dropdown>
+                        <Button
+                          size="small"
+                          appearance="subtle"
+                          icon={<DismissRegular />}
+                          title="Remove this mapping"
+                          onClick={() =>
+                            patchLinearOverrideRows(linearOverrideRows.filter((_r, j) => j !== i))
+                          }
+                        />
+                      </div>
+                    ))}
+                    <div>
+                      <Button
+                        size="small"
+                        icon={<AddRegular />}
+                        onClick={() =>
+                          patchLinearOverrideRows([
+                            ...linearOverrideRows,
+                            { name: '', column: 'in-review' },
+                          ])
+                        }
+                      >
+                        Add mapping
+                      </Button>
+                    </div>
+                  </div>
+                </Field>
 
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={() => void save()}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
+                {linear.teamKeys.map((teamKey) => {
+                  const list = linearStates[teamKey];
+                  const rows = buildLinearTargetRows(
+                    teamKey,
+                    list?.states ?? [],
+                    linear.columnTargetStates,
+                    linear.learnedStateColumns,
+                  );
+                  return (
+                    <Field
+                      key={teamKey}
+                      label={`${teamKey}’s column → state`}
+                      hint="Which workflow state a drag into each column transitions the issue to, for this team. Blocked never transitions the issue — the move stays local."
+                    >
+                      {list?.error && (
+                        <MessageBar intent="warning">
+                          <MessageBarBody>{list.error}</MessageBarBody>
+                        </MessageBar>
+                      )}
+                      {!list && (
+                        <Caption1 className={styles.hint}>Loading {teamKey}’s states…</Caption1>
+                      )}
+                      <div className={styles.mapList}>
+                        {rows.map((row) => (
+                          <div key={row.column} className={styles.mapRow}>
+                            <Caption1 className={styles.mapName}>
+                              {COLUMN_LABEL[row.column]}
+                            </Caption1>
+                            {row.localOnly ? (
+                              <Caption1 className={styles.hint}>Stays local</Caption1>
+                            ) : (
+                              <>
+                                <Dropdown
+                                  className={styles.mapColumn}
+                                  value={row.selected || '—'}
+                                  selectedOptions={row.selected ? [row.selected] : []}
+                                  onOptionSelect={(_e, d) =>
+                                    d.optionValue !== undefined &&
+                                    setLinearColumnTarget(teamKey, row.column, d.optionValue)
+                                  }
+                                >
+                                  {row.options.map((s) => (
+                                    <Option key={s.id} value={s.name}>
+                                      {s.name}
+                                    </Option>
+                                  ))}
+                                </Dropdown>
+                                {row.fromLearned && (
+                                  <Caption1 className={styles.hint}>Learned from a move</Caption1>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </Field>
+                  );
+                })}
 
-          <div className={styles.actions}>
-            <Button
-              appearance="secondary"
-              disabled={!linearKey.trim() || linearStatus?.encryptionAvailable === false}
-              onClick={() => void saveLinearKey()}
-            >
-              Save key
-            </Button>
-            <Button
-              appearance="secondary"
-              disabled={!linearStatus?.hasToken}
-              onClick={() => void clearLinearKey()}
-            >
-              Clear key
-            </Button>
-            <Button appearance="primary" onClick={() => void testLinear()}>
-              Test connection
-            </Button>
-            {linearMsg && <Caption1 className={styles.saved}>{linearMsg}</Caption1>}
-          </div>
+                <Field
+                  className={styles.capped}
+                  label="Keep finished cards for (days)"
+                  hint="The default scope stops matching an issue the moment it finishes, so the card you had just dragged into Done would vanish out of it. A finished card is kept this long instead. 0 = take it off the board as soon as it drops out of scope."
+                >
+                  <SpinButton
+                    min={0}
+                    max={365}
+                    value={linear.doneRetentionDays}
+                    onChange={(_e, d) => {
+                      const n = d.value ?? Number(d.displayValue);
+                      if (Number.isFinite(n))
+                        patchLinearSettings({ doneRetentionDays: clampRetentionDays(n as number) });
+                    }}
+                  />
+                </Field>
+              </div>
 
-          {linearTest && (
-            <MessageBar intent={linearTest.ok ? 'success' : 'error'}>
-              <MessageBarBody>{linearTest.message}</MessageBarBody>
-            </MessageBar>
-          )}
-        </div>
-      ) : section === 'cloud' ? (
-        <div className={styles.pane}>
-          <Subtitle2>Cloud</Subtitle2>
-          <Body1 className={styles.hint}>
-            Mirrors your tasks and projects to a hosted server, so they can be opened from the web
-            or another machine. Polls faster while this window is focused, and backs off
-            automatically while it isn’t or while the server can’t be reached.
-          </Body1>
-
-          <div className={styles.grid}>
-            <Field label="Enable cloud sync">
-              <Switch
-                checked={cloud.enabled}
-                onChange={(_e, d) => patchCloud({ enabled: d.checked })}
-              />
-            </Field>
-
-            <Field
-              label="Server URL"
-              hint="The @tm/server root, e.g. https://taskmanager-api.example.com"
-            >
-              <Input
-                value={cloud.baseUrl}
-                placeholder="https://taskmanager-api.example.com"
-                onChange={(_e, d) => patchCloud({ baseUrl: d.value })}
-              />
-            </Field>
-
-            <Field label="Personal access token" hint={cloudAuthHint(cloudStatus)}>
-              {cloudStatus?.legacySignInRetired && (
+              {linearStatus?.plainTextStorage && (
                 <MessageBar intent="warning">
                   <MessageBarBody>
-                    Cloud sign-in has been replaced by personal access tokens — create one in the
-                    web app’s Personal access tokens page and paste it below.
+                    This machine has no OS keyring (typical on WSL, a headless session, or a minimal
+                    desktop), so the key is stored with a fixed built-in key — obfuscated on disk,
+                    but readable by anyone who can read your app data. To get real encryption
+                    instead, install a keyring (e.g. <code>gnome-keyring</code> /{' '}
+                    <code>libsecret</code>) and restart the app.
                   </MessageBarBody>
                 </MessageBar>
               )}
-              {cloudStatus?.authState === 'rejected' && !cloudStatus?.legacySignInRetired && (
-                <MessageBar intent="warning">
-                  <MessageBarBody>
-                    The cloud rejected this token. It has been revoked or has expired — create a new
-                    one in the web app and paste it here.
-                  </MessageBarBody>
+
+              <div className={styles.actions}>
+                <Button appearance="primary" onClick={() => void save()}>
+                  Save
+                </Button>
+                {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+              </div>
+
+              <div className={styles.actions}>
+                <Button
+                  appearance="secondary"
+                  disabled={!linearKey.trim() || linearStatus?.encryptionAvailable === false}
+                  onClick={() => void saveLinearKey()}
+                >
+                  Save key
+                </Button>
+                <Button
+                  appearance="secondary"
+                  disabled={!linearStatus?.hasToken}
+                  onClick={() => void clearLinearKey()}
+                >
+                  Clear key
+                </Button>
+                <Button appearance="primary" onClick={() => void testLinear()}>
+                  Test connection
+                </Button>
+                {linearMsg && <Caption1 className={styles.saved}>{linearMsg}</Caption1>}
+              </div>
+
+              {linearTest && (
+                <MessageBar intent={linearTest.ok ? 'success' : 'error'}>
+                  <MessageBarBody>{linearTest.message}</MessageBarBody>
                 </MessageBar>
               )}
-              <Input
-                type="password"
-                value={cloudToken}
-                placeholder={cloudTokenPlaceholder(cloudStatus)}
-                onChange={(_e, d) => setCloudToken(d.value)}
-              />
-            </Field>
-
-            <div className={styles.actions}>
-              <Button
-                appearance="secondary"
-                disabled={!cloudToken.trim() || cloudStatus?.encryptionAvailable === false}
-                onClick={() => void saveCloudToken()}
-              >
-                Save token
-              </Button>
-              <Button
-                appearance="secondary"
-                disabled={!cloudStatus?.hasToken}
-                onClick={() => void clearCloudToken()}
-              >
-                Clear token
-              </Button>
-              <Button appearance="primary" onClick={() => void testCloudConnection()}>
-                Test connection
-              </Button>
-              {cloudTesting && <Spinner size="tiny" />}
-              {cloudTokenMsg && <Caption1 className={styles.saved}>{cloudTokenMsg}</Caption1>}
             </div>
+          ) : provider === 'cloud' ? (
+            <div className={styles.pane}>
+              <Subtitle2>Cloud</Subtitle2>
+              <Body1 className={styles.hint}>
+                Mirrors your tasks and projects to a hosted server, so they can be opened from the
+                web or another machine. Polls faster while this window is focused, and backs off
+                automatically while it isn’t or while the server can’t be reached.
+              </Body1>
 
-            {cloudTest && (
-              <MessageBar intent={cloudTest.ok ? 'success' : 'error'}>
-                <MessageBarBody>{cloudTest.message}</MessageBarBody>
-              </MessageBar>
-            )}
-          </div>
+              <div className={styles.grid}>
+                <Field label="Enable cloud sync">
+                  <Switch
+                    checked={cloud.enabled}
+                    onChange={(_e, d) => patchCloud({ enabled: d.checked })}
+                  />
+                </Field>
 
-          <Body1 className={styles.hint}>
-            Tokens are created on the web app’s Personal access tokens page — signed in there, not
-            here — then pasted above. The poller never reports a failure on its own — it counts the
-            tick and retries — so “Test connection” is what tells a wrong address, a missing token
-            and a refused account apart: it walks the whole chain (address, token, this machine’s
-            own sync, then whether the server lists it as connected) and says which part failed.
-            Save the form first — it reads what is stored, not what is typed.
-          </Body1>
+                <Field
+                  className={styles.capped}
+                  label="Server URL"
+                  hint="The @tm/server root, e.g. https://taskmanager-api.example.com"
+                >
+                  <Input
+                    value={cloud.baseUrl}
+                    placeholder="https://taskmanager-api.example.com"
+                    onChange={(_e, d) => patchCloud({ baseUrl: d.value })}
+                  />
+                </Field>
 
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={() => void save()}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
-        </div>
-      ) : (
-        <div className={styles.pane}>
-          <Subtitle2>JIRA (My Tasks board)</Subtitle2>
-          <Body1 className={styles.hint}>
-            Connect JIRA to mirror your assigned issues onto the My Tasks board. Save these settings
-            first, then save your token and test the connection.
-          </Body1>
+                <Field
+                  className={styles.capped}
+                  label="Personal access token"
+                  hint={cloudAuthHint(cloudStatus)}
+                >
+                  {cloudStatus?.legacySignInRetired && (
+                    <MessageBar intent="warning">
+                      <MessageBarBody>
+                        Cloud sign-in has been replaced by personal access tokens — create one in
+                        the web app’s Personal access tokens page and paste it below.
+                      </MessageBarBody>
+                    </MessageBar>
+                  )}
+                  {cloudStatus?.authState === 'rejected' && !cloudStatus?.legacySignInRetired && (
+                    <MessageBar intent="warning">
+                      <MessageBarBody>
+                        The cloud rejected this token. It has been revoked or has expired — create a
+                        new one in the web app and paste it here.
+                      </MessageBarBody>
+                    </MessageBar>
+                  )}
+                  <Input
+                    type="password"
+                    value={cloudToken}
+                    placeholder={cloudTokenPlaceholder(cloudStatus)}
+                    onChange={(_e, d) => setCloudToken(d.value)}
+                  />
+                </Field>
 
-          <div className={styles.grid}>
-            <Field label="Enable JIRA integration">
-              <Switch
-                checked={jira.enabled}
-                label="Fetch my issues onto the board"
-                onChange={(_e, d) => patchJira({ enabled: d.checked })}
-              />
-            </Field>
+                <div className={styles.actions}>
+                  <Button
+                    appearance="secondary"
+                    disabled={!cloudToken.trim() || cloudStatus?.encryptionAvailable === false}
+                    onClick={() => void saveCloudToken()}
+                  >
+                    Save token
+                  </Button>
+                  <Button
+                    appearance="secondary"
+                    disabled={!cloudStatus?.hasToken}
+                    onClick={() => void clearCloudToken()}
+                  >
+                    Clear token
+                  </Button>
+                  <Button appearance="primary" onClick={() => void testCloudConnection()}>
+                    Test connection
+                  </Button>
+                  {cloudTesting && <Spinner size="tiny" />}
+                  {cloudTokenMsg && <Caption1 className={styles.saved}>{cloudTokenMsg}</Caption1>}
+                </div>
 
-            <Field
-              label="Deployment"
-              hint="Self-hosted Server/Data Center uses a PAT; Cloud uses your email + an API token."
-            >
-              <Dropdown
-                value={
-                  jira.deployment === 'cloud'
-                    ? 'Cloud (email + API token)'
-                    : 'Server / Data Center (PAT)'
-                }
-                selectedOptions={[jira.deployment]}
-                onOptionSelect={(_e, d) =>
-                  // `apiVersion` is derived from this on the main side (jiraConfig), so
-                  // it is not set here — writing it too would invite the two to disagree.
-                  patchJira({ deployment: d.optionValue as JiraSettings['deployment'] })
-                }
-              >
-                <Option value="server">Server / Data Center (PAT)</Option>
-                <Option value="cloud">Cloud (email + API token)</Option>
-              </Dropdown>
-            </Field>
+                {cloudTest && (
+                  <MessageBar intent={cloudTest.ok ? 'success' : 'error'}>
+                    <MessageBarBody>{cloudTest.message}</MessageBarBody>
+                  </MessageBar>
+                )}
+              </div>
 
-            <Field
-              label="Base URL"
-              hint="The site root — e.g. https://acme.atlassian.net or https://jira.company.com"
-              validationState={cloudMismatch ? 'warning' : 'none'}
-              validationMessage={
-                cloudMismatch
-                  ? 'This is an Atlassian Cloud site. Cloud rejects Server/DC tokens — set Deployment to Cloud and add your account email.'
-                  : undefined
-              }
-            >
-              <Input
-                value={jira.baseUrl}
-                placeholder="https://acme.atlassian.net"
-                onChange={(_e, d) => patchJira({ baseUrl: d.value.trim() })}
-              />
-            </Field>
+              <Body1 className={styles.hint}>
+                Tokens are created on the web app’s Personal access tokens page — signed in there,
+                not here — then pasted above. The poller never reports a failure on its own — it
+                counts the tick and retries — so “Test connection” is what tells a wrong address, a
+                missing token and a refused account apart: it walks the whole chain (address, token,
+                this machine’s own sync, then whether the server lists it as connected) and says
+                which part failed. Save the form first — it reads what is stored, not what is typed.
+              </Body1>
 
-            {/* Only ever set by the Test-connection probe, and only for a scoped Atlassian
+              <div className={styles.actions}>
+                <Button appearance="primary" onClick={() => void save()}>
+                  Save
+                </Button>
+                {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+              </div>
+            </div>
+          ) : (
+            <div className={styles.pane}>
+              <Subtitle2>JIRA (My Tasks board)</Subtitle2>
+              <Body1 className={styles.hint}>
+                Connect JIRA to mirror your assigned issues onto the My Tasks board. Save these
+                settings first, then save your token and test the connection.
+              </Body1>
+
+              <div className={styles.gridWide}>
+                <Field className={styles.capped} label="Enable JIRA integration">
+                  <Switch
+                    checked={jira.enabled}
+                    label="Fetch my issues onto the board"
+                    onChange={(_e, d) => patchJira({ enabled: d.checked })}
+                  />
+                </Field>
+
+                <Field
+                  className={styles.capped}
+                  label="Deployment"
+                  hint="Self-hosted Server/Data Center uses a PAT; Cloud uses your email + an API token."
+                >
+                  <Dropdown
+                    value={
+                      jira.deployment === 'cloud'
+                        ? 'Cloud (email + API token)'
+                        : 'Server / Data Center (PAT)'
+                    }
+                    selectedOptions={[jira.deployment]}
+                    onOptionSelect={(_e, d) =>
+                      // `apiVersion` is derived from this on the main side (jiraConfig), so
+                      // it is not set here — writing it too would invite the two to disagree.
+                      patchJira({ deployment: d.optionValue as JiraSettings['deployment'] })
+                    }
+                  >
+                    <Option value="server">Server / Data Center (PAT)</Option>
+                    <Option value="cloud">Cloud (email + API token)</Option>
+                  </Dropdown>
+                </Field>
+
+                <Field
+                  className={styles.capped}
+                  label="Base URL"
+                  hint="The site root — e.g. https://acme.atlassian.net or https://jira.company.com"
+                  validationState={cloudMismatch ? 'warning' : 'none'}
+                  validationMessage={
+                    cloudMismatch
+                      ? 'This is an Atlassian Cloud site. Cloud rejects Server/DC tokens — set Deployment to Cloud and add your account email.'
+                      : undefined
+                  }
+                >
+                  <Input
+                    value={jira.baseUrl}
+                    placeholder="https://acme.atlassian.net"
+                    onChange={(_e, d) => patchJira({ baseUrl: d.value.trim() })}
+                  />
+                </Field>
+
+                {/* Only ever set by the Test-connection probe, and only for a scoped Atlassian
                 token, which the site itself refuses with a bare 401. Shown because an app
                 quietly talking to a host nobody typed is worse than an odd-looking line —
                 and because the way to undo it is right here: change the URL above. */}
-            {jira.apiBaseUrl?.trim() && (
-              <Field label="API endpoint">
-                <Caption1 className={styles.hint}>
-                  Requests go to <code>{jira.apiBaseUrl}</code> — Atlassian&rsquo;s tenant gateway,
-                  which is the only host that accepts a <strong>scoped</strong> API token. Issue
-                  links still use the base URL above. Changing the base URL or the deployment clears
-                  this and the next test rediscovers it.
-                </Caption1>
-              </Field>
-            )}
+                {jira.apiBaseUrl?.trim() && (
+                  <Field label="API endpoint">
+                    <Caption1 className={styles.hint}>
+                      Requests go to <code>{jira.apiBaseUrl}</code> — Atlassian&rsquo;s tenant
+                      gateway, which is the only host that accepts a <strong>scoped</strong> API
+                      token. Issue links still use the base URL above. Changing the base URL or the
+                      deployment clears this and the next test rediscovers it.
+                    </Caption1>
+                  </Field>
+                )}
 
-            {jira.deployment === 'cloud' && (
-              <Field
-                label="Account email"
-                hint="The Atlassian account the API token belongs to — Cloud needs both."
-                validationState={jira.cloudEmail.trim() ? 'none' : 'warning'}
-                validationMessage={
-                  jira.cloudEmail.trim()
-                    ? undefined
-                    : 'Required for Cloud; without it JIRA returns 401.'
-                }
-              >
-                <Input
-                  value={jira.cloudEmail}
-                  placeholder="you@company.com"
-                  onChange={(_e, d) => patchJira({ cloudEmail: d.value.trim() })}
-                />
-              </Field>
-            )}
-
-            <Field
-              label="JQL"
-              hint={
-                jira.currentSprintOnly
-                  ? 'Which issues to show. The board\'s "Current sprint" switch is on, so `AND sprint in openSprints()` is added to this query at sync time.'
-                  : 'Which issues to show. Default: your unresolved, assigned issues.'
-              }
-            >
-              <Textarea
-                value={jira.jql}
-                resize="vertical"
-                onChange={(_e, d) => patchJira({ jql: d.value })}
-              />
-            </Field>
-
-            <Field
-              label="Status mapping"
-              hint={
-                jiraStatuses.length
-                  ? `Which board column each JIRA workflow status means — ${jiraStatuses.length} statuses read from your instance, so pick rather than type. Matched on the name, ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to a guess from the name and then to the issue's JIRA category. Blocked is a column like any other: map your workflow's "Blocked" or "On hold" onto it and a ticket in that status lands there.`
-                  : 'Which board column each JIRA workflow status means. Save a working connection and this offers your instance\'s own statuses; until then, type the name. Matched ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to a guess from the name and then to the issue\'s JIRA category. Blocked is a column like any other: map your workflow\'s "Blocked" or "On hold" onto it and a ticket in that status lands there.'
-              }
-            >
-              <div className={styles.mapList}>
-                {statusRows.map((row, i) => (
-                  <div key={i} className={styles.mapRow}>
-                    {/* Freeform, not a plain Dropdown: the list is a convenience, and a
-                        status must stay mappable when JIRA is unreachable, no token is
-                        stored yet, or the instance simply didn't return it. */}
-                    <Combobox
-                      className={styles.mapName}
-                      freeform
-                      value={row.name}
-                      placeholder={
-                        jiraStatuses.length
-                          ? 'Pick a status, or type one'
-                          : 'JIRA status name, e.g. Code Review'
-                      }
-                      onChange={(e) =>
-                        patchStatusRows(
-                          statusRows.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)),
-                        )
-                      }
-                      onOptionSelect={(_e, d) =>
-                        d.optionValue &&
-                        patchStatusRows(
-                          statusRows.map((r, j) =>
-                            j === i ? { ...r, name: d.optionValue as string } : r,
-                          ),
-                        )
-                      }
-                    >
-                      {suggestionsFor(row.name).map((s) => (
-                        <Option key={s.name} value={s.name} text={s.name}>
-                          {`${s.name} — ${s.category} by default`}
-                        </Option>
-                      ))}
-                    </Combobox>
-                    <Dropdown
-                      className={styles.mapColumn}
-                      value={COLUMN_LABEL[row.column]}
-                      selectedOptions={[row.column]}
-                      onOptionSelect={(_e, d) =>
-                        d.optionValue &&
-                        patchStatusRows(
-                          statusRows.map((r, j) =>
-                            j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
-                          ),
-                        )
-                      }
-                    >
-                      {MAPPABLE_COLUMNS.map((c) => (
-                        <Option key={c} value={c}>
-                          {COLUMN_LABEL[c]}
-                        </Option>
-                      ))}
-                    </Dropdown>
-                    <Button
-                      size="small"
-                      appearance="subtle"
-                      icon={<DismissRegular />}
-                      title="Remove this mapping"
-                      onClick={() => patchStatusRows(statusRows.filter((_r, j) => j !== i))}
-                    />
-                  </div>
-                ))}
-                <div>
-                  <Button
-                    size="small"
-                    icon={<AddRegular />}
-                    onClick={() =>
-                      patchStatusRows([...statusRows, { name: '', column: 'in-review' }])
+                {jira.deployment === 'cloud' && (
+                  <Field
+                    className={styles.capped}
+                    label="Account email"
+                    hint="The Atlassian account the API token belongs to — Cloud needs both."
+                    validationState={jira.cloudEmail.trim() ? 'none' : 'warning'}
+                    validationMessage={
+                      jira.cloudEmail.trim()
+                        ? undefined
+                        : 'Required for Cloud; without it JIRA returns 401.'
                     }
                   >
-                    Add mapping
-                  </Button>
-                </div>
-              </div>
-            </Field>
+                    <Input
+                      value={jira.cloudEmail}
+                      placeholder="you@company.com"
+                      onChange={(_e, d) => patchJira({ cloudEmail: d.value.trim() })}
+                    />
+                  </Field>
+                )}
 
-            {/* What the engine will actually do with the map above — including the
+                <Field
+                  className={styles.capped}
+                  label="JQL"
+                  hint={
+                    jira.currentSprintOnly
+                      ? 'Which issues to show. The board\'s "Current sprint" switch is on, so `AND sprint in openSprints()` is added to this query at sync time.'
+                      : 'Which issues to show. Default: your unresolved, assigned issues.'
+                  }
+                >
+                  <Textarea
+                    value={jira.jql}
+                    resize="vertical"
+                    onChange={(_e, d) => patchJira({ jql: d.value })}
+                  />
+                </Field>
+
+                <Field
+                  label="Status mapping"
+                  hint={
+                    jiraStatuses.length
+                      ? `Which board column each JIRA workflow status means — ${jiraStatuses.length} statuses read from your instance, so pick rather than type. Matched on the name, ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to a guess from the name and then to the issue's JIRA category. Blocked is a column like any other: map your workflow's "Blocked" or "On hold" onto it and a ticket in that status lands there.`
+                      : 'Which board column each JIRA workflow status means. Save a working connection and this offers your instance\'s own statuses; until then, type the name. Matched ignoring case, so "Review" and "Code Review" can both land in In Review. Anything unmapped falls back to a guess from the name and then to the issue\'s JIRA category. Blocked is a column like any other: map your workflow\'s "Blocked" or "On hold" onto it and a ticket in that status lands there.'
+                  }
+                >
+                  <div className={styles.mapList}>
+                    {statusRows.map((row, i) => (
+                      <div key={i} className={styles.mapRow}>
+                        {/* Freeform, not a plain Dropdown: the list is a convenience, and a
+                        status must stay mappable when JIRA is unreachable, no token is
+                        stored yet, or the instance simply didn't return it. */}
+                        <Combobox
+                          className={styles.mapName}
+                          freeform
+                          value={row.name}
+                          placeholder={
+                            jiraStatuses.length
+                              ? 'Pick a status, or type one'
+                              : 'JIRA status name, e.g. Code Review'
+                          }
+                          onChange={(e) =>
+                            patchStatusRows(
+                              statusRows.map((r, j) =>
+                                j === i ? { ...r, name: e.target.value } : r,
+                              ),
+                            )
+                          }
+                          onOptionSelect={(_e, d) =>
+                            d.optionValue &&
+                            patchStatusRows(
+                              statusRows.map((r, j) =>
+                                j === i ? { ...r, name: d.optionValue as string } : r,
+                              ),
+                            )
+                          }
+                        >
+                          {suggestionsFor(row.name).map((s) => (
+                            <Option key={s.name} value={s.name} text={s.name}>
+                              {`${s.name} — ${s.category} by default`}
+                            </Option>
+                          ))}
+                        </Combobox>
+                        <Dropdown
+                          className={styles.mapColumn}
+                          value={COLUMN_LABEL[row.column]}
+                          selectedOptions={[row.column]}
+                          onOptionSelect={(_e, d) =>
+                            d.optionValue &&
+                            patchStatusRows(
+                              statusRows.map((r, j) =>
+                                j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
+                              ),
+                            )
+                          }
+                        >
+                          {MAPPABLE_COLUMNS.map((c) => (
+                            <Option key={c} value={c}>
+                              {COLUMN_LABEL[c]}
+                            </Option>
+                          ))}
+                        </Dropdown>
+                        <Button
+                          size="small"
+                          appearance="subtle"
+                          icon={<DismissRegular />}
+                          title="Remove this mapping"
+                          onClick={() => patchStatusRows(statusRows.filter((_r, j) => j !== i))}
+                        />
+                      </div>
+                    ))}
+                    <div>
+                      <Button
+                        size="small"
+                        icon={<AddRegular />}
+                        onClick={() =>
+                          patchStatusRows([...statusRows, { name: '', column: 'in-review' }])
+                        }
+                      >
+                        Add mapping
+                      </Button>
+                    </div>
+                  </div>
+                </Field>
+
+                {/* What the engine will actually do with the map above — including the
                 statuses nothing in it mentions. Shares the already-fetched status list
                 and the same resolver the sync runs, so it cannot drift from reality.
 
@@ -2547,178 +2607,188 @@ export function Settings({
                 opens offline. The case that actually surprises people — a transition name
                 typed below landing somewhere else — is answered when it happens, by the
                 issue it happened to: see the `board:notice` warning in `ipc.ts`. */}
-            <Field
-              label="How your statuses resolve"
-              hint="Every status your instance defines, the column it lands in, and which rule decided. A row that says “Name says review” or “Name says blocked” is a guess the app made for you — pin it to make it yours."
-            >
-              <StatusMapViewer
-                statuses={jiraStatuses}
-                error={jiraStatusError}
-                map={jira.statusCategoryOverrides}
-                learned={jira.learnedStatusColumns}
-                columnLabel={COLUMN_LABEL}
-                onPin={pinStatus}
-              />
-            </Field>
+                <Field
+                  label="How your statuses resolve"
+                  hint="Every status your instance defines, the column it lands in, and which rule decided. A row that says “Name says review” or “Name says blocked” is a guess the app made for you — pin it to make it yours."
+                >
+                  <StatusMapViewer
+                    statuses={jiraStatuses}
+                    error={jiraStatusError}
+                    map={jira.statusCategoryOverrides}
+                    learned={jira.learnedStatusColumns}
+                    columnLabel={COLUMN_LABEL}
+                    onPin={pinStatus}
+                  />
+                </Field>
 
-            {/* Each box gets its own label, not just a placeholder. Five boxes that look
+                {/* Each box gets its own label, not just a placeholder. Five boxes that look
                 identical, distinguishable only by grey text that vanishes the moment you
                 type in one, is how a name meant for In Review ends up filed under In
                 Progress — and a misfiled name here is applied verbatim, so the mistake
                 shows up as a drag moving a ticket somewhere nobody asked for. */}
-            <Field
-              label="Transition names (optional)"
-              hint="Only needed when your workflow's transition names can't be worked out from the status they lead to. Leave blank to auto-detect. A name you enter is used verbatim — it wins over everything the app would work out for itself, including a transition the app would never have chosen, so check the spelling matches the button in JIRA exactly."
-            >
-              <div className={styles.mapList}>
-                {/* First, because it is the one workflows least agree on: moving a card
+                <Field
+                  className={styles.capped}
+                  label="Transition names (optional)"
+                  hint="Only needed when your workflow's transition names can't be worked out from the status they lead to. Leave blank to auto-detect. A name you enter is used verbatim — it wins over everything the app would work out for itself, including a transition the app would never have chosen, so check the spelling matches the button in JIRA exactly."
+                >
+                  <div className={styles.mapList}>
+                    {/* First, because it is the one workflows least agree on: moving a card
                     back to TO DO can be "Reopen", "Stop Progress" or "Back to backlog",
                     none of which name the status they lead to. */}
-                <Field label="Move back to To Do" size="small">
-                  <Input
-                    value={jira.todoTransitionName ?? ''}
-                    aria-label="Move back to To Do — exact transition name"
-                    placeholder="e.g. Reopen"
-                    onChange={(_e, d) => patchJira({ todoTransitionName: d.value })}
-                  />
-                </Field>
-                <Field label="Move to In Progress" size="small">
-                  <Input
-                    value={jira.inProgressTransitionName ?? ''}
-                    aria-label="Move to In Progress — exact transition name"
-                    placeholder="e.g. Start work"
-                    onChange={(_e, d) => patchJira({ inProgressTransitionName: d.value })}
-                  />
-                </Field>
-                <Field label="Move to In Review" size="small">
-                  <Input
-                    value={jira.inReviewTransitionName ?? ''}
-                    aria-label="Move to In Review — exact transition name"
-                    placeholder="e.g. Submit for review"
-                    onChange={(_e, d) => patchJira({ inReviewTransitionName: d.value })}
-                  />
-                </Field>
-                <Field label="Move to Done" size="small">
-                  <Input
-                    value={jira.doneTransitionName ?? ''}
-                    aria-label="Move to Done — exact transition name"
-                    placeholder="e.g. Resolve"
-                    onChange={(_e, d) => patchJira({ doneTransitionName: d.value })}
-                  />
-                </Field>
-                {/* Last, and the only one that may legitimately have no answer: a workflow
+                    <Field label="Move back to To Do" size="small">
+                      <Input
+                        value={jira.todoTransitionName ?? ''}
+                        aria-label="Move back to To Do — exact transition name"
+                        placeholder="e.g. Reopen"
+                        onChange={(_e, d) => patchJira({ todoTransitionName: d.value })}
+                      />
+                    </Field>
+                    <Field label="Move to In Progress" size="small">
+                      <Input
+                        value={jira.inProgressTransitionName ?? ''}
+                        aria-label="Move to In Progress — exact transition name"
+                        placeholder="e.g. Start work"
+                        onChange={(_e, d) => patchJira({ inProgressTransitionName: d.value })}
+                      />
+                    </Field>
+                    <Field label="Move to In Review" size="small">
+                      <Input
+                        value={jira.inReviewTransitionName ?? ''}
+                        aria-label="Move to In Review — exact transition name"
+                        placeholder="e.g. Submit for review"
+                        onChange={(_e, d) => patchJira({ inReviewTransitionName: d.value })}
+                      />
+                    </Field>
+                    <Field label="Move to Done" size="small">
+                      <Input
+                        value={jira.doneTransitionName ?? ''}
+                        aria-label="Move to Done — exact transition name"
+                        placeholder="e.g. Resolve"
+                        onChange={(_e, d) => patchJira({ doneTransitionName: d.value })}
+                      />
+                    </Field>
+                    {/* Last, and the only one that may legitimately have no answer: a workflow
                     with no blocked status blocks the card here and leaves the ticket be. */}
-                <Field label="Move to Blocked" size="small">
-                  <Input
-                    value={jira.blockedTransitionName ?? ''}
-                    aria-label="Move to Blocked — exact transition name"
-                    placeholder="e.g. Raise impediment"
-                    onChange={(_e, d) => patchJira({ blockedTransitionName: d.value })}
+                    <Field label="Move to Blocked" size="small">
+                      <Input
+                        value={jira.blockedTransitionName ?? ''}
+                        aria-label="Move to Blocked — exact transition name"
+                        placeholder="e.g. Raise impediment"
+                        onChange={(_e, d) => patchJira({ blockedTransitionName: d.value })}
+                      />
+                    </Field>
+                  </div>
+                </Field>
+
+                <Field
+                  className={styles.capped}
+                  label="Keep finished cards for (days)"
+                  hint="Most JQL (`resolution = Unresolved`) stops matching an issue the moment you finish it, which would empty the Done column as fast as you filled it. A finished card is kept this long past the query instead, and re-read by key each sync — so moving the ticket back out of Done in JIRA still moves the card. 0 = take it off the board as soon as the query drops it."
+                >
+                  <SpinButton
+                    min={0}
+                    max={365}
+                    value={jira.doneRetentionDays}
+                    onChange={(_e, d) => {
+                      const n = d.value ?? Number(d.displayValue);
+                      if (Number.isFinite(n))
+                        patchJira({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
+                    }}
                   />
                 </Field>
-              </div>
-            </Field>
 
-            <Field
-              label="Keep finished cards for (days)"
-              hint="Most JQL (`resolution = Unresolved`) stops matching an issue the moment you finish it, which would empty the Done column as fast as you filled it. A finished card is kept this long past the query instead, and re-read by key each sync — so moving the ticket back out of Done in JIRA still moves the card. 0 = take it off the board as soon as the query drops it."
-            >
-              <SpinButton
-                min={0}
-                max={365}
-                value={jira.doneRetentionDays}
-                onChange={(_e, d) => {
-                  const n = d.value ?? Number(d.displayValue);
-                  if (Number.isFinite(n))
-                    patchJira({ doneRetentionDays: Math.max(0, Math.round(n as number)) });
-                }}
-              />
-            </Field>
-
-            {/* What a card past that window actually goes THROUGH, and the bound on the fetch
+                {/* What a card past that window actually goes THROUGH, and the bound on the fetch
                 that decides it. Both are read-only: the retention sweep is not a matter of
                 taste, and the fetch limit is a number that can only be set wrong — too low and
                 a big board reads as a shrinking one. Stated here because the alternative to
                 telling people is their finding out. */}
-            <Field label="What happens after that">
-              <Caption1 className={styles.hint}>
-                The card is <strong>removed from the board, not deleted</strong>. Its timeline, its
-                files, the chain arrows drawn to and from it and any agent transcript stay exactly
-                where they are, and it sits under <strong>Removed cards</strong> in the
-                My&nbsp;Tasks toolbar — one click puts it back on the board with the same id. It is
-                destroyed only after {ARCHIVE_RETENTION_DAYS} days there.
-                <br />
-                Each sync reads up to {JIRA_BOARD_LIMIT} issues. Above that the sync fetches what it
-                can and <strong>removes nothing</strong> — a search that stopped short looks exactly
-                like a board that shrank, so it is not treated as evidence that anything left.
-              </Caption1>
-            </Field>
+                <Field label="What happens after that">
+                  <Caption1 className={styles.hint}>
+                    The card is <strong>removed from the board, not deleted</strong>. Its timeline,
+                    its files, the chain arrows drawn to and from it and any agent transcript stay
+                    exactly where they are, and it sits under <strong>Removed cards</strong> in the
+                    My&nbsp;Tasks toolbar — one click puts it back on the board with the same id. It
+                    is destroyed only after {ARCHIVE_RETENTION_DAYS} days there.
+                    <br />
+                    Each sync reads up to {JIRA_BOARD_LIMIT} issues. Above that the sync fetches
+                    what it can and <strong>removes nothing</strong> — a search that stopped short
+                    looks exactly like a board that shrank, so it is not treated as evidence that
+                    anything left.
+                  </Caption1>
+                </Field>
 
-            <Field
-              label={jira.deployment === 'cloud' ? 'API token' : 'Personal Access Token'}
-              hint={
-                jiraStatus?.encryptionAvailable === false
-                  ? 'OS secure storage is unavailable on this machine — the token cannot be stored securely.'
-                  : jiraStatus?.hasToken
-                    ? 'A token is stored. Enter a new one to replace it.'
-                    : jiraStatus?.plainTextStorage
-                      ? 'No OS keyring on this machine — see the note below before saving.'
-                      : 'Stored encrypted via your OS secure store; never written in plaintext.'
-              }
-            >
-              <Input
-                type="password"
-                value={token}
-                placeholder={jiraStatus?.hasToken ? '•••••••• (stored)' : 'Paste your token'}
-                onChange={(_e, d) => setToken(d.value)}
-              />
-            </Field>
-          </div>
+                <Field
+                  className={styles.capped}
+                  label={jira.deployment === 'cloud' ? 'API token' : 'Personal Access Token'}
+                  hint={
+                    jiraStatus?.encryptionAvailable === false
+                      ? 'OS secure storage is unavailable on this machine — the token cannot be stored securely.'
+                      : jiraStatus?.hasToken
+                        ? 'A token is stored. Enter a new one to replace it.'
+                        : jiraStatus?.plainTextStorage
+                          ? 'No OS keyring on this machine — see the note below before saving.'
+                          : 'Stored encrypted via your OS secure store; never written in plaintext.'
+                  }
+                >
+                  <Input
+                    type="password"
+                    value={token}
+                    placeholder={jiraStatus?.hasToken ? '•••••••• (stored)' : 'Paste your token'}
+                    onChange={(_e, d) => setToken(d.value)}
+                  />
+                </Field>
+              </div>
 
-          {jiraStatus?.plainTextStorage && (
-            <MessageBar intent="warning">
-              <MessageBarBody>
-                This machine has no OS keyring (typical on WSL, a headless session, or a minimal
-                desktop), so the token is stored with a fixed built-in key — obfuscated on disk, but
-                readable by anyone who can read your app data. Prefer a token scoped to the minimum
-                you need. To get real encryption instead, install a keyring (e.g.{' '}
-                <code>gnome-keyring</code> / <code>libsecret</code>) and restart the app.
-              </MessageBarBody>
-            </MessageBar>
-          )}
+              {jiraStatus?.plainTextStorage && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>
+                    This machine has no OS keyring (typical on WSL, a headless session, or a minimal
+                    desktop), so the token is stored with a fixed built-in key — obfuscated on disk,
+                    but readable by anyone who can read your app data. Prefer a token scoped to the
+                    minimum you need. To get real encryption instead, install a keyring (e.g.{' '}
+                    <code>gnome-keyring</code> / <code>libsecret</code>) and restart the app.
+                  </MessageBarBody>
+                </MessageBar>
+              )}
 
-          <div className={styles.actions}>
-            <Button appearance="primary" onClick={save}>
-              Save
-            </Button>
-            {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-          </div>
+              <div className={styles.actions}>
+                <Button appearance="primary" onClick={save}>
+                  Save
+                </Button>
+                {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
+              </div>
 
-          <div className={styles.actions}>
-            <Button
-              appearance="secondary"
-              disabled={!token.trim() || jiraStatus?.encryptionAvailable === false}
-              onClick={saveToken}
-            >
-              Save token
-            </Button>
-            <Button appearance="secondary" disabled={!jiraStatus?.hasToken} onClick={clearToken}>
-              Clear token
-            </Button>
-            <Button appearance="primary" disabled={testing} onClick={testConnection}>
-              Test connection
-            </Button>
-            {testing && <Spinner size="tiny" />}
-            {tokenMsg && <Caption1 className={styles.saved}>{tokenMsg}</Caption1>}
-          </div>
+              <div className={styles.actions}>
+                <Button
+                  appearance="secondary"
+                  disabled={!token.trim() || jiraStatus?.encryptionAvailable === false}
+                  onClick={saveToken}
+                >
+                  Save token
+                </Button>
+                <Button
+                  appearance="secondary"
+                  disabled={!jiraStatus?.hasToken}
+                  onClick={clearToken}
+                >
+                  Clear token
+                </Button>
+                <Button appearance="primary" disabled={testing} onClick={testConnection}>
+                  Test connection
+                </Button>
+                {testing && <Spinner size="tiny" />}
+                {tokenMsg && <Caption1 className={styles.saved}>{tokenMsg}</Caption1>}
+              </div>
 
-          {testResult && (
-            <MessageBar intent={testResult.ok ? 'success' : 'error'}>
-              <MessageBarBody>{testResult.message}</MessageBarBody>
-            </MessageBar>
+              {testResult && (
+                <MessageBar intent={testResult.ok ? 'success' : 'error'}>
+                  <MessageBarBody>{testResult.message}</MessageBarBody>
+                </MessageBar>
+              )}
+            </div>
           )}
         </div>
       )}
-    </div>
+    </SettingsPage>
   );
 }

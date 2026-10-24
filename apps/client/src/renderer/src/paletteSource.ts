@@ -31,7 +31,8 @@ import {
   StopRegular,
   type FluentIcon,
 } from '@fluentui/react-icons';
-import type { SettingsSection } from './Settings';
+import { SETTINGS_NAV_ICONS } from '@ui/settings/SettingsPage';
+import { SETTINGS_PROVIDERS, type SettingsNavSection, type SettingsSection } from './settingsNav';
 
 /** Every destination the desktop can route `tab` to (`App.tsx`'s `TabId`) — every `ShellNavId`
  *  except `fleet`, the one destination the desktop does not have (F13.8: it moved from each
@@ -57,26 +58,60 @@ export const DESKTOP_SCREENS: ReadonlyArray<{
   icon: entry.icon,
 }));
 
-/** `Settings.tsx`'s own tabs, in the order its `TabList` renders them — the single source
- *  it reads its `<Tab>` list from, so a section added here is a section Settings already
- *  shows. */
-export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSection; title: string }> = [
-  { id: 'general', title: 'General' },
-  { id: 'appearance', title: 'Appearance' },
-  { id: 'board', title: 'Board' },
-  { id: 'features', title: 'Features' },
-  { id: 'jira', title: 'JIRA' },
-  { id: 'gitlab', title: 'GitLab' },
-  { id: 'github', title: 'GitHub' },
-  { id: 'linear', title: 'Linear' },
-  { id: 'cloud', title: 'Cloud' },
-  { id: 'people', title: 'People' },
-  { id: 'agentProfiles', title: 'Agent profiles' },
-  { id: 'skills', title: 'Skills' },
-  { id: 'workflows', title: 'Workflows' },
-  { id: 'promptTemplates', title: 'Prompt templates' },
-  { id: 'shortcuts', title: 'Shortcuts' },
+/** `Settings.tsx`'s grouped nav (v10 mockup), in the order `SettingsPage` draws it — the
+ *  single source Settings reads its nav from, so a section added here is a section Settings
+ *  already shows. The providers are not nav items: they are tabs inside Integrations. */
+export const SETTINGS_GROUPS: Array<{
+  heading: string;
+  items: Array<{ id: SettingsNavSection; title: string; icon: FluentIcon }>;
+}> = [
+  {
+    heading: 'Workspace',
+    items: [
+      { id: 'general', title: 'General', icon: SETTINGS_NAV_ICONS.general },
+      { id: 'board', title: 'Board', icon: SETTINGS_NAV_ICONS.board },
+      { id: 'features', title: 'Features', icon: SETTINGS_NAV_ICONS.features },
+      { id: 'people', title: 'People', icon: SETTINGS_NAV_ICONS.people },
+      { id: 'skills', title: 'Skills', icon: SETTINGS_NAV_ICONS.skills },
+      { id: 'workflows', title: 'Workflows', icon: SETTINGS_NAV_ICONS.workflows },
+      {
+        id: 'promptTemplates',
+        title: 'Prompt templates',
+        icon: SETTINGS_NAV_ICONS.promptTemplates,
+      },
+    ],
+  },
+  {
+    heading: 'Connections',
+    items: [
+      { id: 'integrations', title: 'Integrations', icon: SETTINGS_NAV_ICONS.integrations },
+      { id: 'agentsModels', title: 'Agents and models', icon: SETTINGS_NAV_ICONS.agentsAndModels },
+    ],
+  },
+  {
+    heading: 'This machine',
+    items: [
+      { id: 'appearance', title: 'Appearance', icon: SETTINGS_NAV_ICONS.appearance },
+      { id: 'shortcuts', title: 'Shortcuts', icon: SETTINGS_NAV_ICONS.shortcuts },
+      {
+        id: 'executionTarget',
+        title: 'Execution target',
+        icon: SETTINGS_NAV_ICONS.executionTarget,
+      },
+      { id: 'updates', title: 'Updates', icon: SETTINGS_NAV_ICONS.updates },
+    ],
+  },
 ];
+
+/** The palette's flat list of "Settings: …" destinations: every nav item, with the
+ *  providers (`settings:jira`, …) right after Integrations, the pane they open on. */
+export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SettingsSection; title: string }> =
+  SETTINGS_GROUPS.flatMap((group) =>
+    group.items.flatMap((item): Array<{ id: SettingsSection; title: string }> => [
+      { id: item.id, title: item.title },
+      ...(item.id === 'integrations' ? SETTINGS_PROVIDERS : []),
+    ]),
+  );
 
 /**
  * Everything `buildDesktopCommands` needs, supplied by `App.tsx`. The host-facing functions
