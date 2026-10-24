@@ -1140,9 +1140,10 @@ describe('Linear: the web reads its settings and does not configure them', () =>
     const source = read(WEB_SETTINGS);
     expect(
       source,
-      `${WEB_SETTINGS} must render a section === 'linear' pane. A browser user with no such ` +
-        'tab has no way to see what the desktop has configured at all.',
-    ).toMatch(/section === 'linear'/);
+      `${WEB_SETTINGS} must render a Linear pane (the provider === 'linear' tab inside ` +
+        'Integrations since the v10 regroup). A browser user with no such tab has no way to ' +
+        'see what the desktop has configured at all.',
+    ).toMatch(/provider === 'linear'/);
     expect(
       source,
       `${WEB_SETTINGS} must read its Linear pane through describeLinearSettings, the one ` +

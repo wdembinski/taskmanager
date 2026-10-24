@@ -504,25 +504,28 @@ function SignedInBoardView({
               paletteHint={{ label: shortcutLabel('mod+k', window), onClick: openPalette }}
             />
           }
+          // Settings is a full-content-card page (v10 mockup): no sidebar tree beside it.
           sidebar={
-            <Sidebar
-              sections={sidebarData.sections}
-              selectedView={sidebarSelectedView}
-              onNavigate={handleSidebarNavigate}
-              onOpenTicket={(taskId) => {
-                setScreen('mytasks');
-                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-              }}
-              onNewIssue={() => {
-                if (tracker.projectId) setNewIssueDialogOpen(true);
-              }}
-              onToggleFold={toggleSidebarFold}
-              showFleet
-              projectOptions={tracker.projectOptions}
-              selectedProjectId={tracker.projectId}
-              onSelectProject={tracker.selectProject}
-              loading={!sidebarData.loaded}
-            />
+            screen === 'settings' ? undefined : (
+              <Sidebar
+                sections={sidebarData.sections}
+                selectedView={sidebarSelectedView}
+                onNavigate={handleSidebarNavigate}
+                onOpenTicket={(taskId) => {
+                  setScreen('mytasks');
+                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+                }}
+                onNewIssue={() => {
+                  if (tracker.projectId) setNewIssueDialogOpen(true);
+                }}
+                onToggleFold={toggleSidebarFold}
+                showFleet
+                projectOptions={tracker.projectOptions}
+                selectedProjectId={tracker.projectId}
+                onSelectProject={tracker.selectProject}
+                loading={!sidebarData.loaded}
+              />
+            )
           }
           // Every screen but My Tasks is a document and wants a margin — the same rule the
           // desktop shell applies (`apps/client/src/renderer/src/App.tsx`'s own `padded`).

@@ -84,6 +84,7 @@ import { PromptTemplatesSection } from '@tm/ui/PromptTemplatesSection';
 import { SkillsSection } from '@tm/ui/SkillsSection';
 import { WorkflowBuilder } from '@tm/ui/WorkflowBuilder';
 import { PaneLoading } from '@tm/ui/PaneLoading';
+import { SettingsPage, SettingsRow } from '@tm/ui/settings/SettingsPage';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
 import { COLUMN_META, statusForColumn } from '@tm/ui/board/boardColumns';
@@ -117,29 +118,27 @@ import {
 import { selectAgentProjects } from '../board/boardSelectors';
 import { describeLinearSettings } from './linearSettingsView';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
-import { sectionNeedsSettings, type SettingsSection } from './settingsSections';
+import {
+  resolveWebSettingsNav,
+  sectionNeedsSettings,
+  WEB_SETTINGS_GROUPS,
+  WEB_SETTINGS_PROVIDERS,
+  type SettingsSection,
+  type WebSettingsNavSection,
+  type WebSettingsProvider,
+} from './settingsSections';
 import { TokensSection } from './TokensSection';
 
 const useStyles = makeStyles({
-  row: { display: 'flex', gap: '16px', height: '100%', minHeight: 0 },
-  nav: {
-    minWidth: '160px',
-    borderRight: `1px solid ${tokens.colorNeutralStroke2}`,
-    paddingRight: '8px',
-  },
-  pane: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '16px',
-    maxWidth: '1100px',
-    width: '100%',
-    flex: 1,
-    minHeight: 0,
-    overflowY: 'auto',
-    paddingRight: '8px',
-    paddingBottom: '8px',
-  },
-  grid: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  // `SettingsPage`'s content column already scrolls, so a pane is just a column.
+  pane: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  // A pane of plain fields is capped at `SettingsRow`'s width (200px label + 16px gap + 360px
+  // value), so no input runs the width of the window (v10 mockup) — the desktop's own cap.
+  grid: { display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '576px' },
+  // The Board pane's column picker and keyword editor get `SettingsRow`'s `wide` cap instead.
+  gridWide: { display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '856px' },
+  // Integrations' provider tabs sit above the provider's own pane, a pane's gap apart.
+  providerTabs: { marginBottom: '16px' },
   // The column picker: one checkbox per column, with what it holds underneath it.
   columnList: { display: 'flex', flexDirection: 'column', gap: '12px' },
   columnCaptions: {
@@ -215,8 +214,6 @@ const FEATURE_SWITCHES: ReadonlyArray<{
   },
 ];
 
-type Section = SettingsSection;
-
 export interface SettingsScreenProps {
   /**
    * The MIRRORED `projects` rows, in `CloudBoardState`'s own by-id shape — passed straight
@@ -238,7 +235,15 @@ export function SettingsScreen({
 }: SettingsScreenProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
-  const [section, setSection] = useState<Section>('general');
+  const [section, setSection] = useState<WebSettingsNavSection>('general');
+  /** Which provider tab Integrations shows — kept apart from `section` so leaving the pane and
+   *  coming back lands on the provider you left it on. */
+  const [provider, setProvider] = useState<WebSettingsProvider>('jira');
+  const openSection = (id: SettingsSection): void => {
+    const resolved = resolveWebSettingsNav(id);
+    setSection(resolved.nav);
+    if (resolved.provider) setProvider(resolved.provider);
+  };
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -400,28 +405,11 @@ export function SettingsScreen({
   );
 
   return (
-    <div className={styles.row}>
-      <TabList
-        vertical
-        selectedValue={section}
-        onTabSelect={(_e, d) => setSection(d.value as Section)}
-        className={styles.nav}
-      >
-        <Tab value="general">General</Tab>
-        <Tab value="board">Board</Tab>
-        <Tab value="features">Features</Tab>
-        <Tab value="projects">Projects</Tab>
-        <Tab value="jira">JIRA</Tab>
-        <Tab value="linear">Linear</Tab>
-        <Tab value="tokens">Personal access tokens</Tab>
-        <Tab value="people">People</Tab>
-        <Tab value="skills">Skills</Tab>
-        <Tab value="promptTemplates">Prompt templates</Tab>
-        <Tab value="workflows">Workflows</Tab>
-        <Tab value="shortcuts">Shortcuts</Tab>
-        <Tab value="desktop">Desktop only</Tab>
-      </TabList>
-
+    <SettingsPage
+      groups={WEB_SETTINGS_GROUPS}
+      selected={section}
+      onSelect={(id) => openSection(id as SettingsSection)}
+    >
       {waitingForSettings && (
         <div className={styles.pane}>
           <PaneLoading label="Loading settings…" error={initial.error} onRetry={initial.retry} />
@@ -430,7 +418,7 @@ export function SettingsScreen({
 
       {section === 'general' && settings && (
         <div className={styles.pane}>
-          <Subtitle2>Settings</Subtitle2>
+          <Subtitle2>General</Subtitle2>
           <Body1 className={styles.hint}>
             The defaults new work starts with, and the two scheduler knobs. Saved on your desktop
             app — these are the same settings it reads.
@@ -569,20 +557,14 @@ export function SettingsScreen({
                 onChange={(_e, d) => patch({ showTaskDetail: d.checked })}
               />
             </div>
-
-            <Field
-              label="Monochrome code"
-              hint="Shows diffs without syntax colour — plain text, the way the review pane looked before highlighting."
-            >
-              <Switch
-                checked={settings.monochromeCode}
-                onChange={(_e, d) => patch({ monochromeCode: d.checked })}
-              />
-            </Field>
           </div>
 
           {actions}
+        </div>
+      )}
 
+      {section === 'appearance' && settings && (
+        <div className={styles.pane}>
           {/* Theme/transparency are per-browser (`appearancePrefs.ts`), not part of
               `settings` — they apply the moment you pick them, with no Save button and no
               relay to the desktop. */}
@@ -632,7 +614,21 @@ export function SettingsScreen({
                 ))}
               </Dropdown>
             </Field>
+
+            {/* Unlike the two above, this one IS an `AppSettings` field, so it saves through
+                the Save row below like any other — the same place the desktop draws it. */}
+            <Field
+              label="Monochrome code"
+              hint="Shows diffs without syntax colour — plain text, the way the review pane looked before highlighting."
+            >
+              <Switch
+                checked={settings.monochromeCode}
+                onChange={(_e, d) => patch({ monochromeCode: d.checked })}
+              />
+            </Field>
           </div>
+
+          {actions}
         </div>
       )}
 
@@ -645,7 +641,7 @@ export function SettingsScreen({
             without opening anything.
           </Body1>
 
-          <div className={styles.grid}>
+          <div className={styles.gridWide}>
             <Field
               label="Columns"
               hint="Which columns the board draws. Each one lists the JIRA statuses that actually land there — a column with nothing mapped to it is safe to hide; one you rely on cannot be hidden if it is the last column standing."
@@ -839,7 +835,22 @@ export function SettingsScreen({
         </div>
       )}
 
-      {section === 'jira' && settings && (
+      {section === 'integrations' && settings && (
+        <TabList
+          className={styles.providerTabs}
+          aria-label="Integrations"
+          selectedValue={provider}
+          onTabSelect={(_e, d) => setProvider(d.value as WebSettingsProvider)}
+        >
+          {WEB_SETTINGS_PROVIDERS.map((p) => (
+            <Tab key={p.id} value={p.id}>
+              {p.title}
+            </Tab>
+          ))}
+        </TabList>
+      )}
+
+      {section === 'integrations' && provider === 'jira' && settings && (
         <div className={styles.pane}>
           <Subtitle2>JIRA (My Tasks board)</Subtitle2>
           <Body1 className={styles.hint}>
@@ -892,7 +903,7 @@ export function SettingsScreen({
         </div>
       )}
 
-      {section === 'linear' && settings && (
+      {section === 'integrations' && provider === 'linear' && settings && (
         <div className={styles.pane}>
           <Subtitle2>Linear</Subtitle2>
           <MessageBar intent="info">
@@ -903,12 +914,11 @@ export function SettingsScreen({
             </MessageBarBody>
           </MessageBar>
 
-          <div className={styles.grid}>
+          <div>
             {describeLinearSettings(settings.linear).map((row) => (
-              <div key={row.label}>
-                <Caption1 className={styles.hint}>{row.label}</Caption1>
+              <SettingsRow key={row.label} label={row.label}>
                 <Body1>{row.value}</Body1>
-              </div>
+              </SettingsRow>
             ))}
           </div>
         </div>
@@ -982,7 +992,7 @@ export function SettingsScreen({
           ))}
         </div>
       )}
-    </div>
+    </SettingsPage>
   );
 }
 

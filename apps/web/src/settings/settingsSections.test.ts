@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { sectionNeedsSettings, type SettingsSection } from './settingsSections';
+import {
+  resolveWebSettingsNav,
+  sectionNeedsSettings,
+  WEB_SETTINGS_GROUPS,
+  type SettingsSection,
+} from './settingsSections';
 
 describe('sectionNeedsSettings', () => {
   it('lets the Personal access tokens pane render without settings — the bootstrap fix', () => {
@@ -55,6 +60,7 @@ describe('sectionNeedsSettings', () => {
       board: true,
       features: true,
       projects: false,
+      integrations: true,
       jira: true,
       linear: true,
       tokens: false,
@@ -63,10 +69,62 @@ describe('sectionNeedsSettings', () => {
       skills: false,
       workflows: false,
       promptTemplates: true,
+      appearance: true,
       shortcuts: false,
     };
     for (const [section, expected] of Object.entries(all)) {
       expect(sectionNeedsSettings(section as SettingsSection)).toBe(expected);
     }
+  });
+
+  it('gates the Integrations and Appearance panes — both render AppSettings fields', () => {
+    // Integrations holds the JIRA and Linear forms; Appearance holds Monochrome code beside
+    // the per-browser theme, so neither can draw its Save-backed half before the blob loads.
+    expect(sectionNeedsSettings('integrations')).toBe(true);
+    expect(sectionNeedsSettings('appearance')).toBe(true);
+  });
+});
+
+describe('WEB_SETTINGS_GROUPS', () => {
+  it('groups the nav as the v10 mockup does, with Tokens under Connections', () => {
+    expect(
+      WEB_SETTINGS_GROUPS.map((g) => [g.heading, g.items.map((i) => i.title)] as const),
+    ).toEqual([
+      [
+        'Workspace',
+        [
+          'General',
+          'Board',
+          'Features',
+          'Projects',
+          'People',
+          'Skills',
+          'Workflows',
+          'Prompt templates',
+        ],
+      ],
+      ['Connections', ['Integrations', 'Tokens']],
+      ['This machine', ['Appearance', 'Shortcuts', 'Desktop only']],
+    ]);
+  });
+
+  it('lists every nav section exactly once, and no provider as a nav item', () => {
+    // JIRA and Linear live inside Integrations; a nav item for either would draw it twice.
+    const ids = WEB_SETTINGS_GROUPS.flatMap((g) => g.items.map((i) => i.id));
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).not.toContain('jira');
+    expect(ids).not.toContain('linear');
+  });
+});
+
+describe('resolveWebSettingsNav', () => {
+  it('opens a provider id as Integrations on that provider’s tab', () => {
+    expect(resolveWebSettingsNav('jira')).toEqual({ nav: 'integrations', provider: 'jira' });
+    expect(resolveWebSettingsNav('linear')).toEqual({ nav: 'integrations', provider: 'linear' });
+  });
+
+  it('opens any other id as its own nav item', () => {
+    expect(resolveWebSettingsNav('tokens')).toEqual({ nav: 'tokens' });
+    expect(resolveWebSettingsNav('appearance')).toEqual({ nav: 'appearance' });
   });
 });
