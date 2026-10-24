@@ -1,6 +1,8 @@
 /**
- * Projects — the Tickets tab: pick a ticket project (`ProjectPicker`), browse the selected
- * one's backlog/timeline/graph, and open a ticket in the SAME shared detail pane (`TaskDetail`
+ * Projects — the Tickets tab: an "Issues" header with a compact ticket-project switch
+ * (`ProjectSwitcher`, which replaced the old `ProjectPicker` card column once the sidebar began
+ * following the open project — TM-449), the selected project's backlog/timeline/graph right
+ * under it, and a ticket opened in the SAME shared detail pane (`TaskDetail`
  * via `TaskDetailHost`) every other board shows it in (F12.8) — there is no drawer of its own
  * any more. Managing projects themselves — adding, renaming, choosing what a project owns —
  * lives on the Projects tab's own `ProjectAdmin` pane, not here; this screen only reads the
@@ -29,12 +31,15 @@
  */
 import { useCallback, useEffect, useMemo, useReducer, useState, type KeyboardEvent } from 'react';
 import {
+  Body1,
   Button,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
+  Text,
   ToggleButton,
   makeStyles,
+  tokens,
 } from '@fluentui/react-components';
 import {
   DismissRegular,
@@ -62,21 +67,28 @@ import { BacklogTable } from './BacklogTable';
 import { GraphPane } from './GraphPane';
 import { EMPTY_HISTORY, backHistory, pushHistory, type PanelHistory } from './panelHistory';
 import { ArchivedPane } from './ArchivedPane';
-import { ProjectPicker } from './ProjectPicker';
+import { ProjectSwitcher } from './ProjectSwitcher';
 import { TimelinePane } from './TimelinePane';
 import { useProjectTickets } from './useProjectTickets';
 import { useTicketRegistries } from './useTicketRegistries';
 
 const useStyles = makeStyles({
   root: { display: 'flex', gap: '20px', minHeight: 0, height: '100%' },
-  admin: { flex: '0 0 320px', minWidth: 0, overflowY: 'auto' },
   backlog: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '10px' },
-  viewSwitch: { display: 'flex', alignItems: 'center', gap: '4px' },
-  viewSwitchSpacer: { flex: 1 },
+  header: { display: 'flex', alignItems: 'center', gap: '4px' },
+  title: {
+    fontSize: tokens.fontSizeBase500,
+    lineHeight: tokens.lineHeightBase500,
+    fontWeight: tokens.fontWeightSemibold,
+    color: `var(--tm-text, ${tokens.colorNeutralForeground1})`,
+    margin: '0 8px 0 0',
+  },
+  hint: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})` },
+  headerSpacer: { flex: 1 },
 });
 
 /** The Projects screen's own views of one project's tickets — `'archived'` (F14.8) is the one
- *  member with no `ProjectPicker` column alongside it (see the root `return` below) and no
+ *  member with no `ProjectSwitcher` in its header (see the root `return` below) and no
  *  tickets of its own feeding it: it reads `archive:list()`/`board:tasks('all')` itself. */
 export type ProjectView = 'backlog' | 'timeline' | 'graph' | 'archived';
 
@@ -91,7 +103,7 @@ export interface ProjectsProps {
    *  `undefined` (the default) keeps this screen's own first-project selection instead; a
    *  controlling host must pass `onSelectProject` alongside it. */
   selectedProjectId?: string | null;
-  /** Reports a `ProjectPicker` pick back up to the controlling host — only read while
+  /** Reports a `ProjectSwitcher` pick back up to the controlling host — only read while
    *  `selectedProjectId` is passed. */
   onSelectProject?: (id: string) => void;
   /** Hands the active Backlog/Timeline/Graph/Archived view to this screen — same optional-
@@ -368,19 +380,87 @@ export function Projects({
 
   return (
     <div className={styles.root} onKeyDown={onKeyDown}>
-      {/* No picker alongside the Archived view (F14.8) — it is not scoped to picking a
-          project to browse the way Backlog/Timeline/Graph are; its own Projects tab lists
-          every archived ticket project regardless of which one is open here. */}
-      {view !== 'archived' && (
-        <div className={styles.admin}>
-          <ProjectPicker
-            projects={projects}
-            selectedProjectId={selectedProjectId}
-            onSelect={setSelectedProjectId}
-          />
-        </div>
-      )}
       <div className={styles.backlog}>
+        <div className={styles.header}>
+          <Text as="h2" className={styles.title}>
+            Issues
+          </Text>
+          {projects.length === 0 ? (
+            <Body1 className={styles.hint}>
+              No ticket projects yet — add one on the Projects tab and choose &quot;its own ticket
+              board&quot;.
+            </Body1>
+          ) : (
+            <>
+              {/* No switcher on the Archived view (F14.8) — it is not scoped to picking a
+                  project to browse the way Backlog/Timeline/Graph are; its own Projects tab
+                  lists every archived ticket project regardless of which one is open here. */}
+              {view !== 'archived' && (
+                <ProjectSwitcher
+                  projects={projects}
+                  selectedProjectId={selectedProjectId}
+                  onSelect={setSelectedProjectId}
+                />
+              )}
+              {selectedProject && (
+                <>
+                  <ToggleButton
+                    size="small"
+                    appearance="subtle"
+                    checked={view === 'backlog'}
+                    onClick={() => setView('backlog')}
+                  >
+                    Backlog
+                  </ToggleButton>
+                  <ToggleButton
+                    size="small"
+                    appearance="subtle"
+                    checked={view === 'timeline'}
+                    onClick={() => setView('timeline')}
+                  >
+                    Timeline
+                  </ToggleButton>
+                  <ToggleButton
+                    size="small"
+                    appearance="subtle"
+                    checked={view === 'graph'}
+                    onClick={() => setView('graph')}
+                  >
+                    Graph
+                  </ToggleButton>
+                  <div className={styles.headerSpacer} />
+                  {/* The peek toggle — dispatches `space`, the same key this button's title
+                      names. Disabled with no selection: there is nothing yet for a peek to
+                      show. */}
+                  <Button
+                    size="small"
+                    appearance="subtle"
+                    icon={
+                      viewState.layout === 'peek' ? (
+                        <PanelRightContractRegular />
+                      ) : (
+                        <PanelRightExpandRegular />
+                      )
+                    }
+                    title={
+                      viewState.layout === 'peek'
+                        ? 'Close the ticket panel'
+                        : 'Open the ticket panel'
+                    }
+                    aria-label={
+                      viewState.layout === 'peek'
+                        ? 'Close the ticket panel'
+                        : 'Open the ticket panel'
+                    }
+                    aria-pressed={viewState.layout === 'peek'}
+                    disabled={!viewState.selectedId}
+                    onClick={() => dispatch({ type: 'space' })}
+                  />
+                </>
+              )}
+            </>
+          )}
+        </div>
         {viewState.notice && (
           <MessageBar intent="info">
             <MessageBarBody>{viewState.notice}</MessageBarBody>
@@ -398,55 +478,6 @@ export function Projects({
         )}
         {selectedProject && (
           <>
-            <div className={styles.viewSwitch}>
-              <ToggleButton
-                size="small"
-                appearance="subtle"
-                checked={view === 'backlog'}
-                onClick={() => setView('backlog')}
-              >
-                Backlog
-              </ToggleButton>
-              <ToggleButton
-                size="small"
-                appearance="subtle"
-                checked={view === 'timeline'}
-                onClick={() => setView('timeline')}
-              >
-                Timeline
-              </ToggleButton>
-              <ToggleButton
-                size="small"
-                appearance="subtle"
-                checked={view === 'graph'}
-                onClick={() => setView('graph')}
-              >
-                Graph
-              </ToggleButton>
-              <div className={styles.viewSwitchSpacer} />
-              {/* The peek toggle — dispatches `space`, the same key this button's title
-                  names. Disabled with no selection: there is nothing yet for a peek to show. */}
-              <Button
-                size="small"
-                appearance="subtle"
-                icon={
-                  viewState.layout === 'peek' ? (
-                    <PanelRightContractRegular />
-                  ) : (
-                    <PanelRightExpandRegular />
-                  )
-                }
-                title={
-                  viewState.layout === 'peek' ? 'Close the ticket panel' : 'Open the ticket panel'
-                }
-                aria-label={
-                  viewState.layout === 'peek' ? 'Close the ticket panel' : 'Open the ticket panel'
-                }
-                aria-pressed={viewState.layout === 'peek'}
-                disabled={!viewState.selectedId}
-                onClick={() => dispatch({ type: 'space' })}
-              />
-            </div>
             {/* Keyed on the project: switching the selection is rare enough that a clean
                 remount — a fresh search/sort state — beats reconciling any pane's state onto
                 a different project mid-life. The three views are a SWITCH, never mounted

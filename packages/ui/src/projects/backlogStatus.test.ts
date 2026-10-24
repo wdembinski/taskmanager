@@ -55,6 +55,14 @@ describe('backlogStatusGroups', () => {
     expect(all).toEqual([child]);
   });
 
+  it('drops a step (parentTaskId set) but keeps its parent, as the sidebar does (TM-451)', () => {
+    const parent = ticket({ status: 'in-progress' });
+    const step = ticket({ status: 'in-progress', parentTaskId: parent.id });
+    const groups = backlogStatusGroups([parent, step], '', 'key');
+    const all = groups.flatMap((g) => g.tickets);
+    expect(all).toEqual([parent]);
+  });
+
   it('omits a column with nothing in it instead of rendering it empty', () => {
     const groups = backlogStatusGroups([ticket({ status: 'in-progress' })], '', 'key');
     expect(groups).toHaveLength(1);
