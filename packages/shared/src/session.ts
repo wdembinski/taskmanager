@@ -62,10 +62,31 @@ export interface StartSessionRequest {
   /**
    * Tools the CLI must never offer this session, sent as `--disallowedTools a,b,c` — how a
    * read-only run (the AI visual reviewer) is kept from editing anything even if it tries.
-   * Absent or empty adds no flag.
+   * The AI PR reviewer (F16) pairs it with {@link allowedTools}. Absent or empty adds no flag.
    */
   disallowedTools?: readonly string[];
+  /**
+   * The only tools the CLI may use without asking, sent as `--allowedTools a,b,c`. Patterns
+   * such as `Bash(git log:*)` narrow a tool to one command — how the AI PR reviewer may read
+   * history but run nothing else. Absent or empty adds no flag.
+   */
+  allowedTools?: readonly string[];
+  /**
+   * Which settings files the CLI loads, sent as `--setting-sources a,b`. `['user']` keeps a
+   * checked-out PR's own `.claude/settings.json` (and the hooks it could add) out of the run.
+   * An empty list is sent as `''` — "load none", a meaningful setting. Absent adds no flag.
+   */
+  settingSources?: readonly SettingSource[];
+  /**
+   * Sent as `--strict-mcp-config`: the CLI loads only the MCP servers named by `--mcp-config`
+   * (the permission relay, when gated), never a checked-out repo's `.mcp.json`. Absent or
+   * false adds no flag.
+   */
+  strictMcpConfig?: boolean;
 }
+
+/** A settings file the CLI can load — the values of its `--setting-sources` flag. */
+export type SettingSource = 'user' | 'project' | 'local';
 
 /**
  * The normalized events the engine streams to the UI. This is deliberately a
