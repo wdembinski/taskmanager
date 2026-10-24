@@ -64,6 +64,31 @@ export const CLOUD_STATUS = {
  *  from below: all three just hand back the task they marked read. */
 const TASKS_BY_ID = Object.fromEntries(TASKS.map((t) => [t.id, t]));
 
+/** Claude's own `/usage` reading, so the status bar draws its 5h/7d pair — the mockups'
+ *  proportions (v9-7: 25 of 40px session, 12 of 40px week). */
+const USAGE_QUOTAS = {
+  session: {
+    id: 'session',
+    windowStart: now - 2 * 60 * 60_000,
+    windowEnd: now + 3 * 60 * 60_000,
+    resetAt: now + 3 * 60 * 60_000,
+    tokens: 0,
+    limit: 0,
+    pct: 62,
+    pctSource: 'claude',
+  },
+  weekly: {
+    id: 'weekly',
+    windowStart: now - 2 * 24 * 60 * 60_000,
+    windowEnd: now + 5 * 24 * 60 * 60_000,
+    resetAt: now + 5 * 24 * 60 * 60_000,
+    tokens: 0,
+    limit: 0,
+    pct: 30,
+    pctSource: 'claude',
+  },
+};
+
 export const CHANNELS = {
   'app:getInfo': APP_INFO,
   'claude:getStatus': CLAUDE_STATUS,
@@ -73,7 +98,7 @@ export const CHANNELS = {
   'sync:state': SYNC_STATE,
   'activity:getLastSeen': null,
   'limit:current': null,
-  'usage:quotas': null,
+  'usage:quotas': USAGE_QUOTAS,
   'window:isMaximized': false,
   'window:nativeMaterial': null,
 
