@@ -73,7 +73,14 @@ import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@ui/shell
 import { useDeviceFolds } from '@ui/shell/sidebarFolds';
 import { openTicketCounts } from '@ui/shell/sidebarProject';
 import { SHELL_NAV } from '@ui/shell/shellNav';
-import { StatusBar, StatusDot, StatusSpacer } from '@ui/shell/StatusBar';
+import {
+  StatusAgents,
+  StatusBar,
+  StatusBranch,
+  StatusDot,
+  StatusSpacer,
+} from '@ui/shell/StatusBar';
+import { statusSegments } from '@ui/shell/statusSegments';
 import { useSidebarData } from '@ui/shell/useSidebarData';
 import { useTrackerProject } from '@ui/shell/useTrackerProject';
 import { TOASTER_ID } from '@ui/theme';
@@ -305,6 +312,9 @@ export function App(): JSX.Element {
    * exactly when you most want to know it.
    */
   const quotas = useUsageQuotas();
+  // The status bar's agents / branch / quota segments — the same `statusSegments` answer
+  // the web reads, so the two hosts cannot disagree on what is running or which branch.
+  const segments = statusSegments({ host: 'desktop', tasks: paletteTasks, selectedTaskId, quotas });
 
   useEffect(() => {
     void Promise.all([
@@ -606,6 +616,18 @@ export function App(): JSX.Element {
             {/* No colour of its own: the bar turns orange under attention, and a fixed
               white would go unreadable exactly then. */}
             {sprint && <Caption1>· {sprint}</Caption1>}
+            {segments.agentsRunning !== null && (
+              <>
+                <Caption1>·</Caption1>
+                <StatusAgents count={segments.agentsRunning} />
+              </>
+            )}
+            {segments.branch !== null && (
+              <>
+                <Caption1>·</Caption1>
+                <StatusBranch name={segments.branch} />
+              </>
+            )}
             <StatusSpacer />
             {/* A downloaded update installs itself on the next quit either way; this is
               simply the offer to have it now, and the only notice the user ever gets. */}
@@ -640,7 +662,7 @@ export function App(): JSX.Element {
               rings, and for the same reason: ambient state you glance at, never a decision.
               The full numbers and the reset countdown are in each one's tooltip, and the
               Performance tab draws the same pair at full size. */}
-            <UsageQuotaStatus quotas={quotas} />
+            <UsageQuotaStatus quotas={segments.quotas} />
             {/* How stale the mirror is, and how long until the next refresh. On the right,
               beside the version: it is ambient state, not something that wants a decision. */}
             <SyncRing state={syncState} />

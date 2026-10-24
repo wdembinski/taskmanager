@@ -33,11 +33,20 @@ import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@tm/ui/sh
 import { useDeviceFolds } from '@tm/ui/shell/sidebarFolds';
 import { openTicketCounts } from '@tm/ui/shell/sidebarProject';
 import { SHELL_NAV, type ShellNavId } from '@tm/ui/shell/shellNav';
-import { StatusBar, StatusBusy, StatusDot, StatusSpacer } from '@tm/ui/shell/StatusBar';
+import {
+  StatusAgents,
+  StatusBar,
+  StatusBranch,
+  StatusBusy,
+  StatusDot,
+  StatusSpacer,
+} from '@tm/ui/shell/StatusBar';
+import { statusSegments } from '@tm/ui/shell/statusSegments';
 import { useSidebarData } from '@tm/ui/shell/useSidebarData';
 import { useTrackerProject } from '@tm/ui/shell/useTrackerProject';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { TransportProvider } from '@tm/ui/transport';
+import { UsageQuotaStatus, useUsageQuotas } from '@tm/ui/UsageQuotaBars';
 import { useDelayedFlag } from '@tm/ui/useDelayedFlag';
 import { Fleet } from './agents/Fleet';
 import { webPaletteSource, type WebPaletteActions } from './palette/webPaletteSource';
@@ -316,6 +325,18 @@ function SignedInBoardView({
   const [route, navigate] = useHashRoute();
   const layoutMode = useLayoutMode();
 
+  // The status bar's agents / branch / quota segments, decided by the same `statusSegments`
+  // the desktop reads. Only what this tab can know: the running count and the quotas need a
+  // live desktop behind the mirror, the open card's branch is a stored fact and does not.
+  const quotas = useUsageQuotas();
+  const segments = statusSegments({
+    host: 'web',
+    tasks: Object.values(board.state.tasks),
+    selectedTaskId: openCardId(route),
+    quotas,
+    desktopOnline: presence === 'online',
+  });
+
   /**
    * The sidebar's own tree (F13.11) is one ticket project's milestones/epics/tickets — the
    * ticket project `useTrackerProject` resolves (F13.17): this tab's own remembered choice,
@@ -575,7 +596,20 @@ function SignedInBoardView({
                 />
               )}
               {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
+              {segments.agentsRunning !== null && (
+                <>
+                  <Caption1>·</Caption1>
+                  <StatusAgents count={segments.agentsRunning} />
+                </>
+              )}
+              {segments.branch !== null && (
+                <>
+                  <Caption1>·</Caption1>
+                  <StatusBranch name={segments.branch} />
+                </>
+              )}
               <StatusSpacer />
+              <UsageQuotaStatus quotas={segments.quotas} />
               <Caption1>v{__APP_VERSION__}</Caption1>
             </StatusBar>
           }
