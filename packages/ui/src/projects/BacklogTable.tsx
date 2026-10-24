@@ -390,8 +390,9 @@ export function BacklogTable({
         >
           Sort by due date
         </ToggleButton>
-        {/* One menu button, not a caption and three toggles: with the peek open those pushed
-            "New ticket" onto a second toolbar line. Its text is the current mode only. */}
+        {/* One icon-only menu button, not a caption and three toggles: with the peek open at
+            1440 those pushed "New ticket" onto a second toolbar line, and so did a button that
+            still spelled out the current mode. The mode is in its `aria-label` and checked item. */}
         <Menu>
           <MenuTrigger disableButtonEnhancement>
             <MenuButton
@@ -401,9 +402,7 @@ export function BacklogTable({
               icon={<GroupListRegular />}
               title="Group by"
               aria-label={`Group by: ${GROUP_MODE_LABEL[groupMode]}`}
-            >
-              {GROUP_MODE_LABEL[groupMode]}
-            </MenuButton>
+            />
           </MenuTrigger>
           <MenuPopover>
             <MenuList

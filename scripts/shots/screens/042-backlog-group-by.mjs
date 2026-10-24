@@ -8,8 +8,8 @@
  * or milestone modes (an owner-approved addition to the v9 list), so every row compares against
  * the v9 list mockup — status closely, the other two for header and row styling only.
  *
- * A non-default mode is picked the way a person would: open the toolbar's menu button (named
- * only by its `title`, since its text is the current mode) and choose the `MenuItemRadio` —
+ * A non-default mode is picked the way a person would: open the toolbar's icon-only menu
+ * button (named by its `title`) and choose the `MenuItemRadio` —
  * both by exact-match sentinels, so a row title containing "Epic" can never take the click.
  */
 
