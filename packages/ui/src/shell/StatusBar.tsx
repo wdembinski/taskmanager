@@ -2,15 +2,17 @@
  * The status bar, in the editor's sense: the full width of the window (the nav rail
  * included), one line high, and **coloured** rather than bordered.
  *
- * Only the bar itself is shared — its fill, its type, and the two atoms every host needs
- * (a live/dead dot and the spacer that splits left from right). What goes *in* it is each
+ * Only the bar itself is shared — its fill, its type, and the atoms every host needs (a
+ * live/dead dot, the spacer that splits left from right, and the agents/branch segments
+ * whose contents `statusSegments` decides). What goes *in* it is each
  * host's own business: the desktop has a Claude version, sync rings and usage quotas, the
  * browser has a poll age and a Sign out. Sharing the container and not the contents is
  * what keeps this from becoming a component with one prop per item.
  */
-import { makeStyles } from '@fluentui/react-components';
+import { makeStyles, tokens } from '@fluentui/react-components';
 import type { ReactNode } from 'react';
 import { fontPx } from '../theme';
+import { agentsRunningLabel } from './statusSegments';
 
 const useStyles = makeStyles({
   /**
@@ -58,6 +60,19 @@ const useStyles = makeStyles({
   // the bar's gradient and its orange — invisible on both.
   ok: { backgroundColor: 'var(--tm-status-bar-dot-ok)' },
   bad: { backgroundColor: 'var(--tm-status-bar-dot-bad)' },
+  /** Its own token, not the scheme's fluo cyan — see `StatusBarTokens.dotRun`. */
+  run: { backgroundColor: 'var(--tm-status-bar-dot-run)' },
+  item: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 },
+  branch: {
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    fontSize: fontPx(11),
+    maxWidth: '240px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    flexShrink: 1,
+    minWidth: 0,
+  },
   grow: { flex: 1 },
   busy: { display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 },
   /** Inherits the bar's own colour rather than naming one, for the same reason `SyncRing`
@@ -102,6 +117,28 @@ export function StatusBar({ attention, children }: StatusBarProps): JSX.Element 
 export function StatusDot({ ok }: { ok: boolean }): JSX.Element {
   const styles = useStyles();
   return <span className={`${styles.dot} ${ok ? styles.ok : styles.bad}`} />;
+}
+
+/** How many agents are working right now — the ringed cyan dot and its count. The host
+ *  decides whether to render it at all (`statusSegments`'s `agentsRunning`). */
+export function StatusAgents({ count }: { count: number }): JSX.Element {
+  const styles = useStyles();
+  return (
+    <span className={styles.item}>
+      <span className={`${styles.dot} ${styles.run}`} />
+      <span>{agentsRunningLabel(count)}</span>
+    </span>
+  );
+}
+
+/** The current card's branch, in mono. Long names ellipsise; the tooltip has the whole. */
+export function StatusBranch({ name }: { name: string }): JSX.Element {
+  const styles = useStyles();
+  return (
+    <span className={styles.branch} title={name}>
+      {name}
+    </span>
+  );
 }
 
 /**
