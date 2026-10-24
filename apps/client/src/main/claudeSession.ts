@@ -265,6 +265,13 @@ export function readUsage(raw: unknown): {
  * a multi-line argument full of quotes and ampersands would be rewritten by `cmd.exe`
  * before the CLI ever saw it. Optional so a caller without one (tests, and any path that
  * cannot materialize a file) still builds valid arguments.
+ *
+ * The values stay raw here. Tool patterns such as `Bash(git log:*)` contain a space (and
+ * parentheses), so `cmd.exe` would split them; {@link quoteCmdArg} quotes them at spawn
+ * time, and only for the local Windows host — the WSL host passes argv through untouched.
+ *
+ * Every optional field adds its flag only when set, after the ones before it, so a request
+ * that sets none of them builds exactly the arguments it always did.
  */
 export function buildClaudeArgs(
   req: StartSessionRequest,
@@ -298,7 +305,37 @@ export function buildClaudeArgs(
   if (gate) {
     args.push('--mcp-config', gate.configPath, '--permission-prompt-tool', PERMISSION_PROMPT_TOOL);
   }
+  if (req.allowedTools && req.allowedTools.length > 0) {
+    args.push('--allowedTools', req.allowedTools.join(','));
+  }
+  // An empty list still adds the flag: `''` tells the CLI to load no settings at all.
+  if (req.settingSources) args.push('--setting-sources', req.settingSources.join(','));
+  // Alongside the gate's `--mcp-config`, so the permission relay still loads — only a
+  // repo's own `.mcp.json` is shut out.
+  if (req.strictMcpConfig) args.push('--strict-mcp-config');
   return args;
+}
+
+/** Characters `cmd.exe` treats specially (or splits on) outside a double-quoted string. */
+const CMD_NEEDS_QUOTES = /[\s&|<>^()!,;=]/;
+/** Characters no `"…"` wrapping makes safe for `cmd.exe`: a quote, a `%var%`, a line break. */
+const CMD_UNQUOTABLE = /["%\r\n]/;
+
+/**
+ * Quote one argument for the command line Node hands `cmd.exe` when it spawns with
+ * `shell: true` on Windows — Node joins the args with spaces and quotes nothing, so
+ * `Bash(git log:*)` would otherwise arrive as two arguments. Wraps the arg in `"…"` when it
+ * is empty or holds whitespace or any of `&|<>^()!,;=`; returns it unchanged otherwise, so
+ * an ordinary command line stays byte-identical.
+ *
+ * Throws on `"`, `%` or a line break: none can be quoted safely for `cmd.exe`, and no tool
+ * pattern or path we pass needs them, so refusing is safer than a run with mangled flags.
+ */
+export function quoteCmdArg(arg: string): string {
+  if (CMD_UNQUOTABLE.test(arg)) {
+    throw new Error(`Cannot safely quote a command-line argument for cmd.exe: ${arg}`);
+  }
+  return arg === '' || CMD_NEEDS_QUOTES.test(arg) ? `"${arg}"` : arg;
 }
 
 /** Env var the CLI reads to override its own context-compaction threshold. */
@@ -419,8 +456,12 @@ export function runClaudeSession(
 
   // resolveViaShell lets Windows resolve `claude.cmd` from PATH the way a terminal
   // does; the host also hides the console window that would otherwise flash up.
+  // Only the local Windows host re-parses the joined command line through cmd.exe; WSL
+  // passes argv straight through, where literal quotes would corrupt the value.
+  const spawnArgs =
+    host.target.kind === 'local' && process.platform === 'win32' ? args.map(quoteCmdArg) : args;
   const env = buildSessionEnv(req);
-  const { child, terminate } = host.spawn(req.cwd, 'claude', args, {
+  const { child, terminate } = host.spawn(req.cwd, 'claude', spawnArgs, {
     resolveViaShell: true,
     ...(Object.keys(env).length > 0 ? { env } : {}),
   });

@@ -14,6 +14,7 @@ import {
   buildSessionEnv,
   encodeUserMessage,
   mapRawEvent,
+  quoteCmdArg,
   runClaudeSession,
 } from './claudeSession';
 import type { ExecHost } from './exec';
@@ -342,6 +343,263 @@ describe('buildClaudeArgs', () => {
       );
       expect(args).not.toContain('--disallowedTools');
     }
+  });
+});
+
+describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', () => {
+  const base: StartSessionRequest = {
+    prompt: 'x',
+    cwd: 'C:\\work',
+    model: 'haiku',
+    permissionMode: 'acceptEdits',
+  };
+  const gate = { configPath: 'C:\\tmp\\mcp-1.json' };
+  const head = [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--input-format',
+    'stream-json',
+    '--verbose',
+    '--model',
+    'haiku',
+  ];
+  const gateTail = [
+    '--mcp-config',
+    'C:\\tmp\\mcp-1.json',
+    '--permission-prompt-tool',
+    'mcp__orchestrator-permissions__approve',
+  ];
+
+  // Every existing caller sets none of the new fields, so its arguments must not move by a
+  // byte. The first three are written out in full on purpose.
+  const unchanged: {
+    name: string;
+    req: StartSessionRequest;
+    gate?: { configPath: string };
+    resume?: boolean;
+    contract?: string;
+    expected: string[];
+  }[] = [
+    {
+      name: 'plain',
+      req: base,
+      expected: [
+        '-p',
+        '--output-format',
+        'stream-json',
+        '--input-format',
+        'stream-json',
+        '--verbose',
+        '--model',
+        'haiku',
+        '--permission-mode',
+        'acceptEdits',
+        '--session-id',
+        'session-123',
+      ],
+    },
+    {
+      name: 'gated',
+      req: base,
+      gate,
+      expected: [
+        '-p',
+        '--output-format',
+        'stream-json',
+        '--input-format',
+        'stream-json',
+        '--verbose',
+        '--model',
+        'haiku',
+        '--permission-mode',
+        'default',
+        '--session-id',
+        'session-123',
+        '--mcp-config',
+        'C:\\tmp\\mcp-1.json',
+        '--permission-prompt-tool',
+        'mcp__orchestrator-permissions__approve',
+      ],
+    },
+    {
+      name: 'with disallowedTools',
+      req: { ...base, disallowedTools: ['Edit', 'Write'] },
+      expected: [
+        '-p',
+        '--output-format',
+        'stream-json',
+        '--input-format',
+        'stream-json',
+        '--verbose',
+        '--model',
+        'haiku',
+        '--permission-mode',
+        'acceptEdits',
+        '--session-id',
+        'session-123',
+        '--disallowedTools',
+        'Edit,Write',
+      ],
+    },
+    {
+      name: 'resume',
+      req: base,
+      resume: true,
+      expected: [...head, '--permission-mode', 'acceptEdits', '--resume', 'session-123'],
+    },
+    {
+      name: 'plan + gated',
+      req: { ...base, permissionMode: 'plan' },
+      gate,
+      expected: [...head, '--permission-mode', 'plan', '--session-id', 'session-123', ...gateTail],
+    },
+    {
+      name: 'with a contract path',
+      req: base,
+      contract: 'C:\\tmp\\contract.md',
+      expected: [
+        ...head,
+        '--permission-mode',
+        'acceptEdits',
+        '--session-id',
+        'session-123',
+        '--append-system-prompt-file',
+        'C:\\tmp\\contract.md',
+      ],
+    },
+    {
+      // boardReviewer / aiVisualReviewer: plan mode, AI_REVIEW_DISALLOWED_TOOLS, gated, contract.
+      name: 'the boardReviewer / aiVisualReviewer shape',
+      req: {
+        ...base,
+        permissionMode: 'plan',
+        disallowedTools: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'],
+      },
+      gate,
+      contract: 'C:\\tmp\\contract.md',
+      expected: [
+        ...head,
+        '--permission-mode',
+        'plan',
+        '--session-id',
+        'session-123',
+        '--append-system-prompt-file',
+        'C:\\tmp\\contract.md',
+        '--disallowedTools',
+        'Edit,Write,MultiEdit,NotebookEdit,Bash',
+        ...gateTail,
+      ],
+    },
+  ];
+
+  it.each(unchanged)(
+    'builds byte-identical args when no new field is set: $name',
+    ({ req, gate: g, resume, contract, expected }) => {
+      expect(buildClaudeArgs(req, 'session-123', g, resume ?? false, contract)).toEqual(expected);
+    },
+  );
+
+  const tailOf = (req: StartSessionRequest, g?: { configPath: string }): string[] =>
+    buildClaudeArgs(req, 'session-123', g).slice(buildClaudeArgs(base, 'session-123', g).length);
+
+  it('passes allowedTools as one comma-joined --allowedTools value, patterns intact', () => {
+    expect(tailOf({ ...base, allowedTools: ['Read', 'Bash(git log:*)'] })).toEqual([
+      '--allowedTools',
+      'Read,Bash(git log:*)',
+    ]);
+  });
+
+  it('adds no --allowedTools flag for an empty list', () => {
+    expect(buildClaudeArgs({ ...base, allowedTools: [] }, 'session-123')).not.toContain(
+      '--allowedTools',
+    );
+  });
+
+  it('passes settingSources as --setting-sources, and an empty list as an empty value', () => {
+    expect(tailOf({ ...base, settingSources: ['user'] })).toEqual(['--setting-sources', 'user']);
+    // `''` means "load no settings" — a real choice, not the same as leaving the flag off.
+    expect(tailOf({ ...base, settingSources: [] })).toEqual(['--setting-sources', '']);
+  });
+
+  it('adds --strict-mcp-config when set, alongside the gate', () => {
+    expect(tailOf({ ...base, strictMcpConfig: true })).toEqual(['--strict-mcp-config']);
+    const gated = buildClaudeArgs({ ...base, strictMcpConfig: true }, 'session-123', gate);
+    // The relay's own --mcp-config must still load; only a repo's `.mcp.json` is shut out.
+    expect(gated).toContain('--mcp-config');
+    expect(gated).toContain('--strict-mcp-config');
+    expect(buildClaudeArgs({ ...base, strictMcpConfig: false }, 'session-123')).not.toContain(
+      '--strict-mcp-config',
+    );
+  });
+
+  it('builds the full AI PR review shape with the exact tail', () => {
+    const args = buildClaudeArgs(
+      {
+        ...base,
+        permissionMode: 'plan',
+        allowedTools: [
+          'Read',
+          'Grep',
+          'Glob',
+          'Bash(git log:*)',
+          'Bash(git show:*)',
+          'Bash(git diff:*)',
+          'Bash(git blame:*)',
+        ],
+        disallowedTools: [
+          'Edit',
+          'Write',
+          'MultiEdit',
+          'NotebookEdit',
+          'WebFetch',
+          'WebSearch',
+          'Task',
+        ],
+        settingSources: ['user'],
+        strictMcpConfig: true,
+      },
+      'session-123',
+      gate,
+      false,
+      'C:\\tmp\\contract.md',
+    );
+    expect(args).toEqual([
+      ...head,
+      '--permission-mode',
+      'plan',
+      '--session-id',
+      'session-123',
+      '--append-system-prompt-file',
+      'C:\\tmp\\contract.md',
+      '--disallowedTools',
+      'Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task',
+      ...gateTail,
+      '--allowedTools',
+      'Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git blame:*)',
+      '--setting-sources',
+      'user',
+      '--strict-mcp-config',
+    ]);
+  });
+});
+
+describe('quoteCmdArg', () => {
+  it('leaves an argument that needs no quoting unchanged', () => {
+    expect(quoteCmdArg('-p')).toBe('-p');
+    expect(quoteCmdArg('C:\\tmp\\x.md')).toBe('C:\\tmp\\x.md');
+  });
+
+  it('wraps a tool pattern (space, parentheses, commas) in double quotes', () => {
+    expect(quoteCmdArg('Read,Bash(git log:*)')).toBe('"Read,Bash(git log:*)"');
+  });
+
+  it('quotes an empty argument so cmd.exe still passes it', () => {
+    expect(quoteCmdArg('')).toBe('""');
+  });
+
+  it('refuses what cmd.exe cannot carry safely: a quote, a percent, a line break', () => {
+    for (const bad of ['a"b', '50%', 'a\nb']) expect(() => quoteCmdArg(bad)).toThrow();
   });
 });
 
