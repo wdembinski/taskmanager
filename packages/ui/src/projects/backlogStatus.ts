@@ -40,7 +40,7 @@ const STATUS_ORDER: readonly BoardColumn[] = [
  * by epic. An epic is never one of the rows here — dropped (`isEpic`) rather than grouped,
  * since this view has no header for it to sit under. Nor is a step (`parentTaskId` set): it
  * belongs to its parent's card, not the list — the same `!t.parentTaskId` rule as the
- * sidebar's (TM-451, `sidebarModel.ts`'s `buildTree`). A column with nothing in it is omitted
+ * sidebar's (TM-451, `sidebarModel.ts`'s `buildMilestoneTree`). A column with nothing in it is omitted
  * rather than rendered empty: every ticket that is neither an epic nor a step appears in
  * exactly one group's `tickets`, always.
  */
