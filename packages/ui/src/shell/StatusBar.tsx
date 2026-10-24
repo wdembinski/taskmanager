@@ -23,7 +23,10 @@ const useStyles = makeStyles({
    */
   footer: {
     display: 'flex',
-    alignItems: 'center',
+    // Baseline, not centre: the branch's 11px mono and the 12px captions only share a
+    // baseline when the row aligns on it — centring their line boxes left the branch a
+    // pixel or two off (v9-7). Glyph-only atoms re-centre themselves with `alignSelf`.
+    alignItems: 'baseline',
     // Space, not a "·", is what separates one segment from the next — v9 draws no dots.
     gap: '12px',
     padding: '3px 12px',
@@ -56,6 +59,8 @@ const useStyles = makeStyles({
     height: '9px',
     borderRadius: '50%',
     flexShrink: 0,
+    // An empty box's baseline is its bottom edge — centred, not sat on the text line.
+    alignSelf: 'center',
     boxShadow: '0 0 0 1.5px var(--tm-status-bar-dot-ring)',
   },
   // NOT `colorPaletteGreenBackground3`, which was the bug: too low contrast against both
@@ -64,28 +69,45 @@ const useStyles = makeStyles({
   bad: { backgroundColor: 'var(--tm-status-bar-dot-bad)' },
   /** Its own token, not the scheme's fluo cyan — see `StatusBarTokens.dotRun`. */
   run: { backgroundColor: 'var(--tm-status-bar-dot-run)' },
-  item: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 },
-  /** The glyph and the name; shrinks so the name inside it can ellipsise. */
-  branchItem: { display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 1, minWidth: 0 },
-  /** `currentColor`, so it reads on the gradient and the attention orange alike. */
-  branchIcon: { fontSize: fontPx(14), flexShrink: 0, color: 'inherit' },
+  item: { display: 'flex', alignItems: 'baseline', gap: '6px', flexShrink: 0 },
+  /** The glyph and the name; shrinks so the name inside it can ellipsise. The extra 17px on
+   *  top of the bar's 12px gap is v9-7's wider break before the branch (243 → 266 plus the
+   *  icon's own padding). */
+  branchItem: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '4px',
+    flexShrink: 1,
+    minWidth: 0,
+    marginLeft: '17px',
+  },
+  /** `currentColor`, so it reads on the gradient and the attention orange alike. Centred,
+   *  since a glyph's baseline is its bottom edge. */
+  branchIcon: { fontSize: fontPx(14), flexShrink: 0, color: 'inherit', alignSelf: 'center' },
+  /** No `overflow` here — a clipped box would stop lending the row its text baseline; the
+   *  ellipsis lives on `branchText` inside. */
   branch: {
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
     fontSize: fontPx(11),
     maxWidth: '240px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
     flexShrink: 1,
     minWidth: 0,
   },
+  branchText: {
+    display: 'block',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   grow: { flex: 1 },
-  busy: { display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 },
+  busy: { display: 'flex', alignItems: 'baseline', gap: '5px', flexShrink: 0 },
+  /** Ring alone, no label: nothing to sit on a baseline, so centre the whole segment. */
+  busyBare: { alignSelf: 'center' },
   /** Inherits the bar's own colour rather than naming one, for the same reason `SyncRing`
    *  does: the bar turns orange under attention, and a fixed white or blue would go
    *  unreadable exactly then. A Fluent `<Spinner>` cannot do this — it strokes from design
    *  tokens, not `currentColor`. */
-  busyRing: { display: 'block', flexShrink: 0, color: 'inherit' },
+  busyRing: { display: 'block', flexShrink: 0, color: 'inherit', alignSelf: 'center' },
   busySpin: {
     animationName: { from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } },
     animationDuration: '1s',
@@ -144,7 +166,9 @@ export function StatusBranch({ name }: { name: string }): JSX.Element {
   return (
     <span className={styles.branchItem} title={name}>
       <BranchForkRegular className={styles.branchIcon} aria-hidden />
-      <span className={styles.branch}>{name}</span>
+      <span className={styles.branch}>
+        <span className={styles.branchText}>{name}</span>
+      </span>
     </span>
   );
 }
@@ -160,7 +184,7 @@ export function StatusBranch({ name }: { name: string }): JSX.Element {
 export function StatusBusy({ label }: { label?: string }): JSX.Element {
   const styles = useStyles();
   return (
-    <span className={styles.busy}>
+    <span className={label ? styles.busy : `${styles.busy} ${styles.busyBare}`}>
       <svg
         className={styles.busyRing}
         width={BUSY_SIZE}

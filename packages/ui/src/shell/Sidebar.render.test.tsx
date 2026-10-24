@@ -58,6 +58,47 @@ describe('Sidebar', () => {
     expect(markup).toContain('No ticket project yet');
   });
 
+  it('heads the sidebar with the workspace and its subtitle, never "This machine"', () => {
+    const markup = renderToStaticMarkup(
+      <Sidebar
+        {...baseProps}
+        sections={[
+          {
+            kind: 'workspace',
+            workspaces: [{ id: 'w1', name: 'Personal', sub: 'Local' }],
+            activeWorkspaceId: 'w1',
+          },
+          teamSection(),
+        ]}
+      />,
+    );
+    expect(markup).toContain('>Personal<');
+    expect(markup).toContain('>Local<');
+    expect(markup).not.toContain('This machine');
+  });
+
+  it('falls back to "Personal" when no workspace is active', () => {
+    const markup = renderToStaticMarkup(
+      <Sidebar
+        {...baseProps}
+        sections={[{ kind: 'workspace', workspaces: [], activeWorkspaceId: null }, teamSection()]}
+      />,
+    );
+    expect(markup).toContain('>Personal<');
+    expect(markup).not.toContain('This machine');
+  });
+
+  it('shows no ticket key on a tree row', () => {
+    const markup = renderToStaticMarkup(
+      <Sidebar
+        {...baseProps}
+        sections={[teamSection({ tree: [ticketNode({ ticketKey: 'TM-42' })] })]}
+      />,
+    );
+    expect(markup).toContain('Fix the thing');
+    expect(markup).not.toContain('TM-42');
+  });
+
   it('keeps the plain caption when there is nothing to switch between', () => {
     const markup = renderToStaticMarkup(<Sidebar {...baseProps} />);
     expect(markup).not.toContain('aria-label="Switch ticket project"');

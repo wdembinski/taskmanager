@@ -48,7 +48,7 @@ function milestone(overrides: Partial<Milestone> = {}): Milestone {
 
 function baseInput(overrides: Partial<SidebarInput> = {}): SidebarInput {
   return {
-    workspaces: [{ id: 'w1', name: 'This machine' }],
+    workspaces: [{ id: 'w1', name: 'Personal', sub: 'Local' }],
     projects: [],
     milestones: [],
     tickets: [],

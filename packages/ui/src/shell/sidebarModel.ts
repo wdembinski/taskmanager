@@ -19,6 +19,8 @@ export const NO_MILESTONE_GROUP = 'No milestone';
 export interface SidebarWorkspace {
   id: string;
   name: string;
+  /** The muted line under the name in the header — "Cloud" or "Local" (v9-1). */
+  sub?: string;
 }
 
 export interface SidebarView {
@@ -81,7 +83,7 @@ export type SidebarSection =
   | { kind: 'newIssue'; shortcut: string };
 
 export interface SidebarInput {
-  /** Only "This machine" until F19. */
+  /** Only one until F19: the cloud team, or "Personal" when not signed in. */
   workspaces: readonly SidebarWorkspace[];
   /** Defaults to the first workspace. */
   activeWorkspaceId?: string | null;

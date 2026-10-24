@@ -102,6 +102,9 @@ const useStyles = makeStyles({
     cursor: 'pointer',
     textDecoration: 'underline',
   },
+  /** The bar aligns its row on the text baseline; the "Checking Claude…" spinner is a
+   *  glyph-led segment, so it centres itself like the shared atoms do. */
+  statusSpinner: { alignSelf: 'center' },
 });
 
 /**
@@ -615,7 +618,12 @@ export function App(): JSX.Element {
                 <Caption1>Backend unavailable</Caption1>
               </>
             ) : (
-              <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
+              <Spinner
+                className={styles.statusSpinner}
+                label="Checking Claude…"
+                labelPosition="after"
+                size="tiny"
+              />
             )}
             {attentionCount > 0 && <Caption1>{attentionCount} waiting on you</Caption1>}
             {/* No colour of its own: the bar turns orange under attention, and a fixed

@@ -44,6 +44,10 @@ export interface UseSidebarDataOptions {
   folds: readonly string[];
   /** F15; omitted hides the Reviews row, same default as `buildSidebar` itself. */
   reviewsEnabled?: boolean;
+  /** The cloud team's name while signed in — the workspace header reads it over "Cloud";
+   *  omitted, the header is "Personal" over "Local". NOT the hook's own `teamName`, which is
+   *  the selected ticket project and already heads the tree below. */
+  cloudTeamName?: string;
 }
 
 export interface SidebarData extends Pick<InitialLoad, 'error' | 'retry'> {
@@ -110,7 +114,11 @@ export function useSidebarData(
 
   const sections = useMemo(() => {
     const input: SidebarInput = {
-      workspaces: [{ id: PERSONAL_PROJECT_ID, name: 'This machine' }],
+      workspaces: [
+        options.cloudTeamName
+          ? { id: PERSONAL_PROJECT_ID, name: options.cloudTeamName, sub: 'Cloud' }
+          : { id: PERSONAL_PROJECT_ID, name: 'Personal', sub: 'Local' },
+      ],
       activeWorkspaceId: PERSONAL_PROJECT_ID,
       projects: machineProjects,
       teamName,
@@ -132,6 +140,7 @@ export function useSidebarData(
     archivedCount,
     options.folds,
     options.reviewsEnabled,
+    options.cloudTeamName,
   ]);
 
   return { sections, loaded, tickets, error: initial.error, retry: initial.retry };

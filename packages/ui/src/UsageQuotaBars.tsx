@@ -59,7 +59,8 @@ const useStyles = makeStyles({
 
   /** The status-bar pair: the window's width and a short bar, per window. The percentage
    *  is the tooltip's, not the bar's — v9 draws none. */
-  status: { display: 'flex', alignItems: 'center', gap: '10px' },
+  // `alignSelf` centres the group in the status bar, whose row aligns on the text baseline.
+  status: { display: 'flex', alignItems: 'center', gap: '10px', alignSelf: 'center' },
   statusItem: { display: 'flex', alignItems: 'center', gap: '5px', cursor: 'default' },
   /**
    * The bar is drawn in the bar's OWN ink rather than Fluent's brand palette, for the
