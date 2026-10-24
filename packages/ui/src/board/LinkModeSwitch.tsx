@@ -1,8 +1,9 @@
 /**
  * The Off · Focus · All switch for how chain links draw over the board (F13.20) — a link
  * glyph, the three segments as `ToggleButton`s (same segmented-control shape the ×1/×2/×3
- * attempt count already uses in `AssignAgentDialog`), and a quiet `L` key hint so the
- * shortcut is discoverable without a tooltip hunt.
+ * attempt count already uses in `AssignAgentDialog`). Each segment's tooltip names the `L`
+ * shortcut; there is no separate key hint beside them — the v9 strip draws none, and a
+ * crushed toolbar clipped it to a stray letter.
  *
  * Shared by both hosts (`MyTasks.tsx`'s toolbar, the web's `BoardToolbar.tsx`), tokens only —
  * the desktop and the browser must agree pixel-for-pixel on what each mode looks like, same
@@ -14,7 +15,7 @@
  * registers with the overflow manager), so this is `forwardRef`'d to the root `<div>`.
  */
 import { forwardRef } from 'react';
-import { Caption1, ToggleButton, makeStyles, tokens } from '@fluentui/react-components';
+import { ToggleButton, makeStyles, tokens } from '@fluentui/react-components';
 import { LinkMultipleRegular } from '@fluentui/react-icons';
 import { LINK_MODES, type LinkMode } from './linkMode';
 
@@ -28,7 +29,6 @@ const TITLE: Record<LinkMode, string> = {
 const useStyles = makeStyles({
   group: { display: 'flex', alignItems: 'center', gap: '2px' },
   icon: { display: 'flex', color: tokens.colorNeutralForeground3 },
-  hint: { color: tokens.colorNeutralForeground4, marginInlineStart: '2px' },
 });
 
 export interface LinkModeSwitchProps {
@@ -56,9 +56,6 @@ export const LinkModeSwitch = forwardRef<HTMLDivElement, LinkModeSwitchProps>(
             {LABEL[m]}
           </ToggleButton>
         ))}
-        <Caption1 className={styles.hint} aria-hidden="true" title="Press L to cycle">
-          L
-        </Caption1>
       </div>
     );
   },
