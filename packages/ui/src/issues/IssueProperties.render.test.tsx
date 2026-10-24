@@ -68,8 +68,53 @@ function after(events: Parameters<typeof nextEditing>[1][]): string {
   return render({ defaultEditing: editing });
 }
 
+/** One row's markup, from its opening tag to the next row's (or the list's end). */
+function rowOf(html: string, key: string): string {
+  const start = html.indexOf(`data-property="${key}"`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const next = html.indexOf('data-property="', start + 1);
+  return html.slice(start, next < 0 ? undefined : next);
+}
+
 describe('IssueProperties', () => {
-  it('reads label over value, with the Blocked-by card as a link', () => {
+  it('lays each row out label-left: the label, then the value cell, in one grid row', () => {
+    const status = rowOf(render(), 'status');
+    const label = status.indexOf('>Status<');
+    const cell = status.indexOf('data-property-cell');
+    expect(label).toBeGreaterThan(0);
+    expect(cell).toBeGreaterThan(label);
+    // The value sits inside the cell, not beside the label in the row itself.
+    expect(status.indexOf('In Progress')).toBeGreaterThan(cell);
+  });
+
+  it('draws the column glyph on Status, the flag on Milestone, and no icon on Model', () => {
+    const html = render();
+    expect(rowOf(html, 'status')).toContain('data-property-icon="status-in-progress"');
+    expect(rowOf(html, 'milestone')).toContain('data-property-icon="milestone"');
+    expect(rowOf(html, 'model')).not.toContain('data-property-icon');
+  });
+
+  it('draws the agent glyph for a card delegated to an agent', () => {
+    const html = render({
+      task: { ...card, agentProjectId: 'p1' },
+      agentProjects: [{ id: 'p1', name: 'retry-queue' }] as never,
+    });
+    const assignee = rowOf(html, 'assignee');
+    expect(assignee).toContain('data-property-icon="agent"');
+    expect(assignee).toContain('retry-queue');
+  });
+
+  it('opens an editor in the value cell, leaving the label where it was', () => {
+    const status = rowOf(after([{ type: 'open', editor: 'status' }]), 'status');
+    const label = status.indexOf('>Status<');
+    expect(label).toBeGreaterThan(0);
+    expect(status.indexOf('data-property-editing')).toBeGreaterThan(
+      status.indexOf('data-property-cell'),
+    );
+    expect(status.indexOf('data-property-cell')).toBeGreaterThan(label);
+  });
+
+  it('reads label and value, with the Blocked-by card as a link', () => {
     const html = render();
     expect(html).toContain('>Status<');
     expect(html).toContain('In Progress');

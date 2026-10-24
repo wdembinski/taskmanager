@@ -1,6 +1,9 @@
 /**
  * The full-screen issue's right-hand property column, after `v9-2-issue-detail-light.svg`:
- * a label over a plain value per row, no borders, the rows set apart by spacing alone.
+ * a muted label on the LEFT of a plain value per row (a 92px label track, as the mockup's
+ * x=1130 / x=1222 columns), no borders, the rows set apart by spacing alone. Only Status
+ * (its column's glyph), Assignee (the agent glyph, or the person) and Milestone (a flag)
+ * carry an icon before the value — the mockup draws Runner, Model, Estimate and Due as text.
  *
  * **Click-to-edit** (the owner's default, taken as given): a value reads as text until it is
  * clicked, and then becomes the editor that field already has everywhere else — Status the
@@ -16,11 +19,14 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Body1, Caption1, Link, Text, makeStyles, tokens } from '@fluentui/react-components';
+import { FlagRegular, PersonRegular } from '@fluentui/react-icons';
+import { columnForTask } from '@tm/shared/board';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { ManualStatus, Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
 import type { ClaudeModel } from '@tm/shared/session';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { delegatedAgentName, isNativeTicket } from '@tm/shared/tickets';
+import { AgentGlyph } from '../AgentGlyph';
 import { FoldToggle } from '../FoldToggle';
 import { ModelField, useModelLabels } from '../ModelField';
 import {
@@ -31,6 +37,7 @@ import {
 } from '../modelChoice';
 import { ArchivedTicketBanner } from '../projects/ArchivedTicketBanner';
 import { useDeviceFold } from '../projects/deviceFold';
+import { PersonAvatar } from '../projects/PersonAvatar';
 import {
   TicketAssigneeField,
   TicketFieldsSection,
@@ -44,20 +51,50 @@ import {
   type PropertyEditor,
   type PropertyRow,
 } from './issuePropertyRows';
+import { STATUS_GLYPH } from './IssueRow';
 
 const useStyles = makeStyles({
   column: { display: 'flex', flexDirection: 'column', gap: '16px' },
   list: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  /**
+   * Label left, value right — the label track fixed so every value starts at one x. Aligned
+   * to the top with the label on the value's 20px line box rather than by `baseline`: a value
+   * that opens with an icon gets the SVG's bottom edge as its baseline, which dropped the
+   * label below the text, and a wrapped value must keep its label on the FIRST line.
+   */
   row: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '2px',
+    display: 'grid',
+    gridTemplateColumns: '92px minmax(0, 1fr)',
+    columnGap: '8px',
+    alignItems: 'start',
     padding: '6px 8px',
     borderRadius: tokens.borderRadiusMedium,
   },
   /** Only a row a click can edit lights up under the pointer. */
   editable: { ':hover': { backgroundColor: tokens.colorSubtleBackgroundHover } },
-  label: { color: tokens.colorNeutralForeground3 },
+  label: {
+    gridColumn: '1',
+    lineHeight: tokens.lineHeightBase300,
+    color: tokens.colorNeutralForeground3,
+  },
+  /** Column 2: the value at rest, or the editor that replaced it, plus a save's error. */
+  cell: {
+    gridColumn: '2',
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+  },
+  /** An icon and the text beside it — the icon on the first line when the text wraps. */
+  value: { display: 'inline-flex', alignItems: 'flex-start', gap: '6px', minWidth: 0 },
+  icon: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    height: tokens.lineHeightBase300,
+    flexShrink: 0,
+    fontSize: '16px',
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
+  },
   /** The value as a control — reads as plain text, with no button chrome. */
   valueButton: {
     background: 'none',
@@ -68,11 +105,12 @@ const useStyles = makeStyles({
     cursor: 'pointer',
     color: tokens.colorNeutralForeground1,
     font: 'inherit',
+    maxWidth: '100%',
     ':focus-visible': { outline: `2px solid ${tokens.colorStrokeFocus2}`, borderRadius: '2px' },
   },
   empty: { color: tokens.colorNeutralForeground3 },
-  links: { display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'flex-start' },
-  linkKey: { marginRight: '4px' },
+  links: { display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' },
+  linkKey: { marginRight: '6px', color: tokens.colorNeutralForeground3 },
   error: { color: tokens.colorPaletteRedForeground1 },
   more: { display: 'flex', flexDirection: 'column', gap: '8px' },
 });
@@ -242,6 +280,44 @@ export function IssueProperties({
     return null;
   }
 
+  /** The icon before a value — Status, Assignee and Milestone only, as the mockup draws. */
+  function iconFor(row: PropertyRow): JSX.Element | null {
+    if (row.key === 'status') {
+      const column = columnForTask(task);
+      return (
+        <span className={styles.icon} data-property-icon={`status-${column}`}>
+          {STATUS_GLYPH[column]}
+        </span>
+      );
+    }
+    if (row.key === 'assignee') {
+      // A delegated card reads as the agent's; a person alone shows their avatar.
+      const person = people.find((p) => p.id === task.assigneeId);
+      return (
+        <span
+          className={styles.icon}
+          data-property-icon={agentName ? 'agent' : person ? 'person' : 'unassigned'}
+        >
+          {agentName ? (
+            <AgentGlyph />
+          ) : person ? (
+            <PersonAvatar person={person} size={16} />
+          ) : (
+            <PersonRegular />
+          )}
+        </span>
+      );
+    }
+    if (row.key === 'milestone') {
+      return (
+        <span className={styles.icon} data-property-icon="milestone">
+          <FlagRegular />
+        </span>
+      );
+    }
+    return null;
+  }
+
   function valueFor(row: PropertyRow): JSX.Element {
     if (row.blockedBy) {
       return (
@@ -256,7 +332,13 @@ export function IssueProperties({
       );
     }
     const empty = row.value === 'None' || row.value === 'Unassigned';
-    const text = <Body1 className={empty ? styles.empty : undefined}>{row.value}</Body1>;
+    const icon = iconFor(row);
+    const text = (
+      <span className={styles.value}>
+        {icon}
+        <Body1 className={empty ? styles.empty : undefined}>{row.value}</Body1>
+      </span>
+    );
     if (!row.editor) return text;
     const editor = row.editor;
     return (
@@ -297,23 +379,26 @@ export function IssueProperties({
               data-property-editor={row.editor}
             >
               <Caption1 className={styles.label}>{row.label}</Caption1>
-              {isEditing && row.editor ? (
-                <div
-                  data-property-editing
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') close();
-                  }}
-                  onBlur={(e) => {
-                    // Focus moving within the editor (its own list) is not leaving it.
-                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) close();
-                  }}
-                >
-                  {editorFor(row.editor)}
-                </div>
-              ) : (
-                valueFor(row)
-              )}
-              {error && <Caption1 className={styles.error}>{error}</Caption1>}
+              {/* The editor opens in the value's own cell, so the label never moves. */}
+              <div className={styles.cell} data-property-cell>
+                {isEditing && row.editor ? (
+                  <div
+                    data-property-editing
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') close();
+                    }}
+                    onBlur={(e) => {
+                      // Focus moving within the editor (its own list) is not leaving it.
+                      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) close();
+                    }}
+                  >
+                    {editorFor(row.editor)}
+                  </div>
+                ) : (
+                  valueFor(row)
+                )}
+                {error && <Caption1 className={styles.error}>{error}</Caption1>}
+              </div>
             </div>
           );
         })}

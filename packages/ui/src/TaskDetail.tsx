@@ -340,7 +340,7 @@ const useStyles = makeStyles({
     flex: 1,
     minHeight: 0,
     display: 'grid',
-    gridTemplateColumns: 'minmax(0, 1fr) 260px',
+    gridTemplateColumns: 'minmax(0, 1fr) 300px',
   },
   fullMain: {
     minHeight: 0,
