@@ -491,6 +491,7 @@ export function Projects({
                 loadError={ticketsLoad.error}
                 loadRetry={ticketsLoad.retry}
                 people={registries.people}
+                milestones={registries.milestones}
                 agentProjects={agentProjects}
                 selectedTicketId={viewState.selectedId}
                 onSelectTicket={selectTicket}
