@@ -66,6 +66,8 @@ import {
   ChevronDownRegular,
   CollectionsEmptyRegular,
   AlertOffRegular,
+  EditRegular,
+  PlayRegular,
 } from '@fluentui/react-icons';
 import { activityLabel, runningSubAgents } from './agentActivity';
 import { stepPosition } from './board/boardColumns';
@@ -86,7 +88,9 @@ import { VariantCompare } from './VariantCompare';
 import { StepBrief, TaskSteps } from './TaskSteps';
 import { AttachmentGallery } from './AttachmentGallery';
 import { FilesSection } from './FilesSection';
-import { TaskAgentPanel } from './TaskAgentPanel';
+import { TaskAgentPanel, useStartAction } from './TaskAgentPanel';
+import { IssueBuilt, IssueTested } from './issues/IssueBuilt';
+import { IssueProperties } from './issues/IssueProperties';
 import { TaskDetailsCell } from './TaskDetailsCell';
 import { VisualSignOff } from './VisualSignOff';
 import { TaskLinksSection } from './projects/TaskLinksSection';
@@ -121,8 +125,16 @@ const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, flex: 1 },
   head: { display: 'flex', flexDirection: 'column', gap: '2px' },
   crumbRow: { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '-8px' },
-  titleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
-  showOnBoard: { marginLeft: 'auto', flexShrink: 0 },
+  /**
+   * The peek's title gets the row's width: Edit and Show on board are icon-only and never
+   * shrink, so at 1100px (a ~300px pane) the title wraps on word boundaries instead of
+   * collapsing to one word per line beside two text buttons. The tracker key lives on the
+   * meta line below, not here.
+   */
+  titleRow: { display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 },
+  titleAction: { flexShrink: 0 },
+  /** The key badge, then `type · priority · phase`. */
+  metaRow: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' },
   icon: { fontSize: '16px', display: 'flex', flexShrink: 0 },
   title: { flex: 1, minWidth: 0 },
   /** The "app's copy only" caveat under an in-progress title edit on a synced card. */
@@ -318,6 +330,65 @@ const useStyles = makeStyles({
    * own scroller + foot band below (see the module header on `TaskDetailProps.section`).
    */
   sectionScroll: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px' },
+  /**
+   * The full-screen issue (`layout="full"`): a main column that scrolls as ONE region and a
+   * fixed-width property column with a scroll of its own, side by side under the page's
+   * crumb row. No bands with caps here — the page has the whole height, and the mockup reads
+   * top to bottom as a document.
+   */
+  fullGrid: {
+    flex: 1,
+    minHeight: 0,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) 300px',
+  },
+  fullMain: {
+    minHeight: 0,
+    minWidth: 0,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '16px',
+    padding: '8px 32px 16px',
+  },
+  fullSide: {
+    minHeight: 0,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    padding: '8px 16px 16px',
+    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  fullHead: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  fullKey: {
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
+    textDecoration: 'none',
+  },
+  /** The key on the left and the title's actions at the right — a row of its own above the
+   *  title, as the mockup draws Run and the pencil, so the buttons never squeeze the title. */
+  fullTopRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
+  fullTitleActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    flexShrink: 0,
+    marginLeft: 'auto',
+  },
+  fullTitleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
+  fullTitle: {
+    flex: 1,
+    minWidth: 0,
+    margin: 0,
+    fontSize: tokens.fontSizeHero700,
+    lineHeight: tokens.lineHeightHero700,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+  },
+  /** The conversation in the main column: its own scroll, capped, so the composer under it
+   *  stays reachable without scrolling the whole page past a long chat. */
+  fullLogWrap: { position: 'relative', flexShrink: 0 },
+  fullLog: { maxHeight: '480px', minHeight: '80px', overflowY: 'auto' },
 });
 
 export interface TaskDetailProps {
@@ -506,6 +577,17 @@ export interface TaskDetailProps {
    * shut by default — keeps that section's own default key and closed state.
    */
   ticketFold?: { key: string; defaultOpen: boolean };
+  /**
+   * `'full'` — the Tickets screen's full-screen issue (`IssueFullPage`, after
+   * `v9-2-issue-detail-light.svg`): a two-column page instead of the stacked pane. The main
+   * column scrolls as one — key above a large title with Run at the top right, the
+   * description as text, the steps, **Built**, **Tested**, then what the mockup does not draw
+   * (the agent controls, the visual sign-off), Links/Files, the merge requests, and the
+   * conversation and composer — and a fixed-width right column holds the ticket's
+   * properties. Absent — the peek, the board's pane — keeps the stacked
+   * layout above. Ignored when {@link section} is set.
+   */
+  layout?: 'full';
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
@@ -555,6 +637,7 @@ export function TaskDetail({
   ticketLinks,
   ticketFold,
   ticketProjects,
+  layout,
 }: TaskDetailProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -942,6 +1025,10 @@ export function TaskDetail({
   // — so the Ticket and Links sections pause for exactly the reason `readOnlyNotice`'s bar
   // above them already states, and need no notice of their own.
   const ticketReadOnly = hostUnreachable !== undefined;
+  const full = layout === 'full' && section === undefined;
+  // The full page's Run button — the agent panel's own Start, hoisted (`useStartAction`), so
+  // the two can never disagree. Called above the empty-state return: it is a hook.
+  const start = useStartAction(task, subtasks, liveRunTaskIds);
 
   if (!task) {
     return (
@@ -1213,6 +1300,114 @@ export function TaskDetail({
     </div>
   );
 
+  const agentPanel = (
+    <TaskAgentPanel
+      task={task}
+      subtasks={subtasks}
+      parentTask={parentTask}
+      agentProjects={agentProjects}
+      filingProjects={boards}
+      items={panelItems}
+      running={run.spinner}
+      liveRunTaskIds={liveRunTaskIds}
+      merging={merging}
+      waitingOn={chainWaitingOn}
+      mergeHeld={chainMergeHeld}
+      // The same list the `<MergeRequests>` section below renders — so the Create PR
+      // slot and the row it would duplicate can never disagree about whether one is open.
+      mergeRequests={mergeRequests}
+      chainLinks={chainLinks}
+      tasksById={chainTasksById}
+      onOpenTask={onOpenTask}
+      onTaskChanged={(updated) => {
+        onStatusChanged?.(updated);
+        void loadActivity();
+      }}
+      // The full page draws Start as its own Run, top right, from the same hook.
+      hideStart={full}
+    />
+  );
+
+  const stepBrief = (
+    <StepBrief
+      task={task}
+      attachments={attachments}
+      parentAttachments={parentAttachments}
+      onChanged={(updated) => {
+        onStatusChanged?.(updated);
+        onSubtasksChanged?.();
+      }}
+    />
+  );
+
+  // Beside the state controls, because it is the other half of the same sentence: closing
+  // a card hushes it automatically, and this is how you hush one you are NOT closing — you
+  // have read the comment, you know the pipeline is red, and you are getting to it.
+  const dismissRow = (
+    <div className={styles.dismissRow}>
+      {/* Hold the card on an owner decision. Gone while one is open: the banner above is
+          where an open decision is answered or withdrawn. */}
+      {!ticketReadOnly && (
+        <RaiseDecisionButton task={task} onTaskChanged={(updated) => onStatusChanged?.(updated)} />
+      )}
+      {wantsAttention && (
+        <Button
+          size="small"
+          appearance="subtle"
+          icon={busy === 'other' ? <Spinner size="tiny" /> : <AlertOffRegular />}
+          disabled={busy !== null}
+          title="Stop this card asking — clears its inbox items, unread comments and merge-request alerts"
+          onClick={() => void dismissAttention()}
+        >
+          {busy === 'other' ? 'Dismissing…' : 'Dismiss'}
+        </Button>
+      )}
+    </div>
+  );
+
+  const ticketSection = isNativeTicket(task) && (
+    <TaskTicketSection
+      ticket={task}
+      tickets={projectTickets}
+      people={people}
+      agentProjects={agentProjects}
+      labels={labels}
+      milestones={milestones}
+      projects={ticketProjects}
+      readOnly={ticketReadOnly}
+      fold={ticketFold}
+    />
+  );
+
+  /** The title being edited — the stacked pane's and the full page's, one editor for both. */
+  const titleEditor = (
+    <>
+      <Input
+        className={styles.title}
+        value={titleDraft.value}
+        disabled={titleBusy}
+        autoFocus
+        onChange={(_e, d) => titleDraft.set(d.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void saveTitle();
+          else if (e.key === 'Escape') cancelTitleEdit();
+        }}
+      />
+      <Button size="small" disabled={titleBusy} onClick={cancelTitleEdit}>
+        Cancel
+      </Button>
+      <Button
+        size="small"
+        appearance="primary"
+        icon={titleBusy ? <Spinner size="tiny" /> : undefined}
+        disabled={titleBusy || !titleDraft.value.trim()}
+        onClick={() => void saveTitle()}
+      >
+        {titleBusy ? 'Saving…' : 'Save'}
+      </Button>
+    </>
+  );
+
   const detailsContent = (
     <>
       {/* The ticket's own identity heads the band: what this card IS, before what is
@@ -1251,81 +1446,31 @@ export function TaskDetail({
         <div className={styles.titleRow}>
           <span className={styles.icon}>{typeIcon(task)}</span>
           {editingTitle ? (
-            <>
-              <Input
-                className={styles.title}
-                value={titleDraft.value}
-                disabled={titleBusy}
-                autoFocus
-                onChange={(_e, d) => titleDraft.set(d.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void saveTitle();
-                  else if (e.key === 'Escape') cancelTitleEdit();
-                }}
-              />
-              <Button size="small" disabled={titleBusy} onClick={cancelTitleEdit}>
-                Cancel
-              </Button>
-              <Button
-                size="small"
-                appearance="primary"
-                icon={titleBusy ? <Spinner size="tiny" /> : undefined}
-                disabled={titleBusy || !titleDraft.value.trim()}
-                onClick={() => void saveTitle()}
-              >
-                {titleBusy ? 'Saving…' : 'Save'}
-              </Button>
-            </>
+            titleEditor
           ) : (
             <>
               <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
-              <Button size="small" appearance="subtle" onClick={() => setEditingTitle(true)}>
-                Edit
-              </Button>
-              {/* The ticket badge, and the one place this pane names the tracker out loud.
-                    "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
-                    key itself is printed short (`#123`) with the whole `owner/repo#123` in the
-                    tooltip — the same bargain the card's footer badge strikes, so the two cannot
-                    read as two different tickets. */}
-              {task.externalKey &&
-                (task.externalUrl ? (
-                  <a
-                    className={styles.key}
-                    href={task.externalUrl}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    title={ticketLinkTitle(task) ?? undefined}
-                  >
-                    <Badge
-                      appearance="outline"
-                      color="informative"
-                      icon={<TrackerMark task={task} size={12} />}
-                    >
-                      {shortTicketKey(task)}
-                    </Badge>
-                  </a>
-                ) : (
-                  <Badge
-                    appearance="outline"
-                    color="informative"
-                    icon={<TrackerMark task={task} size={12} />}
-                    title={task.externalKey}
-                  >
-                    {shortTicketKey(task)}
-                  </Badge>
-                ))}
+              <Button
+                className={styles.titleAction}
+                size="small"
+                appearance="subtle"
+                icon={<EditRegular />}
+                aria-label="Edit title"
+                title="Edit title"
+                onClick={() => setEditingTitle(true)}
+              />
             </>
           )}
           {onShowOnBoard && (
             <Button
-              className={styles.showOnBoard}
+              className={styles.titleAction}
               size="small"
               appearance="subtle"
               icon={<BoardRegular />}
+              aria-label="Show on board"
+              title="Show on board"
               onClick={() => onShowOnBoard(task.id)}
-            >
-              Show on board
-            </Button>
+            />
           )}
         </div>
         {editingTitle && tracker && (
@@ -1334,11 +1479,45 @@ export function TaskDetail({
             with the issue&apos;s own {isJira ? 'summary' : 'title'}.
           </Caption1>
         )}
-        <Caption1 className={styles.phase}>
-          {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
-            .filter(Boolean)
-            .join(' · ')}
-        </Caption1>
+        <div className={styles.metaRow}>
+          {/* The ticket badge, and the one place this pane names the tracker out loud.
+                "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
+                key itself is printed short (`#123`) with the whole `owner/repo#123` in the
+                tooltip — the same bargain the card's footer badge strikes, so the two cannot
+                read as two different tickets. */}
+          {task.externalKey &&
+            (task.externalUrl ? (
+              <a
+                className={styles.key}
+                href={task.externalUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                title={ticketLinkTitle(task) ?? undefined}
+              >
+                <Badge
+                  appearance="outline"
+                  color="informative"
+                  icon={<TrackerMark task={task} size={12} />}
+                >
+                  {shortTicketKey(task)}
+                </Badge>
+              </a>
+            ) : (
+              <Badge
+                appearance="outline"
+                color="informative"
+                icon={<TrackerMark task={task} size={12} />}
+                title={task.externalKey}
+              >
+                {shortTicketKey(task)}
+              </Badge>
+            ))}
+          <Caption1 className={styles.phase}>
+            {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
+              .filter(Boolean)
+              .join(' · ')}
+          </Caption1>
+        </div>
       </div>
 
       {/* The owner card's own look at `ui-shots.mjs`'s shots — never shown for a step, whose
@@ -1352,68 +1531,13 @@ export function TaskDetail({
         />
       )}
 
-      <TaskAgentPanel
-        task={task}
-        subtasks={subtasks}
-        parentTask={parentTask}
-        agentProjects={agentProjects}
-        filingProjects={boards}
-        items={panelItems}
-        running={run.spinner}
-        liveRunTaskIds={liveRunTaskIds}
-        merging={merging}
-        waitingOn={chainWaitingOn}
-        mergeHeld={chainMergeHeld}
-        // The same list the `<MergeRequests>` section below renders — so the Create PR
-        // slot and the row it would duplicate can never disagree about whether one is open.
-        mergeRequests={mergeRequests}
-        chainLinks={chainLinks}
-        tasksById={chainTasksById}
-        onOpenTask={onOpenTask}
-        onTaskChanged={(updated) => {
-          onStatusChanged?.(updated);
-          void loadActivity();
-        }}
-      />
+      {agentPanel}
       {/* A step's brief replaces the card's details + steps — it is the whole spec. */}
       {isStep ? (
-        <StepBrief
-          task={task}
-          attachments={attachments}
-          parentAttachments={parentAttachments}
-          onChanged={(updated) => {
-            onStatusChanged?.(updated);
-            onSubtasksChanged?.();
-          }}
-        />
+        stepBrief
       ) : (
         <>
-          {/* Beside the state controls, because it is the other half of the same
-              sentence: closing a card hushes it automatically, and this is how you
-              hush one you are NOT closing — you have read the comment, you know the
-              pipeline is red, and you are getting to it. */}
-          <div className={styles.dismissRow}>
-            {/* Hold the card on an owner decision. Gone while one is open: the banner
-                above is where an open decision is answered or withdrawn. */}
-            {!ticketReadOnly && (
-              <RaiseDecisionButton
-                task={task}
-                onTaskChanged={(updated) => onStatusChanged?.(updated)}
-              />
-            )}
-            {wantsAttention && (
-              <Button
-                size="small"
-                appearance="subtle"
-                icon={busy === 'other' ? <Spinner size="tiny" /> : <AlertOffRegular />}
-                disabled={busy !== null}
-                title="Stop this card asking — clears its inbox items, unread comments and merge-request alerts"
-                onClick={() => void dismissAttention()}
-              >
-                {busy === 'other' ? 'Dismissing…' : 'Dismiss'}
-              </Button>
-            )}
-          </div>
+          {dismissRow}
           <TaskDetailsCell
             task={task}
             boards={boards}
@@ -1426,19 +1550,7 @@ export function TaskDetail({
             chainTasksById={chainTasksById}
             mergeRequests={mergeRequests}
           />
-          {isNativeTicket(task) && (
-            <TaskTicketSection
-              ticket={task}
-              tickets={projectTickets}
-              people={people}
-              agentProjects={agentProjects}
-              labels={labels}
-              milestones={milestones}
-              projects={ticketProjects}
-              readOnly={ticketReadOnly}
-              fold={ticketFold}
-            />
-          )}
+          {ticketSection}
         </>
       )}
     </>
@@ -1480,6 +1592,8 @@ export function TaskDetail({
         onOpen={(id) => onOpenTask?.(id)}
         onChanged={() => onSubtasksChanged?.()}
         attention={attention}
+        // The full page's checklist is open: it has the room the capped band lacks.
+        defaultOpen={full}
       />
       {/* Beside Steps, and deliberately after it: a card's own steps are the work
           inside it, and the chain is where that work sits among everything else.
@@ -1555,6 +1669,309 @@ export function TaskDetail({
     );
   }
 
+  // The conversation and the bottom band, shared by the stacked pane and the full-screen
+  // page (`layout`): the same log, the same composer, only the frame around them differs.
+  const conversation = (
+    <div className={full ? styles.fullLogWrap : styles.scrollWrap}>
+      <div
+        className={full ? styles.fullLog : styles.scroll}
+        ref={scrollRef}
+        onScroll={handleScroll}
+        role="log"
+        aria-label="Conversation"
+      >
+        {showTimelineSkeleton ? (
+          // This load deliberately swallows failures into an empty timeline (see
+          // `loadActivity`'s `.catch`), so there is never an error to show here — the
+          // retry is a no-op because there is nothing this pane would retry.
+          <PaneLoading label="Loading conversation…" error={null} onRetry={() => {}} shape="rows" />
+        ) : turns.length === 0 && !managedByAI ? (
+          <Caption1 className={styles.empty}>
+            Nothing said yet — write a note, or send the agent a message.
+          </Caption1>
+        ) : (
+          <ChatTurns
+            turns={turns}
+            statusKeywords={statusKeywords}
+            onDeleteNote={(id) => void deleteComment(id)}
+          />
+        )}
+      </div>
+      {hasNewMessages && (
+        <Button
+          className={styles.newMessages}
+          size="small"
+          shape="rounded"
+          appearance="primary"
+          icon={<ChevronDownRegular />}
+          iconPosition="after"
+          onClick={() => scrollToBottom('smooth')}
+        >
+          New messages
+        </Button>
+      )}
+    </div>
+  );
+
+  const footBand = (
+    <div className={styles.footBand}>
+      {managedByAI && (
+        <div className={styles.runState}>
+          <div className={styles.running}>
+            {/* The spinner turns only while something MOVES; a card waiting on you gets
+              the words without the motion, because a spinner over "Waiting for you"
+              says the opposite of what is true. */}
+            {run.spinner && <Spinner size="tiny" />}
+            {/* `run.label`, never a hardcoded fallback: this band only renders for the
+              phases `managedByAI` names, and every one of those carries a label. A
+              fallback here could only ever be a claim the phase had already denied —
+              which is how "Agent running" came to sit under a card that was not. */}
+            <Caption1 className={styles.runningLabel}>{run.label}</Caption1>
+            {/* Quiet mode's one-liner: the conversation dropped the tool-use/thinking
+              turns, so this is the only place the agent's current move is visible. */}
+            {recentActivity && (
+              <Caption1 className={styles.subAgentLabel}>· {recentActivity}</Caption1>
+            )}
+          </div>
+          {subAgents.map((agent) => (
+            <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
+              <Spinner size="tiny" />
+              <Caption1 className={styles.runningLabel}>Agent running</Caption1>
+              {agent.label && <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>}
+            </div>
+          ))}
+          {/* The files the parked run already produced, right under the words that say
+            it's waiting — not reachable only through that step's own editor. */}
+          {waitingAttachments.length > 0 && <AttachmentGallery attachments={waitingAttachments} />}
+        </div>
+      )}
+
+      <Composer
+        task={task}
+        agentProject={agentProject}
+        chat={chat}
+        stepCaption={
+          chat?.offered && chatStepPosition !== null
+            ? `Talking to step ${chatStepPosition} of ${subtasks.length} — ${chat.target.title}`
+            : null
+        }
+        value={comment}
+        onChange={composer.set}
+        busy={busy}
+        tracker={tracker}
+        onSearchPeople={
+          searchUsersChannel ? (q) => transport.invoke(searchUsersChannel, task.id, q) : undefined
+        }
+        // JIRA only, and the prop's absence is what hides the attach button: neither GitHub
+        // nor Linear has an API for putting a file on an issue, so offering the picker would
+        // collect paths nothing could ever upload.
+        onPickAttachments={isJira ? () => transport.invoke('jira:pickAttachments') : undefined}
+        dictation={dictation}
+        onSendChat={() => void sendChat()}
+        onAddNote={() => void addComment()}
+        onPostStatus={() => void postStatus()}
+        onAddTicketComment={() => void addTicketComment()}
+        onAgentOptions={(options) => void setAgentOptions(options)}
+      />
+    </div>
+  );
+
+  if (full) {
+    // The key above the title, small and muted, the way the mockup prints `TM-71` — the
+    // tracker's key (linked when it has a URL) or the app's own ticket key.
+    const keyText = shortTicketKey(task) ?? task.ticketKey ?? null;
+    return (
+      <div className={styles.root}>
+        {readOnlyNotice && (
+          <div className={styles.notice}>
+            <MessageBar intent="warning">
+              <MessageBarBody>{readOnlyNotice}</MessageBarBody>
+            </MessageBar>
+          </div>
+        )}
+        <div className={styles.fullGrid}>
+          <div className={styles.fullMain}>
+            <div className={styles.fullHead}>
+              {onBack && (
+                <div className={styles.crumbRow}>
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    icon={<ChevronLeftRegular />}
+                    onClick={onBack}
+                  >
+                    Back
+                  </Button>
+                </div>
+              )}
+              {parentTask && (
+                <div className={styles.crumbRow}>
+                  <Button
+                    size="small"
+                    appearance="transparent"
+                    icon={<ChevronLeftRegular />}
+                    onClick={() => onOpenTask?.(parentTask.id)}
+                  >
+                    {parentTask.title}
+                  </Button>
+                  {position !== null && (
+                    <Caption1 className={styles.phase}>
+                      Step {position} of {subtasks.length}
+                    </Caption1>
+                  )}
+                </div>
+              )}
+              <div className={styles.fullTopRow} data-issue-top-row>
+                {keyText &&
+                  (task.externalUrl ? (
+                    <a
+                      className={styles.fullKey}
+                      href={task.externalUrl}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      title={ticketLinkTitle(task) ?? undefined}
+                      data-issue-key
+                    >
+                      <Caption1>{keyText}</Caption1>
+                    </a>
+                  ) : (
+                    <Caption1
+                      className={styles.fullKey}
+                      title={task.externalKey ?? undefined}
+                      data-issue-key
+                    >
+                      {keyText}
+                    </Caption1>
+                  ))}
+                <div className={styles.fullTitleActions}>
+                  {onShowOnBoard && (
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<BoardRegular />}
+                      aria-label="Show on board"
+                      title="Show on board"
+                      onClick={() => onShowOnBoard(task.id)}
+                    />
+                  )}
+                  {!editingTitle && (
+                    <Button
+                      size="small"
+                      appearance="subtle"
+                      icon={<EditRegular />}
+                      aria-label="Edit title"
+                      title="Edit title"
+                      onClick={() => setEditingTitle(true)}
+                    />
+                  )}
+                  {/* The agent panel's own Start, hoisted: drawn only when the card can
+                      be started, never as a disabled placeholder. */}
+                  {start.visible && (
+                    <Button
+                      appearance="primary"
+                      icon={start.busy ? <Spinner size="tiny" /> : <PlayRegular />}
+                      disabled={start.busy}
+                      title="Start the agent on this card now."
+                      onClick={start.run}
+                    >
+                      Run
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div className={styles.fullTitleRow}>
+                {editingTitle ? titleEditor : <h1 className={styles.fullTitle}>{task.title}</h1>}
+              </div>
+              {editingTitle && tracker && (
+                <Caption1 className={styles.titleHint}>
+                  Edits the app&apos;s copy — the next {trackerName(task) ?? 'tracker'} sync
+                  replaces it with the issue&apos;s own {isJira ? 'summary' : 'title'}.
+                </Caption1>
+              )}
+            </div>
+            {start.error && (
+              <MessageBar intent="error">
+                <MessageBarBody>{start.error}</MessageBarBody>
+              </MessageBar>
+            )}
+            {task.decisionQuestion != null && (
+              <DecisionBanner
+                task={task}
+                readOnly={ticketReadOnly}
+                onTaskChanged={(updated) => onStatusChanged?.(updated)}
+                onAnswered={() => void loadActivity()}
+              />
+            )}
+            {isStep ? (
+              stepBrief
+            ) : (
+              <TaskDetailsCell
+                presentation="text"
+                task={task}
+                boards={boards}
+                attachments={attachments}
+                priorityDisplay={priorityDisplay}
+                onTaskChanged={(updated) => onStatusChanged?.(updated)}
+                onStatusSet={(status) => onStatusSet?.(task.id, status)}
+                onEdited={() => void loadActivity()}
+                chainLinks={chainLinks}
+                chainTasksById={chainTasksById}
+                mergeRequests={mergeRequests}
+              />
+            )}
+            {/* The mockup's order — the text, the steps, what was built and how it tested —
+                then what the mockup does not draw: the agent controls and the visual
+                sign-off, so they never push the ticket's own story below the fold. */}
+            {stepsContent}
+            <IssueBuilt task={task} mergeRequests={mergeRequests} />
+            <IssueTested mergeRequests={mergeRequests} />
+            {agentPanel}
+            {!isStep && dismissRow}
+            {!isStep && (
+              <VisualSignOff
+                attachments={attachments}
+                activity={timeline.activity}
+                onNeedsChanges={(text) => composer.set({ ...EMPTY_COMPOSER, text })}
+              />
+            )}
+            {linksContent}
+            {changesContent}
+            {error && (
+              <MessageBar intent="error">
+                <MessageBarBody>{error}</MessageBarBody>
+              </MessageBar>
+            )}
+            {conversation}
+            {footBand}
+          </div>
+          {/* The property column: label over value, each value its own editor on a click.
+              It replaces the Ticket fold here — what the list does not carry is under its
+              "More fields". */}
+          <aside className={styles.fullSide} aria-label="Properties" data-issue-properties>
+            <IssueProperties
+              task={task}
+              tickets={projectTickets}
+              people={people}
+              agentProjects={agentProjects}
+              labels={labels}
+              milestones={milestones}
+              projects={ticketProjects}
+              chainLinks={chainLinks}
+              chainTasksById={chainTasksById}
+              mergeRequests={mergeRequests}
+              readOnly={ticketReadOnly}
+              onTaskChanged={(updated) => onStatusChanged?.(updated)}
+              onStatusSet={(status) => onStatusSet?.(task.id, status)}
+              onEdited={() => void loadActivity()}
+              onModelChange={(model) => void setAgentOptions({ model })}
+              onOpenTask={onOpenTask}
+            />
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.root}>
       {/* Only over a card: on the empty pane there is no control to qualify, and a warning
@@ -1595,119 +2012,13 @@ export function TaskDetail({
           </div>
         )}
 
-        <div className={styles.scrollWrap}>
-          <div
-            className={styles.scroll}
-            ref={scrollRef}
-            onScroll={handleScroll}
-            role="log"
-            aria-label="Conversation"
-          >
-            {showTimelineSkeleton ? (
-              // This load deliberately swallows failures into an empty timeline (see
-              // `loadActivity`'s `.catch`), so there is never an error to show here — the
-              // retry is a no-op because there is nothing this pane would retry.
-              <PaneLoading
-                label="Loading conversation…"
-                error={null}
-                onRetry={() => {}}
-                shape="rows"
-              />
-            ) : turns.length === 0 && !managedByAI ? (
-              <Caption1 className={styles.empty}>
-                Nothing said yet — write a note, or send the agent a message.
-              </Caption1>
-            ) : (
-              <ChatTurns
-                turns={turns}
-                statusKeywords={statusKeywords}
-                onDeleteNote={(id) => void deleteComment(id)}
-              />
-            )}
-          </div>
-          {hasNewMessages && (
-            <Button
-              className={styles.newMessages}
-              size="small"
-              shape="rounded"
-              appearance="primary"
-              icon={<ChevronDownRegular />}
-              iconPosition="after"
-              onClick={() => scrollToBottom('smooth')}
-            >
-              New messages
-            </Button>
-          )}
-        </div>
+        {conversation}
       </div>
 
       {/* The bottom band. The live state sits ABOVE the composer inside it, so it never
           scrolls out of sight: the agent itself, then a row per sub-agent it is still
           waiting on. */}
-      <div className={styles.footBand}>
-        {managedByAI && (
-          <div className={styles.runState}>
-            <div className={styles.running}>
-              {/* The spinner turns only while something MOVES; a card waiting on you gets
-                  the words without the motion, because a spinner over "Waiting for you"
-                  says the opposite of what is true. */}
-              {run.spinner && <Spinner size="tiny" />}
-              {/* `run.label`, never a hardcoded fallback: this band only renders for the
-                  phases `managedByAI` names, and every one of those carries a label. A
-                  fallback here could only ever be a claim the phase had already denied —
-                  which is how "Agent running" came to sit under a card that was not. */}
-              <Caption1 className={styles.runningLabel}>{run.label}</Caption1>
-              {/* Quiet mode's one-liner: the conversation dropped the tool-use/thinking
-                  turns, so this is the only place the agent's current move is visible. */}
-              {recentActivity && (
-                <Caption1 className={styles.subAgentLabel}>· {recentActivity}</Caption1>
-              )}
-            </div>
-            {subAgents.map((agent) => (
-              <div key={agent.toolId} className={`${styles.running} ${styles.subAgent}`}>
-                <Spinner size="tiny" />
-                <Caption1 className={styles.runningLabel}>Agent running</Caption1>
-                {agent.label && (
-                  <Caption1 className={styles.subAgentLabel}>· {agent.label}</Caption1>
-                )}
-              </div>
-            ))}
-            {/* The files the parked run already produced, right under the words that say
-                it's waiting — not reachable only through that step's own editor. */}
-            {waitingAttachments.length > 0 && (
-              <AttachmentGallery attachments={waitingAttachments} />
-            )}
-          </div>
-        )}
-
-        <Composer
-          task={task}
-          agentProject={agentProject}
-          chat={chat}
-          stepCaption={
-            chat?.offered && chatStepPosition !== null
-              ? `Talking to step ${chatStepPosition} of ${subtasks.length} — ${chat.target.title}`
-              : null
-          }
-          value={comment}
-          onChange={composer.set}
-          busy={busy}
-          tracker={tracker}
-          onSearchPeople={
-            searchUsersChannel ? (q) => transport.invoke(searchUsersChannel, task.id, q) : undefined
-          }
-          // JIRA only, and the prop's absence is what hides the attach button: neither GitHub
-          // nor Linear has an API for putting a file on an issue, so offering the picker would
-          // collect paths nothing could ever upload.
-          onPickAttachments={isJira ? () => transport.invoke('jira:pickAttachments') : undefined}
-          dictation={dictation}
-          onSendChat={() => void sendChat()}
-          onAddNote={() => void addComment()}
-          onPostStatus={() => void postStatus()}
-          onAddTicketComment={() => void addTicketComment()}
-          onAgentOptions={(options) => void setAgentOptions(options)}
-        />
-      </div>
+      {footBand}
     </div>
   );
 }

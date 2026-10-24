@@ -7,7 +7,7 @@ import { BOOT_CHANNELS } from '../../fixtures/uiShotsFixture.mjs';
 
 /**
  * The card `'issue-row:first'` opens (`'13a'`, see `30-attachments.mjs`'s own note on that
- * row order) carrying an open owner decision — handed to `issue-peek` alone through its
+ * row order) carrying an open owner decision, a milestone and an epic — handed to `issue-peek` alone through its
  * `channelOverrides`, so no other row's board, list or ready set changes.
  */
 const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
@@ -17,6 +17,10 @@ const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
         decisionQuestion:
           'Which hosting plan do we pay for — the monthly one, or the yearly one at a discount?',
         decisionAskedAt: Date.now() - 2 * 86_400_000,
+        // Filed under a milestone and an epic (both from `50-sidebar.mjs`), so the peek's
+        // header breadcrumb draws the full `Project › Milestone › Epic` after the key.
+        milestoneId: 'ms-mixed',
+        epicTaskId: 'sb-7',
       }
     : // Landed, so the "Blocked by" row below reads Done + "merged" (an `after-merge` arrow
       // is satisfied by `landedAt`, not by the column).
@@ -35,6 +39,64 @@ const PEEK_CHAIN_LINKS = [
   { id: 'link-peek-1', fromTaskId: '14a', toTaskId: '13a', gate: 'after-merge' },
   { id: 'link-peek-2', fromTaskId: '2', toTaskId: '13a', gate: 'after-merge' },
 ];
+
+/**
+ * `'13a'` as the full-screen issue rows want it, after `v9-2-issue-detail-light.svg`: STAGED
+ * (an agent assigned, `pending`, never run — `canStartWork`), so the header's Run button
+ * draws; a description, so the main column opens on text; and a branch, so Built has
+ * something to say. Row-local, like `DECISION_TASKS`.
+ */
+const FULL_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
+  t.id === '13a'
+    ? {
+        ...t,
+        status: 'pending',
+        agentProjectId: t.projectId,
+        workedAt: null,
+        sessionId: null,
+        agentBranch: 'fx-13a-retry-queue',
+        externalDescription:
+          'The retry queue drains in the background, but nobody can see it. Show its depth and ' +
+          'the last failure on the dashboard, refreshed every minute.\n\n' +
+          'Done means: the dashboard card shows the queue depth and the newest failure.',
+        milestoneId: 'ms-mixed',
+        epicTaskId: 'sb-7',
+        assigneeId: 'person-human',
+      }
+    : t,
+);
+
+/** An open MR on `'13a'`'s branch with a staged pipeline, so Built and Tested both draw. */
+const FULL_MERGE_REQUESTS = [
+  ...BOOT_CHANNELS['mr:mergeRequests'],
+  {
+    ...BOOT_CHANNELS['mr:mergeRequests'][0],
+    id: 'mr-13a',
+    taskId: '13a',
+    openedForTaskId: '13a',
+    number: 201,
+    title: 'Wire the retry queue to the dashboard',
+    sourceBranch: 'fx-13a-retry-queue',
+    changesRequested: false,
+    pipelineStatus: 'success',
+    pipelineStages: [
+      { name: 'typecheck', status: 'success' },
+      { name: 'test', status: 'success' },
+      { name: 'build', status: 'success' },
+    ],
+  },
+];
+
+/**
+ * `PEEK_CHAIN_LINKS` too, so the property column's Blocked by row has `14a` and `2` to name —
+ * and an assignee on the card, so every row the mockup prints that this card has data for
+ * draws: Status, Assignee, Model, Milestone, Blocked by.
+ */
+const FULL_OVERRIDES = {
+  'board:tasks': FULL_TASKS,
+  'mr:mergeRequests': FULL_MERGE_REQUESTS,
+  'chain:links': PEEK_CHAIN_LINKS,
+};
 export default [
   {
     // The desktop's own default tab is `'mytasks'` (the Board, `App.tsx`'s own
@@ -105,12 +167,31 @@ export default [
     mockup: 'v9-2-issue-detail-light.svg',
   },
   {
-    // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full'.
+    // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full' —
+    // `TaskDetail`'s two-column `layout="full"`: key above a large title, Run top right (the
+    // card is staged, `FULL_TASKS`), the description as text, the steps, Built and Tested;
+    // and the property column, label over value, with Blocked by naming `14a` and `2`.
     name: 'issue-full-screen',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    // By key, not position: `FULL_TASKS` moves the card to the To Do group.
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:has:FX-13a' }, { click: 'Open full screen' }],
+    expect: '[data-issue-breadcrumb]',
     mockup: 'v9-2-issue-detail-light.svg',
+    channelOverrides: FULL_OVERRIDES,
+  },
+  {
+    // The same full-screen issue in the dark scheme. There is no dark issue-detail mockup, so
+    // the light one is the closest stand-in to compare against.
+    name: 'issue-full-screen-dark',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'dark',
+    // By key, not position: `FULL_TASKS` moves the card to the To Do group.
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:has:FX-13a' }, { click: 'Open full screen' }],
+    expect: '[data-issue-breadcrumb]',
+    mockup: 'v9-2-issue-detail-light.svg',
+    channelOverrides: FULL_OVERRIDES,
   },
 ];

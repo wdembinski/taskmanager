@@ -27,10 +27,17 @@ export default [
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'dark',
-    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    // Full screen's main column scrolls as one and the sign-off sits below the fold, right
+    // above Links — so the shot scrolls to it, bringing the Links heading into frame below.
+    setup: [
+      { click: 'Tickets' },
+      { click: 'issue-row:first' },
+      { click: 'Open full screen' },
+      { scrollToSelector: '[data-visual-signoff]' },
+    ],
     expect: '[data-visual-signoff]',
-    // The sign-off band makes the Ticket band tallest of any full-screen row — the state
-    // most likely to squeeze the Links heading under the conversation.
+    // The sign-off band is the tallest section of any full-screen row — the state most likely
+    // to push the Links heading out of frame or under the conversation.
     layoutCheck: {
       visible: '[data-links-heading]',
       clear: ['[role="log"][aria-label="Conversation"]'],

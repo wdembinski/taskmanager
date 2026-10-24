@@ -351,6 +351,8 @@ export function Projects({
       ticketFold={{ key: 'tm.projects.ticketOpen', defaultOpen: true }}
       readOnlyNotice={readOnlyNotice}
       hostUnreachable={hostUnreachable}
+      // Full screen is the two-column issue page; the peek keeps the stacked pane.
+      layout={viewState.layout === 'full' ? 'full' : undefined}
     />
   );
 
@@ -506,6 +508,8 @@ export function Projects({
 
       {viewState.layout === 'peek' && viewState.selectedId && (
         <IssuePeek
+          breadcrumb={breadcrumb}
+          ticketKey={selectedTask?.ticketKey ?? selectedTask?.externalKey ?? undefined}
           onExpand={() => dispatch({ type: 'expand' })}
           onClose={() => dispatch({ type: 'close' })}
         >

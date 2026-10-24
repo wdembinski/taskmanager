@@ -86,6 +86,24 @@ describe('VisualSignOff, rendered inside TaskDetail', () => {
     expect(section).toContain('a-mockup');
   });
 
+  it('keeps Needs changes and Approve together in one group inside the band', () => {
+    const html = render(
+      <TaskDetail task={task({ id: 'card-1' })} attachments={shotPairAttachments} />,
+    );
+    const band = html.slice(
+      html.indexOf('data-visual-signoff'),
+      html.indexOf('data-files-section'),
+    );
+    // The head wraps, and the two verdict buttons wrap as one unit — so in a narrow peek
+    // Approve moves to a second line inside the border instead of past it.
+    const group = band.slice(band.indexOf('data-visual-signoff-actions'));
+    expect(band).toContain('data-visual-signoff-actions');
+    expect(group).toMatch(/Needs changes[\s\S]*Approve/);
+    expect(band.indexOf('Visual sign-off')).toBeLessThan(
+      band.indexOf('data-visual-signoff-actions'),
+    );
+  });
+
   it('renders nothing for a card with no shot pairs', () => {
     const card = task({ id: 'card-1' });
 

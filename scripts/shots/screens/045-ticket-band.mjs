@@ -1,9 +1,11 @@
 /**
- * The ticket panel's Ticket band (Details, then Links) above the conversation, full screen at
- * 1440x900, in the three states that decide how much room the band is left: no conversation
- * and no links, no conversation and two links, and a conversation long enough to overflow.
- * Every row carries a `layoutCheck` proving the "Links" heading is laid out in full and clear
- * of the conversation — see `ui-shots.mjs`'s header doc for the row shape and
+ * The full-screen issue's Links section above the conversation, at 1440x900, in three states:
+ * no conversation and no links, no conversation and two links, and a conversation long enough
+ * to overflow. Full screen is `TaskDetail`'s two-column `layout="full"`, whose main column
+ * scrolls as one (description, agent, steps, Built, Tested, then Links, the merge requests and
+ * the conversation) — so Links sits below the fold and every row scrolls that column to it
+ * first. Every row carries a `layoutCheck` proving the "Links" heading is laid out in full and
+ * clear of the conversation — see `ui-shots.mjs`'s header doc for the row shape and
  * `scripts/lib/shotModules.mjs` for how this file is merged with its siblings.
  *
  * `v9-2-issue-detail-light.svg` is the closest stand-in mockup; it does not draw these exact
@@ -58,18 +60,15 @@ const STATES = [
   },
   {
     state: 'long-chat',
-    // Band + the conversation's floor outgrow a 1440x900 pane, so the region above the
-    // composer opens scrolled to the top with the conversation below the fold — the same
-    // frame as `visual-signoff-dark`, byte for byte. Scrolling that region to the Links
-    // heading brings the conversation into frame under it, which is what this state proves.
-    scrollTo: '[data-links-heading]',
+    // The conversation's own scroll is capped, so a long chat sits under Links rather than
+    // over it; scrolled to the heading, the conversation's top is in frame below it.
     channelOverrides: {
       'task:activity': { byArgTable: { [TASK_ID]: LONG_CHAT }, fallback: [] },
     },
   },
 ];
 
-export default STATES.flatMap(({ state, scrollTo, channelOverrides }) =>
+export default STATES.flatMap(({ state, channelOverrides }) =>
   ['light', 'dark'].map((scheme) => ({
     name: `ticket-band-${state}-${scheme}`,
     app: 'client',
@@ -79,7 +78,7 @@ export default STATES.flatMap(({ state, scrollTo, channelOverrides }) =>
       { click: 'Tickets' },
       { click: 'issue-row:first' },
       { click: 'Open full screen' },
-      ...(scrollTo === undefined ? [] : [{ scrollToSelector: scrollTo }]),
+      { scrollToSelector: '[data-links-heading]' },
     ],
     expect: '[data-links-heading]',
     layoutCheck: {

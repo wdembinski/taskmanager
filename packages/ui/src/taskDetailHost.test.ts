@@ -260,6 +260,15 @@ describe('assembleTaskDetailProps', () => {
     expect(result.chainMergeHeld).toBe(provided.chainMergeHeld);
   });
 
+  it("passes the full-screen layout through untouched, and leaves it unset when it isn't given", () => {
+    const loaded: LoadedTaskDetailData = { tasks: [task({ id: 'card-1' })] };
+
+    expect(
+      assembleTaskDetailProps('card-1', { taskId: 'card-1', layout: 'full' }, loaded).layout,
+    ).toBe('full');
+    expect(assembleTaskDetailProps('card-1', { taskId: 'card-1' }, loaded).layout).toBeUndefined();
+  });
+
   it('lets an explicit null task win over a loaded row for the same id', () => {
     const provided: TaskDetailHostProps = { taskId: 'card-1', task: null };
     const loaded: LoadedTaskDetailData = { tasks: [task({ id: 'card-1' })] };

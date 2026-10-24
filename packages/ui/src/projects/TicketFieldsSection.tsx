@@ -89,6 +89,203 @@ export interface TicketFieldsSectionProps {
   /** Set when the host relaying ticket writes is unreachable — every field is disabled and
    *  the label/milestone manager popovers hidden, but the values are still shown. */
   readOnly?: boolean;
+  /** Fields another surface already edits — the full-screen issue's property column carries
+   *  Milestone and Assignee (and shows Estimate and Due), so its "More fields" fold leaves
+   *  them out rather than offering a second control for the same value. */
+  omit?: readonly OmittableTicketField[];
+}
+
+/** The fields {@link TicketFieldsSectionProps.omit} can leave out. */
+export type OmittableTicketField = 'milestone' | 'assignee' | 'estimate' | 'due';
+
+/**
+ * One ticket field's save, and the inline message a refusal leaves — shared by this section
+ * and the property column, which each mount one so a refused save outlives the editor that
+ * sent it.
+ */
+export function useTicketFieldSave(ticket: Task): {
+  errors: Partial<Record<keyof TicketDraft, string>>;
+  saveField: <K extends keyof TicketDraft>(field: K, value: TicketDraft[K]) => Promise<boolean>;
+  saveDraft: (field: keyof TicketDraft, draft: { value: string; commit: () => void }) => void;
+} {
+  const transport = useTransport();
+  /** One inline message per field, cleared on the next attempt or the next success. */
+  const [errors, setErrors] = useState<Partial<Record<keyof TicketDraft, string>>>({});
+
+  /** Save one field's new value, or do nothing when it did not actually change. */
+  async function saveField<K extends keyof TicketDraft>(
+    field: K,
+    value: TicketDraft[K],
+  ): Promise<boolean> {
+    const patch = ticketPatchFor(field, value, ticket);
+    if (Object.keys(patch).length === 0) {
+      setErrors((prev) => ({ ...prev, [field]: undefined }));
+      return true;
+    }
+    try {
+      await transport.invoke('ticket:update', ticket.id, patch);
+      setErrors((prev) => ({ ...prev, [field]: undefined }));
+      return true;
+    } catch (e) {
+      setErrors((prev) => ({ ...prev, [field]: e instanceof Error ? e.message : String(e) }));
+      return false;
+    }
+  }
+
+  /** A text draft's blur handler: save, and only forget the parked draft on success — a
+   *  refusal leaves the typed text on screen, with the error shown under the field. */
+  function saveDraft(field: keyof TicketDraft, draft: { value: string; commit: () => void }): void {
+    void saveField(field, draft.value).then((ok) => {
+      if (ok) draft.commit();
+    });
+  }
+
+  return { errors, saveField, saveDraft };
+}
+
+/** What the two pickers the property column borrows share. */
+interface TicketPickerProps {
+  ticket: Task;
+  readOnly?: boolean;
+  /** A refused save's message, from the caller's {@link useTicketFieldSave}. */
+  error?: string;
+  onSave: (value: string) => void;
+  className?: string;
+  /**
+   * The property column's editor: the bare Dropdown, no Field label or manager popover (the
+   * column's own label names it, and a popover would take the focus the editor closes on),
+   * focused the moment it is swapped in.
+   */
+  bare?: boolean;
+  autoFocus?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function TicketMilestoneField({
+  ticket,
+  tickets,
+  milestones,
+  readOnly = false,
+  error,
+  onSave,
+  className,
+  bare = false,
+  autoFocus,
+  onOpenChange,
+}: TicketPickerProps & { tickets: Task[]; milestones: Milestone[] }): JSX.Element {
+  const styles = useStyles();
+  const dropdown = (
+    <Dropdown
+      className={styles.cell}
+      value={milestones.find((m) => m.id === ticket.milestoneId)?.name ?? 'None'}
+      selectedOptions={[ticket.milestoneId ?? NONE]}
+      disabled={readOnly}
+      autoFocus={autoFocus}
+      onOpenChange={onOpenChange && ((_e, d) => onOpenChange(d.open))}
+      onOptionSelect={(_e, d) => {
+        if (d.optionValue !== undefined) onSave(d.optionValue);
+      }}
+    >
+      {pickableMilestones(
+        offeredMilestones(milestones, ticket.milestoneId),
+        ticket.milestoneId,
+      ).map((m) => (
+        <Option key={m.id} value={m.id} text={m.name}>
+          {m.name}
+          {m.closed ? ' (closed)' : ''}
+        </Option>
+      ))}
+      <Option value={NONE}>None</Option>
+    </Dropdown>
+  );
+  if (bare) return dropdown;
+  return (
+    <Field
+      label="Milestone"
+      className={className}
+      validationState={error ? 'error' : 'none'}
+      validationMessage={error}
+    >
+      <div className={styles.labelsRow}>
+        {dropdown}
+        {!readOnly && (
+          <Popover trapFocus>
+            <PopoverTrigger disableButtonEnhancement>
+              <Button
+                size="small"
+                appearance="subtle"
+                icon={<SettingsRegular />}
+                title="Manage milestones"
+                aria-label="Manage milestones"
+              />
+            </PopoverTrigger>
+            <PopoverSurface>
+              <Subtitle2>Milestones</Subtitle2>
+              <MilestoneList
+                projectId={ticket.projectId}
+                milestones={milestones}
+                tickets={tickets}
+              />
+            </PopoverSurface>
+          </Popover>
+        )}
+      </div>
+    </Field>
+  );
+}
+
+export function TicketAssigneeField({
+  ticket,
+  people,
+  agentName,
+  readOnly = false,
+  error,
+  onSave,
+  className,
+  bare = false,
+  autoFocus,
+  onOpenChange,
+}: TicketPickerProps & { people: Person[]; agentName?: string }): JSX.Element {
+  const styles = useStyles();
+  const dropdown = (
+    <Dropdown
+      value={people.find((p) => p.id === ticket.assigneeId)?.name ?? 'Unassigned'}
+      selectedOptions={[ticket.assigneeId ?? NONE]}
+      disabled={readOnly}
+      autoFocus={autoFocus}
+      onOpenChange={onOpenChange && ((_e, d) => onOpenChange(d.open))}
+      onOptionSelect={(_e, d) => {
+        if (d.optionValue !== undefined) onSave(d.optionValue);
+      }}
+    >
+      {people.map((p) => (
+        <Option key={p.id} value={p.id} text={p.name}>
+          <div className={styles.optionRow}>
+            <PersonAvatar person={p} size={20} />
+            {p.name}
+          </div>
+        </Option>
+      ))}
+      <Option value={NONE}>Unassigned</Option>
+    </Dropdown>
+  );
+  if (bare) return dropdown;
+  return (
+    <Field
+      label="Assignee"
+      className={className}
+      validationState={error ? 'error' : 'none'}
+      validationMessage={error}
+    >
+      {dropdown}
+      {agentName && (
+        <div className={styles.agentRow}>
+          <Text className={styles.agentSep}>/</Text>
+          <AssigneeDisplay agentName={agentName} variant="text" size={20} />
+        </div>
+      )}
+    </Field>
+  );
 }
 
 function labelColor(labels: TicketLabel[], name: string): string | undefined {
@@ -103,13 +300,12 @@ export function TicketFieldsSection({
   labels,
   milestones,
   readOnly = false,
+  omit = [],
 }: TicketFieldsSectionProps): JSX.Element {
   const styles = useStyles();
-  const transport = useTransport();
   const { archive } = useArchiveAction();
-
-  /** One inline message per field, cleared on the next attempt or the next success. */
-  const [errors, setErrors] = useState<Partial<Record<keyof TicketDraft, string>>>({});
+  const { errors, saveField, saveDraft } = useTicketFieldSave(ticket);
+  const shown = (field: OmittableTicketField): boolean => !omit.includes(field);
   const [epicArchiveError, setEpicArchiveError] = useState<string | null>(null);
   const [epicArchiveBusy, setEpicArchiveBusy] = useState(false);
 
@@ -139,34 +335,6 @@ export function TicketFieldsSection({
     ticket,
     agentProjects.find((p) => p.id === ticket.agentProjectId)?.name,
   );
-
-  /** Save one field's new value, or do nothing when it did not actually change. */
-  async function saveField<K extends keyof TicketDraft>(
-    field: K,
-    value: TicketDraft[K],
-  ): Promise<boolean> {
-    const patch = ticketPatchFor(field, value, ticket);
-    if (Object.keys(patch).length === 0) {
-      setErrors((prev) => ({ ...prev, [field]: undefined }));
-      return true;
-    }
-    try {
-      await transport.invoke('ticket:update', ticket.id, patch);
-      setErrors((prev) => ({ ...prev, [field]: undefined }));
-      return true;
-    } catch (e) {
-      setErrors((prev) => ({ ...prev, [field]: e instanceof Error ? e.message : String(e) }));
-      return false;
-    }
-  }
-
-  /** A text draft's blur handler: save, and only forget the parked draft on success — a
-   *  refusal leaves the typed text on screen, with the error shown under the field. */
-  function saveDraft(field: keyof TicketDraft, draft: { value: string; commit: () => void }): void {
-    void saveField(field, draft.value).then((ok) => {
-      if (ok) draft.commit();
-    });
-  }
 
   /** One click, Undo included — an epic has no open-ticket choice to make, unlike a
    *  milestone: archiving it never moves anything, it only hides the epic itself. */
@@ -198,58 +366,19 @@ export function TicketFieldsSection({
         />
       </div>
 
-      <div className={styles.row}>
-        <Field
-          label="Milestone"
-          className={styles.cell}
-          validationState={errors.milestoneId ? 'error' : 'none'}
-          validationMessage={errors.milestoneId}
-        >
-          <div className={styles.labelsRow}>
-            <Dropdown
-              className={styles.cell}
-              value={milestones.find((m) => m.id === ticket.milestoneId)?.name ?? 'None'}
-              selectedOptions={[ticket.milestoneId ?? NONE]}
-              disabled={readOnly}
-              onOptionSelect={(_e, d) => {
-                if (d.optionValue !== undefined) void saveField('milestoneId', d.optionValue);
-              }}
-            >
-              {pickableMilestones(
-                offeredMilestones(milestones, ticket.milestoneId),
-                ticket.milestoneId,
-              ).map((m) => (
-                <Option key={m.id} value={m.id} text={m.name}>
-                  {m.name}
-                  {m.closed ? ' (closed)' : ''}
-                </Option>
-              ))}
-              <Option value={NONE}>None</Option>
-            </Dropdown>
-            {!readOnly && (
-              <Popover trapFocus>
-                <PopoverTrigger disableButtonEnhancement>
-                  <Button
-                    size="small"
-                    appearance="subtle"
-                    icon={<SettingsRegular />}
-                    title="Manage milestones"
-                    aria-label="Manage milestones"
-                  />
-                </PopoverTrigger>
-                <PopoverSurface>
-                  <Subtitle2>Milestones</Subtitle2>
-                  <MilestoneList
-                    projectId={ticket.projectId}
-                    milestones={milestones}
-                    tickets={tickets}
-                  />
-                </PopoverSurface>
-              </Popover>
-            )}
-          </div>
-        </Field>
-      </div>
+      {shown('milestone') && (
+        <div className={styles.row}>
+          <TicketMilestoneField
+            className={styles.cell}
+            ticket={ticket}
+            tickets={tickets}
+            milestones={milestones}
+            readOnly={readOnly}
+            error={errors.milestoneId}
+            onSave={(v) => void saveField('milestoneId', v)}
+          />
+        </div>
+      )}
 
       <Field
         label="Labels"
@@ -318,20 +447,22 @@ export function TicketFieldsSection({
             placeholder="Not estimated"
           />
         </Field>
-        <Field
-          label="Estimate (days)"
-          className={styles.cell}
-          validationState={errors.estimateDaysText ? 'error' : 'none'}
-          validationMessage={errors.estimateDaysText}
-        >
-          <Input
-            value={estimateDaysDraft.value}
-            disabled={readOnly}
-            onChange={(_e, d) => estimateDaysDraft.set(d.value)}
-            onBlur={() => saveDraft('estimateDaysText', estimateDaysDraft)}
-            placeholder="Not estimated"
-          />
-        </Field>
+        {shown('estimate') && (
+          <Field
+            label="Estimate (days)"
+            className={styles.cell}
+            validationState={errors.estimateDaysText ? 'error' : 'none'}
+            validationMessage={errors.estimateDaysText}
+          >
+            <Input
+              value={estimateDaysDraft.value}
+              disabled={readOnly}
+              onChange={(_e, d) => estimateDaysDraft.set(d.value)}
+              onBlur={() => saveDraft('estimateDaysText', estimateDaysDraft)}
+              placeholder="Not estimated"
+            />
+          </Field>
+        )}
       </div>
 
       <div className={styles.row}>
@@ -349,54 +480,36 @@ export function TicketFieldsSection({
             onBlur={() => saveDraft('startAtInput', startAtDraft)}
           />
         </Field>
-        <Field
-          label="Due"
-          className={styles.cell}
-          validationState={errors.dueAtInput ? 'error' : 'none'}
-          validationMessage={errors.dueAtInput}
-        >
-          <Input
-            type="date"
-            value={dueAtDraft.value}
-            disabled={readOnly}
-            onChange={(_e, d) => dueAtDraft.set(d.value)}
-            onBlur={() => saveDraft('dueAtInput', dueAtDraft)}
-          />
-        </Field>
+        {shown('due') && (
+          <Field
+            label="Due"
+            className={styles.cell}
+            validationState={errors.dueAtInput ? 'error' : 'none'}
+            validationMessage={errors.dueAtInput}
+          >
+            <Input
+              type="date"
+              value={dueAtDraft.value}
+              disabled={readOnly}
+              onChange={(_e, d) => dueAtDraft.set(d.value)}
+              onBlur={() => saveDraft('dueAtInput', dueAtDraft)}
+            />
+          </Field>
+        )}
       </div>
 
       <div className={styles.row}>
-        <Field
-          label="Assignee"
-          className={styles.cell}
-          validationState={errors.assigneeId ? 'error' : 'none'}
-          validationMessage={errors.assigneeId}
-        >
-          <Dropdown
-            value={people.find((p) => p.id === ticket.assigneeId)?.name ?? 'Unassigned'}
-            selectedOptions={[ticket.assigneeId ?? NONE]}
-            disabled={readOnly}
-            onOptionSelect={(_e, d) => {
-              if (d.optionValue !== undefined) void saveField('assigneeId', d.optionValue);
-            }}
-          >
-            {people.map((p) => (
-              <Option key={p.id} value={p.id} text={p.name}>
-                <div className={styles.optionRow}>
-                  <PersonAvatar person={p} size={20} />
-                  {p.name}
-                </div>
-              </Option>
-            ))}
-            <Option value={NONE}>Unassigned</Option>
-          </Dropdown>
-          {agentName && (
-            <div className={styles.agentRow}>
-              <Text className={styles.agentSep}>/</Text>
-              <AssigneeDisplay agentName={agentName} variant="text" size={20} />
-            </div>
-          )}
-        </Field>
+        {shown('assignee') && (
+          <TicketAssigneeField
+            className={styles.cell}
+            ticket={ticket}
+            people={people}
+            agentName={agentName}
+            readOnly={readOnly}
+            error={errors.assigneeId}
+            onSave={(v) => void saveField('assigneeId', v)}
+          />
+        )}
         <Field
           label="Reporter"
           className={styles.cell}

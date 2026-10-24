@@ -19,7 +19,9 @@ import type { TaskDetailProps } from './TaskDetail';
 /**
  * Every prop `TaskDetailHost` takes: whatever `TaskDetail` takes, minus `task` (optional
  * here — a caller that already holds the row passes it and skips a lookup the host would
- * otherwise redo), plus the id of the task to show.
+ * otherwise redo), plus the id of the task to show. Pass-through props such as `layout`
+ * (the full-screen issue page) reach `TaskDetail` untouched via `assembleTaskDetailProps`'
+ * `rest`.
  */
 export type TaskDetailHostProps = Omit<TaskDetailProps, 'task'> & {
   taskId: string | null;
