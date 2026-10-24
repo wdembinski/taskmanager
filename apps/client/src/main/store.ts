@@ -156,7 +156,14 @@ import {
   type ReviewViewedMark,
 } from '@shared/review';
 import type { ParsedTask } from './planParser';
-import { type ReviewCommentRow, reviewCommentToRow, rowToReviewComment } from './reviewCommentRows';
+import type { AiDraftInput, AiReview } from '@shared/aiReview';
+import {
+  type ReviewCommentRow,
+  aiDraftToRow,
+  reviewCommentToRow,
+  rowToReviewComment,
+} from './reviewCommentRows';
+import { type AiReviewRow, aiReviewToRow, rowToAiReview } from './review/aiReviewRows';
 import { splitProjectTag } from './projectTagMigration';
 import { blockOwnerFor, needsBlockOwner } from './blockOwnerMigration';
 import { planBlocksMigration } from './blocksLinkMigration';
@@ -1136,6 +1143,35 @@ export interface Store {
    * the `sentAt IS NULL` guard is what F6.9's "exactly one message" rests on.
    */
   markReviewSent(taskId: string, ids: readonly string[], at: number): ReviewComment[];
+
+  // --- AI reviews (F16, see `@shared/aiReview`). ---
+  /**
+   * Record a new review. The counts start at 0 — a review has found nothing until its run
+   * settles — and `createdAt` is the store's. No subject check: a PR subject has no local
+   * row to check against, the same reason `ai_reviews` carries no foreign key.
+   */
+  createAiReview(input: Omit<AiReview, 'findingCount' | 'droppedCount'>): AiReview;
+  /** One review by id; undefined when unknown. */
+  getAiReview(id: string): AiReview | undefined;
+  /** Every review of one subject, newest first. */
+  listAiReviews(subjectId: string): AiReview[];
+  /**
+   * Merge a patch into a review — read-merge-write, like `updateReviewComment`; `id`,
+   * `subjectId` and `createdAt` never move. `resultText` is the raw reply kept for
+   * debugging: capped at `AI_REVIEW_RESULT_MAX_BYTES` on write, `null` clears it, and
+   * omitting it leaves it alone. Undefined for an unknown id.
+   */
+  updateAiReview(
+    id: string,
+    patch: Partial<Omit<AiReview, 'id' | 'subjectId'>> & { resultText?: string | null },
+  ): AiReview | undefined;
+  /** A review's capped raw `resultText`; `null` when unknown or never written. */
+  getAiReviewResultText(id: string): string | null;
+  /**
+   * Land a review's drafts, all in one transaction, each stamped `at` and given a fresh id.
+   * The only writer of `origin = 'ai'`. Returns the drafts as they read back.
+   */
+  addAiDrafts(drafts: readonly AiDraftInput[], at: number): ReviewComment[];
 
   /**
    * Every cached row in `review_queue`, across all three queues, each paired with its own
@@ -2310,23 +2346,63 @@ export function createStore(dbPath: string): Store {
     --
     -- Otherwise the same shape as review_comments — see its comments above for side/
     -- startSide/startLine and why diffId is not a foreign key either.
+    --
+    -- The columns from origin down are F16's AI drafts (@shared/aiReview): a human row keeps
+    -- every default, an AI row names the ai_reviews row it came from. Databases from before
+    -- F16 get them by ALTER below, which is also where idx_review_drafts_ai_review is made.
     CREATE TABLE IF NOT EXISTS review_drafts (
-      id        TEXT PRIMARY KEY,
-      subjectId TEXT NOT NULL,
-      diffId    TEXT NOT NULL,
-      path      TEXT NOT NULL,
-      oldPath   TEXT,             -- NULL unless the file was renamed
-      side      TEXT NOT NULL,    -- 'old' | 'new'
-      line      INTEGER NOT NULL,
-      startSide TEXT,             -- both NULL for a single-line comment
-      startLine INTEGER,
-      body      TEXT NOT NULL,
-      excerpt   TEXT NOT NULL,
-      createdAt INTEGER NOT NULL,
-      updatedAt INTEGER NOT NULL,
-      sentAt    INTEGER           -- NULL = draft
+      id          TEXT PRIMARY KEY,
+      subjectId   TEXT NOT NULL,
+      diffId      TEXT NOT NULL,
+      path        TEXT NOT NULL,
+      oldPath     TEXT,             -- NULL unless the file was renamed
+      side        TEXT NOT NULL,    -- 'old' | 'new'
+      line        INTEGER NOT NULL,
+      startSide   TEXT,             -- both NULL for a single-line comment
+      startLine   INTEGER,
+      body        TEXT NOT NULL,
+      excerpt     TEXT NOT NULL,
+      createdAt   INTEGER NOT NULL,
+      updatedAt   INTEGER NOT NULL,
+      sentAt      INTEGER,          -- NULL = draft
+      origin      TEXT NOT NULL DEFAULT 'human', -- 'human' | 'ai'
+      aiReviewId  TEXT,             -- the ai_reviews row an AI draft came from
+      severity    TEXT,             -- AiFindingSeverity; NULL on a human draft
+      suggestion  TEXT,             -- replacement text for the range, verbatim
+      acceptedAt  INTEGER,
+      dismissedAt INTEGER,
+      fileLevel   INTEGER NOT NULL DEFAULT 0 -- 1 = the finding could not anchor in the hunks
     );
     CREATE INDEX IF NOT EXISTS idx_review_drafts_subject ON review_drafts(subjectId, createdAt);
+    -- One AI review of one subject at one head (F16, AiReview in @shared/aiReview), plus the
+    -- raw resultText the session answered with — capped at AI_REVIEW_RESULT_MAX_BYTES on
+    -- write and kept only for debugging, so it is never on AiReview itself. No foreign key,
+    -- for the same reason review_drafts has none: a review lives exactly as long as its
+    -- subject's drafts, and goes with them through deleteAiReviewsForSubject. status,
+    -- verdict and requestedBy are plain TEXT, coerced on read (aiReviewRows.ts); tokens is
+    -- AiReviewTokens JSON.
+    CREATE TABLE IF NOT EXISTS ai_reviews (
+      id           TEXT PRIMARY KEY,
+      subjectId    TEXT NOT NULL,
+      diffId       TEXT NOT NULL,
+      headSha      TEXT NOT NULL,
+      status       TEXT NOT NULL,   -- AiReviewStatus
+      parkReason   TEXT,
+      model        TEXT NOT NULL,
+      startedAt    INTEGER,
+      finishedAt   INTEGER,
+      costUsd      REAL,
+      tokens       TEXT,            -- AiReviewTokens JSON
+      summary      TEXT,
+      verdict      TEXT,            -- AiReviewVerdict
+      findingCount INTEGER NOT NULL DEFAULT 0,
+      droppedCount INTEGER NOT NULL DEFAULT 0,
+      error        TEXT,
+      requestedBy  TEXT NOT NULL,   -- 'human' | 'automation'
+      resultText   TEXT,
+      createdAt    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_reviews_subject ON ai_reviews(subjectId, createdAt);
     -- One row per file a subject has marked read (F15.4, ReviewViewedMark). Stale once
     -- path's blob SHA moves past blobSha — the reader's job to notice, not this table's.
     -- No foreign key, for the same reason review_drafts has none.
@@ -2393,6 +2469,36 @@ export function createStore(dbPath: string): Store {
   db.exec(
     `UPDATE board_reviews SET status = 'failed', error = 'interrupted' WHERE status = 'running'`,
   );
+  // The same for an AI review (F16): nothing restarts it, the human asks again. Only
+  // `running` — a queued or parked review is the runner's and the gate's to own.
+  db.prepare(
+    `UPDATE ai_reviews SET status = 'failed', error = 'the app closed during the review',
+       finishedAt = ? WHERE status = 'running'`,
+  ).run(Date.now());
+
+  // Migrate databases created before F16's AI drafts. Every existing row is a human's, so
+  // the 'human' and 0 defaults are exactly right and the rest stay NULL; the aiReviewId
+  // index can only be made once that column exists.
+  {
+    const draftColumns = db.prepare(`PRAGMA table_info(review_drafts)`).all() as Array<{
+      name: string;
+    }>;
+    const added: Array<[string, string]> = [
+      ['origin', `TEXT NOT NULL DEFAULT 'human'`],
+      ['aiReviewId', 'TEXT'],
+      ['severity', 'TEXT'],
+      ['suggestion', 'TEXT'],
+      ['acceptedAt', 'INTEGER'],
+      ['dismissedAt', 'INTEGER'],
+      ['fileLevel', 'INTEGER NOT NULL DEFAULT 0'],
+    ];
+    for (const [name, type] of added) {
+      if (!draftColumns.some((c) => c.name === name)) {
+        db.exec(`ALTER TABLE review_drafts ADD COLUMN ${name} ${type}`);
+      }
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_review_drafts_ai_review ON review_drafts(aiReviewId)`);
+  }
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
   // the three v1 edit kinds, applied under the old rule where "applied" was the whole
@@ -4092,10 +4198,12 @@ export function createStore(dbPath: string): Store {
   const insertReviewComment = db.prepare<[ReviewCommentRow]>(
     `INSERT INTO review_drafts
        (id, subjectId, diffId, path, oldPath, side, line, startSide, startLine, body, excerpt,
-        createdAt, updatedAt, sentAt)
+        createdAt, updatedAt, sentAt, origin, aiReviewId, severity, suggestion, acceptedAt,
+        dismissedAt, fileLevel)
      VALUES
        (@id, @subjectId, @diffId, @path, @oldPath, @side, @line, @startSide, @startLine, @body,
-        @excerpt, @createdAt, @updatedAt, @sentAt)
+        @excerpt, @createdAt, @updatedAt, @sentAt, @origin, @aiReviewId, @severity, @suggestion,
+        @acceptedAt, @dismissedAt, @fileLevel)
      ON CONFLICT DO NOTHING`,
   );
   // Only `path`/`oldPath` are absent from the SET list: `updateReviewComment`'s patch can
@@ -4124,6 +4232,35 @@ export function createStore(dbPath: string): Store {
   const deleteDraftsForSubject = db.prepare(`DELETE FROM review_drafts WHERE subjectId = ?`);
   const deleteViewedForSubject = db.prepare(`DELETE FROM review_viewed WHERE subjectId = ?`);
   const deleteQueueForSubject = db.prepare(`DELETE FROM review_queue WHERE subjectId = ?`);
+  // A review goes with its subject's drafts (F16) — run beside every deleteDraftsForSubject.
+  const deleteAiReviewsForSubject = db.prepare(`DELETE FROM ai_reviews WHERE subjectId = ?`);
+
+  // ai_reviews (F16): the statements behind createAiReview/getAiReview/listAiReviews/
+  // updateAiReview/getAiReviewResultText. The row mapping is aiReviewRows.ts's.
+  const insertAiReviewStmt = db.prepare<[AiReviewRow]>(
+    `INSERT INTO ai_reviews
+       (id, subjectId, diffId, headSha, status, parkReason, model, startedAt, finishedAt,
+        costUsd, tokens, summary, verdict, findingCount, droppedCount, error, requestedBy,
+        resultText, createdAt)
+     VALUES
+       (@id, @subjectId, @diffId, @headSha, @status, @parkReason, @model, @startedAt,
+        @finishedAt, @costUsd, @tokens, @summary, @verdict, @findingCount, @droppedCount,
+        @error, @requestedBy, @resultText, @createdAt)`,
+  );
+  const selectAiReviewStmt = db.prepare(`SELECT * FROM ai_reviews WHERE id = ?`);
+  const selectAiReviewsForSubject = db.prepare(
+    `SELECT * FROM ai_reviews WHERE subjectId = ? ORDER BY createdAt DESC, rowid DESC`,
+  );
+  // id, subjectId and createdAt are a review's identity and never move.
+  const updateAiReviewStmt = db.prepare<[AiReviewRow]>(
+    `UPDATE ai_reviews
+       SET diffId = @diffId, headSha = @headSha, status = @status, parkReason = @parkReason,
+           model = @model, startedAt = @startedAt, finishedAt = @finishedAt,
+           costUsd = @costUsd, tokens = @tokens, summary = @summary, verdict = @verdict,
+           findingCount = @findingCount, droppedCount = @droppedCount, error = @error,
+           requestedBy = @requestedBy, resultText = @resultText
+     WHERE id = @id`,
+  );
 
   // review_viewed (F15.10): listReviewViewed/setReviewViewed/clearReviewViewed's own
   // statements, beside the subject-wide delete above. setReviewViewed upserts on the
@@ -4961,6 +5098,7 @@ export function createStore(dbPath: string): Store {
       // covers `pruneArchivedBefore`, which comes through here too.
       const subjectId = taskSubjectId(childId);
       deleteDraftsForSubject.run(subjectId);
+      deleteAiReviewsForSubject.run(subjectId);
       deleteViewedForSubject.run(subjectId);
       deleteQueueForSubject.run(subjectId);
       deleteTask.run(childId);
@@ -5818,6 +5956,7 @@ export function createStore(dbPath: string): Store {
         for (const task of getTasks(id)) {
           const subjectId = taskSubjectId(task.id);
           deleteDraftsForSubject.run(subjectId);
+          deleteAiReviewsForSubject.run(subjectId);
           deleteViewedForSubject.run(subjectId);
           deleteQueueForSubject.run(subjectId);
         }
@@ -6426,6 +6565,7 @@ export function createStore(dbPath: string): Store {
           if (desiredIds.has(oldId)) continue;
           const subjectId = taskSubjectId(oldId);
           deleteDraftsForSubject.run(subjectId);
+          deleteAiReviewsForSubject.run(subjectId);
           deleteViewedForSubject.run(subjectId);
           deleteQueueForSubject.run(subjectId);
         }
@@ -7058,6 +7198,73 @@ export function createStore(dbPath: string): Store {
       });
       tx();
       return stamped;
+    },
+
+    createAiReview(input) {
+      const review: AiReview = {
+        id: input.id,
+        subjectId: input.subjectId,
+        diffId: input.diffId,
+        headSha: input.headSha,
+        status: input.status,
+        parkReason: input.parkReason,
+        model: input.model,
+        startedAt: input.startedAt,
+        finishedAt: input.finishedAt,
+        costUsd: input.costUsd,
+        tokens: input.tokens,
+        summary: input.summary,
+        verdict: input.verdict,
+        findingCount: 0,
+        droppedCount: 0,
+        error: input.error,
+        requestedBy: input.requestedBy,
+      };
+      insertAiReviewStmt.run(aiReviewToRow(review, Date.now()));
+      return review;
+    },
+
+    getAiReview(id) {
+      const row = selectAiReviewStmt.get(id) as AiReviewRow | undefined;
+      return row ? rowToAiReview(row) : undefined;
+    },
+
+    listAiReviews(subjectId) {
+      return (selectAiReviewsForSubject.all(subjectId) as AiReviewRow[]).map(rowToAiReview);
+    },
+
+    updateAiReview(id, patch) {
+      const existing = selectAiReviewStmt.get(id) as AiReviewRow | undefined;
+      if (!existing) return undefined;
+      const { resultText, ...fields } = patch;
+      // An explicit `undefined` leaves a field alone, as an omitted one does — never a
+      // NULL written by accident through the spread.
+      const set = Object.fromEntries(
+        Object.entries(fields).filter(([, v]) => v !== undefined),
+      ) as Partial<AiReview>;
+      const next: AiReview = {
+        ...rowToAiReview(existing),
+        ...set,
+        id: existing.id,
+        subjectId: existing.subjectId,
+      };
+      // aiReviewToRow caps it, so a stored text over the cap can never come back.
+      const text = resultText !== undefined ? resultText : existing.resultText;
+      updateAiReviewStmt.run(aiReviewToRow(next, existing.createdAt, text));
+      return next;
+    },
+
+    getAiReviewResultText(id) {
+      const row = selectAiReviewStmt.get(id) as AiReviewRow | undefined;
+      return row?.resultText ?? null;
+    },
+
+    addAiDrafts(drafts, at) {
+      const rows = drafts.map((d) => aiDraftToRow(d, randomUUID(), at));
+      db.transaction(() => {
+        for (const row of rows) insertReviewComment.run(row);
+      })();
+      return rows.map(rowToReviewComment);
     },
 
     listReviewQueue() {
