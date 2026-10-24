@@ -7,7 +7,7 @@ import { BOOT_CHANNELS } from '../../fixtures/uiShotsFixture.mjs';
 
 /**
  * The card `'issue-row:first'` opens (`'13a'`, see `30-attachments.mjs`'s own note on that
- * row order) carrying an open owner decision — handed to `issue-peek` alone through its
+ * row order) carrying an open owner decision, a milestone and an epic — handed to `issue-peek` alone through its
  * `channelOverrides`, so no other row's board, list or ready set changes.
  */
 const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
@@ -17,6 +17,10 @@ const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
         decisionQuestion:
           'Which hosting plan do we pay for — the monthly one, or the yearly one at a discount?',
         decisionAskedAt: Date.now() - 2 * 86_400_000,
+        // Filed under a milestone and an epic (both from `50-sidebar.mjs`), so the peek's
+        // header breadcrumb draws the full `Project › Milestone › Epic` after the key.
+        milestoneId: 'ms-mixed',
+        epicTaskId: 'sb-7',
       }
     : // Landed, so the "Blocked by" row below reads Done + "merged" (an `after-merge` arrow
       // is satisfied by `landedAt`, not by the column).
@@ -111,6 +115,18 @@ export default [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    expect: '[data-issue-breadcrumb]',
+    mockup: 'v9-2-issue-detail-light.svg',
+  },
+  {
+    // The same full-screen issue in the dark scheme. There is no dark issue-detail mockup, so
+    // the light one is the closest stand-in to compare against.
+    name: 'issue-full-screen-dark',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'dark',
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }, { click: 'Open full screen' }],
+    expect: '[data-issue-breadcrumb]',
     mockup: 'v9-2-issue-detail-light.svg',
   },
 ];

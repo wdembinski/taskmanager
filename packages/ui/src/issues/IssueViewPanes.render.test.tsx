@@ -72,6 +72,7 @@ describe('IssueFullPage', () => {
     expect(manager).toBeGreaterThanOrEqual(0);
     expect(milestone).toBeGreaterThan(manager);
     expect(epic).toBeGreaterThan(milestone);
+    expect(html).toContain('data-issue-breadcrumb');
   });
 
   it('renders the Back to list button and the children', () => {
@@ -89,7 +90,7 @@ describe('IssueFullPage', () => {
 describe('IssuePeek', () => {
   it('renders both header buttons with their labels', () => {
     const html = renderToStaticMarkup(
-      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
         <div>detail</div>
       </IssuePeek>,
     );
@@ -100,9 +101,54 @@ describe('IssuePeek', () => {
     expect(html).toContain('title="Close (Esc)"');
   });
 
+  it('renders the key and every breadcrumb segment in the header, in order', () => {
+    const html = renderToStaticMarkup(
+      <IssuePeek
+        breadcrumb={['Task Manager', 'M4 Reach', 'F4 Linear integration']}
+        ticketKey="TM-71"
+        onExpand={() => {}}
+        onClose={() => {}}
+      >
+        <div>detail</div>
+      </IssuePeek>,
+    );
+
+    const crumb = html.indexOf('data-issue-breadcrumb');
+    const key = html.indexOf('TM-71');
+    const manager = html.indexOf('Task Manager');
+    const milestone = html.indexOf('M4 Reach');
+    const epic = html.indexOf('F4 Linear integration');
+
+    expect(crumb).toBeGreaterThanOrEqual(0);
+    expect(key).toBeGreaterThan(crumb);
+    expect(manager).toBeGreaterThan(key);
+    expect(milestone).toBeGreaterThan(manager);
+    expect(epic).toBeGreaterThan(milestone);
+    expect(html).toContain('Task Manager › M4 Reach › F4 Linear integration');
+    // The crumb sits ahead of the two icons, not after them.
+    expect(epic).toBeLessThan(html.indexOf('aria-label="Open full screen"'));
+  });
+
+  it('renders no separator for an empty breadcrumb', () => {
+    const withKey = renderToStaticMarkup(
+      <IssuePeek breadcrumb={[]} ticketKey="TM-71" onExpand={() => {}} onClose={() => {}}>
+        <div>detail</div>
+      </IssuePeek>,
+    );
+    const bare = renderToStaticMarkup(
+      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
+        <div>detail</div>
+      </IssuePeek>,
+    );
+
+    expect(withKey).toContain('TM-71');
+    expect(withKey).not.toContain('›');
+    expect(bare).not.toContain('›');
+  });
+
   it('renders the children', () => {
     const html = renderToStaticMarkup(
-      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
         <div>peek detail</div>
       </IssuePeek>,
     );
@@ -112,7 +158,7 @@ describe('IssuePeek', () => {
 
   it('shows pipeline stage dots and the verdict badge for a MergeRequests child (F13.24)', () => {
     const html = renderToStaticMarkup(
-      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
         <MergeRequests
           mergeRequests={[mr()]}
           onMarkRead={() => {}}
@@ -134,7 +180,7 @@ describe('IssuePeek', () => {
     const readyMr = mr({ approvalsRequired: 1, approvalsGiven: 1, pipelineStatus: 'success' });
 
     const withButtons = renderToStaticMarkup(
-      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
         <MergeRequests
           mergeRequests={[readyMr]}
           onMarkRead={() => {}}
@@ -148,7 +194,7 @@ describe('IssuePeek', () => {
       </IssuePeek>,
     );
     const withoutButton = renderToStaticMarkup(
-      <IssuePeek onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
         <MergeRequests
           mergeRequests={[readyMr]}
           onMarkRead={() => {}}

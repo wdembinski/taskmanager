@@ -13,7 +13,7 @@
  * over `GlassPane`'s own styles for any property both declare.
  */
 import type { ReactNode } from 'react';
-import { Button, Text, makeStyles, tokens } from '@fluentui/react-components';
+import { Button, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
 import { ArrowLeftRegular, ArrowMaximizeRegular, DismissRegular } from '@fluentui/react-icons';
 import { GlassPane } from '../shell/GlassPane';
 
@@ -36,10 +36,14 @@ const useStyles = makeStyles({
   peekHeader: {
     flex: '0 0 auto',
     display: 'flex',
-    justifyContent: 'flex-end',
+    alignItems: 'center',
     gap: '2px',
     padding: '6px',
   },
+  // Takes the header's free width so the two icons stay pinned right, and lets the crumb
+  // itself shrink to an ellipsis rather than push them out.
+  peekCrumb: { flex: 1, minWidth: 0, paddingLeft: '10px', paddingRight: '6px' },
+  peekKey: { marginRight: '10px' },
   peekBody: { flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' },
   full: {
     flex: 1,
@@ -67,6 +71,10 @@ const useStyles = makeStyles({
 });
 
 export interface IssuePeekProps {
+  /** The project/milestone/epic breadcrumb (`issueBreadcrumb`), same as `IssueFullPage`'s. */
+  breadcrumb: readonly string[];
+  /** The ticket's own key (`TM-71`, or a tracker's `ENG-1`), drawn ahead of the crumbs. */
+  ticketKey?: string;
   /** The peek header's "Open full screen" icon button — dispatches `expand`. */
   onExpand: () => void;
   /** The peek header's "Close" icon button — dispatches `close`. */
@@ -76,12 +84,22 @@ export interface IssuePeekProps {
 }
 
 /** The peek: a `GlassPane` beside the list, matching the attached peek mockup's two
- *  top-right icons. */
-export function IssuePeek({ onExpand, onClose, children }: IssuePeekProps): JSX.Element {
+ *  top-right icons, with the key and breadcrumb to their left. */
+export function IssuePeek({
+  breadcrumb,
+  ticketKey,
+  onExpand,
+  onClose,
+  children,
+}: IssuePeekProps): JSX.Element {
   const styles = useStyles();
   return (
     <GlassPane className={styles.peek}>
       <div className={styles.peekHeader}>
+        <Text className={mergeClasses(styles.crumbText, styles.peekCrumb)} data-issue-breadcrumb>
+          {ticketKey && <span className={styles.peekKey}>{ticketKey}</span>}
+          {breadcrumb.join(' › ')}
+        </Text>
         <Button
           appearance="subtle"
           size="small"
@@ -130,7 +148,9 @@ export function IssueFullPage({ breadcrumb, onBack, children }: IssueFullPagePro
         >
           Back to list
         </Button>
-        <Text className={styles.crumbText}>{breadcrumb.join(' › ')}</Text>
+        <Text className={styles.crumbText} data-issue-breadcrumb>
+          {breadcrumb.join(' › ')}
+        </Text>
       </div>
       <div className={styles.fullBody}>{children}</div>
     </GlassPane>
