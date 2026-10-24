@@ -18,6 +18,9 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     gap: '8px',
     padding: '12px',
+    // No wider than the Settings fields around it (`Settings.tsx`'s `capped`).
+    maxWidth: '576px',
+    boxSizing: 'border-box',
     borderRadius: tokens.borderRadiusMedium,
     backgroundColor: tokens.colorNeutralBackground2,
   },

@@ -46,6 +46,7 @@ import {
   type FluentIcon,
 } from '@fluentui/react-icons';
 import type { ReactNode } from 'react';
+import { GlassPane } from '../shell/GlassPane';
 
 /**
  * The nav icon for every section either host has. The first six are the mockup's own
@@ -84,11 +85,24 @@ export interface SettingsNavGroup {
 }
 
 const useStyles = makeStyles({
+  /** The tinted canvas the card stands on: the mockup's 10px top/right/bottom inset, and none
+   *  on the left, where the card meets the nav rail (x=52). Hosts give this tab no shell
+   *  padding, so this is the only inset. */
   page: {
     display: 'flex',
     flexDirection: 'column',
     flex: 1,
     minHeight: 0,
+    boxSizing: 'border-box',
+    padding: '10px 10px 10px 0',
+  },
+  /** The one `GlassPane` holding the title, nav and pane. */
+  card: {
+    display: 'flex',
+    flexDirection: 'column',
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
     boxSizing: 'border-box',
     padding: `${tokens.spacingVerticalXXL} 28px 0 ${tokens.spacingHorizontalXL}`,
   },
@@ -132,6 +146,8 @@ const useStyles = makeStyles({
     // so Fluent's indicator (`::after`) and its hover twin (`::before`) are cleared.
     '::after': { backgroundColor: tokens.colorTransparentBackground },
     '::before': { backgroundColor: tokens.colorTransparentBackground },
+    // The mockup's 12.5px labels; Fluent's small tab would otherwise draw ~14px.
+    [`& .${tabClassNames.content}`]: { fontSize: '12.5px' },
   },
   tabSelected: {
     backgroundColor: tokens.colorBrandBackground2,
@@ -206,41 +222,43 @@ export function SettingsPage({ groups, selected, onSelect, children }: SettingsP
   const styles = useStyles();
   return (
     <div className={styles.page}>
-      <h1 className={styles.title}>Settings</h1>
-      <div className={styles.body}>
-        <TabList
-          vertical
-          size="small"
-          aria-label="Settings sections"
-          selectedValue={selected}
-          onTabSelect={settingsTabSelectHandler(onSelect)}
-          className={styles.nav}
-        >
-          {groups.flatMap((group, index) => [
-            <Caption1Strong
-              key={`heading:${group.heading}`}
-              role="presentation"
-              className={mergeClasses(styles.heading, index > 0 && styles.headingLater)}
-            >
-              {group.heading}
-            </Caption1Strong>,
-            ...group.items.map((item) => {
-              const Icon = item.icon;
-              return (
-                <Tab
-                  key={item.id}
-                  value={item.id}
-                  icon={<Icon />}
-                  className={mergeClasses(styles.tab, item.id === selected && styles.tabSelected)}
-                >
-                  {item.title}
-                </Tab>
-              );
-            }),
-          ])}
-        </TabList>
-        <div className={styles.content}>{children}</div>
-      </div>
+      <GlassPane className={styles.card}>
+        <h1 className={styles.title}>Settings</h1>
+        <div className={styles.body}>
+          <TabList
+            vertical
+            size="small"
+            aria-label="Settings sections"
+            selectedValue={selected}
+            onTabSelect={settingsTabSelectHandler(onSelect)}
+            className={styles.nav}
+          >
+            {groups.flatMap((group, index) => [
+              <Caption1Strong
+                key={`heading:${group.heading}`}
+                role="presentation"
+                className={mergeClasses(styles.heading, index > 0 && styles.headingLater)}
+              >
+                {group.heading}
+              </Caption1Strong>,
+              ...group.items.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <Tab
+                    key={item.id}
+                    value={item.id}
+                    icon={<Icon />}
+                    className={mergeClasses(styles.tab, item.id === selected && styles.tabSelected)}
+                  >
+                    {item.title}
+                  </Tab>
+                );
+              }),
+            ])}
+          </TabList>
+          <div className={styles.content}>{children}</div>
+        </div>
+      </GlassPane>
     </div>
   );
 }

@@ -1723,12 +1723,12 @@ export function Settings({
               </div>
 
               {gitlabTest && (
-                <MessageBar intent={gitlabTest.ok ? 'success' : 'error'}>
+                <MessageBar className={styles.capped} intent={gitlabTest.ok ? 'success' : 'error'}>
                   <MessageBarBody>{gitlabTest.message}</MessageBarBody>
                 </MessageBar>
               )}
               {gitlabTest?.prerequisites?.map((prereq) => (
-                <MessageBar key={prereq.project} intent="warning">
+                <MessageBar key={prereq.project} className={styles.capped} intent="warning">
                   <MessageBarBody>
                     <MessageBarTitle>{prereq.project}</MessageBarTitle>
                     <ul className={styles.prereqList}>
@@ -1930,7 +1930,7 @@ export function Settings({
               </div>
 
               {githubStatus?.plainTextStorage && (
-                <MessageBar intent="warning">
+                <MessageBar className={styles.capped} intent="warning">
                   <MessageBarBody>
                     This machine has no OS keyring (typical on WSL, a headless session, or a minimal
                     desktop), so the token is stored with a fixed built-in key — obfuscated on disk,
@@ -1970,12 +1970,12 @@ export function Settings({
               </div>
 
               {githubTest && (
-                <MessageBar intent={githubTest.ok ? 'success' : 'error'}>
+                <MessageBar className={styles.capped} intent={githubTest.ok ? 'success' : 'error'}>
                   <MessageBarBody>{githubTest.message}</MessageBarBody>
                 </MessageBar>
               )}
               {githubTest?.prerequisites?.map((prereq) => (
-                <MessageBar key={prereq.project} intent="warning">
+                <MessageBar key={prereq.project} className={styles.capped} intent="warning">
                   <MessageBarBody>
                     <MessageBarTitle>{prereq.project}</MessageBarTitle>
                     <ul className={styles.prereqList}>
@@ -2035,7 +2035,7 @@ export function Settings({
                     </Button>
                   </div>
                   {linearTeams.error && (
-                    <MessageBar intent="warning">
+                    <MessageBar className={styles.capped} intent="warning">
                       <MessageBarBody>{linearTeams.error}</MessageBarBody>
                     </MessageBar>
                   )}
@@ -2187,7 +2187,7 @@ export function Settings({
                       hint="Which workflow state a drag into each column transitions the issue to, for this team. Blocked never transitions the issue — the move stays local."
                     >
                       {list?.error && (
-                        <MessageBar intent="warning">
+                        <MessageBar className={styles.capped} intent="warning">
                           <MessageBarBody>{list.error}</MessageBarBody>
                         </MessageBar>
                       )}
@@ -2250,7 +2250,7 @@ export function Settings({
               </div>
 
               {linearStatus?.plainTextStorage && (
-                <MessageBar intent="warning">
+                <MessageBar className={styles.capped} intent="warning">
                   <MessageBarBody>
                     This machine has no OS keyring (typical on WSL, a headless session, or a minimal
                     desktop), so the key is stored with a fixed built-in key — obfuscated on disk,
@@ -2290,7 +2290,7 @@ export function Settings({
               </div>
 
               {linearTest && (
-                <MessageBar intent={linearTest.ok ? 'success' : 'error'}>
+                <MessageBar className={styles.capped} intent={linearTest.ok ? 'success' : 'error'}>
                   <MessageBarBody>{linearTest.message}</MessageBarBody>
                 </MessageBar>
               )}
@@ -2330,7 +2330,7 @@ export function Settings({
                   hint={cloudAuthHint(cloudStatus)}
                 >
                   {cloudStatus?.legacySignInRetired && (
-                    <MessageBar intent="warning">
+                    <MessageBar className={styles.capped} intent="warning">
                       <MessageBarBody>
                         Cloud sign-in has been replaced by personal access tokens — create one in
                         the web app’s Personal access tokens page and paste it below.
@@ -2338,7 +2338,7 @@ export function Settings({
                     </MessageBar>
                   )}
                   {cloudStatus?.authState === 'rejected' && !cloudStatus?.legacySignInRetired && (
-                    <MessageBar intent="warning">
+                    <MessageBar className={styles.capped} intent="warning">
                       <MessageBarBody>
                         The cloud rejected this token. It has been revoked or has expired — create a
                         new one in the web app and paste it here.
@@ -2376,7 +2376,7 @@ export function Settings({
                 </div>
 
                 {cloudTest && (
-                  <MessageBar intent={cloudTest.ok ? 'success' : 'error'}>
+                  <MessageBar className={styles.capped} intent={cloudTest.ok ? 'success' : 'error'}>
                     <MessageBarBody>{cloudTest.message}</MessageBarBody>
                   </MessageBar>
                 )}
@@ -2740,7 +2740,7 @@ export function Settings({
               </div>
 
               {jiraStatus?.plainTextStorage && (
-                <MessageBar intent="warning">
+                <MessageBar className={styles.capped} intent="warning">
                   <MessageBarBody>
                     This machine has no OS keyring (typical on WSL, a headless session, or a minimal
                     desktop), so the token is stored with a fixed built-in key — obfuscated on disk,
@@ -2781,7 +2781,7 @@ export function Settings({
               </div>
 
               {testResult && (
-                <MessageBar intent={testResult.ok ? 'success' : 'error'}>
+                <MessageBar className={styles.capped} intent={testResult.ok ? 'success' : 'error'}>
                   <MessageBarBody>{testResult.message}</MessageBarBody>
                 </MessageBar>
               )}

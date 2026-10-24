@@ -586,8 +586,10 @@ export function App(): JSX.Element {
           </>
         }
         // Every screen but My Tasks is a document and wants a margin. My Tasks is a
-        // two-panel workspace whose right pane runs to the window's edges.
-        padded={tab !== 'mytasks'}
+        // two-panel workspace whose right pane runs to the window's edges, and Tickets and
+        // Settings stand on cards (`GlassPane`) that lay out their own 10px canvas inset —
+        // the shell's padding on top would double it.
+        padded={tab !== 'mytasks' && tab !== 'tickets' && tab !== 'settings'}
         /* Status bar: Claude readiness + app info, the full width of the window. */
         status={
           <StatusBar attention={attentionCount > 0}>
