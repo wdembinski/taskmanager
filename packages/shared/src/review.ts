@@ -21,6 +21,7 @@
  *    to stay comfortably under it.
  */
 
+import type { AiFindingSeverity, ReviewDraftOrigin } from './aiReview';
 import type { ForgeProvider } from './mergeRequest';
 import type { ChatRefusal } from './model';
 
@@ -645,6 +646,23 @@ export interface ReviewComment {
    * the same text in the current revision. Left out entirely until something recomputes it.
    */
   outdated?: boolean;
+  /*
+   * F16's AI fields. All optional: typecheck cannot find every existing builder. An AI draft
+   * counts as the human's — sendable or publishable — only once accepted, and editing it
+   * accepts it; later cards enforce that rule.
+   */
+  /** Who wrote this draft. Absent means `'human'`. */
+  origin?: ReviewDraftOrigin;
+  /** The `AiReview.id` that produced it. */
+  aiReviewId?: string | null;
+  /** The finding's severity, for an AI draft. */
+  severity?: AiFindingSeverity | null;
+  /** Structured replacement text for the anchored range; F18 formats it per forge. */
+  suggestion?: string | null;
+  /** When the human accepted an AI draft (editing it counts). */
+  acceptedAt?: number | null;
+  /** When the human dismissed an AI draft. */
+  dismissedAt?: number | null;
 }
 
 /** The worktree moved on since the human loaded `diffId`. */
