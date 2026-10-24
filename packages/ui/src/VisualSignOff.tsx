@@ -70,15 +70,37 @@ const useStyles = makeStyles({
     borderRadius: tokens.borderRadiusMedium,
     border: `1px solid ${tokens.colorNeutralStroke2}`,
   },
-  head: { display: 'flex', alignItems: 'center', gap: '8px' },
-  grow: { flex: 1 },
+  /**
+   * Wraps: in the issue peek (~300px at 1100px wide) the title, state badge and both
+   * verdict buttons do not fit one line, and a non-wrapping row pushed Approve past the
+   * band's border. The buttons wrap together as `actions`, never one at a time.
+   */
+  head: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    columnGap: '8px',
+    rowGap: '6px',
+  },
+  headTitle: { whiteSpace: 'nowrap' },
+  actions: { display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto', flexShrink: 0 },
   rows: { display: 'flex', flexDirection: 'column', gap: '10px' },
   row: { display: 'flex', flexDirection: 'column', gap: '4px' },
   rowHead: { display: 'flex', alignItems: 'center', gap: '8px' },
   thumbs: { display: 'flex', gap: '6px' },
-  thumbWrap: { display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' },
-  thumb: {
+  // Each thumbnail shares the row and may shrink below its 160px cap, so a pair always
+  // fits inside the band's border however narrow the pane is.
+  thumbWrap: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    alignItems: 'center',
+    flex: '1 1 0',
+    minWidth: 0,
     maxWidth: '160px',
+  },
+  thumb: {
+    maxWidth: '100%',
     maxHeight: '110px',
     borderRadius: tokens.borderRadiusSmall,
     border: `1px solid ${tokens.colorNeutralStroke2}`,
@@ -252,7 +274,9 @@ export function VisualSignOff({
   return (
     <div className={styles.root} data-visual-signoff>
       <div className={styles.head}>
-        <Text weight="semibold">Visual sign-off</Text>
+        <Text weight="semibold" className={styles.headTitle}>
+          Visual sign-off
+        </Text>
         <StateBadge state={state.human} by={state.signedOffBy} />
         {/* Rows open their own side-by-side page now, so the contact sheet keeps its own
             link — desktop only, since the web host's dialog is per-row. */}
@@ -266,25 +290,26 @@ export function VisualSignOff({
             Open all
           </Button>
         )}
-        <span className={styles.grow} />
-        <Button
-          size="small"
-          appearance="subtle"
-          disabled={busy !== null}
-          icon={busy === 'needs-changes' ? <Spinner size="tiny" /> : <DismissRegular />}
-          onClick={() => void flagNeedsChanges()}
-        >
-          Needs changes
-        </Button>
-        <Button
-          size="small"
-          appearance="primary"
-          disabled={busy !== null}
-          icon={busy === 'approve' ? <Spinner size="tiny" /> : <CheckmarkCircleRegular />}
-          onClick={() => void approve()}
-        >
-          Approve
-        </Button>
+        <div className={styles.actions} data-visual-signoff-actions>
+          <Button
+            size="small"
+            appearance="subtle"
+            disabled={busy !== null}
+            icon={busy === 'needs-changes' ? <Spinner size="tiny" /> : <DismissRegular />}
+            onClick={() => void flagNeedsChanges()}
+          >
+            Needs changes
+          </Button>
+          <Button
+            size="small"
+            appearance="primary"
+            disabled={busy !== null}
+            icon={busy === 'approve' ? <Spinner size="tiny" /> : <CheckmarkCircleRegular />}
+            onClick={() => void approve()}
+          >
+            Approve
+          </Button>
+        </div>
       </div>
       {roundLine && (
         <Caption1 className={styles.hint} data-ai-review-round>

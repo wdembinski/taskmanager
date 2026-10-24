@@ -66,6 +66,7 @@ import {
   ChevronDownRegular,
   CollectionsEmptyRegular,
   AlertOffRegular,
+  EditRegular,
   PlayRegular,
 } from '@fluentui/react-icons';
 import { activityLabel, runningSubAgents } from './agentActivity';
@@ -124,8 +125,16 @@ const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, flex: 1 },
   head: { display: 'flex', flexDirection: 'column', gap: '2px' },
   crumbRow: { display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '-8px' },
-  titleRow: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 },
-  showOnBoard: { marginLeft: 'auto', flexShrink: 0 },
+  /**
+   * The peek's title gets the row's width: Edit and Show on board are icon-only and never
+   * shrink, so at 1100px (a ~300px pane) the title wraps on word boundaries instead of
+   * collapsing to one word per line beside two text buttons. The tracker key lives on the
+   * meta line below, not here.
+   */
+  titleRow: { display: 'flex', alignItems: 'center', gap: '4px', minWidth: 0 },
+  titleAction: { flexShrink: 0 },
+  /** The key badge, then `type · priority · phase`. */
+  metaRow: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' },
   icon: { fontSize: '16px', display: 'flex', flexShrink: 0 },
   title: { flex: 1, minWidth: 0 },
   /** The "app's copy only" caveat under an in-progress title edit on a synced card. */
@@ -1432,53 +1441,27 @@ export function TaskDetail({
           ) : (
             <>
               <Subtitle2 className={styles.title}>{task.title}</Subtitle2>
-              <Button size="small" appearance="subtle" onClick={() => setEditingTitle(true)}>
-                Edit
-              </Button>
-              {/* The ticket badge, and the one place this pane names the tracker out loud.
-                    "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
-                    key itself is printed short (`#123`) with the whole `owner/repo#123` in the
-                    tooltip — the same bargain the card's footer badge strikes, so the two cannot
-                    read as two different tickets. */}
-              {task.externalKey &&
-                (task.externalUrl ? (
-                  <a
-                    className={styles.key}
-                    href={task.externalUrl}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    title={ticketLinkTitle(task) ?? undefined}
-                  >
-                    <Badge
-                      appearance="outline"
-                      color="informative"
-                      icon={<TrackerMark task={task} size={12} />}
-                    >
-                      {shortTicketKey(task)}
-                    </Badge>
-                  </a>
-                ) : (
-                  <Badge
-                    appearance="outline"
-                    color="informative"
-                    icon={<TrackerMark task={task} size={12} />}
-                    title={task.externalKey}
-                  >
-                    {shortTicketKey(task)}
-                  </Badge>
-                ))}
+              <Button
+                className={styles.titleAction}
+                size="small"
+                appearance="subtle"
+                icon={<EditRegular />}
+                aria-label="Edit title"
+                title="Edit title"
+                onClick={() => setEditingTitle(true)}
+              />
             </>
           )}
           {onShowOnBoard && (
             <Button
-              className={styles.showOnBoard}
+              className={styles.titleAction}
               size="small"
               appearance="subtle"
               icon={<BoardRegular />}
+              aria-label="Show on board"
+              title="Show on board"
               onClick={() => onShowOnBoard(task.id)}
-            >
-              Show on board
-            </Button>
+            />
           )}
         </div>
         {editingTitle && tracker && (
@@ -1487,11 +1470,45 @@ export function TaskDetail({
             with the issue&apos;s own {isJira ? 'summary' : 'title'}.
           </Caption1>
         )}
-        <Caption1 className={styles.phase}>
-          {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
-            .filter(Boolean)
-            .join(' · ')}
-        </Caption1>
+        <div className={styles.metaRow}>
+          {/* The ticket badge, and the one place this pane names the tracker out loud.
+                "Open in JIRA" over a GitHub issue sends the human to the wrong tab, and the
+                key itself is printed short (`#123`) with the whole `owner/repo#123` in the
+                tooltip — the same bargain the card's footer badge strikes, so the two cannot
+                read as two different tickets. */}
+          {task.externalKey &&
+            (task.externalUrl ? (
+              <a
+                className={styles.key}
+                href={task.externalUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                title={ticketLinkTitle(task) ?? undefined}
+              >
+                <Badge
+                  appearance="outline"
+                  color="informative"
+                  icon={<TrackerMark task={task} size={12} />}
+                >
+                  {shortTicketKey(task)}
+                </Badge>
+              </a>
+            ) : (
+              <Badge
+                appearance="outline"
+                color="informative"
+                icon={<TrackerMark task={task} size={12} />}
+                title={task.externalKey}
+              >
+                {shortTicketKey(task)}
+              </Badge>
+            ))}
+          <Caption1 className={styles.phase}>
+            {[task.externalType ?? task.type, task.externalPriority, !isStep ? task.phase : null]
+              .filter(Boolean)
+              .join(' · ')}
+          </Caption1>
+        </div>
       </div>
 
       {/* The owner card's own look at `ui-shots.mjs`'s shots — never shown for a step, whose
