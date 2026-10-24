@@ -125,7 +125,11 @@ describe('the relay policy', () => {
 
 describe('the event fanout policy', () => {
   const IPC = 'apps/client/src/main/ipc.ts';
-  const pushed = pushedChannels(read(IPC));
+  // `ticketIpc.ts` is handed `ipc.ts`'s own `send` and makes the native-ticket pushes
+  // (`ticketLink:changed`, a ticket's `project:tasksChanged`) through it — the same choke
+  // point, written one file over so a test and a headless scenario can run the real bodies.
+  const TICKET_IPC = 'apps/client/src/main/ticketIpc.ts';
+  const pushed = [...pushedChannels(read(IPC)), ...pushedChannels(read(TICKET_IPC))];
 
   /**
    * The one classified channel the desktop is not expected to push, named here rather than

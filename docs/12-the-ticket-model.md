@@ -244,9 +244,13 @@ and whether it's symmetric:
 One row per link, **directed, with an inverse lookup** — not two rows, which would double
 every write and make "delete this link" ambiguous. `linksFor(links, taskId)` phrases every
 link touching a ticket from *that ticket's* point of view, so the same row reads as "blocks"
-from one end and "is blocked by" from the other, and no two surfaces (the drawer, the picker,
-a future backlog table) can word the inverse differently, because there is exactly one function
-that does the wording.
+from one end and "is blocked by" from the other, and no two surfaces (the task panel's Links
+section, the Graph's link picker, the Timeline) can word the inverse differently, because there
+is exactly one function that does the wording. A ticket's fields and links are edited in one
+panel, `TaskDetail` (through `TaskDetailHost`), which opens from the board, the Backlog, the
+Timeline and the Graph and saves each field on its own through `ticket:update` with a one-field
+patch. `scripts/verify-one-task-panel.mjs` is the proof: it edits a milestone and adds links the
+way the panel does, then reads the same values back from the Backlog and the board.
 
 `canLinkTickets` returns a refusal **as data** (`'missing' | 'self' | 'duplicate'`; the type also
 carries the arrow's `'cycle' | 'step'`, which only the handler's `blocks` path returns), the same

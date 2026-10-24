@@ -442,7 +442,12 @@ only the **attention inbox**.
 The fixed band at the top of a card's detail pane: identity, agent controls, status,
 dependencies, a foldable description and the steps. One shaded slab a step *lighter* than
 the board beside it, capped at half the pane's height. The **chat** below it is the only
-part that scrolls.
+part that scrolls. It is the top of the **[task panel](#task-panel)**.
+
+### Task panel
+
+The one detail pane for a card or ticket: `TaskDetail`, mounted by `TaskDetailHost` on every
+screen. Native tickets get a Ticket section (fields) and a Links section.
 
 ### Description (the app's copy)
 

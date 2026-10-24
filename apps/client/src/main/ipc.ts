@@ -70,13 +70,10 @@ import {
   type Task,
   type TaskActivityEntry,
   type TaskStatus,
-  type TicketInput,
   type TicketLabel,
-  type TicketLink,
 } from '@shared/model';
-import { isEpic, isNativeTicket } from '@shared/tickets';
 import type { IssueProviderId } from '@shared/issues';
-import { canLinkTickets, type TicketLinkResult } from '@shared/ticketLinks';
+import type { TicketLinkResult } from '@shared/ticketLinks';
 import {
   ARCHIVE_RETENTION_DAYS,
   canStopWork,
@@ -98,6 +95,7 @@ import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
 import { createAutomationHandlers } from './automationHandlers';
 import { createArchiveHandlers } from './archiveHandlers';
+import { createTicketIpc } from './ticketIpc';
 import type { Automation } from '@shared/automation';
 import { createSkillHandlers } from './skillHandlers';
 import { createWorkflowHandlers } from './workflowHandlers';
@@ -578,6 +576,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   // root is hoisted into a name rather than joined inline as it was.
   const userData = app.getPath('userData');
   const store = createStore(join(userData, 'orchestrator.db'));
+  // The native-ticket write path (`ticket:update`, plain ticket links) — see `ticketIpc.ts`.
+  const ticketIpc = createTicketIpc({ store, send });
 
   // One-shot: a database from before this ticket may still carry a vipper.iam refresh token.
   // Nothing mints an access token from it any more, so it is dead weight — a credential
@@ -1688,7 +1688,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // reason: `ticket_links` cascades on both `fromTaskId` and `toTaskId`, so a link left
     // drawn to a card that is gone is a lie no ordinary task will ever leave behind, but a
     // ticket does every time it is removed.
-    pushTicketLinks();
+    ticketIpc.pushTicketLinks();
     // The BYTES did not: no cascade reaches outside the database. After `deleteTask` has
     // returned, never inside its transaction — a throw in there would roll the row
     // deletion back and leave a card half-deleted, which is worse than either half alone.
@@ -3979,45 +3979,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
 
   // --- Native tickets, people, labels, milestones, ticket links (Phase 24) --
   //
-  // A ticket is a `Task` row with `source: 'ticket'`; the twelve ticket-only fields
-  // (`TicketPatch`) are what this section guards, since `createTicketTx`/`updateTask` write
-  // them blindly and neither can afford a query per field on every card save. Every guard
-  // below is its own sentence for exactly that reason — a thrown `UNIQUE constraint failed`
-  // or a silent `undefined` teaches a human nothing.
-
-  /**
-   * Validate the cross-references a ticket create/update carries: `epicTaskId` must name an
-   * EPIC in the SAME project and not itself; an epic may not itself hang under another epic;
-   * `milestoneId`/`assigneeId`/`reporterId` must resolve. Throws the first refusal found.
-   */
-  function assertTicketRefs(
-    projectId: string,
-    ticketId: string | null,
-    issueType: NonNullable<TicketInput['issueType']>,
-    fields: Pick<TicketInput, 'epicTaskId' | 'milestoneId' | 'assigneeId' | 'reporterId'>,
-  ): void {
-    if (fields.epicTaskId != null) {
-      if (issueType === 'epic') throw new Error('An epic cannot itself hang under another epic.');
-      if (fields.epicTaskId === ticketId) throw new Error('A ticket cannot be its own epic.');
-      const epic = store.getTask(fields.epicTaskId);
-      if (!epic) throw new Error('That epic no longer exists.');
-      if (epic.projectId !== projectId) {
-        throw new Error("The epic must belong to the ticket's own project.");
-      }
-      if (!isEpic(epic)) throw new Error('That ticket is not an epic.');
-    }
-    if (fields.milestoneId != null) {
-      if (!store.listMilestones(projectId).some((m) => m.id === fields.milestoneId)) {
-        throw new Error('That milestone no longer exists.');
-      }
-    }
-    if (fields.assigneeId != null && !store.listPeople().some((p) => p.id === fields.assigneeId)) {
-      throw new Error('That assignee no longer exists.');
-    }
-    if (fields.reporterId != null && !store.listPeople().some((p) => p.id === fields.reporterId)) {
-      throw new Error('That reporter no longer exists.');
-    }
-  }
+  // A ticket is a `Task` row with `source: 'ticket'`; the guards over its twelve ticket-only
+  // fields (`assertTicketRefs`) and the `ticket:update` body live in `ticketIpc.ts`, so a test
+  // and a headless scenario can run the real thing.
 
   handle('ticket:create', async (projectId, input) => {
     const project = store.getProject(projectId);
@@ -4046,28 +4010,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       const target = store.getProject(input.projectTagId);
       if (!target || !isFilingProject(target)) throw new Error('Unknown project.');
     }
-    assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
+    ticketIpc.assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
     const task = store.createTicket(projectId, input);
     if (!task) throw new Error('Could not create that ticket.');
     send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
     return task;
   });
 
-  handle('ticket:update', async (taskId, patch) => {
-    const existing = store.getTask(taskId);
-    if (!existing) throw new Error('Unknown ticket.');
-    if (!isNativeTicket(existing)) throw new Error('That card is not a native ticket.');
-    const issueType =
-      patch.issueType !== undefined ? (patch.issueType ?? 'task') : (existing.issueType ?? 'task');
-    assertTicketRefs(existing.projectId, taskId, issueType, patch);
-    const updated = store.updateTask(taskId, patch);
-    if (!updated) throw new Error('Could not update that ticket.');
-    send('project:tasksChanged', {
-      projectId: existing.projectId,
-      tasks: store.getTasks(existing.projectId),
-    });
-    return updated;
-  });
+  handle('ticket:update', async (taskId, patch) => ticketIpc.updateTicket(taskId, patch));
 
   // --- People (app-wide, not per project) ------------------------------------
   function pushPeople(): Person[] {
@@ -4254,12 +4204,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   );
 
   // --- Ticket links (documentation, not the chain of execution) --------------
-  function pushTicketLinks(): TicketLink[] {
-    const links = store.listTicketLinks();
-    send('ticketLink:changed', links);
-    return links;
-  }
-
+  // The plain-link bodies live in `ticketIpc.ts`; only the `blocks` branch stays here.
   handle('ticketLink:list', async () => store.listTicketLinks());
 
   handle('ticketLink:add', async (fromTaskId, toTaskId, type): Promise<TicketLinkResult> => {
@@ -4273,21 +4218,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       if (drawn.status === 'refused') return drawn;
       return { status: 'ok', links: store.listTicketLinks() };
     }
-    const links = store.listTicketLinks();
-    const refusal = canLinkTickets(links, store.getTask(fromTaskId), store.getTask(toTaskId), type);
-    if (refusal) return { status: 'refused', reason: refusal };
-    const created = store.addTicketLink(fromTaskId, toTaskId, type);
-    // `canLinkTickets` already passed, so a miss here is a race with another writer rather
-    // than a refusal we can explain — report it as the duplicate the unique index caught,
-    // exactly as `chain:link` does for its own race.
-    if (!created) return { status: 'refused', reason: 'duplicate' };
-    return { status: 'ok', links: pushTicketLinks() };
+    return ticketIpc.addPlainTicketLink(fromTaskId, toTaskId, type);
   });
 
-  handle('ticketLink:remove', async (id) => {
-    store.deleteTicketLink(id);
-    pushTicketLinks();
-  });
+  handle('ticketLink:remove', async (id) => ticketIpc.removeTicketLink(id));
 
   // --- Graph-view node layout (per project) -----------------------------------
   handle('ticketGraph:getLayout', async (projectId) => store.getTicketGraphLayout(projectId));
