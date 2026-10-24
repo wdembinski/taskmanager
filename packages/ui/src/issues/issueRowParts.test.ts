@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type IssueType, type Task } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import {
+  indexIssueRows,
   issueRowParts,
   KEY_COLUMN_FIT,
   keyColumnWidth,
@@ -200,5 +201,42 @@ describe('keyColumnWidth', () => {
 
   it('sizes the column to a long key so it never wraps', () => {
     expect(keyColumnWidth(['FX-3', 'FX-sb-7-a'])).toBe('calc(9ch + 4px)');
+  });
+});
+
+describe('indexIssueRows', () => {
+  // The list feeds every row from one `board:tasks` answer (steps included) and one
+  // `mr:mergeRequests` answer — what `BacklogTable` hands each row has to be the same slice
+  // the board's card gets, or the pill and the ref never draw.
+  const parent = task({ id: 'c1', status: 'in-progress' });
+  const review = task({ id: 'r1', ticketKey: 'TM-72', status: 'in-review' });
+  const steps = [
+    task({ id: 's1', parentTaskId: 'c1', status: 'done' }),
+    task({ id: 's2', parentTaskId: 'c1', status: 'running' }),
+    task({ id: 's3', parentTaskId: 'c1', status: 'pending' }),
+    task({ id: 's4', parentTaskId: 'c1', status: 'pending' }),
+  ];
+  const mrs = [
+    mr({ id: 'gl-9-72', taskId: 'r1', number: 72 }),
+    mr({ id: 'gl-9-orphan', taskId: null, number: 99 }),
+  ];
+  const index = indexIssueRows([parent, review, ...steps], mrs);
+  const rowCtx = (t: Task): IssueRowContext =>
+    ctx({
+      subtasks: index.subtasksByParent.get(t.id),
+      mergeRequests: index.mergeRequestsByTask.get(t.id),
+    });
+
+  it('gives a running row its steps, so it reads "Step 2 of 4"', () => {
+    expect(issueRowParts(parent, rowCtx(parent)).run).toEqual({ label: 'Step 2 of 4' });
+  });
+
+  it("gives an in-review row its own MR's ref, and no other row one", () => {
+    expect(issueRowParts(review, rowCtx(review)).mr?.ref).toBe('!72');
+    expect(issueRowParts(parent, rowCtx(parent)).mr).toBeUndefined();
+  });
+
+  it('drops an MR with no task', () => {
+    expect([...index.mergeRequestsByTask.keys()]).toEqual(['r1']);
   });
 });

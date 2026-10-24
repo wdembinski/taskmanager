@@ -102,14 +102,22 @@ const useStyles = makeStyles({
   run: {
     display: 'inline-flex',
     alignItems: 'center',
-    gap: '6px',
+    // v9-1: the dot's left edge 7px in, the label 18px in.
+    gap: '5px',
     height: '20px',
-    padding: '0 10px',
+    padding: '0 10px 0 7px',
     borderRadius: '10px',
     fontSize: tokens.fontSizeBase200,
     whiteSpace: 'nowrap',
     backgroundColor: `var(--tm-run-pill, ${tokens.colorNeutralBackground3})`,
     color: `var(--tm-run-ink, ${tokens.colorNeutralForeground2})`,
+  },
+  runDot: {
+    flexShrink: 0,
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    backgroundColor: 'var(--tm-run-dot, currentColor)',
   },
   mr: {
     flexShrink: 0,
@@ -174,7 +182,12 @@ export function IssueRow({
       </Text>
       <span className={styles.cluster}>
         {archived && <Text className={styles.archived}>Archived</Text>}
-        {parts.run && <span className={styles.run}>{parts.run.label}</span>}
+        {parts.run && (
+          <span className={styles.run}>
+            <span className={styles.runDot} aria-hidden="true" />
+            {parts.run.label}
+          </span>
+        )}
         {parts.mr && (
           <Link
             appearance="subtle"

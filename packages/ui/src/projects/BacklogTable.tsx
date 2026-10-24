@@ -15,14 +15,7 @@
  * in place: switching the selected project is rare enough that a remount — a fresh search and
  * sort state — is simpler than reconciling this component's state to a new project mid-life.
  */
-import {
-  type CSSProperties,
-  type KeyboardEvent,
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { type CSSProperties, type KeyboardEvent, type ReactNode, useMemo, useState } from 'react';
 import {
   Button,
   Input,
@@ -49,10 +42,10 @@ import type { Milestone, Person, Project, Task } from '@tm/shared/model';
 import { delegatedAgentName } from '@tm/shared/tickets';
 import { archivedBy, type ArchiveIndex } from '@tm/shared/trackerArchive';
 import { IssueRow } from '../issues/IssueRow';
-import { type IssueRowContext, keyColumnWidth } from '../issues/issueRowParts';
+import { indexIssueRows, type IssueRowContext, keyColumnWidth } from '../issues/issueRowParts';
+import { useIssueRowFeeds } from '../issues/useIssueRowFeeds';
 import { PaneLoading } from '../PaneLoading';
 import { useDeviceFolds } from '../shell/sidebarFolds';
-import { useTransport } from '../transport';
 import {
   type BacklogGroupMode,
   type BacklogSection,
@@ -276,8 +269,6 @@ export function BacklogTable({
   onIncludeArchivedChange,
 }: BacklogTableProps): JSX.Element {
   const styles = useStyles();
-  const transport = useTransport();
-  const [liveRunTaskIds, setLiveRunTaskIds] = useState<ReadonlySet<string>>(new Set());
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
   const [groupMode, setGroupMode] = useBacklogGroupMode();
@@ -290,23 +281,13 @@ export function BacklogTable({
     null,
   );
 
-  // `scheduler:activeRuns`, for `IssueRow`'s "Step n of m" pill — a task's own status
-  // changing is exactly what moves it into or out of a live run, so `task:changed` reloads
-  // this too. See `TaskDetailHostView.tsx`.
-  useEffect(() => {
-    let live = true;
-    const reload = (): void => {
-      void transport
-        .invoke('scheduler:activeRuns')
-        .then((runs) => live && setLiveRunTaskIds(new Set(runs.map((r) => r.taskId))));
-    };
-    reload();
-    const off = transport.on('task:changed', reload);
-    return () => {
-      live = false;
-      off();
-    };
-  }, [transport]);
+  // The board's own run, MR and merge feeds, so a row's "Step n of m" pill and PR ref read
+  // exactly what the ticket's card does. See `useIssueRowFeeds`.
+  const { liveRunTaskIds, mergeRequests, mergingTaskIds } = useIssueRowFeeds();
+  const rowIndex = useMemo(
+    () => indexIssueRows(tickets ?? [], mergeRequests),
+    [tickets, mergeRequests],
+  );
 
   const sections = useMemo(
     () =>
@@ -338,7 +319,10 @@ export function BacklogTable({
       now: Date.now(),
       assignee,
       agentName: agentNameOf(agentProjects, ticket),
+      subtasks: rowIndex.subtasksByParent.get(ticket.id),
+      mergeRequests: rowIndex.mergeRequestsByTask.get(ticket.id),
       liveRunTaskIds,
+      mergingTaskIds,
     };
     return (
       <IssueRow

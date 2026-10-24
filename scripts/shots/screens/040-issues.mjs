@@ -105,6 +105,10 @@ const FULL_OVERRIDES = {
  * The dates come from the real `Date.now()`, not the fixture's fixed `now`: `BacklogTable`
  * reads "today" off the browser's own clock, so a date taken from the fixture's 2026-01-15
  * would always draw as overdue.
+ *
+ * The run pill and the PR refs need nothing extra here: the base `board:tasks` already carries
+ * FX-3's four steps (`3-s1`…`3-s4`, step 2 running — "Step 2 of 4"), and the base
+ * `mr:mergeRequests` already holds `!190`/`!191` on the In Review rows `'6'`/`'7'`.
  */
 const LIST_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
   t.id === '3'
