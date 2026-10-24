@@ -582,7 +582,6 @@ function SignedInBoardView({
                 even one well after the board has latched ready, where `syncStatusLabel` would
                 otherwise still say a stale "synced Ns ago" from the last read that worked. */}
               <Caption1>
-                ·{' '}
                 {board.pollError
                   ? 'not syncing'
                   : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
@@ -595,19 +594,9 @@ function SignedInBoardView({
                   label={syncBusyLabel(board.syncProgress, board.pendingRelays) ?? undefined}
                 />
               )}
-              {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
-              {segments.agentsRunning !== null && (
-                <>
-                  <Caption1>·</Caption1>
-                  <StatusAgents count={segments.agentsRunning} />
-                </>
-              )}
-              {segments.branch !== null && (
-                <>
-                  <Caption1>·</Caption1>
-                  <StatusBranch name={segments.branch} />
-                </>
-              )}
+              {attentionCount > 0 && <Caption1>{attentionCount} waiting on you</Caption1>}
+              {segments.agentsRunning !== null && <StatusAgents count={segments.agentsRunning} />}
+              {segments.branch !== null && <StatusBranch name={segments.branch} />}
               <StatusSpacer />
               <UsageQuotaStatus quotas={segments.quotas} />
               <Caption1>v{__APP_VERSION__}</Caption1>

@@ -612,22 +612,12 @@ export function App(): JSX.Element {
             ) : (
               <Spinner label="Checking Claude…" labelPosition="after" size="tiny" />
             )}
-            {attentionCount > 0 && <Caption1>· {attentionCount} waiting on you</Caption1>}
+            {attentionCount > 0 && <Caption1>{attentionCount} waiting on you</Caption1>}
             {/* No colour of its own: the bar turns orange under attention, and a fixed
               white would go unreadable exactly then. */}
-            {sprint && <Caption1>· {sprint}</Caption1>}
-            {segments.agentsRunning !== null && (
-              <>
-                <Caption1>·</Caption1>
-                <StatusAgents count={segments.agentsRunning} />
-              </>
-            )}
-            {segments.branch !== null && (
-              <>
-                <Caption1>·</Caption1>
-                <StatusBranch name={segments.branch} />
-              </>
-            )}
+            {sprint && <Caption1>{sprint}</Caption1>}
+            {segments.agentsRunning !== null && <StatusAgents count={segments.agentsRunning} />}
+            {segments.branch !== null && <StatusBranch name={segments.branch} />}
             <StatusSpacer />
             {/* A downloaded update installs itself on the next quit either way; this is
               simply the offer to have it now, and the only notice the user ever gets. */}

@@ -9,7 +9,7 @@
  * both go dark while the desktop is offline. A card's branch is a stored fact, so it stays.
  */
 import type { Task } from '@tm/shared/model';
-import type { UsageQuotas } from '@tm/shared/usage';
+import type { UsageQuota, UsageQuotas } from '@tm/shared/usage';
 
 export interface StatusSegmentsInput {
   host: 'desktop' | 'web';
@@ -77,4 +77,10 @@ export function statusSegments(input: StatusSegmentsInput): StatusSegments {
 
 export function agentsRunningLabel(n: number): string {
   return n === 1 ? '1 agent running' : `${n} agents running`;
+}
+
+/** A quota's word in the status bar: the window's width, as v9 draws it. The full name
+ *  and the percentage live in the segment's tooltip. */
+export function quotaSegmentLabel(id: UsageQuota['id']): '5h' | '7d' {
+  return id === 'session' ? '5h' : '7d';
 }

@@ -10,6 +10,7 @@
  * what keeps this from becoming a component with one prop per item.
  */
 import { makeStyles, tokens } from '@fluentui/react-components';
+import { BranchForkRegular } from '@fluentui/react-icons';
 import type { ReactNode } from 'react';
 import { fontPx } from '../theme';
 import { agentsRunningLabel } from './statusSegments';
@@ -23,7 +24,8 @@ const useStyles = makeStyles({
   footer: {
     display: 'flex',
     alignItems: 'center',
-    gap: '8px',
+    // Space, not a "·", is what separates one segment from the next — v9 draws no dots.
+    gap: '12px',
     padding: '3px 12px',
     flexShrink: 0,
     backgroundImage: 'var(--tm-status-gradient)',
@@ -63,6 +65,10 @@ const useStyles = makeStyles({
   /** Its own token, not the scheme's fluo cyan — see `StatusBarTokens.dotRun`. */
   run: { backgroundColor: 'var(--tm-status-bar-dot-run)' },
   item: { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 },
+  /** The glyph and the name; shrinks so the name inside it can ellipsise. */
+  branchItem: { display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 1, minWidth: 0 },
+  /** `currentColor`, so it reads on the gradient and the attention orange alike. */
+  branchIcon: { fontSize: fontPx(14), flexShrink: 0, color: 'inherit' },
   branch: {
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
     fontSize: fontPx(11),
@@ -131,12 +137,14 @@ export function StatusAgents({ count }: { count: number }): JSX.Element {
   );
 }
 
-/** The current card's branch, in mono. Long names ellipsise; the tooltip has the whole. */
+/** The current card's branch: a fork glyph, then the name in mono. Long names ellipsise;
+ *  the tooltip has the whole. */
 export function StatusBranch({ name }: { name: string }): JSX.Element {
   const styles = useStyles();
   return (
-    <span className={styles.branch} title={name}>
-      {name}
+    <span className={styles.branchItem} title={name}>
+      <BranchForkRegular className={styles.branchIcon} aria-hidden />
+      <span className={styles.branch}>{name}</span>
     </span>
   );
 }

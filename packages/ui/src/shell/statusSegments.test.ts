@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@tm/shared/model';
 import type { UsageQuota, UsageQuotas } from '@tm/shared/usage';
-import { agentsRunningLabel, statusSegments, type StatusSegmentsInput } from './statusSegments';
+import {
+  agentsRunningLabel,
+  quotaSegmentLabel,
+  statusSegments,
+  type StatusSegmentsInput,
+} from './statusSegments';
 
 /** A minimal task fixture — only the fields this module reads are worth naming. */
 function task(id: string, overrides: Partial<Task> = {}): Task {
@@ -141,5 +146,12 @@ describe('agentsRunningLabel', () => {
     expect(agentsRunningLabel(1)).toBe('1 agent running');
     expect(agentsRunningLabel(2)).toBe('2 agents running');
     expect(agentsRunningLabel(12)).toBe('12 agents running');
+  });
+});
+
+describe('quotaSegmentLabel', () => {
+  it('names each window by its width, as v9 draws it', () => {
+    expect(quotaSegmentLabel('session')).toBe('5h');
+    expect(quotaSegmentLabel('weekly')).toBe('7d');
   });
 });
