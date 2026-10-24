@@ -83,6 +83,10 @@
  *       `'option:NAME'` / `'title:NAME'` click the visible `[role="option"]` whose text, or
  *       the button whose `title`, is exactly `NAME` — to open a Fluent `Dropdown` named only
  *       by its title and pick one of its options (the detail pane's State control).
+ *       `'menuitemradio:NAME'` clicks the visible `[role="menuitemradio"]` whose text is
+ *       exactly `NAME` — a Fluent `MenuItemRadio` is not in `candidates()` either, and a plain
+ *       text click on "Epic" could land on a row whose title contains it (the Backlog's
+ *       "Group by" menu, opened first with `'title:Group by'`).
  *     - `{ key: spec }` — dispatches a bubbling `keydown` on `document.activeElement` (or
  *       `document.body`), parsed the same `"mod+k"`/`"shift+mod+k"` way
  *       `packages/ui/src/palette/shortcut.ts`'s own spec is, plus the named keys `space`,
@@ -373,11 +377,12 @@ function boardCardClickExprs(taskId) {
   };
 }
 
-/** `{ click: 'option:NAME' }` / `{ click: 'title:NAME' }` — the first visible element matching
- *  `selector` whose text (option) or `title` attribute (title) is exactly `name`. An open
- *  Fluent `Dropdown`'s `[role="option"]` rows are not in `candidates()`, and a plain text
- *  click on "Done" lands on the board's own DONE column header first; a dropdown button is
- *  named only by its `title` ("Status"), which other buttons' text may also contain. */
+/** `{ click: 'option:NAME' }` / `{ click: 'menuitemradio:NAME' }` / `{ click: 'title:NAME' }` —
+ *  the first visible element matching `selector` whose text (option, menuitemradio) or `title`
+ *  attribute (title) is exactly `name`. An open Fluent `Dropdown`'s `[role="option"]` rows (and
+ *  a `Menu`'s `[role="menuitemradio"]` ones) are not in `candidates()`, and a plain text click
+ *  on "Done" lands on the board's own DONE column header first; a dropdown button is named
+ *  only by its `title` ("Status"), which other buttons' text may also contain. */
 function exactClickExprs(selector, name, by) {
   const read = by === 'title' ? `el.getAttribute('title')` : 'window.__tm.textOf(el)';
   const find = `Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find((el) => window.__tm.visible(el) && ${read} === ${JSON.stringify(name)})`;
@@ -419,24 +424,27 @@ async function runSetupStep(cdp, step) {
     const tab = /^tab:(.+)$/.exec(step.click);
     const option = /^option:(.+)$/.exec(step.click);
     const titled = /^title:(.+)$/.exec(step.click);
+    const radio = /^menuitemradio:(.+)$/.exec(step.click);
     const { ready, click } = option
       ? exactClickExprs('[role="option"]', option[1], 'text')
-      : titled
-        ? exactClickExprs('button, [role="combobox"]', titled[1], 'title')
-        : issueRowHas
-          ? issueRowHasClickExprs(issueRowHas[1])
-          : issueRow
-            ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
-            : boardCard
-              ? boardCardClickExprs(boardCard[1])
-              : treeItem
-                ? treeItemClickExprs(Number(treeItem[1]))
-                : tab
-                  ? tabClickExprs(tab[1])
-                  : {
-                      ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
-                      click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
-                    };
+      : radio
+        ? exactClickExprs('[role="menuitemradio"]', radio[1], 'text')
+        : titled
+          ? exactClickExprs('button, [role="combobox"]', titled[1], 'title')
+          : issueRowHas
+            ? issueRowHasClickExprs(issueRowHas[1])
+            : issueRow
+              ? issueRowClickExprs(issueRow[1] === 'first' ? 0 : Number(issueRow[1]))
+              : boardCard
+                ? boardCardClickExprs(boardCard[1])
+                : treeItem
+                  ? treeItemClickExprs(Number(treeItem[1]))
+                  : tab
+                    ? tabClickExprs(tab[1])
+                    : {
+                        ready: `!!window.__tm.findByText(${JSON.stringify(step.click)}, false)`,
+                        click: `window.__tm.clickText(${JSON.stringify(step.click)}, false)`,
+                      };
     await waitFor(async () => (await evaluate(cdp, ready)) === true, {
       timeoutMs: 10000,
       label: `"${step.click}" to appear`,

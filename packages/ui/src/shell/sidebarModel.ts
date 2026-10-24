@@ -298,13 +298,17 @@ function buildMilestoneNode(
  * → finished open milestones → `No milestone` if finished → closed milestones last. `No
  * milestone` appears at most once, banded by its own finished state; the closed-last rule and
  * each band's relative order are otherwise unchanged from before finished-banding existed.
+ *
+ * Exported so the Backlog's milestone grouping (`backlogGrouping.ts`) takes its order from
+ * this one place instead of a second copy of these rules; `folds` there is simply omitted.
  */
-function buildTree(
+export function buildMilestoneTree(
   milestones: readonly Milestone[],
   tickets: readonly Task[],
   isMilestoneArchived: (milestone: Milestone) => boolean,
-  foldSet: ReadonlySet<string>,
+  folds: readonly string[] = [],
 ): SidebarTreeNode[] {
+  const foldSet = new Set(folds);
   const archivedIds = new Set(milestones.filter(isMilestoneArchived).map((m) => m.id));
   const liveMilestones = milestones.filter((m) => !archivedIds.has(m.id));
   const liveIds = new Set(liveMilestones.map((m) => m.id));
@@ -360,7 +364,6 @@ function buildTree(
  * New issue is always last, pinned at the bottom.
  */
 export function buildSidebar(input: SidebarInput): SidebarSection[] {
-  const foldSet = new Set(input.folds);
   const isMilestoneArchived = input.isMilestoneArchived ?? (() => false);
 
   const views: SidebarView[] = [
@@ -379,7 +382,7 @@ export function buildSidebar(input: SidebarInput): SidebarSection[] {
     {
       kind: 'team',
       name: input.teamName,
-      tree: buildTree(input.milestones, input.tickets, isMilestoneArchived, foldSet),
+      tree: buildMilestoneTree(input.milestones, input.tickets, isMilestoneArchived, input.folds),
     },
     { kind: 'archived', count: input.archivedCount },
     { kind: 'machine', label: 'This machine', location: 'local', projects: input.projects },

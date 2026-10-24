@@ -28,7 +28,7 @@ function machineProjectsOf(projects: readonly Project[]): Array<Pick<Project, 'i
 }
 
 /** `milestone:list`'s own rows carry archived ones too (the store does not filter them, see
- *  `ipc.ts`'s `listMilestones`) — without this, `buildTree` reads every one of them as live,
+ *  `ipc.ts`'s `listMilestones`) — without this, `buildMilestoneTree` reads every one of them as live,
  *  contradicting the Archived view's own "hidden from the tree" copy (`ArchivedPane.tsx`). A
  *  stable module-level reference, not an inline closure, so it never busts `sections`' own
  *  `useMemo` on its own. */
