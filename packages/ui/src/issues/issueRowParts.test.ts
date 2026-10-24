@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type IssueType, type Task } from '@tm/shared/model';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
-import { issueRowParts, type IssueRowContext } from './issueRowParts';
+import {
+  issueRowParts,
+  KEY_COLUMN_FIT,
+  keyColumnWidth,
+  type IssueRowContext,
+} from './issueRowParts';
 
 const NOW = new Date(2026, 9, 16, 12, 0, 0).getTime();
 
@@ -176,5 +181,24 @@ describe('issueRowParts', () => {
       const withType = task({ issueType, externalPriority: 'High' });
       expect(issueRowParts(withType, ctx())).toEqual(bareResult);
     }
+  });
+});
+
+describe('keyColumnWidth', () => {
+  it('keeps the default 52px for an empty list', () => {
+    expect(keyColumnWidth([])).toBe('52px');
+  });
+
+  it('keeps 52px while every key fits it, and widens to the longest past that', () => {
+    const keys = ['FX-3', 'LIN-203'];
+    const longest = Math.max(...keys.map((k) => k.length));
+    expect(keyColumnWidth(keys)).toBe(
+      longest <= KEY_COLUMN_FIT ? '52px' : `calc(${longest}ch + 4px)`,
+    );
+    expect(keyColumnWidth(['FX-3', 'X'.repeat(KEY_COLUMN_FIT)])).toBe('52px');
+  });
+
+  it('sizes the column to a long key so it never wraps', () => {
+    expect(keyColumnWidth(['FX-3', 'FX-sb-7-a'])).toBe('calc(9ch + 4px)');
   });
 });

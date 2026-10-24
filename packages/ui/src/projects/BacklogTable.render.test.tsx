@@ -96,6 +96,16 @@ describe('BacklogSectionView', () => {
     expect(html).toContain('aria-label="Add child to Grouping epic"');
     expect(html).not.toContain('aria-label="Add child to M1 · Launch"');
   });
+
+  it('marks the milestone and its epic sub-header with their levels', () => {
+    // The sub-header's spaced, indented style keys on level 2 — the shots prove the spacing.
+    const html = render();
+    expect(html).toContain('data-backlog-section-level="1"');
+    expect(html).toContain('data-backlog-section-level="2"');
+    expect(html.indexOf('data-backlog-section-level="1"')).toBeLessThan(
+      html.indexOf('data-backlog-section-level="2"'),
+    );
+  });
 });
 
 describe('onSectionHeaderKeyDown', () => {

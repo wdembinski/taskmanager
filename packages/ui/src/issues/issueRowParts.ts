@@ -106,6 +106,20 @@ export function dueParts(
   return { label, flagged };
 }
 
+/** The longest key the default 52px key column holds without overflowing. */
+export const KEY_COLUMN_FIT = 6;
+
+/**
+ * The key column's width for a list showing `keys`: today's `52px` while every key fits it,
+ * else wide enough for the longest one (`ch` is exact — the key is monospace) so a key like
+ * `FX-sb-7-a` never wraps and every row's title still starts in one column. A list sets it
+ * as `--tm-key-width`; `IssueRow` falls back to 52px where nothing sets it.
+ */
+export function keyColumnWidth(keys: readonly string[]): string {
+  const longest = keys.reduce((n, key) => Math.max(n, key.length), 0);
+  return longest <= KEY_COLUMN_FIT ? '52px' : `calc(${longest}ch + 4px)`;
+}
+
 /**
  * Which optional parts this row draws. Priority and `issueType` never produce a part —
  * neither is read here at all.

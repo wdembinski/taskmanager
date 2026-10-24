@@ -15,7 +15,14 @@
  * in place: switching the selected project is rare enough that a remount — a fresh search and
  * sort state — is simpler than reconciling this component's state to a new project mid-life.
  */
-import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import {
   Button,
   Input,
@@ -42,7 +49,7 @@ import type { Milestone, Person, Project, Task } from '@tm/shared/model';
 import { delegatedAgentName } from '@tm/shared/tickets';
 import { archivedBy, type ArchiveIndex } from '@tm/shared/trackerArchive';
 import { IssueRow } from '../issues/IssueRow';
-import type { IssueRowContext } from '../issues/issueRowParts';
+import { type IssueRowContext, keyColumnWidth } from '../issues/issueRowParts';
 import { PaneLoading } from '../PaneLoading';
 import { useDeviceFolds } from '../shell/sidebarFolds';
 import { useTransport } from '../transport';
@@ -87,7 +94,9 @@ const useStyles = makeStyles({
   },
   group: { display: 'flex', flexDirection: 'column', gap: '2px' },
   // A milestone's epic sub-headers (and their rows) sit one step in from the milestone's own.
-  subGroup: { paddingLeft: '16px' },
+  // `marginTop` parts a milestone header from its first epic sub-header, and sub-groups from
+  // each other.
+  subGroup: { paddingLeft: '16px', marginTop: '6px' },
   groupHeader: { display: 'flex', alignItems: 'center', gap: '4px' },
   // The fold toggle IS the caption: same muted semibold text as the old static caption, now a
   // real `<button>` so it is reachable by Tab and announces `aria-expanded`.
@@ -115,6 +124,14 @@ const useStyles = makeStyles({
 /** Every row under `section`, its sub-sections' included — the header's count. */
 function sectionRowCount(section: BacklogSection): number {
   return section.sections.reduce((n, s) => n + sectionRowCount(s), section.tickets.length);
+}
+
+/** Every row's key under `sections`, sub-sections' included — what `keyColumnWidth` sizes. */
+function sectionKeys(sections: readonly BacklogSection[]): string[] {
+  return sections.flatMap((s) => [
+    ...s.tickets.map((t) => t.ticketKey ?? t.externalKey ?? ''),
+    ...sectionKeys(s.sections),
+  ]);
 }
 
 /**
@@ -304,6 +321,10 @@ export function BacklogTable({
         : [],
     [groupMode, tickets, milestones, query, sortKey, archiveIndex, includeArchived],
   );
+  const keyWidth = useMemo(
+    () => ({ '--tm-key-width': keyColumnWidth(sectionKeys(sections)) }) as CSSProperties,
+    [sections],
+  );
 
   if (tickets === null) {
     return (
@@ -414,7 +435,12 @@ export function BacklogTable({
       {tickets.length === 0 ? (
         <Body1 className={styles.empty}>No tickets in this project yet.</Body1>
       ) : (
-        <div className={styles.scroll} role="listbox" data-backlog-group-mode={groupMode}>
+        <div
+          className={styles.scroll}
+          style={keyWidth}
+          role="listbox"
+          data-backlog-group-mode={groupMode}
+        >
           {sections.map((section) => (
             <BacklogSectionView
               key={section.id}

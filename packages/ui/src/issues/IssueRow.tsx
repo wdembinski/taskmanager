@@ -67,7 +67,10 @@ const useStyles = makeStyles({
   },
   key: {
     flexShrink: 0,
-    width: '52px',
+    // A list with longer keys widens the column via `--tm-key-width` (see `keyColumnWidth`);
+    // a key never wraps onto a second line.
+    width: 'var(--tm-key-width, 52px)',
+    whiteSpace: 'nowrap',
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
     fontSize: tokens.fontSizeBase200,
     color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
