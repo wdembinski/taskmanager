@@ -309,12 +309,61 @@ reconciler for a native ticket to be structurally isolated from in the first pla
 
 ---
 
-## Milestone archiving (F14)
+## Archiving
 
-A milestone, an epic or a ticket project can be put away without being deleted —
-`trackerArchivedAt` on tasks/epics, `archivedAt` on milestones/projects, both distinct from
-`Task.archivedAt` (the BOARD's own "removed from the board" column; neither ever reads the
-other's). `AppSettings.ticketAutoArchiveWeeks` (global, `null` by default = off) adds a sweep
+There are **two archives**, and they never read each other's column. The board's archive takes
+a card off the board; the tracker's archive (F14) puts finished work away. A milestone, an epic
+or a ticket project can be archived without being deleted, and nothing about it is ever lost.
+
+|                   | Board: removed card                                                                                                    | Tracker: archived (F14)                                                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Column            | `tasks.archivedAt` (+ `archivedReason`)                                                                                | `milestones.archivedAt`, `projects.archivedAt` (ticket projects only), `tasks.trackerArchivedAt` (epics, and tickets archived along with their milestone) |
+| Who sets it       | the JIRA/GitHub reconcilers and variant discard                                                                        | the human (archive dialog, Archived view, banner) and the opt-in auto-archive sweep                                                                       |
+| Where it shows    | **Removed cards** in the board toolbar ([`ArchivedCardsDialog.tsx`](../packages/ui/src/board/ArchivedCardsDialog.tsx)) | the project's **Archived** view ([`ArchivedPane.tsx`](../packages/ui/src/projects/ArchivedPane.tsx)), Backlog's "Include archived", a direct link         |
+| Pruned?           | yes — destroyed by `pruneArchivedBefore` at boot after `ARCHIVE_RETENTION_DAYS` (180)                                  | never                                                                                                                                                     |
+| Editable by link? | no — it is off `board:tasks`; Removed cards puts it back with the same id                                              | yes — opens with a restore banner ([`ArchivedTicketBanner.tsx`](../packages/ui/src/projects/ArchivedTicketBanner.tsx)) and stays editable                 |
+
+### The predicate
+
+Whether a ticket is hidden is decided in exactly one place,
+[`trackerArchive.ts`](../packages/shared/src/trackerArchive.ts). `archivedBy(ticket, index)`
+checks, in order, the ticket's **project → milestone → epic → the ticket itself** and returns
+the first archived one as `{ by, id }`, or `null`. Three rules hold:
+
+- a ticket that is not native (`isNativeTicket` false — a JIRA/GitHub/Linear row) is **never**
+  hidden: its lifecycle belongs to its own tracker;
+- a dangling `milestoneId`/`epicTaskId` (a deleted row, or one missing from the index) counts as
+  **not archived** at that step — a dangling id must never hide a ticket silently;
+- `isHidden(t, index, { includeArchived })` is the one switch every "Include archived" toggle
+  flips; `visibleTickets` filters a list through it, and `archiveIndexOf(milestones, epics,
+projects)` builds the three lookups.
+
+Pickers use `pickableMilestones|Epics|Projects`, which drop archived rows **except the one
+already set** on the ticket, so editing an archived ticket never silently clears its milestone.
+There is no SQL `WHERE` and no per-screen filter: the board (`bucketBoardCards`), Backlog
+(`backlogRows`), Timeline, Graph, sidebar and palette all pass the same index, or they would
+disagree about what is archived.
+
+### Open tickets and restore
+
+Archiving a milestone that still has open tickets needs an `OpenTicketsChoice`
+(`choice-required` otherwise), applied in the same transaction as the archive:
+
+- `backlog` — the open tickets lose their milestone (`milestoneId = null`) and stay visible;
+- `milestone` — they move to another live milestone of the same project (refused if it is the
+  same milestone, archived, unknown, or in another project);
+- `archive` — they are archived too: `trackerArchivedAt` is stamped with **the milestone's own
+  `archivedAt`**, skipping any ticket already tracker-archived some other way.
+
+`restoreMilestone` clears the milestone's `archivedAt` and restores exactly the tickets
+**co-archived at the same `at`** — matched by timestamp, not by status. A ticket archived on
+its own, or by its epic or project, stays archived; a `backlog` or `milestone` move is not
+undone. Archiving or restoring an epic or a project sets or clears only that one row, and the
+predicate hides or shows its children.
+
+### The auto-archive sweep
+
+`AppSettings.ticketAutoArchiveWeeks` (global, `null` by default = off) adds a sweep
 on top of the human-driven `archiveMilestone`/`restoreMilestone` pair: once every ticket on a
 milestone has closed (`done`/`cancelled`) for at least that many weeks — timed by an
 activity-log `status-moved` row when one exists, falling back to the ticket's own `updatedAt`
@@ -323,6 +372,28 @@ otherwise, via `dueForAutoArchive` (`@shared/autoArchive`) — `runAutoArchiveSw
 same `archiveMilestone(id, { kind: 'backlog' }, now)` a human's own archive dialog calls, and
 records one `milestone-archived` activity row per milestone archived. `startAutoArchiveSweep`
 runs it once at boot and once every hour after, over every live ticket project's milestones.
+
+### Over the relay
+
+`archive:apply|restore|list` are classified `'relay'` and add no new event — see
+[The relay classification](#the-relay-classification). The handlers live in
+[`archiveHandlers.ts`](../apps/client/src/main/archiveHandlers.ts), free of Electron, so the
+desktop's `ipc.ts` and a relayed web call run the same code. A milestone change rides
+`milestone:changed`, a ticket change rides `project:tasksChanged`, and a project archive or
+restore is followed by a `project:list` re-read. A refusal comes back as an `ArchiveResult`
+with `ok: false` and a message ready to show, never as a thrown error.
+
+### Verification
+
+Two headless scripts, both run under Electron-as-Node on a scratch DB in the OS temp dir:
+
+- [`verify-archive-migration.mjs`](../scripts/verify-archive-migration.mjs) proves the
+  **store** — the columns, the migration on an old database, and each store method on its own.
+- [`verify-archive.mjs`](../scripts/verify-archive.mjs) proves the **whole path** — every
+  archive, restore and list through a `RelayRegistry` holding the real handlers, the board and
+  Backlog inputs read back through the predicate after each change, each open-tickets choice
+  and refusal, the co-archive restore, and the sweep with a faked clock. Its header names the
+  two mutations (the predicate, the restore) that must make it fail.
 
 ---
 

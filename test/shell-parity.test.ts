@@ -815,6 +815,56 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
   });
 });
 
+describe('the Archived view both hosts render from the shared pane (F14.12)', () => {
+  /**
+   * The tracker's Archived view (F14.8) is `ArchivedPane`, mounted by the shared ticket
+   * workspace `Projects` — not by either host. So both halves of the parity are one hop
+   * apart: each host imports `Projects` from the shared package (the desktop renames it
+   * `TicketWorkspace`, since its own `./projects/Projects` is the agent-projects screen), and
+   * `Projects` itself mounts `<ArchivedPane`. F14.12 made the web reach it this way rather
+   * than growing a browser copy; TM-213 was meant to pin that and was dropped.
+   */
+  const SHARED_PROJECTS = 'packages/ui/src/projects/Projects.tsx';
+
+  for (const [label, path] of [
+    ['the browser client', WEB_APP],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`renders ${label}'s ticket workspace from @tm/ui`, () => {
+      expect(
+        importedFrom(read(path), 'projects/Projects'),
+        `${path} must import Projects from @tm/ui/projects/Projects (or its @ui alias). The ` +
+          'Archived view lives inside that shared workspace; a host that renders anything ' +
+          'else has no Archived view, or a second one.',
+      ).toContain('Projects');
+    });
+  }
+
+  it('mounts the shared ArchivedPane inside the shared workspace', () => {
+    const source = read(SHARED_PROJECTS);
+    expect(
+      source,
+      `${SHARED_PROJECTS} must import ArchivedPane from './ArchivedPane' — the one Archived ` +
+        'view both hosts reach through this file.',
+    ).toMatch(/import\s+\{[^}]*\bArchivedPane\b[^}]*\}\s+from\s+'\.\/ArchivedPane'/);
+    expect(
+      source,
+      `${SHARED_PROJECTS} must mount <ArchivedPane — an import nothing renders leaves both ` +
+        'hosts without an Archived view, and every other check here still green.',
+    ).toMatch(/<ArchivedPane\b/);
+  });
+
+  it('leaves no local ArchivedPane behind in a host tree', () => {
+    const copies = HOST_TREES.flatMap((tree) => filesUnder(tree, /^ArchivedPane\.tsx?$/));
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements the Archived view that lives in packages/ui. ` +
+        'Delete it and import from @tm/ui — a host-local copy is a second implementation that ' +
+        'only diverges, and nothing else in this repo can see it happen.',
+    ).toEqual([]);
+  });
+});
+
 describe('the theme both hosts mount', () => {
   for (const [label, path] of [
     ['The browser entry point', WEB_MAIN],
