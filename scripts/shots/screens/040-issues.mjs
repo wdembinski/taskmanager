@@ -97,6 +97,23 @@ const FULL_OVERRIDES = {
   'mr:mergeRequests': FULL_MERGE_REQUESTS,
   'chain:links': PEEK_CHAIN_LINKS,
 };
+
+/**
+ * The list rows' data, after `v9-1-issues-list-light.svg`: a plain due date on `'3'` (the
+ * mockup's TM-71, the row the list shots select) and "Today" plus an assignee on `'4'` — both
+ * In Progress, so at the top of the list, above the fold. Row-local, so no board shot changes.
+ * The dates come from the real `Date.now()`, not the fixture's fixed `now`: `BacklogTable`
+ * reads "today" off the browser's own clock, so a date taken from the fixture's 2026-01-15
+ * would always draw as overdue.
+ */
+const LIST_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
+  t.id === '3'
+    ? { ...t, dueAt: Date.now() + 3 * 86_400_000 }
+    : t.id === '4'
+      ? { ...t, dueAt: Date.now(), assigneeId: 'person-human' }
+      : t,
+);
+
 export default [
   {
     // The desktop's own default tab is `'mytasks'` (the Board, `App.tsx`'s own
@@ -104,22 +121,31 @@ export default [
     // (`shellNav.ts`'s `{ id: 'tickets', label: 'Tickets' }`) has to click there first; driving
     // this row with `setup: null` landed on the Board and found no issue rows to screenshot,
     // which is how this got caught.
+    //
+    // The mockup's state is TM-71 selected with the peek open, so the row clicks `FX-3` (the
+    // fixture's TM-71, the only key containing it once steps are dropped) and the run fails
+    // if nothing ends up selected. `'3'` is the fixture's card frozen mid-run, so its peek's
+    // running band spins forever — `allowPersistentSpinner`, as `030-board-columns.mjs` does.
     name: 'issue-list-light',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    setup: [{ click: 'Tickets' }],
-    expect: '[role="option"]',
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:has:FX-3' }],
+    expect: '[role="option"][aria-selected="true"]',
+    allowPersistentSpinner: true,
     mockup: 'v9-1-issues-list-light.svg',
+    channelOverrides: { 'board:tasks': LIST_TASKS },
   },
   {
     name: 'issue-list-dark',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'dark',
-    setup: [{ click: 'Tickets' }],
-    expect: '[role="option"]',
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:has:FX-3' }],
+    expect: '[role="option"][aria-selected="true"]',
+    allowPersistentSpinner: true,
     mockup: 'v9-3-issues-list-dark.svg',
+    channelOverrides: { 'board:tasks': LIST_TASKS },
   },
   {
     // `IssueViewLayout` (packages/ui/src/issues/issueView.ts) opens 'closed' -> 'peek' on the

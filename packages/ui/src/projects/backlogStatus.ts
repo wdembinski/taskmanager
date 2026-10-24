@@ -38,9 +38,11 @@ const STATUS_ORDER: readonly BoardColumn[] = [
  * `backlogRows` does, filtered (`filterTickets`) and sorted (`sortBacklog`) exactly as the
  * epic-grouped view is, then bucketed by the column each is in (`columnForTask`) instead of
  * by epic. An epic is never one of the rows here — dropped (`isEpic`) rather than grouped,
- * since this view has no header for it to sit under. A column with nothing in it is omitted
- * rather than rendered empty: every non-epic ticket appears in exactly one group's `tickets`,
- * always.
+ * since this view has no header for it to sit under. Nor is a step (`parentTaskId` set): it
+ * belongs to its parent's card, not the list — the same `!t.parentTaskId` rule as the
+ * sidebar's (TM-451, `sidebarModel.ts`'s `buildTree`). A column with nothing in it is omitted
+ * rather than rendered empty: every ticket that is neither an epic nor a step appears in
+ * exactly one group's `tickets`, always.
  */
 export function backlogStatusGroups(
   tickets: readonly Task[],
@@ -51,7 +53,7 @@ export function backlogStatusGroups(
   const sorted = sortBacklog(
     filterTickets(archiveVisibleTickets(tickets, archive), query),
     sortKey,
-  ).filter((ticket) => !isEpic(ticket));
+  ).filter((ticket) => !isEpic(ticket) && !ticket.parentTaskId);
 
   const buckets = new Map<BoardColumn, Task[]>();
   for (const ticket of sorted) {
