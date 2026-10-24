@@ -143,12 +143,12 @@ Then four more stops finish the contract, outside `store.ts`:
 2. **`TicketInput`/`TicketPatch`**, same file — add the field to `TicketInput` if a human should
    be able to set it while creating a ticket, and to the `Pick<Task, ...>` union behind
    `TicketPatch` if it should be editable afterwards. Most fields want both.
-3. **`assertTicketRefs`** in `apps/client/src/main/ipc.ts` — only if the field is a reference to
+3. **`assertTicketRefs`** in `apps/client/src/main/ticketIpc.ts` — only if the field is a reference to
    another row (an id like `epicTaskId`/`milestoneId`/`assigneeId`/`reporterId`). `ticket:create`
    and `ticket:update` otherwise forward `TicketInput`/`TicketPatch` straight through to the
    store with no per-field code, so a plain scalar needs nothing here at all.
-4. **The renderer field** — `ticketFields.ts` (parsing/validation) and `TicketDrawer.tsx` (the
-   control itself), so a human has somewhere to put the value the first six stops now know how
+4. **The renderer field** — `ticketFields.ts` (parsing/validation) and
+   `TicketFieldsSection.tsx` (`packages/ui/src/projects/`, the control itself), so a human has somewhere to put the value the first six stops now know how
    to keep.
 
 ---
