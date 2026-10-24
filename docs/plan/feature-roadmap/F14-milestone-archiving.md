@@ -498,7 +498,7 @@ Map<string, TMilestone>; epics: Map<string, TEpic>; projects: Map<string, TProje
   - Acceptance: `httpTransport` tests that `archive:*` relay and are not refused;
     `test/shell-parity.test.ts` asserts the web renders the shared view; web build green.
 
-- [ ] F14.13 Verify archiving end to end and document it @needs: F14.9 Show archived tickets by direct link with a restore banner and keep them editable, F14.10 Add the optional auto-archive sweep, F14.12 Bring archiving to the web
+- [x] F14.13 Verify archiving end to end and document it @needs: F14.9 Show archived tickets by direct link with a restore banner and keep them editable, F14.10 Add the optional auto-archive sweep, F14.12 Bring archiving to the web
 
   - `scripts/verify-archive.mjs` on a temp DB (outside the repo, memory
     _headless-scenario-harness-traps_): archive a milestone with each choice through the IPC

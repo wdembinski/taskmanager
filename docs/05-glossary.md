@@ -166,6 +166,19 @@ and only ever after JIRA has been asked about the ticket by key and answered; a 
 nobody could get an answer about is kept on the board. Archived cards are destroyed after
 180 days, or when you delete the card yourself. See
 [The My Tasks board is a query](03-how-orchestration-works.md#the-my-tasks-board-is-a-query).
+Not to be confused with **Archived (tracker)** below: this is `Task.archivedAt`, the board's
+column, and it is pruned.
+
+### Archived (tracker)
+
+A milestone, epic or ticket project **put away as finished** (F14) — `archivedAt` on
+milestones and projects, `trackerArchivedAt` on epics and on tickets archived along with their
+milestone. Its tickets drop out of the board, Backlog, Timeline, Graph and pickers, but stay
+editable, open by direct link with a restore banner, are listed in the project's **Archived**
+view, and are **never pruned**. Whether a ticket is hidden is decided only by the shared
+`archivedBy` predicate. Not to be confused with **Removed card (archived)** above, the board's
+own `Task.archivedAt`; neither ever reads the other's column. See
+[Archiving](12-the-ticket-model.md#archiving).
 
 ### Agent project
 
