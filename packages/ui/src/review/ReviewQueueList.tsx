@@ -21,7 +21,7 @@ import {
 import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
 import type { ReviewQueue, ReviewQueueItem, ReviewQueuesSnapshot } from '@tm/shared/review';
 import { MONO } from '../theme';
-import { groupQueue } from './reviewWorkspaceView';
+import { groupQueue } from './reviewWorkspaceModel';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto' },

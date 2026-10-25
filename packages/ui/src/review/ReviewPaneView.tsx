@@ -185,9 +185,9 @@ function excerptLines(
  * check — modeled on `useCardAnchors`' own measure loop: a `ResizeObserver` schedules a single
  * rAF-debounced remeasure, and a width that did not change triggers no re-render. Starts
  * `null` (not measured yet) rather than `0`, so a first render before the observer reports in
- * never reads as "too narrow for split".
+ * never reads as "too narrow for split". Also measures the review workspace's diff column.
  */
-function useWidePaneWidth(): {
+export function useWidePaneWidth(): {
   containerRef: (el: HTMLDivElement | null) => void;
   widthPx: number | null;
 } {

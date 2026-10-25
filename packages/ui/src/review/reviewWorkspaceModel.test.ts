@@ -8,7 +8,7 @@ import {
   sourceBadge,
   subjectLabel,
   viewedLabel,
-} from './reviewWorkspaceView';
+} from './reviewWorkspaceModel';
 
 const github: ReviewSubject = {
   kind: 'pr',
