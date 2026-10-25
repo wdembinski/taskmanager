@@ -297,12 +297,17 @@ export class LimitGate {
    * merged: resume only once the LATER reset clears, and treat the pair as weekly
    * if either is. Returns the resulting state, or null for a no-op signal.
    */
-  engage(signal: LimitSignal, parkedTaskIds: readonly string[]): LimitState | null {
+  engage(
+    signal: LimitSignal,
+    parkedTaskIds: readonly string[],
+    parkedReviewIds: readonly string[] = [],
+  ): LimitState | null {
     if (signal.status === 'allowed') return null;
 
     const now = this.deps.now();
     const limitType = classifyLimit(signal.rateLimitType);
     const resumeAt = computeResumeAt(signal.resetsAt, limitType, now, this.deps.jitter());
+    const reviews = reviewField([...(this.current?.parkedReviewIds ?? []), ...parkedReviewIds]);
 
     const next: LimitState = this.current
       ? {
@@ -312,8 +317,15 @@ export class LimitGate {
           resetsAt: pickLaterReset(this.current.resetsAt, signal.resetsAt),
           resumeAt: Math.max(this.current.resumeAt, resumeAt),
           parkedTaskIds: [...new Set([...this.current.parkedTaskIds, ...parkedTaskIds])],
+          ...reviews,
         }
-      : { limitType, resetsAt: signal.resetsAt, resumeAt, parkedTaskIds: [...parkedTaskIds] };
+      : {
+          limitType,
+          resetsAt: signal.resetsAt,
+          resumeAt,
+          parkedTaskIds: [...parkedTaskIds],
+          ...reviews,
+        };
 
     this.arm(next);
     this.deps.onChanged(this.current);
@@ -375,6 +387,34 @@ export class LimitGate {
     this.deps.onChanged(this.current);
   }
 
+  /**
+   * Add AI reviews to a gate that is ALREADY up — a review that wanted to start mid-limit,
+   * or one re-parked on resume because the wall is still there. Mirrors `park`: returns
+   * the ids actually added, none if no gate is up (the caller should then just run them).
+   */
+  parkReviews(reviewIds: readonly string[]): string[] {
+    if (!this.current) return [];
+    const known = new Set(this.current.parkedReviewIds ?? []);
+    const added = [...new Set(reviewIds)].filter((id) => !known.has(id));
+    if (added.length === 0) return [];
+    this.current = { ...this.current, parkedReviewIds: [...known, ...added] };
+    this.deps.onChanged(this.current);
+    return added;
+  }
+
+  /** Forget some reviews so they are NOT restarted (e.g. cancelled while parked). */
+  unparkReviews(reviewIds: readonly string[]): void {
+    if (!this.current) return;
+    const before = this.current.parkedReviewIds ?? [];
+    const drop = new Set(reviewIds);
+    const kept = before.filter((id) => !drop.has(id));
+    if (kept.length === before.length) return;
+    const next: LimitState = { ...this.current, ...reviewField(kept) };
+    if (kept.length === 0) delete next.parkedReviewIds;
+    this.current = next;
+    this.deps.onChanged(this.current);
+  }
+
   /** Tear down without resuming (app shutdown). Leaves any persisted state intact. */
   dispose(): void {
     if (this.timer !== null) this.deps.clearTimer(this.timer);
@@ -401,6 +441,16 @@ export class LimitGate {
     this.deps.onResumeDue(state);
     this.deps.onChanged(null);
   }
+}
+
+/**
+ * The `parkedReviewIds` part of a state: the deduplicated ids, or nothing at all when
+ * there are none — so a gate that never parked a review looks exactly as it did before
+ * F16.9, both on disk and to every `toEqual` that pins it.
+ */
+function reviewField(ids: readonly string[]): { parkedReviewIds?: string[] } {
+  const unique = [...new Set(ids)];
+  return unique.length > 0 ? { parkedReviewIds: unique } : {};
 }
 
 /** Pick the later of two reset times (either may be unknown). */

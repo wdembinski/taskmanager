@@ -37,4 +37,10 @@ export interface LimitState {
   resumeAt: number;
   /** The task ids parked behind this gate — resumed by their saved session id at reset. */
   parkedTaskIds: string[];
+  /**
+   * The AI reviews this gate stopped (F16.9). Each restarts from scratch when the gate
+   * lifts — a new session and a new worktree — because a half-finished review has no
+   * state worth keeping. Optional so that gates persisted before F16.9 still load.
+   */
+  parkedReviewIds?: string[];
 }

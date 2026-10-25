@@ -48,6 +48,12 @@ export interface AuthState {
    * `pending` with a comment hoping someone re-runs it.
    */
   parkedTaskIds: string[];
+  /**
+   * The AI reviews this gate stopped (F16.9). Each restarts from scratch when the gate
+   * lifts — a new session and a new worktree — because a half-finished review has no
+   * state worth keeping. Optional so that gates persisted before F16.9 still load.
+   */
+  parkedReviewIds?: string[];
 }
 
 /**

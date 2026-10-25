@@ -167,14 +167,16 @@ export class AuthGate {
    * live run's failure behind it, while later ones are just the queue draining into the
    * same wall and would otherwise rewrite the banner every few hundred milliseconds.
    */
-  engage(reason: string, taskIds: readonly string[]): AuthState {
+  engage(reason: string, taskIds: readonly string[], reviewIds: readonly string[] = []): AuthState {
+    const reviews = reviewField(merge(this.current?.parkedReviewIds ?? [], reviewIds));
     this.current = this.current
-      ? { ...this.current, parkedTaskIds: merge(this.current.parkedTaskIds, taskIds) }
+      ? { ...this.current, parkedTaskIds: merge(this.current.parkedTaskIds, taskIds), ...reviews }
       : {
           since: this.deps.now(),
           reason,
           source: 'run',
           parkedTaskIds: [...new Set(taskIds)],
+          ...reviews,
         };
     this.deps.onChanged(this.current);
     return this.current;
@@ -215,6 +217,34 @@ export class AuthGate {
   }
 
   /**
+   * Add AI reviews to a gate that is ALREADY up — a review that wanted to start while the
+   * sign-in was broken, or one re-parked on resume. Mirrors `park`: returns the ids
+   * actually added, none if no gate is up (the caller should then just run them).
+   */
+  parkReviews(reviewIds: readonly string[]): string[] {
+    if (!this.current) return [];
+    const known = new Set(this.current.parkedReviewIds ?? []);
+    const added = [...new Set(reviewIds)].filter((id) => !known.has(id));
+    if (added.length === 0) return [];
+    this.current = { ...this.current, parkedReviewIds: [...known, ...added] };
+    this.deps.onChanged(this.current);
+    return added;
+  }
+
+  /** Forget some reviews so they are NOT restarted (cancelled while parked). */
+  unparkReviews(reviewIds: readonly string[]): void {
+    if (!this.current) return;
+    const before = this.current.parkedReviewIds ?? [];
+    const drop = new Set(reviewIds);
+    const kept = before.filter((id) => !drop.has(id));
+    if (kept.length === before.length) return;
+    const next: AuthState = { ...this.current, ...reviewField(kept) };
+    if (kept.length === 0) delete next.parkedReviewIds;
+    this.current = next;
+    this.deps.onChanged(this.current);
+  }
+
+  /**
    * The sign-in is believed good again: resume everything parked and clear the gate.
    *
    * Deliberately never verified first. If the credential is still bad the first resumed
@@ -239,4 +269,12 @@ export class AuthGate {
 /** Union two id lists, preserving order and dropping duplicates. */
 function merge(existing: readonly string[], added: readonly string[]): string[] {
   return [...new Set([...existing, ...added])];
+}
+
+/**
+ * The `parkedReviewIds` part of a state: the ids, or nothing at all when there are none —
+ * so a gate that never parked a review looks exactly as it did before F16.9.
+ */
+function reviewField(ids: readonly string[]): { parkedReviewIds?: string[] } {
+  return ids.length > 0 ? { parkedReviewIds: [...ids] } : {};
 }
