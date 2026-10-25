@@ -168,6 +168,8 @@ function harness(
     loadLimitGate: () => opts.limit ?? null,
     saveLimitGate: vi.fn(),
     clearLimitGate: vi.fn(),
+    loadAuthGate: () => null,
+    saveAuthGate: vi.fn(),
     listProjects: () => [],
     saveAttention: () => undefined,
     deleteAttention: () => undefined,
@@ -214,6 +216,8 @@ function harness(
     }),
     getAiReview: (id) => reviews.get(id),
     listAiReviews: (subjectId) => [...reviews.values()].filter((r) => r.subjectId === subjectId),
+    listAiReviewsByStatus: (statuses) =>
+      [...reviews.values()].filter((r) => statuses.includes(r.status)),
     updateAiReview: (id, patch) => {
       const prior = reviews.get(id);
       if (!prior) return undefined;
@@ -487,7 +491,7 @@ describe('AiReviewRunner — refusals', () => {
     });
   });
 
-  it('refuses while the usage-limit gate is up', async () => {
+  it('parks, rather than refuses, while the usage-limit gate is up', async () => {
     const h = harness({
       limit: {
         limitType: 'rolling',
@@ -496,9 +500,16 @@ describe('AiReviewRunner — refusals', () => {
         parkedTaskIds: [],
       },
     });
-    const answer = await refusal(h);
-    expect(answer).toMatchObject({ refused: 'gate-up' });
-    expect((answer as AiReviewRefusal).reason).toMatch(/usage limit/);
+    const answer = await h.runner.start('task:t1', 'human');
+    await flush();
+    expect(answer).not.toHaveProperty('refused');
+    const row = h.reviews.get((answer as AiReview).id)!;
+    expect(row.status).toBe('parked-limit');
+    expect(row.parkReason).toMatch(/usage limit/);
+    expect(row.finishedAt).toBeNull();
+    expect(h.scheduler.currentLimit()?.parkedReviewIds).toEqual([row.id]);
+    expect(h.startedRunIds).toHaveLength(0);
+    expect(h.worktrees.create).not.toHaveBeenCalled();
     h.scheduler.dispose();
   });
 
@@ -540,19 +551,39 @@ describe('AiReviewRunner — the queue and launch failures', () => {
   });
 
   it.each([
-    ['a sign-in failure', 'Failed to authenticate: OAuth session expired', 'OAuth session expired'],
-    ['a usage limit', 'Claude AI usage limit reached|1792918800', 'usage limit reached'],
-  ])('fails on %s with the detection’s reason and no repair turn', async (_name, text, inError) => {
-    const h = harness();
-    const review = await started(h);
-    h.emit(result(text, { success: false }));
-    await flush();
-    const row = h.reviews.get(review.id)!;
-    expect(row.status).toBe('failed');
-    expect(row.error).toContain(inError);
-    expect(h.sessions.send).not.toHaveBeenCalled();
-    expect(h.store.addAiDrafts).not.toHaveBeenCalled();
-  });
+    [
+      'a sign-in failure',
+      'Failed to authenticate: OAuth session expired',
+      'parked-signin',
+      'OAuth session expired',
+    ],
+    [
+      'a usage limit',
+      'Claude AI usage limit reached|1792918800',
+      'parked-limit',
+      'usage limit reached',
+    ],
+  ])(
+    'parks on %s in the gate, with no repair turn and nothing landed',
+    async (_name, text, status, inReason) => {
+      const h = harness();
+      const review = await started(h);
+      h.emit(result(text, { success: false }));
+      await flush();
+      const row = h.reviews.get(review.id)!;
+      expect(row.status).toBe(status);
+      expect(row.parkReason).toContain(inReason);
+      expect(row.finishedAt).toBeNull();
+      const gate =
+        status === 'parked-signin' ? h.scheduler.currentAuth() : h.scheduler.currentLimit();
+      expect(gate?.parkedReviewIds).toEqual([review.id]);
+      expect(h.sessions.stop).toHaveBeenCalledWith(h.startedRunIds[0]);
+      expect(h.worktrees.remove).toHaveBeenCalledWith(PROJECT, review.id);
+      expect(h.sessions.send).not.toHaveBeenCalled();
+      expect(h.store.addAiDrafts).not.toHaveBeenCalled();
+      h.scheduler.dispose();
+    },
+  );
 
   it('fails a session that exits without an answer', async () => {
     const h = harness();

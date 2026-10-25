@@ -2514,6 +2514,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     emitChanged: (review) =>
       logMain(`AI review ${review.id} (${review.subjectId}): ${review.status}`),
   });
+  // F16.9: a review parked by a previous run is held by the gate it parked in, which the
+  // restore above brings back; one held by neither (its gate was never saved, or lifted
+  // while the app was closed) restarts — after the gates, so it parks behind one still up.
+  void gatesRestored.then(() => aiReviews.restoreParked());
 
   const reviewHandlers = createReviewHandlers({
     subjects: reviewSubjects,

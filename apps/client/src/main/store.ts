@@ -156,7 +156,7 @@ import {
   type ReviewViewedMark,
 } from '@shared/review';
 import type { ParsedTask } from './planParser';
-import type { AiDraftInput, AiReview } from '@shared/aiReview';
+import type { AiDraftInput, AiReview, AiReviewStatus } from '@shared/aiReview';
 import {
   type ReviewCommentRow,
   aiDraftToRow,
@@ -1155,6 +1155,8 @@ export interface Store {
   getAiReview(id: string): AiReview | undefined;
   /** Every review of one subject, newest first. */
   listAiReviews(subjectId: string): AiReview[];
+  /** Every review in one of `statuses`, across subjects, oldest first — the boot restart's. */
+  listAiReviewsByStatus(statuses: readonly AiReviewStatus[]): AiReview[];
   /**
    * Merge a patch into a review — read-merge-write, like `updateReviewComment`; `id`,
    * `subjectId` and `createdAt` never move. `resultText` is the raw reply kept for
@@ -4266,6 +4268,11 @@ export function createStore(dbPath: string): Store {
   const selectAiReviewsForSubject = db.prepare(
     `SELECT * FROM ai_reviews WHERE subjectId = ? ORDER BY createdAt DESC, rowid DESC`,
   );
+  // The statuses arrive as one JSON array — json_each is "IN (one of these)" for one binding.
+  const selectAiReviewsByStatus = db.prepare(
+    `SELECT * FROM ai_reviews WHERE status IN (SELECT value FROM json_each(?))
+     ORDER BY createdAt, rowid`,
+  );
   // id, subjectId and createdAt are a review's identity and never move.
   const updateAiReviewStmt = db.prepare<[AiReviewRow]>(
     `UPDATE ai_reviews
@@ -7248,6 +7255,13 @@ export function createStore(dbPath: string): Store {
 
     listAiReviews(subjectId) {
       return (selectAiReviewsForSubject.all(subjectId) as AiReviewRow[]).map(rowToAiReview);
+    },
+
+    listAiReviewsByStatus(statuses) {
+      if (statuses.length === 0) return [];
+      return (selectAiReviewsByStatus.all(JSON.stringify(statuses)) as AiReviewRow[]).map(
+        rowToAiReview,
+      );
     },
 
     updateAiReview(id, patch) {
