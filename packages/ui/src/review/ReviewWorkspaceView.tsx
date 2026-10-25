@@ -27,11 +27,6 @@ import {
   Body1,
   Button,
   Caption1,
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogSurface,
-  DialogTitle,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
@@ -55,14 +50,13 @@ import type {
   ReviewQueueItem,
   ReviewQueuesSnapshot,
 } from '@tm/shared/review';
-import { KeyboardShortcutsList } from '../palette/KeyboardShortcutsList';
 import { GlassPane } from '../shell/GlassPane';
 import { MONO } from '../theme';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
+import { ReviewKeysDialog } from './ReviewKeysDialog';
 import { ReviewQueueList } from './ReviewQueueList';
 import { useWidePaneWidth } from './ReviewPaneView';
-import { REVIEW_KEYS } from './reviewKeys';
 import { canComment, canSend, unsentCount, viewedStatuses, type ReviewState } from './reviewState';
 import { buildFileTree, effectiveDiffLayout, summaryTotals, type DiffLayout } from './reviewView';
 import { sourceBadge, subjectLabel, viewedLabel } from './reviewWorkspaceModel';
@@ -244,16 +238,7 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
 
       <DiffColumn {...props} status={status} />
 
-      <Dialog open={keysOpen} onOpenChange={(_e, data) => !data.open && onCloseKeys()}>
-        <DialogSurface>
-          <DialogBody>
-            <DialogTitle>Keyboard shortcuts</DialogTitle>
-            <DialogContent>
-              <KeyboardShortcutsList items={REVIEW_KEYS} />
-            </DialogContent>
-          </DialogBody>
-        </DialogSurface>
-      </Dialog>
+      <ReviewKeysDialog open={keysOpen} onClose={onCloseKeys} />
     </div>
   );
 }
