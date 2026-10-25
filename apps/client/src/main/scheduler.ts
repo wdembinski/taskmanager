@@ -147,7 +147,12 @@ import {
 } from './limitGate';
 import type { CliUsageReading } from './claudeUsage';
 import type { PermissionRequest, PermissionDecisionResult } from './permissionBroker';
-import { EXIT_PLAN_MODE_TOOL, evaluateToolUse } from './permissionPolicy';
+import {
+  EXIT_PLAN_MODE_TOOL,
+  evaluateReviewToolUse,
+  evaluateToolUse,
+  type ReviewToolDenial,
+} from './permissionPolicy';
 import { tickPlanCheckbox } from './planParser';
 import { buildReleasePrompt } from './releasePrompt';
 import { autoIntegrateOn } from '@shared/integrate';
@@ -865,6 +870,16 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   return detail ? `${name}: ${detail}` : name;
 }
 
+/**
+ * Where an AI review run's refused tool uses go (F16.5). The review runner supplies one
+ * per run through {@link Scheduler.registerReviewRun} and records each denial on the
+ * review — nobody is watching an unattended review, so there is no Attention item.
+ */
+export interface ReviewPermissionSink {
+  reviewId: string;
+  onDenied(denial: ReviewToolDenial): void;
+}
+
 /** Bookkeeping for one task the scheduler currently has a session running for. */
 interface Run {
   taskId: string;
@@ -1446,6 +1461,12 @@ export class Scheduler {
    * pending-* maps). Auto-pruned when the run ends.
    */
   private readonly auxRuns = new Map<string, string>();
+  /**
+   * AI review sessions (F16.5), runId → the sink their denials are recorded on. Checked
+   * FIRST in `decidePermission`: a review run is judged by the deny-only review policy and
+   * never reaches a task branch, the `bypassPermissions` shortcut or the Attention inbox.
+   */
+  private readonly reviewRuns = new Map<string, ReviewPermissionSink>();
   /**
    * Parent cards whose subtask chain should start as soon as their PLANNING run has
    * exited (Phase 11). Approving a plan stops that run and launches step 1 — but both
@@ -2641,6 +2662,26 @@ export class Scheduler {
   }
 
   /**
+   * Route one AI review session's tool uses through the deny-only review policy (F16.5):
+   * every tool it may not use is answered `deny` at once and handed to `sink.onDenied`.
+   * F16.8's `startReviewSession` calls this as soon as the session has a runId — before
+   * its first tool use can reach the gate — and {@link unregisterReviewRun} once it ends.
+   */
+  registerReviewRun(runId: string, sink: ReviewPermissionSink): void {
+    if (this.disposed) return;
+    this.reviewRuns.set(runId, sink);
+  }
+
+  /**
+   * Forget a {@link registerReviewRun} session — called by F16.8's `startReviewSession`
+   * when the review ends. A later tool use under the same runId fails safe as an unknown
+   * session.
+   */
+  unregisterReviewRun(runId: string): void {
+    this.reviewRuns.delete(runId);
+  }
+
+  /**
    * Whether any task run is currently executing under a project. Used to refuse
    * deleting a project out from under a live session — a run keys off its project's
    * directory (and, for a worktree run, still has to be integrated back into it).
@@ -3519,6 +3560,11 @@ export class Scheduler {
     if (this.disposed) {
       return Promise.resolve({ behavior: 'deny', message: 'orchestrator is shutting down' });
     }
+    // An AI review run (F16.5) is judged before anything task-shaped: it has no card, so no
+    // ExitPlanMode/AskUserQuestion branch, `bypassPermissions` shortcut or Attention item
+    // below can apply. Its policy never asks — a refused tool is denied now and recorded.
+    const reviewSink = this.reviewRuns.get(request.runId);
+    if (reviewSink) return Promise.resolve(this.decideReviewPermission(request, reviewSink));
     const run = this.runs.get(request.runId);
     if (!run) {
       // Can't correlate the tool to a task — fail safe rather than allow blindly.
@@ -3712,6 +3758,34 @@ export class Scheduler {
     return this.hasAttachOutbox(run)
       ? this.ingestOutboxBeforePark(run).then(raisePermission)
       : raisePermission();
+  }
+
+  /**
+   * One review run's tool use, judged by {@link evaluateReviewToolUse}: allow, or deny and
+   * hand the denial to the run's sink. The sink is the review runner's code — if it throws,
+   * the answer is still `deny`; a recording failure must never turn into an allowed tool.
+   */
+  private decideReviewPermission(
+    request: PermissionRequest,
+    sink: ReviewPermissionSink,
+  ): PermissionDecisionResult {
+    const decision = evaluateReviewToolUse(request.toolName, request.input);
+    if (decision.action === 'allow') {
+      return { behavior: 'allow', updatedInput: request.input };
+    }
+    // The review policy never asks, but the type allows it — treat one as a refusal.
+    const reason = decision.reason;
+    try {
+      sink.onDenied({
+        toolName: request.toolName,
+        reason,
+        detail: describeToolUse(request.toolName, request.input),
+        at: new Date().toISOString(),
+      });
+    } catch (err) {
+      logMain(`review ${sink.reviewId}: could not record a denied tool use`, err);
+    }
+    return { behavior: 'deny', message: `AI review is read-only — ${reason}` };
   }
 
   /**
@@ -4025,6 +4099,7 @@ export class Scheduler {
     // `gateSteps` itself has no "stop all" of its own, so it is walked here.
     for (const id of this.gateSteps.runningIds()) this.gateSteps.stop(id);
     this.auxRuns.clear(); // the caller's sessions.stopAll() kills the processes themselves
+    this.reviewRuns.clear();
     this.inFlight.clear();
     this.attention.clear();
   }

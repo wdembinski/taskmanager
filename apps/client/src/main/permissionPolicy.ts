@@ -17,12 +17,23 @@
  * is the hard pre-execution gate — this policy is the layer that decides what to
  * SURFACE to a human. A true in-app veto (blocking a tool before it runs via
  * `--permission-prompt-tool`) is a later hardening; see the Phase 4 notes.
+ *
+ * The review policy (F16.5) — `evaluateReviewToolUse` — is the second, stricter
+ * classifier, for an unattended AI review of an untrusted PR. Nobody is watching
+ * that session and there is no card to raise an Attention item on, so it never
+ * returns `ask`: a tool use is either `allow` (a read, or one of a few read-only
+ * git subcommands) or `deny`, and anything it does not recognise is denied — the
+ * opposite of `evaluateToolUse`'s unknown → allow.
  */
 
 import { isAskUserQuestionTool } from './askUserQuestion';
 
-/** The outcome of classifying one tool use. `reason` explains an `ask` to the human. */
-export type PermissionDecision = { action: 'allow' } | { action: 'ask'; reason: string };
+/**
+ * The outcome of classifying one tool use. `reason` explains an `ask` to the human,
+ * or a `deny` to the session (and the review it is recorded on).
+ */
+export type PermissionDecision =
+  { action: 'allow' } | { action: 'ask'; reason: string } | { action: 'deny'; reason: string };
 
 /** Tools whose whole purpose is to delete — always routed to a human. */
 const DELETE_TOOLS = new Set(['delete', 'deletefile', 'remove', 'rm', 'trash']);
@@ -115,4 +126,77 @@ export function evaluateToolUse(
 
   // Everything else (Read, Grep, Glob, WebFetch, …) is safe to auto-approve.
   return { action: 'allow' };
+}
+
+/** The only non-shell tools an AI review may use — the review's `allowedTools`. */
+export const REVIEW_READ_TOOLS: readonly string[] = ['Read', 'Grep', 'Glob'];
+
+/** The only git subcommands an AI review may run through the shell. */
+export const REVIEW_GIT_SUBCOMMANDS: readonly string[] = ['log', 'show', 'diff', 'blame'];
+
+/**
+ * One tool use the review policy refused, as recorded on the review. `detail` is
+ * the human-readable description of the attempt (`describeToolUse`); `at` is ISO.
+ */
+export interface ReviewToolDenial {
+  toolName: string;
+  reason: string;
+  detail: string;
+  at: string;
+}
+
+/**
+ * Any character that lets one command become several, redirect, or substitute:
+ * chains (`;` `&` `|`), redirection (`<` `>`), substitution (`` ` `` `$` `(` `)`),
+ * grouping (`{` `}`) and line breaks.
+ */
+const SHELL_METACHARACTERS = /[;&|<>`$(){}\n\r]/;
+
+const REVIEW_READ_TOOL_NAMES = new Set(REVIEW_READ_TOOLS.map((tool) => tool.toLowerCase()));
+const REVIEW_GIT_SUBCOMMAND_NAMES = new Set(REVIEW_GIT_SUBCOMMANDS);
+
+/** Classify one shell command for a review: a single read-only git command, or deny. */
+function evaluateReviewCommand(command: string): PermissionDecision {
+  const trimmed = command.trim();
+  if (trimmed === '') return { action: 'deny', reason: 'empty shell command' };
+  if (SHELL_METACHARACTERS.test(trimmed)) {
+    return { action: 'deny', reason: 'shell pipelines and chains are not allowed' };
+  }
+
+  const tokens = trimmed.split(/\s+/);
+  if (tokens[0] !== 'git') {
+    return { action: 'deny', reason: `only git ${REVIEW_GIT_SUBCOMMANDS.join('/')} may run` };
+  }
+  // The subcommand must come straight after `git`: a global option in between
+  // (`-c core.pager=…`, `-C dir`, `--exec-path`) can run arbitrary programs.
+  const subcommand = tokens[1];
+  if (subcommand === undefined) return { action: 'deny', reason: 'bare git is not allowed' };
+  if (!REVIEW_GIT_SUBCOMMAND_NAMES.has(subcommand)) {
+    return { action: 'deny', reason: `git ${subcommand} is not a read-only review command` };
+  }
+  for (const arg of tokens.slice(2)) {
+    if (arg.startsWith('--output')) return { action: 'deny', reason: `${arg} writes a file` };
+    if (arg === '--ext-diff')
+      return { action: 'deny', reason: '--ext-diff runs an external program' };
+  }
+  return { action: 'allow' };
+}
+
+/**
+ * Classify one tool use in an unattended AI review (F16.5): `allow` or `deny`,
+ * never `ask`. Default-deny — only `REVIEW_READ_TOOLS` and a single shell command
+ * running one of `REVIEW_GIT_SUBCOMMANDS` are allowed.
+ */
+export function evaluateReviewToolUse(
+  toolName: string,
+  input: Record<string, unknown>,
+): PermissionDecision {
+  const name = toolName.toLowerCase();
+  if (REVIEW_READ_TOOL_NAMES.has(name)) return { action: 'allow' };
+
+  if (name === 'bash' || name === 'shell' || name === 'powershell') {
+    return evaluateReviewCommand(firstString(input, ['command', 'cmd', 'script']) ?? '');
+  }
+
+  return { action: 'deny', reason: `${toolName} is not available to a read-only review` };
 }
