@@ -110,7 +110,8 @@ function planHeadingLines(): string[] {
     `of a task on the board, shown on its own with no surrounding context. So give every`,
     `heading an imperative title of roughly 3-8 words that starts with a verb — "Add the`,
     `auth guard", "Migrate the settings blob", "Extract the branch naming" — never a bare`,
-    `"Phase 1", and never a lone noun.`,
+    `"Phase 1", and never a lone noun. Write each step as its own \`## Step N: <title>\``,
+    `heading; never nest steps as \`###\` under a single \`## Steps\` heading.`,
     '',
   ];
 }
