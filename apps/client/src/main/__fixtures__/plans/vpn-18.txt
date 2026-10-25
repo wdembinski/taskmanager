@@ -1,0 +1,287 @@
+# VPN-11 finish: relay transfer reports, retention, metrics read endpoints, console read data
+
+## Context
+VPN-11 is half done. Merged in #4: the `metrics` table layout, the delta rules across counter
+resets, and `POST /relay/transfer`. Nothing sends to that endpoint yet, old samples are never
+deleted, and nothing reads the data. The console (VPN-13) shows "—" for per-device handshake
+and rx/tx, the idle-stop countdown, and cost this month. This ticket closes all of those.
+Only the `vpn` repo changes (API `apps/api`, relay `relay/`, `docs/CONTRACT.md`). There is no
+console, Terraform or live Azure work.
+
+## Facts (checked in this worktree)
+- **Ingest exists:** `apps/api/src/metrics/metrics.service.ts` `MetricsService.ingest()` parses
+  `TransferReport {bootId, peers:[{publicKey,rx,tx}]}` (relay view), runs `computeDelta`
+  (`metrics.delta.ts`) and calls `MetricsRepository.increment()`. That writes each non-zero
+  delta (device view: device rx = relay tx) to the minute, hour AND day rows at once. So the
+  "rollups" are already written at ingest. This ticket adds retention (pruning) and reads; it
+  does not add a rollup computation.
+- **Read helpers exist but nothing uses them:** `metrics.delta.ts` `windowFor(range, now)`,
+  `partitionsCovering`, `bucketFloor`, and `RANGE_SPECS` in `metrics.types.ts`:
+  `1h → m tier, step 60 s, 60 points`; `24h → m, 300 s, 288`; `7d → h, 3600 s, 168`;
+  `30d → h, 21600 s, 120`. `MetricsRepository.readSamples(tier, from, to)` and
+  `deleteSample(pk, rk)` (a 404 counts as success) exist.
+- **Table keys** (CONTRACT §4): counters are `counter`/`<deviceId>` and `counter`/`_relay`.
+  Samples are `m:<YYYY-MM-DD>`, `h:<YYYY-MM>` and `d:<YYYY>`, with RowKey
+  `<bucket ISO>|<deviceId>`. Policy hour rows are `rh:<YYYY-MM-DD>`/`<hour ISO>|<ruleId>`; their
+  prefix is in `policy/policyStatus.repository.ts` `HOUR_PREFIX`, and CONTRACT §4 says
+  "Hour rows are not pruned yet". Partition keys sort as dates, so
+  `PartitionKey ge 'm:' and PartitionKey le 'm:<day>' and RowKey lt '<iso>'` is a valid range
+  filter. `testing/memoryTable.ts` supports `eq/ge/gt/le/lt` joined by `and`, plus `select`.
+- **Autostop job:** `apps/api/src/autostop.ts` runs every 15 min (`*/15`). It builds `tables`
+  with `createTables(config)` (this includes `tables.metrics`), runs `runAutostopPass`
+  (`relay/autostop.rules.ts`), then exits 0 on success and 1 on failure.
+- **Relay row/view:** `relay/relay.service.ts` `toView(row)` builds `Relay`, with types in
+  `relay/relay.types.ts`. Idle config is `config.relay.idleTimeoutMinutes`
+  (`RELAY_IDLE_TIMEOUT_MINUTES`, default 30). The agent's own rule (CONTRACT §7 step 6) is
+  `idleSince = max(latest handshake, agent start)`, and it reports idle once
+  `now − idleSince ≥ VIPPER_IDLE_TIMEOUT`. The API's `lastHandshakeAt` is refreshed by
+  `GET /relay/peers` (`relay/relayAgent.service.ts`).
+- **Agent:** `relay/vipper-relay-agent.sh`, `AGENT_VERSION="0.3.0"`, 60 s main loop
+  (`main()`, around lines 1010-1026: `sync_peers` → `policy_tick` → `idle_check`). Dry-run
+  skips all `wg` calls. The test-only override pattern is `VIPPER_NFT` / `VIPPER_BOOT_ID` /
+  `VIPPER_DRY_RUN_TICKS`. HTTP goes through `api_call METHOD PATH [BODY]`, which sets
+  `HTTP_STATUS` and `HTTP_BODY_FILE`. JSON bodies are built with jq (see `report_policy`).
+- **Relay tests:** `relay/test/run-tests.sh` (`run_scenario`), `relay/test/mock-api.js`
+  (records calls at `GET /__calls`, and validates `/relay/policy/status` strictly),
+  `relay/test/assert-run.js` (per-scenario assertions), `relay/test/fake-nft.sh` (the model
+  for a fake `wg`).
+- **Auth:** `@Auth('user:admin')` and `@Auth('user:connect')` from `auth/auth.guard.ts`.
+  Admin-or-own visibility is done in `devices/devices.controller.ts` `owner(req)` via
+  `IamAuthService.can(token,'admin')`. `DevicesService.list(owner)` returns the visible
+  devices, and `all()` returns every device.
+- **Azure SDK:** `@azure/identity` is present (`DefaultAzureCredential` is used in
+  `relay/relay.core.ts`). There is no Cost Management SDK. Use REST through `fetch` (Node 22)
+  with a token for `https://management.azure.com/.default`; this adds no dependency.
+- **Mockup sample data** (`docs/brand-system:docs/mockups/lib/data.mjs`):
+  `relay.idleStopIn: '26 min'`, `relay.costMtd: '€1.47'`, device `rx/tx` like `'4.2 GB'` and
+  `seen: '14s'`, and `traffic.talkers: [{label, value, display}]`. Responses carry raw bytes,
+  ISO times, amount and currency; the console formats them.
+- **There is no UI change in this ticket.** The project has no headless screenshot command,
+  and none is needed: the console is not touched.
+- `docs/PLAN.md` has no VPN-11 section to update. `docs/CONTRACT.md` is the document to keep
+  in step.
+
+## Decisions
+- **Retention** runs in the existing autostop job (every 15 min), AFTER the autostop pass, so
+  it can never delay a stop. It prunes:
+  - `m:` rows older than `now − 24 h` (the bucket is floored to the minute);
+  - `h:` rows older than `now − 30 d` (floored to the hour);
+  - `rh:` policy hour rows older than `now − 30 d`;
+  - `d:` rows never.
+  A prune error is logged and makes the job exit 1, but the autostop result is unaffected.
+  Every read window lies inside its retention: `windowFor` gives `from > now − range`.
+- **Agent reads `wg show wg0 dump`** (one call gives handshake + transfer) and sends it to
+  `POST /relay/transfer` on every 60 s tick. `TransferPeer` gains `latestHandshake` (epoch s,
+  0 = never). It is optional in the API so the body stays backward compatible; the agent
+  always sends it.
+- **Per-device status** is a new `GET /devices/status` (`user:connect`, same visibility as
+  `GET /devices`), backed by the counter rows. `rx/tx` = the device-view raw counters, i.e.
+  bytes since the relay (re)added the peer, which is what `wg show` displays.
+- **Idle countdown:** `Relay` gains `idleSince` and `autoStopAt`. Both are non-null only while
+  `running`. `idleSince = max(lastHandshakeAt ?? since, since)` and
+  `autoStopAt = idleSince + idleTimeoutMinutes`. This is accurate to about one agent tick.
+- **Cost:** `GET /cost/month-to-date` (`user:admin`) queries the Cost Management REST API for
+  RG `config.azure.resourceGroup`. The result is cached for 6 h in the `metrics` table
+  (row `cost`/`<YYYY-MM>`) rather than in process memory, because the Container App scales to
+  zero. If a refresh fails while a cached value exists, the cached value is served with
+  `stale: true`; with no cached value the call returns `502 upstream_error`. The API identity
+  needs **Cost Management Reader** on RG `vpn`. This is recorded as a Terraform follow-up
+  (CONTRACT §8 role table, marked "follow-up, not yet in Terraform", and in the final commit
+  message). Live Azure is not touched.
+- **Delivery:** the orchestrator merges the branch, so there is no PR step. Each step commits
+  on this branch.
+
+## Step 1: Report peer transfer from the relay agent
+Files: `relay/vipper-relay-agent.sh`, `relay/test/fake-wg.sh` (new),
+`relay/test/mock-api.js`, `relay/test/assert-run.js`, `relay/test/run-tests.sh`,
+`relay/README.md`, `docs/CONTRACT.md` (§3.3 TransferPeer, §6 test-only env, §7 agent steps).
+- Bump `AGENT_VERSION` to `0.4.0`. Add the test-only `VIPPER_WG` (the wg binary; live it
+  defaults to `wg`; in dry-run wg is called only if it is set, like `VIPPER_NFT`).
+- Add `report_transfer()`. It runs `"$WG" show wg0 dump`, skips line 1 (the interface), and
+  reads peer lines (tab-separated:
+  `pubkey psk endpoint allowed-ips latest-handshake rx tx keepalive`). It builds
+  `{bootId:$BOOT_ID, peers:[{publicKey,rx,tx,latestHandshake}]}` with jq, keeping only peers
+  whose numbers are non-negative safe integers, capped at 1000. It then calls
+  `api_call POST /relay/transfer`. On non-200 it logs a warning and does not retry (the next
+  tick's counters supersede it). If wg fails, it logs a warning and skips the report.
+- Call it in the main loop after `policy_tick` (`report_transfer || true`), once in dry-run
+  after `idle_check`, and on every extra dry-run tick.
+- Add `fake-wg.sh`, which prints a fixed dump: an interface line, 2 normal peers, 1 peer that
+  has never handshaked (`0`), and 1 malformed line. Its output can be switched by an env var
+  (`FAKE_WG_FAIL=1` exits non-zero).
+- `mock-api.js`: add `POST /relay/transfer` with strict validation (bootId pattern; every peer
+  has exactly `publicKey`, `rx`, `tx`, `latestHandshake`, all of them valid). It answers
+  `200 {accepted, ignored}`, or 400 on a violation. `MOCK_TRANSFER_FAIL=1` makes it answer 503.
+- Scenarios in `run-tests.sh`/`assert-run.js`:
+  - `transfer-report`: the body equals the fake dump minus the malformed line, `bootId` is
+    `test-boot-1`, and there is one call per tick;
+  - `transfer-fail` (503): the agent keeps running and logs the warning, with no retry within
+    the tick;
+  - `transfer-wg-fail`: no POST, and a warning is logged.
+  Existing scenarios must still pass. If the existing assertions check the exact list of
+  calls, update them for the extra POST.
+- CONTRACT: §3.3 `TransferPeer` gains `latestHandshake: number /* epoch s, 0 = never; optional */`.
+  §7 gets a new step: "every 60 s: `wg show wg0 dump` → `POST /relay/transfer`, not retried".
+  §6 lists `VIPPER_WG` as test-only.
+**Acceptance:** `bash relay/test/run-tests.sh` (Git Bash) prints
+`All relay agent dry-run tests passed.`, including the 3 new scenarios.
+
+## Step 2: Expose per-device status and the idle countdown
+Files: `apps/api/src/metrics/metrics.types.ts`, `metrics.service.ts`,
+`metrics.repository.ts`, `metrics.module.ts`, `metrics/deviceStatus.controller.ts` (new),
+`metrics/metrics.service.test.ts`, `metrics/metrics.repository.test.ts`,
+`apps/api/src/app.module.ts` (only if controllers must be registered there),
+`relay/relay.types.ts`, `relay/relay.service.ts`, `relay/relay.service.test.ts`,
+`docs/CONTRACT.md`.
+- Ingest: `parsePeer` accepts an optional `latestHandshake` (a safe integer ≥ 0; anything
+  else → 400 naming `peers[i].latestHandshake`). The counter row stores `handshakeAt` (ISO, or
+  `""` for 0/absent; the previous value is kept when the field is absent). Extend `CounterRow`.
+- `MetricsService.deviceStatuses(visibleDevices)` reads `listCounters()` and returns
+  `DeviceStatus { deviceId; lastHandshakeAt: string|null; rx: number; tx: number /* device view: rx = relay tx */; reportedAt: string|null }`.
+  It returns one entry per visible device, with nulls/0 when there is no counter row, sorted
+  like the device list.
+- New `DeviceStatusController` (`@Controller('devices')`, `@Get('status')`,
+  `@Auth('user:connect')`) answers `200 {"statuses": DeviceStatus[]}` for the caller's own
+  devices, or all of them for an admin. It reuses the `owner(req)` pattern (IamAuthService).
+  Make sure `GET /devices/status` is not shadowed by another route (there is no `GET /devices/:id`).
+- `Relay` gains `idleSince: string|null` and `autoStopAt: string|null`, computed in
+  `toView()` as described under Decisions, and null unless `state === 'running'`.
+- Tests:
+  - ingest stores `handshakeAt`;
+  - a bad `latestHandshake` → 400;
+  - statuses: the device view swaps rx/tx, a device without a row gets nulls, and a non-admin
+    sees only their own devices;
+  - `toView`: running with a handshake, running without a handshake (uses `since`), and
+    stopped (both null).
+- CONTRACT: the `Relay` type, a new `DeviceStatus` type, a `GET /devices/status` row in §3.4,
+  and the §4 counter row gets `handshakeAt`.
+**Acceptance:** `pnpm --filter @vpn/api test` and `pnpm --filter @vpn/api typecheck` pass.
+
+## Step 3: Prune metrics samples in the autostop job
+Files: `apps/api/src/metrics/metrics.retention.ts` (new), `metrics.retention.test.ts` (new),
+`metrics/metrics.repository.ts`, `policy/policyStatus.repository.ts` (export the prefix if
+needed), `apps/api/src/autostop.ts`, `docs/CONTRACT.md` (§4 bullets, §5 autostop job).
+- Add `MetricsRepository.listOlderThan(prefix, cutoff)`. It queries
+  `PartitionKey ge '<prefix>' and PartitionKey le '<prefix><partition of cutoff>' and RowKey lt '<cutoff ISO>'`
+  with `select: []` (keys only). `<prefix>` is `m:`, `h:` or `rh:`.
+- `pruneMetrics(repo, now): Promise<{deleted: {m,h,rh}}>`, with cutoffs from Decisions. It
+  deletes each row with `deleteSample` and never touches `d:`, `counter` or `rule` rows.
+- `autostop.ts`: after `runAutostopPass` and `drain()`, run `pruneMetrics` in a try/catch.
+  Log `metrics prune: deleted m=<n> h=<n> rh=<n>`, or log the error. The exit code is
+  `result.ok && pruneOk ? 0 : 1`.
+- Tests (MemoryTable): rows straddling each cutoff across a UTC day and month boundary;
+  `d:`/`counter`/`rule` rows survive; an exact-cutoff bucket survives (cutoff is exclusive);
+  running twice is idempotent.
+- CONTRACT §4: replace "Hour rows are not pruned yet" with the retention rule, and add a
+  "Metrics retention" bullet. §5: the autostop job prunes after its pass.
+**Acceptance:** `pnpm --filter @vpn/api test` and `typecheck` pass.
+
+## Step 4: Add the throughput and top-talkers endpoints
+Files: `apps/api/src/metrics/metrics.query.ts` (new, pure aggregation),
+`metrics.query.test.ts` (new), `metrics/metrics.service.ts`,
+`metrics/metrics.controller.ts` (new), `metrics/metrics.module.ts`,
+`metrics/metrics.service.test.ts`, `apps/api/src/app.module.ts` (if needed),
+`apps/api/src/app.e2e.test.ts` (route/auth coverage, if it covers routes), `docs/CONTRACT.md`.
+- `GET /metrics/throughput?range=1h|24h|7d|30d&by=device|total` (`user:admin`; `range`
+  default `1h`, `by` default `total`). It uses `windowFor` and `readSamples(spec.tier, from, to)`
+  and sums each sample into point `floor((bucket − from)/step)`. The answer is
+  `200 {range, from, to, stepSeconds, points, series: [{deviceId: string|null, name: string, rx: number[], tx: number[]}]}`
+  where the arrays have length `points` and hold bytes per step in the device view. `by=total`
+  gives one series `{deviceId:null, name:'total'}`. `by=device` gives one series per device
+  with any bytes in the window, sorted by total desc. A revoked device keeps its id, with
+  `name` = the device id.
+- `GET /metrics/top-talkers?range=…&limit=` (`user:admin`, `limit` 1..50, default 5) answers
+  `200 {range, from, to, talkers: [{deviceId, name, rx, tx, total}]}`, sorted by total desc,
+  then by name.
+- A bad `range`/`by`/`limit` → `400 validation_failed`.
+- Tests:
+  - the pure aggregation for each range: point index, a sample that lands on the boundary
+    `to` is excluded, and 30d buckets fold six hours into one point;
+  - reading across a UTC day / month partition boundary;
+  - top-talkers ordering and the limit;
+  - validation errors;
+  - non-admin → 403 (in e2e if routes are covered there).
+- CONTRACT: the types `ThroughputSeries`, `ThroughputResult`, `TopTalker`, 2 rows in §3.4,
+  and a pointer to the D5 range table.
+**Acceptance:** `pnpm --filter @vpn/api test` and `typecheck` pass.
+
+## Step 5: Add the cached month-to-date cost endpoint
+Files: `apps/api/src/cost/cost.client.ts` (new), `cost/cost.service.ts` (new),
+`cost/cost.repository.ts` (new), `cost/cost.controller.ts` (new), `cost/cost.module.ts`
+(new), `cost/cost.service.test.ts` (new), `apps/api/src/app.module.ts`, `docs/CONTRACT.md`
+(§3.3, §3.4, §4 row `metrics`/`cost`/`<YYYY-MM>`, §8 role follow-up).
+- `CostClient` (an interface plus an Azure implementation). It POSTs to
+  `https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.CostManagement/query?api-version=2023-11-01`
+  with the body
+  `{type:'ActualCost', timeframe:'MonthToDate', dataset:{granularity:'None', aggregation:{totalCost:{name:'Cost',function:'Sum'}}}}`.
+  The bearer token comes from `DefaultAzureCredential`. It finds the `Cost` and `Currency`
+  columns in `properties.columns` and reads `rows[0]` (no rows, e.g. on the 1st of the month →
+  `amount: 0, currency: null`). A missing subscription id → `notConfigured`. Non-2xx →
+  `UpstreamError` with the status (403 → the message names the missing Cost Management Reader
+  role).
+- `CostService.monthToDate()`: it reads the cached row `cost`/`<YYYY-MM>` (UTC month). If
+  `fetchedAt` is less than 6 h old it returns that row. Otherwise it fetches, upserts the row
+  and returns it. If the fetch fails and a cached row exists for this month, it returns that
+  row with `stale: true`; otherwise it rethrows (→ 502). A new month never serves the previous
+  month's row.
+- `GET /cost/month-to-date` (`user:admin`) answers
+  `200 {amount: number, currency: string|null, from: string /* month start ISO */, fetchedAt: string, stale: boolean}`.
+- Tests (fake client + MemoryTable, injected clock):
+  - a fresh cache does not call the client;
+  - after 6 h the client is called and the row is updated;
+  - a failure with a cache gives `stale: true`;
+  - a failure with no cache gives a 502;
+  - a month rollover ignores the old row;
+  - column parsing in either order.
+- CONTRACT §8: add the row `vpn-api MI | Cost Management Reader | RG vpn` marked
+  **follow-up (Terraform, not yet applied)**.
+**Acceptance:** `pnpm --filter @vpn/api test` and `typecheck` pass.
+
+## Step 6: Verify the whole ticket end to end
+- Run `pnpm --filter @vpn/api build`, `pnpm --filter @vpn/api typecheck`,
+  `pnpm --filter @vpn/api test` and `bash relay/test/run-tests.sh`; all must pass.
+- Grep `docs/CONTRACT.md` for each new endpoint (`/metrics/throughput`,
+  `/metrics/top-talkers`, `/devices/status`, `/cost/month-to-date`), for the `idleSince`,
+  `autoStopAt` and `latestHandshake` fields, and for the retention rule. Each must be present,
+  and "Hour rows are not pruned yet" must be gone.
+- Make the final commit, with a message whose body lists the Terraform follow-up:
+  "grant vpn-api MI Cost Management Reader on RG vpn".
+**Acceptance:** all four commands pass, and the grep finds every item.
+
+## Out of scope
+Console wiring (infra repo `console/web`), Terraform (the role assignment is a follow-up
+only), deploying, live Azure, and the Go client.
+
+## Critical files
+relay/vipper-relay-agent.sh
+relay/test/fake-wg.sh
+relay/test/mock-api.js
+relay/test/assert-run.js
+relay/test/run-tests.sh
+relay/README.md
+docs/CONTRACT.md
+apps/api/src/app.module.ts
+apps/api/src/autostop.ts
+apps/api/src/app.e2e.test.ts
+apps/api/src/metrics/metrics.types.ts
+apps/api/src/metrics/metrics.service.ts
+apps/api/src/metrics/metrics.service.test.ts
+apps/api/src/metrics/metrics.repository.ts
+apps/api/src/metrics/metrics.repository.test.ts
+apps/api/src/metrics/metrics.module.ts
+apps/api/src/metrics/metrics.controller.ts
+apps/api/src/metrics/deviceStatus.controller.ts
+apps/api/src/metrics/metrics.query.ts
+apps/api/src/metrics/metrics.query.test.ts
+apps/api/src/metrics/metrics.retention.ts
+apps/api/src/metrics/metrics.retention.test.ts
+apps/api/src/policy/policyStatus.repository.ts
+apps/api/src/relay/relay.types.ts
+apps/api/src/relay/relay.service.ts
+apps/api/src/relay/relay.service.test.ts
+apps/api/src/cost/cost.client.ts
+apps/api/src/cost/cost.service.ts
+apps/api/src/cost/cost.repository.ts
+apps/api/src/cost/cost.controller.ts
+apps/api/src/cost/cost.module.ts
+apps/api/src/cost/cost.service.test.ts
