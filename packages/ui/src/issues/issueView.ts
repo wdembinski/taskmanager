@@ -4,8 +4,8 @@
  * and the deletion notice can be proven without a DOM. The same split `issueRowParts.ts` and
  * `taskDetailHost.ts` already keep.
  *
- * See `docs/plan/feature-roadmap/F13-design-system-and-shell.md`'s F13.13 entry for the design
- * this implements; the transitions below follow that entry's own wording, not a re-derivation.
+ * See `docs/14-design-system.md#peek-vs-full-screen` for the design this implements (F13.13);
+ * the transitions below follow that section's own wording, not a re-derivation.
  */
 import type { Milestone, Project, Task } from '@tm/shared/model';
 

@@ -450,6 +450,33 @@ version on the right. The editor's blue at rest, and the app's **orange** with a
 moment anything is waiting on a human — so that signal is visible from every screen, not
 only the **attention inbox**.
 
+### Activity bar
+
+The **nav rail** as the F13 shell draws it: a few icons on the far left, sitting on the
+canvas rather than on a pane, with every destination taken from one list both hosts share.
+Everything else moved into the **sidebar** beside it. See
+[14. The design system](14-design-system.md#shell).
+
+### Sidebar
+
+The column between the activity bar and the screen: Inbox, My issues, Reviews, the
+**milestone › epic › ticket** tree of the selected ticket project, Archived and This
+machine. It sits directly on the canvas, with no pane of its own. See
+[14. The design system](14-design-system.md#shell).
+
+### Glass pane
+
+The one surface every pane in the shell paints — near-opaque white (or near-black) with a
+light blur behind it, drawn only by `GlassPane.tsx`. It turns fully opaque when the browser
+cannot blur, when transparency is reduced, or under Windows High Contrast. Rows, chips,
+dialogs and code are never glass. See [14. The design system](14-design-system.md#glass).
+
+### Peek
+
+The issue's panel opened beside the Tickets list with **Space**, as a glass pane on the right,
+while the list stays usable. **Enter** opens the same panel full screen instead; **Escape**
+steps back one level. See [14. The design system](14-design-system.md#peek-vs-full-screen).
+
 ### Details cell
 
 The fixed band at the top of a card's detail pane: identity, agent controls, status,
