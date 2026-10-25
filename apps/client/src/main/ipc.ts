@@ -288,6 +288,8 @@ import { linkMergeRequest, type LinkPrDeps } from './forge/linkPr';
 import { watchMergeRequests, type PrWatcherDeps } from './forge/prWatcher';
 import { forgeBaseUrl } from './forge/baseUrl';
 import { buildBoardIndex } from './forge/boardIndex';
+import { mergedRowsToLand, unlandedBranchCandidates } from './forge/landings';
+import { discoverMergedPullRequests } from './github/mergedDiscovery';
 import {
   CARD_RECORDS_PARK,
   isParkedRefusal,
@@ -1297,7 +1299,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   };
   const landThenMove: LandThenMoveDeps = {
     ...landedDoneMove,
-    noteWorkLanded: (id) => scheduler.noteWorkLanded(id),
+    noteWorkLanded: (id, at) => scheduler.noteWorkLanded(id, at),
     logError: (message, e) => logMain(message, e),
   };
   handle('task:run', async (taskId) => {
@@ -3195,6 +3197,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     knownKeys: string[];
     taskIdByKey: Map<string, string>;
     knownTaskIds: Set<string>;
+    /** Top-level card `agentBranch` → id — GitHub's second-strongest match; GitLab ignores it. */
+    taskIdByBranch: Map<string, string>;
   } => buildBoardIndex(store.getAllBoardTasks());
 
   // -------------------------------------------------------------------------
@@ -3470,6 +3474,42 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
    * repository id. Everything attention depends on needs the detail endpoints, so those are
    * spent only on PRs `needsDetailRefresh` calls stale, at a concurrency of 4.
    */
+  /**
+   * Merged-search hits already detail-read and found to be on nobody's branch, for this app
+   * run — so `discoverMergedPullRequests` never pays for the same one twice.
+   */
+  const checkedMergedRefs = new Set<string>();
+
+  /**
+   * Land every merged GitHub PR whose card has not landed — the same hand-off GitLab's sync
+   * makes, and the reason `after-merge` chain gates work on a GitHub repository at all: nobody
+   * here ran the merge, so a merged PR is this app's only way of learning that a reviewed
+   * branch landed (see `Task.landedAt`).
+   *
+   * Not just `upserts`: a merged row joins those on ONE sync only, so a row filed under its
+   * card later never landed. `mergedRowsToLand` also takes every stored merged row whose card
+   * is still unlanded, which is why this runs twice a sync — after the PR half and again after
+   * `rematchStoredMergeRequests`, so a row the re-match filed lands in the same sync.
+   */
+  async function landMergedPullRequests(upserts: readonly MergeRequest[]): Promise<void> {
+    const landings = mergedRowsToLand(upserts, store.listMergeRequests(), (id) =>
+      store.getTask(id),
+    );
+    for (const { taskId, mr } of landings) {
+      // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
+      // why this card landed with nobody clicking Merge, same as a failed pipeline already
+      // names `prWatcher`'s own `fix-pipeline` note.
+      if (autoMergeLanded(store.getTaskActivity(taskId))) {
+        const task = store.getTask(taskId);
+        if (task) prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
+      }
+      // The landing is stamped (at the PR's `merged_at`) and the chain released before the
+      // column move, never after — the chain never waits on that move, and a failure there
+      // must not stop the sync.
+      await landThenMoveToDone(landThenMove, taskId, mr);
+    }
+  }
+
   const syncGitHubPullRequests = async (): Promise<MergeRequest[]> => {
     const { github } = store.getSettings();
     if (!github.enabled) return store.listMergeRequests();
@@ -3576,34 +3616,35 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       }
     }
 
-    const { knownKeys, taskIdByKey, knownTaskIds } = boardKeyIndex();
+    // Merged PRs the open search never saw — opened and merged between two polls, or while
+    // the app was closed. One extra search, only while a worked card waits on a branch no
+    // stored row explains; see `github/mergedDiscovery.ts`. Never allowed to fail the sync.
+    try {
+      detailed.push(
+        ...(await discoverMergedPullRequests({
+          client,
+          candidates: unlandedBranchCandidates(store.getAllBoardTasks(), stored, Date.now()),
+          stored,
+          checked: checkedMergedRefs,
+          onError: (e) => logMain('GitHub merged pull request search failed', e),
+        })),
+      );
+    } catch (e) {
+      logMain('GitHub merged pull request discovery failed', e);
+    }
+
+    const { knownKeys, taskIdByKey, knownTaskIds, taskIdByBranch } = boardKeyIndex();
     const { upserts, deleteIds } = reconcilePullRequests(stored, detailed, {
       knownKeys,
       taskIdByKey,
       knownTaskIds,
+      taskIdByBranch,
       identity,
       now: Date.now(),
     });
     for (const mr of upserts) store.upsertMergeRequest(mr);
     store.deleteMergeRequests(deleteIds);
-    // The same hand-off GitLab's sync makes, and the reason `after-merge` chain gates work on
-    // a GitHub repository at all: nobody here ran the merge, so a merged PR is this app's
-    // only way of learning that a reviewed branch landed (see `Task.landedAt`).
-    for (const taskId of landedTaskIds(upserts)) {
-      // Credit the merge to auto-merge before `noteWorkLanded` — the timeline should name
-      // why this card landed with nobody clicking Merge, same as a failed pipeline already
-      // names `prWatcher`'s own `fix-pipeline` note.
-      const mr = upserts.find((m) => m.taskId === taskId && m.state === 'merged');
-      if (autoMergeLanded(store.getTaskActivity(taskId))) {
-        const task = store.getTask(taskId);
-        if (mr && task) {
-          prWatcherDeps().note(task.projectId, taskId, mergedByAutoMergeNote(mrRef(mr)));
-        }
-      }
-      // The landing is stamped and the chain released before the column move, never after —
-      // the chain never waits on that move, and a failure there must not stop the sync.
-      await landThenMoveToDone(landThenMove, taskId, mr);
-    }
+    await landMergedPullRequests(upserts);
     // After the board knows about them, never before: `forge-rebase`/`resolve-conflicts` can
     // write a note or start a run, and both want the card state this sync just settled.
     await watchMergeRequests(upserts, prWatcherDeps());
@@ -3651,6 +3692,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
         ? await syncGitHubPullRequests()
         : store.listMergeRequests();
     rematchStoredMergeRequests();
+    // A row the re-match just filed under its card lands now, not never — see
+    // `landMergedPullRequests`.
+    if (github.enabled && github.syncPullRequests) await landMergedPullRequests([]);
     return mrs;
   };
 

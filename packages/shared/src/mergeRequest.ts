@@ -197,6 +197,17 @@ export interface MergeRequest {
   lastEventSeenAt: number | null;
   updatedAt: number;
   syncedAt: number;
+  /**
+   * Epoch ms the forge says this was merged — GitHub's `merged_at` — or null/absent when it
+   * is not merged, or the forge never said (GitLab rows, and every row written before this
+   * field existed).
+   *
+   * What a landing stamps as `Task.landedAt` when the app learns about the merge late: a PR
+   * merged while the app was closed, or one first filed under its card by a later sync, landed
+   * when GitHub merged it, not when we noticed. Optional so the many fixtures that build a row
+   * by hand need not spell it.
+   */
+  mergedAt?: number | null;
 }
 
 /** Pipeline outcomes that are a problem rather than a stage of one. */

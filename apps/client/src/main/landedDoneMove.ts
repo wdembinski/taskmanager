@@ -97,6 +97,19 @@ export function landedDoneNote(mr: LandedMr): string {
   return `Moved to Done: ${mrRef(mr)} merged into ${mr.targetBranch}.`;
 }
 
+/**
+ * Whether a `status` row postdates the landing — read as "a human moved it since".
+ *
+ * `landedAt` can now be in the PAST: a GitHub landing stamps the PR's `merged_at`, which a
+ * sync may learn minutes or hours later. Every row written in that gap still counts, and that
+ * is safe because every writer of a `status` row is a human's move — `task:move`,
+ * `task:setStatus`, a web command (`cloudCommands`), assign + start, a hand Start
+ * (`handStartMove`) — plus this module's own move to Done, after which the card is Done and
+ * the next call stops at `already-done`. The engine's own column moves (the chain's
+ * `markInProgress`, a run borrowing `status`) never record one. So a row in the gap is a
+ * person who moved the card after it merged, and their move wins, exactly as it would have
+ * had the sync noticed instantly.
+ */
 function movedSince(entries: readonly TaskActivityEntry[], landedAt: number): boolean {
   return entries.some((e) => e.kind === 'status' && e.createdAt > landedAt);
 }
@@ -160,8 +173,11 @@ export async function moveLandedCardToDone(
 
 /** {@link LandedDoneMoveDeps}, plus the landing itself and somewhere to report a failed move. */
 export interface LandThenMoveDeps extends LandedDoneMoveDeps {
-  /** `scheduler.noteWorkLanded` — stamps `landedAt` and releases the chain. */
-  noteWorkLanded(taskId: string): void;
+  /**
+   * `scheduler.noteWorkLanded` — stamps `landedAt` (as `at` when the forge said when it
+   * merged, else now) and releases the chain.
+   */
+  noteWorkLanded(taskId: string, at?: number | null): void;
   /** `logMain` — a failed move must not stop the sync that reported the merge. */
   logError(message: string, e: unknown): void;
 }
@@ -175,14 +191,15 @@ export interface LandThenMoveDeps extends LandedDoneMoveDeps {
  * card reaches Done `landedAt` is already set, and a landed card holds nobody
  * (`@shared/releaseOnDone`'s `releasePrompt`). Kept in one function so neither call site can
  * reorder it. `mr` is undefined when the merged row is not filed under this card id, and
- * then only the landing happens.
+ * then only the landing happens. Its `mergedAt`, when the forge gave one, is the landing
+ * time — a PR GitHub merged an hour before this sync landed an hour ago.
  */
 export async function landThenMoveToDone(
   deps: LandThenMoveDeps,
   taskId: string,
-  mr: LandedMr | undefined,
+  mr: (LandedMr & Partial<Pick<MergeRequest, 'mergedAt'>>) | undefined,
 ): Promise<Task | null> {
-  deps.noteWorkLanded(taskId);
+  deps.noteWorkLanded(taskId, mr?.mergedAt);
   if (!mr) return null;
   try {
     return await moveLandedCardToDone(deps, taskId, mr);

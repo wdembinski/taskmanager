@@ -177,6 +177,11 @@ export async function linkGitHubPullRequest(
   const prior = stored.find((mr) => mr.id === id);
   const listed = listedFromDetail(detail, args.owner, args.repo);
   const fetched = await describePullRequest(client, listed, { stale: true, prior, detail });
-  const { upserts } = reconcilePullRequests(prior ? [prior] : [], [fetched], opts);
+  // No branch index: whatever card the reconciler would pick, `linkMergeRequest` stamps the
+  // human's own choice over it.
+  const { upserts } = reconcilePullRequests(prior ? [prior] : [], [fetched], {
+    ...opts,
+    taskIdByBranch: new Map(),
+  });
   return upserts[0];
 }

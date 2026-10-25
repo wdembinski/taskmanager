@@ -60,6 +60,15 @@ export interface GitHubSyncOptions {
    */
   knownTaskIds: ReadonlySet<string>;
   /**
+   * Source branch → the top-level card whose `agentBranch` it is (`forge/boardIndex.ts`).
+   *
+   * Second in precedence, after {@link MergeRequest.openedForTaskId} and ahead of any key in
+   * the text: the branch is a fact about whose work the PR carries, and a key is a guess that
+   * has filed PRs under the wrong card before. It is also the only way to file a PR the agent
+   * opened itself, with no key in its text — the shape that left VPN cards unlanded.
+   */
+  taskIdByBranch: ReadonlyMap<string, string>;
+  /**
    * Who you are on this GitHub instance, so your own comments are not news. Required rather
    * than optional — the same shape `GitLabSyncOptions` uses — because forgetting it has a
    * symptom nobody would report as a bug: every PR you have ever reviewed wearing an unread
@@ -114,15 +123,20 @@ function pathRef(pr: Pick<MergeRequest, 'projectPath' | 'number'>): string | nul
  * re-derivation at all — see {@link MergeRequest.openedForTaskId}. It matters more here than
  * on GitLab, too: `prBody` writes a GitHub card's key as `Closes owner/repo#12` in the BODY,
  * and the body is the one field re-matching never gets to read.
+ *
+ * Second comes the card whose `agentBranch` the PR is on — see
+ * {@link GitHubSyncOptions.taskIdByBranch} — and only then the keys.
  */
 function matchTaskId(
   pr: Pick<
     MergeRequest,
     'title' | 'sourceBranch' | 'projectPath' | 'issueKeys' | 'openedForTaskId'
   >,
-  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds'>,
+  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds' | 'taskIdByBranch'>,
 ): string | null {
   if (pr.openedForTaskId && opts.knownTaskIds.has(pr.openedForTaskId)) return pr.openedForTaskId;
+  const byBranch = branchTaskId(pr.sourceBranch, opts);
+  if (byBranch) return byBranch;
   const remembered = pr.issueKeys.filter((k) => opts.knownKeys.includes(k));
   const found = discoverPullRequestKeys(
     { title: pr.title, sourceBranch: pr.sourceBranch, projectPath: pr.projectPath },
@@ -130,6 +144,16 @@ function matchTaskId(
   );
   const key = pickTaskKey([...remembered.filter(isRepoScopedKey), ...found, ...remembered]);
   return key ? (opts.taskIdByKey.get(key) ?? null) : null;
+}
+
+/** The card a source branch belongs to, or null — an empty branch (no detail read) names none. */
+function branchTaskId(
+  sourceBranch: string,
+  opts: Pick<GitHubSyncOptions, 'knownTaskIds' | 'taskIdByBranch'>,
+): string | null {
+  if (!sourceBranch) return null;
+  const id = opts.taskIdByBranch.get(sourceBranch);
+  return id && opts.knownTaskIds.has(id) ? id : null;
 }
 
 /**
@@ -183,9 +207,8 @@ export function reconcilePullRequests(
     const taskId =
       openedForTaskId && opts.knownTaskIds.has(openedForTaskId)
         ? openedForTaskId
-        : key
-          ? (opts.taskIdByKey.get(key) ?? null)
-          : null;
+        : (branchTaskId(pr.sourceBranch, opts) ??
+          (key ? (opts.taskIdByKey.get(key) ?? null) : null));
 
     // The discussion is only re-read for PRs that changed, so an absent list means "keep what
     // we knew" rather than "there are none" — the same ternary `gitlabSync` uses, and the same
@@ -254,6 +277,8 @@ export function reconcilePullRequests(
       lastEventSeenAt: prior?.lastEventSeenAt ?? null,
       updatedAt: pr.updatedAt,
       syncedAt: opts.now,
+      // Terminal once set, so a sync that did not read it keeps what an earlier one did.
+      mergedAt: pr.mergedAt ?? prior?.mergedAt ?? null,
     });
   }
 
@@ -284,7 +309,7 @@ export function reconcilePullRequests(
  */
 export function rematchPullRequests(
   existing: readonly MergeRequest[],
-  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds'>,
+  opts: Pick<GitHubSyncOptions, 'knownKeys' | 'taskIdByKey' | 'knownTaskIds' | 'taskIdByBranch'>,
 ): MergeRequest[] {
   const changed: MergeRequest[] = [];
   for (const pr of existing) {

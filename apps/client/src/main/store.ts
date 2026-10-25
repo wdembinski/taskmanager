@@ -1989,7 +1989,8 @@ export function createStore(dbPath: string): Store {
       lastEventAt       INTEGER,
       lastEventSeenAt   INTEGER,
       updatedAt         INTEGER NOT NULL,
-      syncedAt          INTEGER NOT NULL
+      syncedAt          INTEGER NOT NULL,
+      mergedAt          INTEGER             -- the forge's merge time; NULL = not merged / never said
     );
     CREATE INDEX IF NOT EXISTS idx_mr_task ON merge_requests(taskId);
     -- Open Attention-inbox items. A NEW table, so nothing to migrate.
@@ -2804,6 +2805,13 @@ export function createStore(dbPath: string): Store {
   // only the ones the Create PR button opens from here on that remember their card.
   if (!mrColumns.some((c) => c.name === 'openedForTaskId')) {
     db.exec(`ALTER TABLE merge_requests ADD COLUMN openedForTaskId TEXT`);
+  }
+
+  // Migrate databases from before a merged PR remembered WHEN it merged. NULL on every
+  // existing row is honest — nobody recorded it — and a landing with no merge time falls
+  // back to "now", exactly what every landing did before this column existed.
+  if (!mrColumns.some((c) => c.name === 'mergedAt')) {
+    db.exec(`ALTER TABLE merge_requests ADD COLUMN mergedAt INTEGER`);
   }
 
   // Migrate databases created while merge requests were GitLab's alone. A pure RENAME:
@@ -3728,6 +3736,8 @@ export function createStore(dbPath: string): Store {
     lastEventSeenAt: number | null;
     updatedAt: number;
     syncedAt: number;
+    /** The forge's merge time; NULL on unmerged rows and every row written before it. */
+    mergedAt: number | null;
   }
 
   function rowToMergeRequest(r: MergeRequestRow): MergeRequest {
@@ -3791,6 +3801,7 @@ export function createStore(dbPath: string): Store {
       lastEventSeenAt: r.lastEventSeenAt,
       updatedAt: r.updatedAt,
       syncedAt: r.syncedAt,
+      mergedAt: r.mergedAt ?? null,
     };
   }
 
@@ -3806,7 +3817,7 @@ export function createStore(dbPath: string): Store {
         pipelineUrl,
         approvalsRequired, approvalsGiven, changesRequested,
         detailedMergeStatus, hasConflicts, issueKeys,
-        latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt)
+        latestNoteAt, lastReadAt, lastEventAt, lastEventSeenAt, updatedAt, syncedAt, mergedAt)
      VALUES
        (@id, @taskId, @openedForTaskId, @provider, @repoId, @projectPath, @number, @title,
         @displayName, @webUrl,
@@ -3816,7 +3827,8 @@ export function createStore(dbPath: string): Store {
         @pipelineUrl,
         @approvalsRequired, @approvalsGiven, @changesRequested,
         @detailedMergeStatus, @hasConflicts, @issueKeys,
-        @latestNoteAt, @lastReadAt, @lastEventAt, @lastEventSeenAt, @updatedAt, @syncedAt)
+        @latestNoteAt, @lastReadAt, @lastEventAt, @lastEventSeenAt, @updatedAt, @syncedAt,
+        @mergedAt)
      ON CONFLICT(id) DO UPDATE SET
        taskId = excluded.taskId,
        -- COALESCE, unlike every other column here: a reconciler carries the remembered card
@@ -3843,7 +3855,10 @@ export function createStore(dbPath: string): Store {
        hasConflicts = excluded.hasConflicts, issueKeys = excluded.issueKeys,
        latestNoteAt = excluded.latestNoteAt, lastReadAt = excluded.lastReadAt,
        lastEventAt = excluded.lastEventAt, lastEventSeenAt = excluded.lastEventSeenAt,
-       updatedAt = excluded.updatedAt, syncedAt = excluded.syncedAt`,
+       updatedAt = excluded.updatedAt, syncedAt = excluded.syncedAt,
+       -- COALESCE again: a merge time is terminal, and a writer that never read it (GitLab,
+       -- the Create PR button, a re-match built from an old row) must not erase it.
+       mergedAt = COALESCE(excluded.mergedAt, merge_requests.mergedAt)`,
   );
   const deleteMergeRequestStmt = db.prepare(`DELETE FROM merge_requests WHERE id = ?`);
 
@@ -6810,6 +6825,8 @@ export function createStore(dbPath: string): Store {
         hasConflicts: mr.hasConflicts ? 1 : 0,
         issueKeys: JSON.stringify(mr.issueKeys),
         pipelineStages: JSON.stringify(mr.pipelineStages ?? []),
+        // Optional on the type, so a row built without it must still bind.
+        mergedAt: mr.mergedAt ?? null,
       });
     },
 

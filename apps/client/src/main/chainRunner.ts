@@ -269,11 +269,16 @@ export class ChainRunner {
    * release is re-asked on every pass, and nothing is started twice: `announced` holds the
    * start key for an arrow that already fired, `inFlight` holds the card that is running,
    * and {@link ChainRunner.declineReason} holds the one whose work is done.
+   *
+   * `at` is when the work really landed, when the caller knows — a GitHub PR's `merged_at`,
+   * which a sync can learn long after the fact (the app was closed, or the PR was only filed
+   * under this card later). Absent, the landing is now. Either way only the FIRST stamp
+   * counts: a repeat poll never moves it.
    */
-  landed(taskId: string): void {
+  landed(taskId: string, at?: number | null): void {
     const task = this.deps.getTask(taskId);
     if (!task) return;
-    if (task.landedAt == null) this.deps.setLandedAt(taskId, this.deps.now());
+    if (task.landedAt == null) this.deps.setLandedAt(taskId, at ?? this.deps.now());
     this.release(taskId, 'landed');
   }
 

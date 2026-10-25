@@ -457,6 +457,17 @@ export async function describePullRequest(
      */
     hasConflicts: detail ? detail.mergeable === false : (prior?.hasConflicts ?? false),
     updatedAt,
+    // When it landed, from whichever payload says so — the detail, or a search row's
+    // `pull_request` (the merged-PR discovery search carries it there). See
+    // `MergeRequest.mergedAt`: it becomes the card's `landedAt`.
+    mergedAt: parseMergedAt(detail?.merged_at ?? listed.pull_request?.merged_at),
     notes,
   };
+}
+
+/** GitHub's ISO `merged_at` as epoch ms, or null when it is absent or unparseable. */
+function parseMergedAt(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
 }

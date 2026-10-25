@@ -732,6 +732,20 @@ export class GitHubClient {
   }
 
   /**
+   * Your pull requests MERGED on or after `sinceIso` (a `YYYY-MM-DD` date), newest first.
+   *
+   * The open search above never sees a PR that was opened and merged between two polls, or
+   * while the app was closed — so a card whose PR landed that way never landed here. This is
+   * the one extra query that finds them; `github/mergedDiscovery.ts` decides when it is worth
+   * asking (only while some worked card is waiting on a branch no stored row explains) and
+   * which hits are worth a detail call. One page by default: the date bounds it.
+   */
+  async searchMergedPullRequests(sinceIso: string, maxPages = 1): Promise<GitHubSearchIssueItem[]> {
+    return (await this.searchIssues(`is:pr is:merged author:@me merged:>=${sinceIso}`, maxPages))
+      .items;
+  }
+
+  /**
    * One search query, followed to the end, with **how short the answer was** attached.
    *
    * `advanced_search=true` is not optional politeness: GitHub deprecated the legacy search

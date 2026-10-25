@@ -54,6 +54,8 @@ export interface FetchedMergeRequest {
   detailedMergeStatus: string | null;
   hasConflicts: boolean;
   updatedAt: number;
+  /** When the forge merged it — see {@link MergeRequest.mergedAt}. GitLab never sets it. */
+  mergedAt?: number | null;
   /**
    * Human notes, when this sync fetched them. Undefined = "not re-read this time".
    *
@@ -270,8 +272,12 @@ export function reconcileMergeRequests(
  * review-based project would wait forever for a merge that had already happened.
  *
  * No setting gates it, and none is needed: a local-only project has no merge-request rows,
- * so this simply returns nothing for one. Filtering is left to the caller, which is
- * idempotent — a merged MR is retained on its card and re-reported on every poll.
+ * so this simply returns nothing for one. The caller is idempotent, but this only sees
+ * `upserts` — and a merged row joins those on exactly ONE sync, the first that reads it as
+ * merged (a retained settled row is re-upserted only when its card changes). A row filed
+ * under its card later, by a re-match or a board change, is never reported here again.
+ * GitHub's sync therefore lands from `forge/landings.ts`'s `mergedRowsToLand`, which also
+ * looks at the stored merged rows; GitLab still has this gap.
  */
 export function landedTaskIds(mrs: readonly MergeRequest[]): string[] {
   const ids = new Set<string>();

@@ -585,6 +585,36 @@ describe('describePullRequest — a settled PR read back after it merged', () =>
 
     expect(stub.listCheckRuns).toHaveBeenCalledWith('acme', 'web', 'deadbeef');
   });
+
+  /**
+   * `merged_at` becomes the card's `landedAt` — a PR GitHub merged while the app was closed
+   * landed when it merged, not when a later sync noticed.
+   */
+  it('yields mergedAt from a merged detail', async () => {
+    const result = await describePullRequest(client({ checkRuns: [] }), listed(), {
+      stale: false,
+      detail: detail({ state: 'closed', merged: true, merged_at: '2026-08-11T11:00:00Z' }),
+    });
+    expect(result.state).toBe('merged');
+    expect(result.mergedAt).toBe(Date.parse('2026-08-11T11:00:00Z'));
+  });
+
+  it('falls back to the search row’s merged_at when there is no detail', async () => {
+    const result = await describePullRequest(
+      client(),
+      listed({ state: 'closed', pull_request: { merged_at: '2026-08-11T12:00:00Z' } }),
+      { stale: false },
+    );
+    expect(result.mergedAt).toBe(Date.parse('2026-08-11T12:00:00Z'));
+  });
+
+  it('says null for a PR that has not merged', async () => {
+    const result = await describePullRequest(client({ checkRuns: [] }), listed(), {
+      stale: false,
+      detail: detail(),
+    });
+    expect(result.mergedAt).toBeNull();
+  });
 });
 
 describe('describePullRequest — the other CI system', () => {

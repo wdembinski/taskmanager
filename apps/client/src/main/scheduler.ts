@@ -3131,12 +3131,15 @@ export class Scheduler {
    *
    * The same fact as the local integrate path, arriving by a different road, and it needs no
    * setting of its own: a local-only project simply has no merge-request rows, so nothing
-   * ever calls this for one. Idempotent, which matters here — the sync repeats the verdict
-   * on every poll for as long as the MR is retained.
+   * ever calls this for one. Idempotent, which matters here — the GitHub sync re-lands every
+   * stored merged row whose card has not landed yet, and the first `landedAt` always stands.
+   *
+   * `at` is the forge's own merge time when it is known (`MergeRequest.mergedAt`); see
+   * {@link ChainRunner.landed}.
    */
-  noteWorkLanded(taskId: string): void {
+  noteWorkLanded(taskId: string, at?: number | null): void {
     if (this.disposed) return;
-    this.chain.landed(taskId);
+    this.chain.landed(taskId, at);
     // The merged PR no longer holds its card's lane or files (`openPrTaskIds` reads open
     // ones only), so a card the lane cap queued, or that waited for those files, may start
     // now — the run exited long ago, so nothing else re-asks. Both are idempotent, which the
