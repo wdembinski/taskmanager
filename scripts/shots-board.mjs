@@ -1,7 +1,7 @@
 /**
  * Screenshots of the board (My Tasks), in both themes, against a fixed fixture — so a later
  * step can diff "before" against "after" once F13.21–F13.25 rewrite `TaskCard` to the v9
- * anatomy (`docs/plan/feature-roadmap/F13-design-system-and-shell.md`'s Board bullet). Also
+ * anatomy (`docs/14-design-system.md#row-anatomy`). Also
  * renders the two v9 board mockups to PNG at the same size, for a side-by-side.
  *
  * Built on `verify-theme-boot.mjs`'s own CDP-over-headless-Chrome machinery (build the

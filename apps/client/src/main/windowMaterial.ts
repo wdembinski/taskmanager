@@ -1,11 +1,11 @@
 /**
  * Whether to paint the window with Windows' own Mica/Acrylic material instead of the CSS
  * glass pane — pure, unit-tested, and deliberately ignorant of Electron, in the style of
- * `backgroundMode.ts`. The detection rule is F13.6's spike finding (`F13-design-system-and-
- * shell.md`, F13.7): Electron's `backgroundMaterial` is a no-op below Windows build 22621 and
- * is dropped over a Remote Desktop session, and DWM does not withhold Mica/Acrylic on its own
- * when the OS "Transparency effects" switch is off — the app must refuse the material itself
- * in both cases, using signals readable before any window exists.
+ * `backgroundMode.ts`. The detection rule is F13.6's spike finding (F13.7,
+ * `docs/14-design-system.md#glass`): Electron's `backgroundMaterial` is a no-op below
+ * Windows build 22621 and is dropped over a Remote Desktop session, and DWM does not withhold
+ * Mica/Acrylic on its own when the OS "Transparency effects" switch is off — the app must
+ * refuse the material itself in both cases, using signals readable before any window exists.
  */
 import type { NativeMaterial } from '@shared/canvas';
 

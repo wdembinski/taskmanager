@@ -1,7 +1,7 @@
 /**
  * Semantic design tokens — the light and dark value for every role the shell paints,
- * from the v9 mockups (`docs/plan/feature-roadmap/F13-design-system-and-shell.md`'s token
- * table). Components ask for a role (`SEMANTIC[scheme].text`), never a hex; `theme.ts`
+ * from the v9 mockups (the table in `docs/14-design-system.md#tokens`, generated from this
+ * file). Components ask for a role (`SEMANTIC[scheme].text`), never a hex; `theme.ts`
  * builds the two Fluent themes from the same table, so a Fluent `Button` and a bare
  * `makeStyles` div never disagree about what "text" means.
  *

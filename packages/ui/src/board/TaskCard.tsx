@@ -1,7 +1,7 @@
 /**
  * TaskCard — one draggable card on the My Tasks Kanban board, drawn in the v9 mockup's own
- * four-row anatomy (`docs/plan/feature-roadmap/F13-design-system-and-shell.md`'s Board
- * bullet, `mockups/v9-7-board-light.svg`): a header (key + owner), the title, one status
+ * four-row anatomy (`docs/14-design-system.md#row-anatomy`,
+ * `mockups/v9-7-board-light.svg`): a header (key + owner), the title, one status
  * line, and a footer (epic chip + MR ref or due date). `cardParts` (F13.22) decides WHICH of
  * those optional pieces are present; this component only draws what it is handed.
  *
