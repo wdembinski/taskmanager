@@ -9,11 +9,17 @@
  * status letter and a path are facts about a file, not something that moves, so the only
  * colour in this file is the +/− count, which reuses the diff's own green/red rather than
  * inventing a third meaning for either hue.
+ *
+ * The review workspace adds a viewed box per file: pass both `viewed` and `onToggleViewed`
+ * and each file row gets a `Checkbox` (ticked for `'viewed'`; a `'changed'` mark — the
+ * file moved on since it was ticked — shows unticked, titled "Changed since viewed"). Leave
+ * either out and the tree renders exactly as before, which is what the Changes pane does.
  */
 import { useMemo } from 'react';
 import type { JSX } from 'react';
 import {
   Caption1,
+  Checkbox,
   Tree,
   TreeItem,
   TreeItemLayout,
@@ -21,7 +27,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import { isCollapsedByDefault } from '@tm/shared/review';
+import { isCollapsedByDefault, type ViewedStatus } from '@tm/shared/review';
 import { MONO } from '../theme';
 import { statusLetter, type FileTreeDir, type FileTreeNode } from './reviewView';
 
@@ -41,12 +47,22 @@ const useStyles = makeStyles({
   },
   name: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   collapsedNote: { color: tokens.colorNeutralForeground3 },
+  viewedBox: { marginRight: '2px' },
 });
+
+/** The viewed box's inputs, present only when the host passed BOTH props. */
+interface ViewedProps {
+  viewed: Readonly<Record<string, ViewedStatus>>;
+  onToggleViewed: (path: string) => void;
+}
 
 export interface FileTreeProps {
   nodes: readonly FileTreeNode[];
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
+  /** Each file's viewed status. With `onToggleViewed`, draws a viewed box per file. */
+  viewed?: Readonly<Record<string, ViewedStatus>>;
+  onToggleViewed?: (path: string) => void;
 }
 
 /** Every directory's own path, so `defaultOpenItems` starts the whole tree expanded. */
@@ -59,9 +75,17 @@ function dirPaths(nodes: readonly FileTreeNode[]): string[] {
   return paths;
 }
 
-export function FileTree({ nodes, selectedPath, onSelectFile }: FileTreeProps): JSX.Element {
+export function FileTree({
+  nodes,
+  selectedPath,
+  onSelectFile,
+  viewed,
+  onToggleViewed,
+}: FileTreeProps): JSX.Element {
   const styles = useStyles();
   const openItems = useMemo(() => dirPaths(nodes), [nodes]);
+  const viewedProps: ViewedProps | undefined =
+    viewed && onToggleViewed ? { viewed, onToggleViewed } : undefined;
 
   return (
     <Tree
@@ -76,6 +100,7 @@ export function FileTree({ nodes, selectedPath, onSelectFile }: FileTreeProps): 
           node={node}
           selectedPath={selectedPath}
           onSelectFile={onSelectFile}
+          viewedProps={viewedProps}
         />
       ))}
     </Tree>
@@ -86,10 +111,12 @@ function FileTreeRow({
   node,
   selectedPath,
   onSelectFile,
+  viewedProps,
 }: {
   node: FileTreeNode;
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
+  viewedProps: ViewedProps | undefined;
 }): JSX.Element {
   const styles = useStyles();
 
@@ -105,6 +132,7 @@ function FileTreeRow({
               node={child}
               selectedPath={selectedPath}
               onSelectFile={onSelectFile}
+              viewedProps={viewedProps}
             />
           ))}
         </Tree>
@@ -115,6 +143,7 @@ function FileTreeRow({
   const { entry } = node;
   const name = entry.path.split('/').pop() ?? entry.path;
   const collapsed = isCollapsedByDefault(entry);
+  const status = viewedProps?.viewed[entry.path] ?? 'unviewed';
 
   return (
     <TreeItem
@@ -124,6 +153,20 @@ function FileTreeRow({
       onClick={() => onSelectFile(entry.path)}
     >
       <TreeItemLayout
+        iconBefore={
+          viewedProps && (
+            <Checkbox
+              className={styles.viewedBox}
+              aria-label={`Viewed ${entry.path}`}
+              title={status === 'changed' ? 'Changed since viewed' : undefined}
+              checked={status === 'viewed'}
+              data-viewed={status}
+              // The box is its own control: ticking it must not also select the row.
+              onClick={(event) => event.stopPropagation()}
+              onChange={() => viewedProps.onToggleViewed(entry.path)}
+            />
+          )
+        }
         aside={
           <span className={styles.aside}>
             {entry.additions > 0 && (
