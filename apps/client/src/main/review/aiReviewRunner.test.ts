@@ -5,7 +5,8 @@
  * the session's events by hand.
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { AiDraftInput, AiReview } from '@shared/aiReview';
+import type { AiDraftInput, AiReview, AiReviewStatus } from '@shared/aiReview';
+import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
 import type { Project, Task } from '@shared/model';
 import {
@@ -17,6 +18,7 @@ import {
 } from '@shared/review';
 import type { SessionEvent, StartSessionRequest } from '@shared/session';
 import type { ClaudeCliCapabilities } from '../claudeCapabilities';
+import type { CliUsageReading } from '../claudeUsage';
 import type { PermissionGate } from '../claudeSession';
 import { Scheduler } from '../scheduler';
 import type { SessionManager } from '../sessionManager';
@@ -154,6 +156,13 @@ async function flush(): Promise<void> {
 function harness(
   opts: {
     limit?: LimitState;
+    auth?: AuthState;
+    /** Restore the saved gates as the harness is built — before the runner exists, as at boot. */
+    restore?: boolean;
+    /** `/usage`, through `scheduler.setUsageProbe`; unset = no probe. */
+    usage?: () => Promise<CliUsageReading | null>;
+    /** Rows already in the store when the runner is built. */
+    seed?: AiReview[];
     caps?: ClaudeCliCapabilities | null;
     resolve?: (subjectId: string) => ReviewTarget | AiReviewRefusal;
     createFails?: string;
@@ -168,13 +177,15 @@ function harness(
     loadLimitGate: () => opts.limit ?? null,
     saveLimitGate: vi.fn(),
     clearLimitGate: vi.fn(),
-    loadAuthGate: () => null,
+    loadAuthGate: () => opts.auth ?? null,
     saveAuthGate: vi.fn(),
     listProjects: () => [],
     saveAttention: () => undefined,
     deleteAttention: () => undefined,
     listAttention: () => [],
     getTaskHistory: () => [],
+    // A gate's resume reconsiders every chain.
+    listTaskLinks: () => [],
   } as unknown as Store;
   const observers = new Map<string, (event: SessionEvent) => void>();
   const requests: StartSessionRequest[] = [];
@@ -201,10 +212,14 @@ function harness(
     vi.fn(),
   );
   scheduler.setPermissionGate({ configPath: 'gate.json' } as unknown as PermissionGate);
-  if (opts.limit) scheduler.restoreLimitGate();
+  if (opts.usage) scheduler.setUsageProbe(opts.usage);
+  if (opts.restore !== false) {
+    if (opts.auth) scheduler.restoreAuthGate();
+    if (opts.limit) scheduler.restoreLimitGate();
+  }
 
   // --- the in-memory store of reviews and draft batches ---
-  const reviews = new Map<string, AiReview>();
+  const reviews = new Map<string, AiReview>((opts.seed ?? []).map((r) => [r.id, r]));
   const resultTexts = new Map<string, string | null>();
   const batches: AiDraftInput[][] = [];
   const tasks = new Map((opts.tasks ?? []).map((t) => [t.id, t]));
@@ -608,5 +623,248 @@ describe('AiReviewRunner — the queue and launch failures', () => {
     h.emit({ kind: 'exited', code: 1 });
     await flush();
     expect(h.reviews.get(review.id)?.error).toContain('denied tool uses: Edit');
+  });
+});
+
+describe('AiReviewRunner — parks (F16.9)', () => {
+  /**
+   * A limit named only in `resultText` — the text tier, no epoch and no `rate-limit` event.
+   * ("You've hit your session limit" is not a sentence `detectLimitFailure` reads: see the
+   * scheduler's settled-park test.)
+   */
+  const PROSE_LIMIT = "You've reached your usage limit · resets 11:30pm (Europe/Warsaw)";
+  /** A failure that is no wall at all: left to the settle path, it would earn a repair turn. */
+  const API_ERROR =
+    'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}';
+  const NO_USAGE = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 };
+  const REJECTED = (): SessionEvent =>
+    ({
+      kind: 'rate-limit',
+      status: 'rejected',
+      rateLimitType: 'five_hour',
+      resetsAt: Math.floor(Date.now() / 1000) + 3600,
+    }) as SessionEvent;
+
+  /** A gate's own timer (a reset already passed, at boot) fires on a real `setTimeout`. */
+  async function settle(): Promise<void> {
+    await new Promise((r) => setTimeout(r, 20));
+    await flush();
+  }
+
+  /** A review the store already holds `parked-*` from a previous run of the app. */
+  function parkedRow(id: string, status: AiReviewStatus = 'parked-limit'): AiReview {
+    return {
+      id,
+      subjectId: 'task:t1',
+      diffId: 'd0',
+      headSha: 'old',
+      status,
+      parkReason: 'usage limit reached',
+      model: 'sonnet',
+      startedAt: 500,
+      finishedAt: null,
+      costUsd: 0.1,
+      tokens: null,
+      summary: null,
+      verdict: null,
+      findingCount: 0,
+      droppedCount: 0,
+      error: null,
+      requestedBy: 'human',
+    };
+  }
+
+  const savedLimit = (resumeAt: number, parkedReviewIds: string[]): LimitState => ({
+    limitType: 'rolling',
+    resetsAt: null,
+    resumeAt,
+    parkedTaskIds: [],
+    parkedReviewIds,
+  });
+
+  it('parks a limit said only in prose, then restarts from scratch on resume', async () => {
+    const h = harness();
+    const review = await started(h);
+    h.emit(result(PROSE_LIMIT, { success: false, terminalReason: 'api_error' }));
+    await flush();
+
+    expect(h.reviews.get(review.id)).toMatchObject({ status: 'parked-limit', finishedAt: null });
+    expect(h.scheduler.currentLimit()?.parkedReviewIds).toEqual([review.id]);
+    expect(h.sessions.stop).toHaveBeenCalledWith(h.startedRunIds[0]);
+    expect(h.worktrees.remove).toHaveBeenCalledWith(PROJECT, review.id);
+    expect(h.sessions.send).not.toHaveBeenCalled();
+
+    h.scheduler.resumeLimitNow();
+    await flush();
+    expect(h.scheduler.currentLimit()).toBeNull();
+    expect(h.startedRunIds).toHaveLength(2);
+    expect(h.worktrees.create).toHaveBeenCalledTimes(2);
+    expect(h.reviews.get(review.id)).toMatchObject({ status: 'running', parkReason: null });
+
+    h.emit(result(VALID));
+    await flush();
+    expect(h.batches).toHaveLength(1);
+    const row = h.reviews.get(review.id)!;
+    expect(row.status).toBe('done');
+    // The parked session's spend is the base the restart's totals are added to.
+    expect(row.costUsd).toBeCloseTo(0.84);
+    h.scheduler.dispose();
+  });
+
+  it('fails, rather than parks, a prose limit /usage contradicts', async () => {
+    const h = harness({ usage: () => Promise.resolve({ sessionPct: 20, weeklyPct: 3 }) });
+    const review = await started(h);
+    h.emit(result(PROSE_LIMIT, { success: false, terminalReason: 'api_error' }));
+    await flush();
+
+    const row = h.reviews.get(review.id)!;
+    expect(row.status).toBe('failed');
+    expect(row.error).toContain('/usage shows budget left');
+    expect(row.parkReason).toBeNull();
+    expect(h.scheduler.currentLimit()).toBeNull();
+    expect(h.sessions.send).not.toHaveBeenCalled();
+    expect(h.worktrees.remove).toHaveBeenCalledWith(PROJECT, review.id);
+  });
+
+  it('parks a sign-in failure, then restarts it once signed in', async () => {
+    const h = harness();
+    const review = await started(h);
+    h.emit(
+      result('Failed to authenticate: OAuth session expired and could not be refreshed', {
+        success: false,
+        costUsd: 0,
+        usage: NO_USAGE,
+      }),
+    );
+    await flush();
+
+    expect(h.reviews.get(review.id)?.status).toBe('parked-signin');
+    expect(h.scheduler.currentAuth()?.parkedReviewIds).toEqual([review.id]);
+    expect(h.sessions.send).not.toHaveBeenCalled();
+
+    h.scheduler.signedIn();
+    await flush();
+    expect(h.scheduler.currentAuth()).toBeNull();
+    expect(h.startedRunIds).toHaveLength(2);
+    expect(h.worktrees.create).toHaveBeenCalledTimes(2);
+
+    h.emit(result(VALID));
+    await flush();
+    expect(h.reviews.get(review.id)?.status).toBe('done');
+    expect(h.batches).toHaveLength(1);
+  });
+
+  it.each([
+    ['before the runner exists, as at boot', true],
+    ['once the runner is listening', false],
+  ])(
+    'restarts a review held by a gate whose reset passed while closed, restored %s, once',
+    async (_name, early) => {
+      const h = harness({
+        seed: [parkedRow('old1')],
+        limit: savedLimit(Date.now() - 60_000, ['old1']),
+        restore: early,
+      });
+      if (!early) h.scheduler.restoreLimitGate();
+      await h.runner.restoreParked();
+      await settle();
+      // A second boot pass finds nothing left to restart.
+      await h.runner.restoreParked();
+      await settle();
+
+      expect(h.scheduler.currentLimit()).toBeNull();
+      expect(h.startedRunIds).toHaveLength(1);
+      expect(h.worktrees.create).toHaveBeenCalledTimes(1);
+      // Re-resolved and re-pinned at the subject's current head.
+      expect(h.reviews.get('old1')).toMatchObject({
+        status: 'running',
+        diffId: 'd1',
+        headSha: 'head',
+      });
+      h.emit(result(VALID));
+      await flush();
+      expect(h.reviews.get('old1')?.status).toBe('done');
+    },
+  );
+
+  it('holds a review in a restored gate whose reset is still ahead until it lifts', async () => {
+    const h = harness({
+      seed: [parkedRow('old1')],
+      limit: savedLimit(Date.now() + 3_600_000, ['old1']),
+    });
+    await h.runner.restoreParked();
+    await settle();
+    expect(h.startedRunIds).toHaveLength(0);
+    expect(h.reviews.get('old1')?.status).toBe('parked-limit');
+    expect(h.scheduler.currentLimit()?.parkedReviewIds).toEqual(['old1']);
+
+    h.scheduler.resumeLimitNow();
+    await flush();
+    expect(h.startedRunIds).toHaveLength(1);
+    expect(h.reviews.get('old1')?.status).toBe('running');
+    h.scheduler.dispose();
+  });
+
+  it('restarts an orphan parked row that no gate holds', async () => {
+    const h = harness({ seed: [parkedRow('old1'), parkedRow('old2', 'parked-signin')] });
+    await h.runner.restoreParked();
+    await flush();
+    // One at a time: the first runs, the second waits its turn.
+    expect(h.startedRunIds).toHaveLength(1);
+    expect(h.reviews.get('old1')?.status).toBe('running');
+    expect(h.reviews.get('old2')?.status).toBe('queued');
+    h.emit(result(VALID));
+    await flush();
+    expect(h.startedRunIds).toHaveLength(2);
+    expect(h.reviews.get('old2')?.status).toBe('running');
+  });
+
+  /**
+   * The runner's repair turn, seen where the runner asks for it: once the park has stopped
+   * the session, the scheduler drops a send to it, so `sessions.send` alone would not show it.
+   */
+  const repairs = (h: ReturnType<typeof harness>) => vi.spyOn(h.scheduler, 'sendToReviewSession');
+
+  it('keeps a review parked when a failed result lands 10 ms after the park', async () => {
+    const h = harness();
+    const review = await started(h);
+    const repair = repairs(h);
+    h.emit(REJECTED());
+    await flush();
+    expect(h.reviews.get(review.id)?.status).toBe('parked-limit');
+    expect(h.scheduler.currentLimit()?.parkedReviewIds).toEqual([review.id]);
+
+    await new Promise((r) => setTimeout(r, 10));
+    h.emit(result(API_ERROR, { success: false, terminalReason: 'api_error' }));
+    await flush();
+
+    expect(h.reviews.get(review.id)).toMatchObject({ status: 'parked-limit', finishedAt: null });
+    expect(h.scheduler.currentLimit()?.parkedReviewIds).toEqual([review.id]);
+    expect(repair).not.toHaveBeenCalled();
+    expect(h.sessions.send).not.toHaveBeenCalled();
+    expect(h.store.addAiDrafts).not.toHaveBeenCalled();
+
+    h.scheduler.resumeLimitNow();
+    await flush();
+    expect(h.startedRunIds).toHaveLength(2);
+    expect(h.worktrees.create).toHaveBeenCalledTimes(2);
+    expect(h.reviews.get(review.id)?.status).toBe('running');
+    h.scheduler.dispose();
+  });
+
+  it('keeps a review parked when the park lands while its result is being classified', async () => {
+    const h = harness();
+    const review = await started(h);
+    const repair = repairs(h);
+    h.emit(result(API_ERROR, { success: false, terminalReason: 'api_error' }));
+    // Same tick: `classifyReviewWall` has not answered yet.
+    h.emit(REJECTED());
+    await flush();
+
+    expect(h.reviews.get(review.id)?.status).toBe('parked-limit');
+    expect(h.scheduler.currentLimit()?.parkedReviewIds).toEqual([review.id]);
+    expect(repair).not.toHaveBeenCalled();
+    expect(h.store.addAiDrafts).not.toHaveBeenCalled();
+    h.scheduler.dispose();
   });
 });
