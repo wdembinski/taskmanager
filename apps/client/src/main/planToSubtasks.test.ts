@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkPlan } from '@shared/planCheck';
 import {
@@ -387,6 +389,108 @@ describe('splitPlanIntoSteps', () => {
       const [first] = splitPlanIntoSteps(huge);
       expect(first.description.length).toBeLessThan(9_000);
       expect(first.description).toContain('framing was cut');
+    });
+  });
+
+  describe('a ## Steps heading with ### steps (TM-528)', () => {
+    // Five of six approved VPN plans became ONE step: their real steps were `###` headings
+    // under a single `## Steps`, and the split stopped at level 2. These are those plans.
+    const fixture = (name: string): string =>
+      readFileSync(join(__dirname, '__fixtures__/plans', name), 'utf8');
+    const FRAMING_TITLE = /^(context|facts|decisions|critical files|out of scope|open question)\b/i;
+
+    const vpn10 = fixture('vpn-10.txt').replace(/\n/g, '\r\n');
+    const vpn12 = fixture('vpn-12.txt');
+    const vpn18 = fixture('vpn-18.txt');
+
+    it('splits VPN-10 (CRLF) into its five ### steps plus Verification', () => {
+      expect(vpn10).toContain('\r\n');
+      const steps = splitPlanIntoSteps(vpn10);
+      expect(steps.map((s) => s.title)).toEqual([
+        'Store networks in the devices table',
+        'Add the /networks admin endpoints',
+        'Move devices between networks',
+        'Derive the reachability matrix from the active policy',
+        'Verify the API and open the vpn PR',
+        'Verification',
+      ]);
+      expect(steps[0].description).not.toContain('### Add the /networks admin endpoints');
+    });
+
+    it('splits VPN-12 into its six numbered ### steps, with no Open question step', () => {
+      expect(splitPlanIntoSteps(vpn12).map((s) => s.title)).toEqual([
+        'Bring over the compiler commit and teach the agent guard',
+        'Parse conntrack and deny-log samples in the agent',
+        'Ship conntrack in cloud-init and document the agent step',
+        'Ingest flow reports in the API with retention cap',
+        'Serve GET /flows and the CSV export',
+        'Verify end to end and open the PR',
+      ]);
+    });
+
+    it('keeps VPN-18 at its six ## Step N: steps', () => {
+      expect(splitPlanIntoSteps(vpn18).map((s) => s.title)).toEqual([
+        'Report peer transfer from the relay agent',
+        'Expose per-device status and the idle countdown',
+        'Prune metrics samples in the autostop job',
+        'Add the throughput and top-talkers endpoints',
+        'Add the cached month-to-date cost endpoint',
+        'Verify the whole ticket end to end',
+      ]);
+    });
+
+    // VPN-10's Context + Facts alone run past MAX_SHARED_CONTEXT, so its Decisions are cut
+    // from the shared framing — the cap's existing behaviour, not this split's.
+    it.each([
+      ['VPN-10', vpn10, 'framing was cut'],
+      ['VPN-12', vpn12, '## Decisions'],
+      ['VPN-18', vpn18, '## Decisions'],
+    ])('gives every %s step the framing, and makes none of it a step', (_name, plan, tail) => {
+      const steps = splitPlanIntoSteps(plan);
+      for (const step of steps) {
+        expect(step.title).not.toMatch(FRAMING_TITLE);
+        expect(step.title).not.toContain('\r');
+        expect(step.description).toContain('## Context');
+        expect(step.description).toContain(tail);
+      }
+    });
+
+    it('expands a synthetic Steps section in place, before Verification', () => {
+      const plan = [
+        '# Plan',
+        '## Context',
+        'Why.',
+        '## Steps',
+        '### A',
+        'do a',
+        '### B',
+        'do b',
+        '## Verification',
+        'check',
+      ].join('\n');
+      const steps = splitPlanIntoSteps(plan);
+      expect(steps.map((s) => s.title)).toEqual(['A', 'B', 'Verification']);
+      expect(steps[0].description.startsWith('do a')).toBe(true);
+      expect(steps[0].description).not.toContain('do b');
+    });
+
+    it('leaves a phase with ### Changes / ### Tests as one step', () => {
+      const plan = [
+        '## Phase 1 — Add the store',
+        '### Changes',
+        'edit store.ts',
+        '### Tests',
+        'add store.test.ts',
+        '## Phase 2 — Wire the IPC',
+        '### Changes',
+        'edit ipc.ts',
+        '### Tests',
+        'add ipc.test.ts',
+      ].join('\n');
+      expect(splitPlanIntoSteps(plan).map((s) => s.title)).toEqual([
+        'Add the store',
+        'Wire the IPC',
+      ]);
     });
   });
 });

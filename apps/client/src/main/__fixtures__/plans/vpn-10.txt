@@ -1,0 +1,118 @@
+# Networks: API + console page with reachability matrix
+
+## Context
+
+Ticket (mockup 04): virtual networks are **subnets of one overlay (`10.88.0.0/16`) isolated by policy**, not separate WireGuard interfaces. Today networks are a static env list (`NETWORKS=core=10.88.1.0/24`, parsed at startup, `apps/api/src/config/config.ts:124,147`); CONTRACT §1 says in so many words "not stored in a table". This ticket makes them admin-managed data: `GET/POST/PATCH/DELETE /networks`, an `isolated` flag, moving a device between networks, a reachability matrix derived from the **active** firewall policy (never stored), audit events, and a console page `console/web/src/pages/Networks.tsx` (repo `infrastructure-vpn-wt`) matching mockup 04. Done when: API tests for CRUD / overlap / next-free; console builds and renders against a mocked API; screenshots in the PR. One PR per repo touched; no merge, no deploy, no live Azure.
+
+**Scope set by the owner (2026-10-24):** this run does the **Networks API only** — stored networks, `/networks` CRUD, `isolated`, device move, reachability matrix, CONTRACT, audit events — and opens **one PR in the vpn repo**. The console page (`Networks.tsx`, fixtures, screenshots) moves to **VPN-19**, which builds on VPN-13's console tooling once that is merged. Nothing in this run touches `C:\Repositories\infrastructure-vpn-wt` or any UI, so no screenshots are needed here. The CONTRACT text written here is VPN-19's input.
+
+## Facts (checked 2026-10-24)
+
+- Worktree for the API: this directory (branch `feat/networks-api-console-page-with`). `.vipper/` is git-ignored here (`.gitignore:24`).
+- Network config today: `OverlayNetwork {id,name,cidr}` (`config.ts:20`), `config.network.networks` (first = default). Consumers: `devices.service.ts:79` (enrol → default network), `:244` (reserveAddress — IP must be in the device's **current** network pool), `:442` `withNetwork` (legacy rows: network derived from CIDR), `:476` `bindReservation` (skips leases whose network is gone), `policy.service.ts:80` (`parseDraftBody(body, networkIds)` — `net:` must name a configured network), `policy.service.ts:149` (`compile` → `compilePolicy({rules, devices, networks:{id,cidr}[]})`). Tests that set `NETWORKS`: `config.test.ts`, `devices.service.test.ts:106,121,455`, `policy.service.test.ts:357`.
+- `common/ip.ts` exports `ipToInt, intToIp, parseCidr (prefix 8..30), cidrContains, cidrsOverlap, networkAddressPool (.2 … broadcast-1), compareIps`.
+- Devices repo: `claimLease(ip, deviceId, createdAt, network, reservedFor?)` (createEntity, false on 409), `releaseLease`, `setLeaseReservation`, `updateAddress(id, ip, mode)` (`devices.repository.ts:95`, Merge, does **not** write `network`; nothing updates `network`). `reserveAddress` = `devices.service.ts:239`.
+- Policy compiler: unknown `net:` → warning + rule becomes a comment (matches nothing). `compileOpenPolicy()` (v0) output must stay byte-identical to `apps/api/src/policy/__snapshots__/open.nft` (relay `boot.nft` is checked against it by `relay/test/render-template.sh`). The relay agent refuses any quoted nft string except `"r_<8 hex>"` / `"default"` and any hook but `forward` (CONTRACT §7 step 9.4) — new compiled lines must carry **no** quoted comment.
+- No reachability/evaluation function exists anywhere.
+- Audit: `AuditService.record({actor, action, detail, subjectId})` never throws; `AuditAction` (`audit/audit.types.ts:2`) already has `network.created`, `network.deleted` (unused).
+- Tables: `tables/tables.ts` — `devices` table has partitions `device` and `name`; every device query filters `PartitionKey eq 'device'`. A new **table** would need Terraform (infra repo) → use a new **partition** instead.
+- Auth: `@UseGuards(AuthGuard)` + `@Auth('user:admin')`, actor = `userOf(req).sub`. Errors: `common/errors.ts` (`ErrorCode` closed union at `:10`, `validationFailed`, `notFound`, `new ApiError(409, code, msg)`).
+- No `@Patch` exists; CORS methods `app.setup.ts:32` = `GET,POST,PUT,DELETE,OPTIONS`, asserted verbatim in `app.e2e.test.ts:504`.
+- E2E harness: `app.e2e.test.ts:28-57` (memoryTables, FakeIam `Bearer tok-admin` = admin, `tok-alice` = connect); admin-only route loop at `:308`. Service tests: `devices.service.test.ts:15` pattern.
+- Go client uses `Device.network` for display only and `NetworkConfig.overlayCidr` (whole /16) for routing → dynamic network CIDRs inside the /16 do not break it. A device learns a new IP only on service start / `reload` (`GET /devices/self`).
+- Relay agent has no network awareness (peers are `/32`s, wg0 is `10.88.0.1/16`).
+- **Console repo:** `C:\Repositories\infrastructure-vpn-wt` is currently on `feat/vpn-metrics-table` (not `feat/vpn` as the ticket says) and has **no** fixtures, jsdom tests or screenshot command. A sibling orchestrator task has them on local branch **`feat/console-screens-overview-devices`** (commit `f5784d2` "fixture mode, jsdom tests and screenshot command", checked out at `C:\Users\wdemb\AppData\Roaming\claude-orchestrator\worktrees\6b128efc-e9aa-4f09-a1f0-97b987121472\2df8329a-a7fe-428e-9331-9a709eb01308`, not pushed, not on `feat/vpn`). It provides: `console/web/src/fixtures/{data.ts,fetch.ts,FixtureAuthProvider.tsx}` (in-memory CONTRACT router, `switch (key)` at `fetch.ts:365`; `data.networks` = core/lab/guest with only `{id,cidr}` at `data.ts:32`; 8 devices; 8 `draftRules`), `src/test/setup.ts`, `pnpm build --mode fixtures`, `?theme=light|dark`, and **`console/web/tools/shots.ps1`** (screens list at `:62-66`, writes `<name>-<theme>.png` + `<name>-<theme>-mockup.png` + a `verdicts.txt` skeleton, params `-VpnRepo -MockupRef -OutDir -Edge -Budget`).
+- Console stack: React 18, Fluent UI v9 (`@fluentui/react-components`, has `InlineDrawer`/`OverlayDrawer`), react-router 6, vitest + jsdom + Testing Library. Routes `src/App.tsx:58-69`; nav is a top `TabList` in `src/components/Layout.tsx` (`SECTIONS` at `:125`, selected-tab check at `:135`), max width 1100 px — **not** the mockup's 248 px sidebar + 340 px inspector shell. `src/api/client.ts` `request(method, path)` has **no body support** (`:67-95`). `DevicesTable.tsx` is the Fluent table pattern. Stock Fluent themes only.
+- Mockups: vpn repo branch `origin/docs/brand-system`, `docs/mockups/screens/04-networks.mjs`, rendered `docs/mockups/04-networks.{light,dark}.svg` (1440×900); data `docs/mockups/lib/data.mjs:37-41`. The ticket's "docs/13" is not in this repo; the screenshot command for the console is the sibling's `tools/shots.ps1`.
+
+### Mockup 04 (copied so steps need not re-read it)
+- Header "Networks", primary button "New network" (plus icon).
+- **Cards**, one row of 3 (`surface3`; selected = brand tint + brand stroke): name (semibold) + CIDR (mono, muted); chip `isolated` (orange on orange tint) top-right when isolated; note line; divider; device count "devices" and free count "free" (mono); 4 px usage bar = devices/pool, green (muted when isolated). Sample: `core 10.88.1.0/24 "Workstations and storage"`, `lab 10.88.2.0/24 "Bench equipment, via site router"`, `guest 10.88.3.0/24 isolated "Default-deny to everything"`.
+- **Reachability** section, subtitle "what each network may open to each other — click a cell to edit its rules". Rows = source ("from ↓"), columns = destination ("to →"), 108×54 rounded cells: allow = green tint, check icon, "Allow"; deny = red tint, deny icon, "Deny"; partial = orange tint, shield icon, "<n> rules"; diagonal = dashed outline, muted "within". Legend: "Anything not allowed is denied. The relay enforces this — it is the only path between any two devices."
+- **Selected network devices** section: title `<id>` + mono CIDR + "<n> devices"; table columns state dot | Name | Address (mono) | Tags (chips) | Last handshake (right). (Mockup's "Advertises" column / site routers are out of scope.)
+- **"New network" drawer** (right pane): title + close; **Name** (`office`); **Address range** with right-aligned hint "next free", mono value prefilled (`10.88.4.0/24`), green mono check line "<n> addresses · no overlap"; **Default posture** radios "Isolated — deny everything, then add rules" / "Open to core — start from the core network rules"; divider; **Devices to move here** checkboxes, each with mono "moves address"; attention banner "Re-addressing — Moved devices reconnect once."; buttons "Create network" (primary, plus) and "Cancel".
+
+## Decisions
+
+1. **Storage:** partition `"network"` in the existing `devices` table, RowKey = network id; props `name, cidr, isolated, note, isDefault, createdAt, createdBy, updatedAt`. No Terraform change.
+2. **Seeding:** env `NETWORKS` becomes the **seed**: when the partition is empty, the API inserts the env networks (`createEntity`, 409 ignored; first = `isDefault`, `isolated:false`, `note:""`). After that the table is authoritative; env is still parsed and validated at startup. `NetworksService.list()` is async with an in-process cache invalidated on every write (TTL 30 s; max 1 replica).
+3. **Network wire type** `Network { id; name; cidr; isolated; note; default; deviceCount; poolSize; createdAt }`. `id` `^[a-z0-9-]{1,32}$`, immutable (policy references `net:<id>`); `POST` takes `{id?, name, cidr?, isolated?, note?}` — `id` defaults to the name normalised like device labels and cut to 32; `name` 1..64 chars, no control chars; `note` ≤ 100; `cidr` defaults to next free. `PATCH /networks/:id` takes `{name?, note?, isolated?}`; `cidr` and `id` are immutable (`400` if sent).
+4. **CIDR rules (POST):** valid IPv4 CIDR, prefix 24..30, inside `OVERLAY_CIDR`, not containing `RELAY_OVERLAY_IP`, not overlapping `10.88.0.0/24` (infrastructure/legacy) or any network → `409 network_overlap` naming the other network; id taken → `409 network_exists`. Race: insert, re-list, if an overlapping network sorts before ours (createdAt, id) delete ours and return `409 network_overlap`.
+5. **Next free:** lowest `/24` in the overlay that overlaps no network and does not contain the relay IP (`10.88.0.0/24` is never offered); `null` when none. Returned as `nextFreeCidr` in `GET /networks`.
+6. **DELETE:** `409 network_in_use` if it is the default network, holds any device or lease (incl. unbound reservations), or is referenced by `net:<id>` in the active version or the draft (message says which). Else `204`.
+7. **Move a device:** `PUT /devices/:id/network {network, ip?}` (admin). `auto` device → lowest free address in the target network (stays `auto`); `ip` given → pinned there (`reserved`, lease reserved for owner+name); a `reserved` device without `ip` → `400 validation_failed` ("… has a reserved address; pass ip or release the reservation first"); same network → `200` no-op. Lease order: claim new → Merge device `{overlayIp, network, addressMode}` (new repo method) → release (or for reserved, delete) old lease; failure after claim releases the new lease. `forgetDevice(id)`. The moved client keeps its old IP until its service restarts or reloads — the mockup's "reconnect once"; pushing the change to the client is a follow-up, recorded in CONTRACT.
+8. **`isolated` semantics (owner chose this, 2026-10-24):** "cut off unless a rule allows it". Published policies are already default-deny, so the compiler adds, **after** the user rules and before `counter drop comment "default"`, nothing new; but in the **v0 open policy** each isolated network gets `ip saddr @net_<id> drop` + `ip daddr @net_<id> drop` before `counter accept comment "default"` (no quoted comment; output unchanged when no network is isolated, so `open.nft` and relay `boot.nft` stay identical). The matrix shows isolated pairs as deny under v0. The mockup's "Open to core" posture is `isolated:false` **plus** copying every enabled rule that names `net:core` (with `net:core` → `net:<new>`) into the **draft** through the existing `GET /policy/draft` + `PUT /policy/draft` (If-Match), without publishing. That copy is console-side work in VPN-19 and needs no new API; write it into CONTRACT §3.4 under `POST /networks` as the intended client flow.
+9. **Reachability** (`GET /networks/reachability`, admin): pure `evaluateReachability(rules, version, networks, devices)` in `policy/reachability.ts`, computed from the **active** version on every call. For each ordered pair (from, to) incl. the diagonal, walk enabled rules in order; a rule *applies* if its source can match an address in `from` and its destination one in `to` (`any` / `net:<that id>` = full; `tag:` / `device:` matching ≥ 1 enrolled device in that network = partial; no match = skip; unresolved = skip); protocol ≠ `any` or ports ≠ `any` = partial. First full-coverage rule terminates: allow → `allow` unless a partial deny was seen before (`partial`); deny → `deny` unless a partial allow was seen (`partial`). No terminator → default deny → `partial` if any partial allow was seen, else `deny`. v0 → `allow` everywhere except pairs touching an isolated network (`deny`). Response `{ version, networks: string[], cells: { from, to, state: 'allow'|'partial'|'deny', ruleIds: string[] }[] }` (`ruleIds` = applicable rules in order). (`ruleIds` is what lets VPN-19's "click a cell to edit its rules" list the cell's rules.)
+10. **Audit:** `network.created` (`<id> <cidr>` + ` (isolated)`), `network.updated` (`<id>: isolated on|off, renamed "<a>" → "<b>", note`), `network.deleted` (`<id> <cidr>`), `device.moved` (`<name>: <from> → <to> (<ip>)`), all with the admin's sub, `subjectId` = network id / device id; no audit on no-ops.
+11. **Pool size:** `poolSize` follows CONTRACT: a /24 has 253 device addresses (`.0`, `.1` and broadcast are reserved), not the mockup's 254.
+
+## Steps
+
+### Store networks in the devices table
+- `apps/api/src/networks/` (new): `networks.types.ts` (`Network`, `NetworkRecord`), `networks.repository.ts` (partition `network` of `tables.devices`: list, get, insert (createEntity → false on 409), merge, delete), `networks.service.ts` (`list()` with seed + cache, `get`, `defaultNetwork()`, `nextFreeCidr(networks)`, `validateCidr(cidr, networks)` — pure helpers exported for tests), `networks.module.ts` (global or imported by Devices/Policy modules).
+- Refactor sync consumers to `await networks.list()`: `devices.service.ts` (enrol/default, reserveAddress, `withNetwork` and its callers, `bindReservation`), `policy.service.ts` (`putDraft`, `compile`). Inject `NetworksService` into both constructors; update `devices.service.test.ts`, `policy.service.test.ts` constructors and the `NETWORKS` tests (the env now seeds).
+- Tests (`networks.service.test.ts`): seeding from env on empty partition (once, idempotent with a pre-existing row), cache invalidation, `nextFreeCidr` (empty → `10.88.1.0/24`; core+lab → `10.88.3.0/24`; gap filled first; a /25 blocks its /24; full overlay → null), `validateCidr` (bad CIDR, /23, /31, outside overlay, contains relay, overlaps `10.88.0.0/24`, overlaps a network, adjacent OK).
+- Acceptance: `pnpm --filter api test` and `pnpm --filter api typecheck` (or the repo's `tsc --noEmit`) pass; existing devices/policy tests unchanged in intent.
+
+### Add the /networks admin endpoints
+- `networks.controller.ts`: `GET /networks` → `{networks: Network[], nextFreeCidr}` (sorted by CIDR; `deviceCount` from `devices.list(ALL)` grouped by `network`), `POST /networks` → `201 {network}`, `PATCH /networks/:id` → `200 {network}` (no-op = no audit), `DELETE /networks/:id` → `204`; all `@Auth('user:admin')`. Body parsing in the service with `validationFailed`. Add error codes `network_exists`, `network_overlap`, `network_in_use` to `common/errors.ts`. Add `PATCH` to CORS methods (`app.setup.ts:32`) and to the e2e assertion (`app.e2e.test.ts:504`). Audit actions `network.created/updated/deleted` (add `network.updated` to `audit.types.ts`). Register the module in `app.module.ts`.
+- e2e tests in `app.e2e.test.ts`: admin-only loop (401 no token, 403 alice) for all four routes; CRUD round-trip; POST without cidr gets `nextFreeCidr`; overlap → 409 naming the network; duplicate id → 409; invalid id/name/cidr → 400; PATCH name/isolated/note + immutable cidr → 400; DELETE default → 409, with a device → 409, referenced by draft `net:` → 409, empty → 204; enrolment still lands in the default network; `POST /policy/draft` accepts `net:<new id>` after create; audit events listed by `GET /audit`.
+- `docs/CONTRACT.md`: §1 overlay paragraph (stored networks, env = seed), §3.2 new codes, §3.3 `Network` type + `AuditAction` additions + audit table rows, §3.4 endpoint rows, §3.5 CORS methods, §4 table row for partition `network` + seeding/race rules, §6 `NETWORKS` row ("seed only"). `docs/PLAN.md` API surface line.
+- Acceptance: api tests pass; `grep -n "networks" docs/CONTRACT.md` shows the new rows.
+
+### Move devices between networks
+- `devices.repository.ts`: `moveDevice(id, overlayIp, network, addressMode)` (Merge). `devices.service.ts`: `moveNetwork(actorSub, id, body)` per Decision 7; `devices.controller.ts`: `PUT /devices/:id/network` (`user:admin`). Audit `device.moved` (add to `audit.types.ts`).
+- Tests (service + e2e): auto device → lowest free in target, old lease freed, `network` updated, peers show new `/32`; `ip` → reserved with reserved lease; reserved without ip → 400; target unknown → 400; target full → 409 `ip_pool_exhausted`; ip taken → 409 `address_in_use`; same network → 200 no-op, no audit; non-admin → 403; legacy device (network null) can be moved.
+- CONTRACT §3.4 row, audit row, §4 lease note, and the "client keeps old IP until reload" limitation.
+- Acceptance: api tests pass.
+
+### Derive the reachability matrix from the active policy
+- `policy/reachability.ts` (pure) per Decision 9; `GET /networks/reachability` (admin) in the networks controller, reading `policy.active()`, `networks.list()`, `devices.list(ALL)`.
+- Isolation in the open policy per Decision 8: `compileOpenPolicy(isolated: string[] = [])` emits the extra drop lines only when non-empty; `compile()`/`relayPolicy()` pass isolated network ids (and their `net_` sets). Snapshot test: `open.nft` unchanged with none isolated; new snapshot `__snapshots__/open-isolated.nft`; `relay/test/render-template.sh` still passes (run it if bash is available, else state that it was not run).
+- Tests `reachability.test.ts` using `policy/fixtures/sample.ts` plus mockup-like rules: v0 all allow; v0 with isolated guest → guest rows/cols deny; `net:core→net:lab allow` → allow; tag-scoped allow → partial with ruleIds; port-scoped allow → partial; deny any first → deny; disabled rules ignored; deleted-network rule skipped; diagonal evaluated. e2e: route admin-only, shape, follows a publish.
+- CONTRACT: `Reachability` type, endpoint row, the evaluation rules (copy Decision 9), the isolated compile rule in "Compiled policy".
+- Acceptance: api tests pass, snapshot files committed.
+
+### Verify the API and open the vpn PR
+- Run the whole API suite and typecheck from the repo root (`pnpm --filter api test`, plus the API's typecheck/build script — check `apps/api/package.json` for its name, e.g. `pnpm --filter api build`). Run `bash relay/test/render-template.sh` if bash is available; if it isn't, say so in the PR. Check `docs/CONTRACT.md` against the code: every new route, type, error code and audit action written in steps 2–4 is in CONTRACT, and the §1 and §6 text no longer says networks are env-only.
+- Commit on `feat/networks-api-console-page-with` (message ends with the Co-Authored-By line), push it, and open a PR against `main` in `wdembinski/vpn` with `gh pr create`. The body covers: what changed (stored networks seeded from `NETWORKS`, `/networks` CRUD + next free, `isolated` semantics, `PUT /devices/:id/network`, `GET /networks/reachability`, audit events), the CONTRACT sections touched, the test output, the known limitation (a moved client keeps its old IP until its service restarts or reloads), and "Console page: VPN-19". It ends with the Claude Code attribution line. Do not merge, deploy or touch Azure.
+- Acceptance: the test and typecheck output is pasted in the PR, and the PR URL is printed in the final summary.
+
+## Out of scope
+- The console Networks page, fixtures and screenshots (VPN-19), the sidebar/inspector app shell, site routers / "Advertises" column, pushing a moved device's new IP to the running client, `GET/DELETE /reservations`, Terraform changes.
+
+## Critical files
+apps/api/src/networks/networks.types.ts
+apps/api/src/networks/networks.repository.ts
+apps/api/src/networks/networks.service.ts
+apps/api/src/networks/networks.service.test.ts
+apps/api/src/networks/networks.controller.ts
+apps/api/src/networks/networks.module.ts
+apps/api/src/app.module.ts
+apps/api/src/app.setup.ts
+apps/api/src/app.e2e.test.ts
+apps/api/src/common/errors.ts
+apps/api/src/audit/audit.types.ts
+apps/api/src/config/config.ts
+apps/api/src/config/config.test.ts
+apps/api/src/devices/devices.controller.ts
+apps/api/src/devices/devices.repository.ts
+apps/api/src/devices/devices.service.ts
+apps/api/src/devices/devices.service.test.ts
+apps/api/src/devices/devices.module.ts
+apps/api/src/policy/policy.service.ts
+apps/api/src/policy/policy.service.test.ts
+apps/api/src/policy/policy.compiler.ts
+apps/api/src/policy/policy.compiler.test.ts
+apps/api/src/policy/policy.module.ts
+apps/api/src/policy/reachability.ts
+apps/api/src/policy/reachability.test.ts
+apps/api/src/policy/__snapshots__/open-isolated.nft
+apps/api/src/testing/fakes.ts
+docs/CONTRACT.md
+docs/PLAN.md
+
+## Verification
+- After each step: `pnpm --filter api test` (unit + e2e on memory tables). After step 4, also `relay/test/render-template.sh`.
+- Last step: the full suite, typecheck and the CONTRACT cross-check, then the vpn PR.
+- No UI changes in this run, so there are no screenshots. Visual checks belong to VPN-19.

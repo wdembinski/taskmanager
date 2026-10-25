@@ -19,6 +19,10 @@
  *     Framing headings (Context, Decisions, Out of scope …) are never steps, but their
  *     text is appended to every step's brief, and ONE work section beside framing is a
  *     one-step plan rather than a cue to fall through to the list split.
+ *   - A work section that is a step list — titled `Steps`, `Implementation plan`, `Phases` …,
+ *     or the only work section at its level — and whose sub-headings hold 2+ work sections
+ *     is expanded into those sub-headings in place (`## Steps` / `### A` / `### B` → A, B).
+ *     Framing sections are never descended into.
  *   - Failing that, split on top-level list items (`- [ ] x`, `- x`, `1. x`), folding
  *     each item's indented continuation lines into its brief.
  *   - Failing that, the whole plan becomes one step. Never zero: an approved plan must
@@ -101,17 +105,34 @@ const NON_WORK_PREFIXES = [
   'findings',
   'out of scope',
   'open questions',
+  'open question',
   'non-goals',
 ];
 
 /**
- * True when a heading names framing rather than work. Case/punctuation tolerant, and blind
- * to a parenthetical and an ordinal prefix: the exact-match list alone let "Out of scope
- * (other F15 steps)" and "Step 8 (renumbered…) — Out of scope" through as steps, each of
- * which then ran a session with nothing to build.
+ * Headings that name a LIST of steps rather than one — `## Steps` holding `### …` steps.
+ * Matched exactly (after {@link headingKey}), so an ordinary `## Phase 1` with `### Changes`
+ * / `### Tests` children stays one step.
  */
-function isNonWorkHeading(title: string): boolean {
-  const key = title
+const STEP_LIST_HEADINGS = new Set([
+  'steps',
+  'the steps',
+  'implementation steps',
+  'work steps',
+  'implementation',
+  'implementation plan',
+  'plan',
+  'phases',
+  'milestones',
+  'tasks',
+]);
+
+/**
+ * A heading reduced to what it names: blind to case, markup, a parenthetical, an ordinal
+ * prefix and trailing punctuation.
+ */
+function headingKey(title: string): string {
+  return title
     .replace(/\([^)]*\)/g, ' ')
     .replace(/[*_`#]/g, '')
     .replace(/\s+/g, ' ')
@@ -120,8 +141,23 @@ function isNonWorkHeading(title: string): boolean {
     .toLowerCase()
     .replace(/[.:;,!?]+$/, '')
     .trim();
+}
+
+/**
+ * True when a heading names framing rather than work. Case/punctuation tolerant, and blind
+ * to a parenthetical and an ordinal prefix: the exact-match list alone let "Out of scope
+ * (other F15 steps)" and "Step 8 (renumbered…) — Out of scope" through as steps, each of
+ * which then ran a session with nothing to build.
+ */
+function isNonWorkHeading(title: string): boolean {
+  const key = headingKey(title);
   if (NON_WORK_HEADINGS.has(key)) return true;
   return NON_WORK_PREFIXES.some((prefix) => key === prefix || key.startsWith(`${prefix} `));
+}
+
+/** True when a heading names a list of steps (`## Steps`, `## Implementation plan` …). */
+function isStepListHeading(title: string): boolean {
+  return STEP_LIST_HEADINGS.has(headingKey(title));
 }
 
 /**
@@ -281,14 +317,55 @@ function withSharedContext(work: PlanStep[], framing: PlanStep[]): PlanStep[] {
 }
 
 /**
+ * A work section whose sub-headings are its real steps, expanded into them (TM-528).
+ *
+ * Five of six VPN plans put every step as a `###` under ONE `## Steps`, and the split stopped
+ * at level 2: the card got a single step carrying all of them, and the agent built only the
+ * first. A section expands when its body splits (at its shallowest sub-heading level) into
+ * 2+ work sub-sections AND its title names a step list or it is the only work section at its
+ * level — the title gate keeps `## Phase 1` with `### Changes` / `### Tests` one step.
+ * Framing children (`### Context`) are returned as framing; text before the first child is
+ * prepended to every child.
+ */
+function expandStepList(
+  section: PlanStep,
+  soleWork: boolean,
+): { steps: PlanStep[]; framing: PlanStep[] } {
+  const lines = section.description.split('\n');
+  let level = 7;
+  for (const line of lines) {
+    const match = HEADING.exec(line);
+    if (match) level = Math.min(level, match[1].length);
+  }
+  if (level === 7) return { steps: [section], framing: [] };
+
+  const children = sectionsAtLevel(lines, level);
+  const work = children.filter((s) => !isNonWorkHeading(s.title));
+  if (work.length < 2 || !(isStepListHeading(section.title) || soleWork)) {
+    return { steps: [section], framing: [] };
+  }
+  const firstChild = lines.findIndex((line) => HEADING.exec(line)?.[1].length === level);
+  const intro = trimBlankLines(lines.slice(0, firstChild));
+  return {
+    steps: work.map((s) => ({
+      ...s,
+      description: [intro, s.description].filter((part) => part.length > 0).join('\n\n'),
+    })),
+    framing: children.filter((s) => isNonWorkHeading(s.title)),
+  };
+}
+
+/**
  * Split an approved plan into ordered steps. Always returns at least one step for a
  * non-empty plan — an approved plan that produced nothing to run would strand the
  * ticket with no way forward.
  */
 export function splitPlanIntoSteps(markdown: string): PlanStep[] {
-  const text = markdown.trim();
+  // Normalise line endings up front: bodies are re-joined with `\n`, so a stray `\r` would
+  // otherwise ride into titles and briefs.
+  const text = markdown.replace(/\r\n?/g, '\n').trim();
   if (!text) return [];
-  const lines = text.split(/\r?\n/);
+  const lines = text.split('\n');
 
   // Prefer headings: the shallowest level that yields >= 2 sections is the phase level.
   const levels = new Set<number>();
@@ -306,7 +383,14 @@ export function splitPlanIntoSteps(markdown: string): PlanStep[] {
     // the list split below would turn every bullet of the whole plan into a step — TM-459
     // got 17, its Context facts and Out-of-scope items among them.
     if (work.length >= 2 || (work.length === 1 && framing.length > 0)) {
-      return finalize(withSharedContext(work, framing));
+      // A `## Steps` section is a list of steps, not one: expand it in place, so a
+      // `## Verification` after it stays last.
+      const expanded = work.flatMap((s) => {
+        const { steps, framing: childFraming } = expandStepList(s, work.length === 1);
+        framing.push(...childFraming);
+        return steps;
+      });
+      return finalize(withSharedContext(expanded, framing));
     }
   }
 

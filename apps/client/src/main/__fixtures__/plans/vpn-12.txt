@@ -1,0 +1,242 @@
+# Flow log from relay conntrack with matched rule — remaining work
+
+## Context
+Mockup 06 (Traffic → Flows) needs a per-flow log from the relay: source, destination, protocol, port, bytes, duration, matched rule, and allowed/denied. Denied rows should let an admin spot a misconfigured device in seconds.
+
+An earlier run did only the API compiler half. It is commit `89d85f8` on `feat/flow-log-from-relay-conntrack-with` (PR #15, open, not merged). It adds:
+- the `flowLog` option in `compilePolicy`;
+- `GET /relay/policy?flowlog=1`;
+- the snapshot `apps/api/src/policy/__snapshots__/sample-flowlog.nft`;
+- the relay fixture `v16-flowlog`, which no scenario uses yet.
+
+Still missing: the agent guard, conntrack and deny-log sampling, `POST /relay/flows`, flow storage with retention, `GET /flows` plus CSV, and the cloud-init changes. This plan covers that work.
+
+## Facts (checked 2026-10-25)
+- **Prior work is not in this worktree.** `main` is at `5460576` and does not have `89d85f8`. Its branch is checked out in another orchestrator worktree, so the first step cherry-picks `89d85f8` onto this session's branch. PR #15 then becomes superseded; mention that in the new PR.
+- **The agent refuses the flow-log ruleset today.** In `policy_script_ok`, `relay/vipper-relay-agent.sh:731-736` allows only `"r_xxxxxxxx"` or `"default"` inside quotes, so `log prefix "vipper-deny r_00000006 "` is refused with "quoted string other than a rule id". `ct`, `mark`, `set`, `limit`, `log` and `level` are not in `POLICY_DENIED_WORDS` (:654).
+- **Agent layout.**
+  - `AGENT_VERSION="0.3.0"` at :28, `TICK_SECONDS=60`.
+  - `api_call <method> <path> [body]` at :218 sets `HTTP_STATUS` and `HTTP_BODY_FILE`.
+  - `policy_tick` (:887-902) hard-codes `api_call GET /relay/policy` at :889.
+  - `report_policy` (:864) is the per-tick report template: the body is built with `jq -c --arg`, and a failure is only logged.
+  - The live loop is at :1012-1026, and dry-run ticks are handled in `main()`.
+  - Tool checks are at :939-952. `NFT_MISSING` (:942-948) is the pattern for "warn and skip".
+- **Agent tests.**
+  - `relay/test/run-tests.sh` is bash with node 22 and jq.
+  - `run_scenario` is at :85-123. Fakes are wired through env vars, as in `VIPPER_NFT="$TEST_DIR/fake-nft.sh"`.
+  - `mock-api.js` records every call (`GET /__calls`) and validates each report strictly (`policyReportProblem`, :97-119).
+  - `assert-run.js` holds the `scenarios` map (:173), `commonChecks` (:63) and `checkReports` (:98).
+  - There are no captured-output fixture files yet.
+- **cloud-init.** `relay/cloud-init.yaml.tftpl` installs `wireguard-tools jq curl iptables dnsmasq nftables` (:30-39). It has no `conntrack` package and sets only `net.ipv4.ip_forward=1` (:98-102). `custom_data` is `ignore_changes`, so existing VMs only pick up new packages after a re-create. `render-template.sh:140` checks the package set.
+- **custom_data is nearly full.** It is 64,733 of 65,535 bytes (`relay/README.md:241`).
+  - The fix, gz+b64 embedding of the agent, is commit `7ed815c` on the local, unpushed branch `feat/finish-throughput-metrics-relay-reports`.
+  - That branch also bumps `AGENT_VERSION` to 0.4.0, the same number that `89d85f8` names for `?flowlog=1`.
+  - See the open question at the end.
+- **API patterns to reuse.**
+  - Relay POST: `policy/relayPolicy.controller.ts`, `relay/relay.controller.ts:69` (`POST /relay/transfer`).
+  - Hand-written validation: `parsePolicyReport` in `policy/policyStatus.service.ts:133-185`, `parseTransferReport` in `metrics/metrics.service.ts:65-94`, and `validationFailed` in `common/errors.ts:275`.
+  - The JSON body limit is 64 kB (`app.setup.ts:42`); a larger body gets `413`.
+  - `parseLimit`: `audit/audit.service.ts:68-76`.
+  - Response headers via `@Res({passthrough:true})`: `policy/policy.controller.ts:29-33`.
+  - Day/hour partitions and CAS loop: `policy/policyStatus.repository.ts:19-49,121-147`. `num()` is at :200.
+  - Tables: `tables/tables.ts` (`Tables`: devices, ipleases, relay, audit, metrics). `testing/memoryTable.ts` supports only `eq|ge|gt|le|lt` joined by `and`.
+  - Devices: `DevicesService.all()` (`devices/devices.service.ts:145`) gives `{id,name,overlayIp}`. There is no lookup by IP, so build a Map, as `MetricsService.ingest` does at `metrics.service.ts:36`.
+  - Every constructor parameter needs an explicit `@Inject(X)`.
+  - Tests: Vitest via `pnpm --filter @vpn/api test`. Helpers: `FakeClock`, `testConfig`, and `memoryTables()` in `testing/`. E2E: `app.e2e.test.ts` with `call()`, relay auth `'Relay test-relay-secret'`, admin `'Bearer tok-admin'`, prefix `/api/v1`.
+  - `pnpm install` fails in orchestrator worktrees ("readStream must be readable"). Use `pnpm install --frozen-lockfile --ignore-scripts --filter "./apps/api..."`.
+- **CONTRACT.md anchors.**
+  - §3.3 Types: line 109.
+  - §3.4 Endpoints: line 245; relay rows at 261-274.
+  - §4 Table Storage: line 287; the metrics row is at 307 and its bullet rules at 309-321.
+  - §6 agent env: line 404; test-only env at 415.
+  - §7 agent behaviour: line 443; step 9 (policy) at 453-460.
+- **Mockup** (`origin/docs/brand-system`: `docs/mockups/screens/06-traffic.mjs`, `docs/mockups/lib/data.mjs` `flows`).
+  - Columns: status dot, Source, →, Destination, Protocol, Port, Bytes, Duration, Matched rule (`#n` plus the comment), and a Result pill (`Live`/`Allowed`/`Denied`). Denied rows are tinted red.
+  - Controls: a search box "Filter by device, port or rule" and an "Export CSV" button.
+  - Footer: "6 of 212 flows · 41 denied in the last 24 h".
+  - Sample record: `{src,dst,proto,port,bytes,dur,rule,state: live|ok|denied}`.
+- **No UI in this ticket.** The console Flows page lives in `infrastructure-vpn-wt/console/web` and is not in the ticket's scope list. No screen changes, so no screenshot command is needed. A follow-up card should build the page against `GET /flows`.
+- **A stray card note does not belong here.** The note "Implement steps 1–4 now: Overview, Devices, Firewall … PR into feat/vpn" refers to another card's plan (`you-are-working-in-binary-wirth.md`). It is ignored.
+
+## Decisions
+- **Agent version.** The flow log ships in the next agent minor above whatever `main` has when step 1 starts: 0.4.0 if the throughput-report branch has not landed, 0.5.0 if it has. CONTRACT and code comments say "agent with flow log (§7 step 10)" rather than repeating a number in many places. `AGENT_VERSION` holds the actual number.
+- **Verdict tags** stay exactly as `89d85f8` compiles them:
+  - accept: `ct mark set 0x<rule id hex>`;
+  - drop: a preceding `limit rate 10/second burst 20 packets log prefix "vipper-deny <rule id> " level info`;
+  - mark 0 means unattributed (`rule: null`).
+- **Agent guard** gets one extra quoted-string form: exactly `"vipper-deny (r_[0-9a-f]{8}|default) "`. Nothing else is loosened.
+- **Sampling, each tick, after `policy_tick`.**
+  - `conntrack -L -o extended,id` (binary `$CONNTRACK`, overridable by `VIPPER_CONNTRACK`).
+  - Keep only entries whose original src is in the overlay CIDR.
+  - From each entry take: `id`, proto, src, dst, dport (null for icmp), bytes (orig+reply), packets, mark → rule id (`r_%08x`, or null if 0), and `delta-time` if present → seconds.
+  - Parse with one `jq -R -s` program. Drop malformed lines. Sort by bytes descending and cap at **250**.
+- **Denied, each tick.**
+  - `journalctl -k -o short-unix --grep '^vipper-deny ' --cursor-file "$WORK_DIR/kmsg.cursor"` (binary `$JOURNALCTL`, overridable by `VIPPER_JOURNALCTL`). On the first tick, start at `--since -2min`.
+  - Parse the prefix rule id, `SRC=`, `DST=`, `PROTO=` and `DPT=`.
+  - Aggregate by (rule, src, dst, proto, dport) into `{count, firstAt, lastAt}`. Cap at **100**, keeping the highest counts.
+- **Tooling and kernel settings.**
+  - cloud-init adds the package `conntrack` and sysctls `net.netfilter.nf_conntrack_acct=1` and `net.netfilter.nf_conntrack_timestamp=1`.
+  - The agent also sets both sysctls at start (best effort), so existing VMs get bytes and durations without a re-create.
+  - If the `conntrack` binary is missing, the agent warns once, sends `flows: []` and still sends the denied rows.
+- **Report.**
+  - `POST /relay/flows` with body `FlowReport = { bootId, sampledAt (ISO), flows: FlowSample[] ≤250, denied: DeniedSample[] ≤100 }`. It stays under the 64 kB limit; fields are terse.
+  - `FlowSample = { ct: int, proto: 'tcp'|'udp'|'icmp'|<lowercase name ≤16>, src: IPv4, dst: IPv4, port: int 0..65535|null, bytes: int≥0, packets: int≥0, rule: /^r_[0-9a-f]{8}$/|null, seconds: int≥0|null }`.
+  - `DeniedSample = { rule: /^r_[0-9a-f]{8}$|^default$/, src, dst, proto, port|null, count: int≥1, firstAt, lastAt }`.
+  - The agent sends it every tick. A failure is only logged, as for `report_policy`.
+- **Storage.** No new table, so no Terraform change.
+  - Flows go in the `metrics` table, partition `fl:<hour ISO, e.g. 2026-10-25T13>`.
+  - Accepted rows: RowKey `a_<bootId>_<ct>`, upserted with `firstSeen` kept from the existing row in that hour. `firstSeen` is otherwise `sampledAt − seconds`.
+  - Denied rows: RowKey `d_<sha1(rule|src|dst|proto|port) first 16 hex>`, merged by adding the count and widening `firstAt`/`lastAt`.
+  - Each row stores the resolved `srcDevice{id,name}`, `dstDevice{id,name}` at ingest, so names survive device deletion. The relay IP resolves to `relay`.
+- **Retention and cap.**
+  - The window is the last **24 h**: reads only cover `fl:` partitions for the last 24 hours.
+  - Each ingest best-effort deletes rows of partitions 25–26 h old, at most once per hour per process.
+  - Hard cap: **1,000 rows per hour partition**, counted in a `_count` row through the existing CAS loop. A new row beyond the cap is dropped and counted in `ignored`; updates to existing rows still apply.
+  - Worst case is therefore 24,000 rows.
+  - `POST /relay/flows` returns `200 { accepted, ignored }`.
+- **Read API (admin).**
+  - `GET /flows?device=&port=&rule=&result=&limit=` returns `200 { flows: Flow[], total, denied }`. `total` and `denied` count all matches in the 24 h window before `limit`, which feeds the footer "6 of 212 · 41 denied".
+  - Filters:
+    - `device` is a device id that matches src or dst;
+    - `port` is an integer from 0 to 65535;
+    - `rule` is `r_xxxxxxxx` or `default`;
+    - `result` is `allowed` or `denied`;
+    - `limit` is an integer from 1 to 1000, default 100.
+    - Anything else is `400 validation_failed`.
+  - Merge rows of the same key across hour partitions, keeping the latest. Sort by `lastSeen` descending.
+  - `Flow = { id, result: 'allowed'|'denied', live: boolean (allowed and lastSeen == latest sampledAt), src:{ip,deviceId|null,name|null}, dst:{…}, proto, port, bytes|null, packets|null, durationSeconds, ruleId|null, ruleNumber|null, ruleComment|null, count (denied hits; 1 for allowed), firstSeen, lastSeen }`.
+  - `ruleNumber` and `ruleComment` come from the active policy version's rules by id, at read time.
+- **CSV.** `GET /flows/export?<same filters>` returns `200 text/csv; charset=utf-8` with `Content-Disposition: attachment; filename="flows-<ISO date>.csv"`.
+  - Rows are all matches, up to the cap.
+  - Header: `last_seen,first_seen,result,src_ip,src_device,dst_ip,dst_device,proto,port,bytes,packets,duration_s,rule_id,rule_number,rule_comment,count`.
+  - Values follow RFC 4180 quoting. A field starting with `= + - @` is prefixed with `'`.
+  - CORS exposes `Content-Disposition`.
+
+## Steps
+
+### 1. Bring over the compiler commit and teach the agent guard
+- Cherry-pick `89d85f8` onto this branch and resolve conflicts. Re-run the API tests.
+- Agent:
+  - extend the quoted-string allowance in `policy_script_ok` to exactly `"vipper-deny (r_[0-9a-f]{8}|default) "`;
+  - change `policy_tick` to `api_call GET '/relay/policy?flowlog=1'`;
+  - bump `AGENT_VERSION` (see Decisions).
+- Fix the "agent ≥ 0.4.0" wording in `policy.compiler.ts`, `relayPolicy.controller.ts` and CONTRACT to "agent with flow log (§7 step 10)".
+- Tests:
+  - add a `policy-flowlog` scenario to `run-tests.sh`/`assert-run.js` that serves `v16-flowlog` and asserts it is applied and the mock saw `query.flowlog === '1'`;
+  - add `evil-*` fixtures that must still be refused: a log prefix with another text, and `"vipper-deny r_1 "`.
+- **Done when:** `bash relay/test/run-tests.sh` passes and `pnpm --filter @vpn/api test` passes.
+
+### 2. Parse conntrack and deny-log samples in the agent
+- Add `$CONNTRACK` and `$JOURNALCTL` (env `VIPPER_CONNTRACK`, `VIPPER_JOURNALCTL`) and a best-effort sysctl at start, skipped in dry-run.
+- Add `sample_flows <out>` and `sample_denied <out>` as `jq -R -s` programs (see Decisions), plus `report_flows`, which POSTs `/relay/flows` after `policy_tick` in both the live loop and the dry-run ticks.
+- Add captured-output fixtures:
+  - `relay/test/fixtures/conntrack-extended.txt`: real `conntrack -L -o extended,id` lines, covering tcp ESTABLISHED with mark, udp, icmp (no dport), mark 0, a non-overlay entry, a line without `bytes=` and a malformed line;
+  - `relay/test/fixtures/journal-deny.txt`: `short-unix` kernel lines with `vipper-deny r_… ` and `vipper-deny default `, repeated tuples, and noise.
+- `fake-conntrack.sh` and `fake-journalctl.sh` print those files. Each has a `FAKE_*_FAIL` knob.
+- In `mock-api.js`, add a strict validator `flowReportProblem` for `POST /relay/flows`, mirroring the API contract.
+- In `assert-run.js`, add a `flows` scenario that checks the exact parsed body:
+  - rule ids from marks;
+  - bytes summed over orig+reply;
+  - icmp `port:null`;
+  - non-overlay and malformed lines dropped;
+  - denied aggregated with counts.
+- Add `flows-no-conntrack` (binary missing: warns, empty `flows`, denied still sent) and `flows-api-down` (POST fails, agent keeps ticking).
+- Before writing the fixture, verify the conntrack-tools `-o extended,id` field layout, including whether `delta-time=` needs `-o ktimestamp`, against the conntrack-tools source or man page. Make the fixture match the real format.
+- **Done when:** `bash relay/test/run-tests.sh` passes with the new scenarios, and `bash -n` is clean on the new fakes.
+
+### 3. Ship conntrack in cloud-init and document the agent step
+- In `relay/cloud-init.yaml.tftpl`:
+  - add the package `conntrack`;
+  - add `net.netfilter.nf_conntrack_acct=1` and `net.netfilter.nf_conntrack_timestamp=1` to `99-vipper.conf`, with an `nf_conntrack` module load so the sysctl applies at boot.
+- Update `render-template.sh` (package set; the size check stays green, see the open question).
+- In `relay/README.md`, update "What the agent does", the env list, the "conntrack needs a re-created VM, sysctl does not" note, and the tests list.
+- In CONTRACT:
+  - §6: the env vars `VIPPER_CONNTRACK` and `VIPPER_JOURNALCTL`;
+  - §7: a new step 10 "Flow log".
+- **Done when:** `bash relay/test/render-template.sh` passes, which includes the 64 KiB check, and `run-tests.sh` still passes.
+
+### 4. Ingest flow reports in the API with retention cap
+- New `apps/api/src/flows/` with:
+  - `flows.module.ts`, registered in `app.module.ts`;
+  - `flows.types.ts`;
+  - `flows.repository.ts` over `tables.metrics`: `fl:` hour partitions, upsert and merge, the `_count` cap via CAS, `pruneBefore(hour)`;
+  - `flows.service.ts`: `parseFlowReport` with index-prefixed `validation_failed` messages, device resolution by overlay IP from `DevicesService.all()`, and `ingest`;
+  - `relayFlows.controller.ts`: `@Controller('relay/flows')`, `@Post() @HttpCode(200) @Auth('relay')`.
+- Tests in `flows.service.test.ts` and `flows.repository.test.ts`:
+  - validation: every field, list caps, extra keys;
+  - device resolution, including the relay IP and unknown IPs;
+  - upsert keeps `firstSeen`;
+  - denied merge adds counts;
+  - **retention cap**: the 1,001st new row in an hour is ignored while updates still apply;
+  - **retention window**: rows older than 24 h are pruned and not read (`FakeClock.advanceMinutes`).
+- E2E: `POST /relay/flows` returns 401 without auth or with a Bearer token, 200 `{accepted, ignored}`, and 400 for a bad body.
+- In CONTRACT, add §3.3 `FlowReport`/`FlowSample`/`DeniedSample`, a §3.4 row, and a §4 metrics row `fl:<hour>` with retention and cap rules.
+- **Done when:** `pnpm --filter @vpn/api test` and `pnpm --filter @vpn/api typecheck` pass.
+
+### 5. Serve GET /flows and the CSV export
+- `flows.controller.ts` (`@Auth('user:admin')`): `GET /flows` and `GET /flows/export`, with filter parsing in the service. Rule number and comment come from `PolicyService`'s active version. `live` is computed, and `total`/`denied` counts are computed before `limit`.
+- CSV writer with quoting and formula-injection guard. Add `Content-Disposition` to CORS exposed headers in `app.setup.ts`.
+- Tests:
+  - every filter alone and combined;
+  - bad values give 400;
+  - default and max `limit`;
+  - newest first;
+  - merge across hour partitions;
+  - `live` flag;
+  - `ruleNumber`/`ruleComment` mapping, and null for mark 0;
+  - CSV header, quoting, the `=cmd` guard and headers;
+  - E2E: admin-only (non-admin gets 403, none gets 401) and a full round trip from `POST /relay/flows` to `GET /flows?result=denied` to `/flows/export`.
+- Add the CONTRACT §3.3 `Flow`/`FlowList` types and the §3.4 rows.
+- **Done when:** the API tests and typecheck pass.
+
+### 6. Verify end to end and open the PR
+- Run everything from a clean state: `pnpm --filter @vpn/api test`, `pnpm --filter @vpn/api typecheck`, `bash relay/test/run-tests.sh`, `bash relay/test/render-template.sh`.
+- Check that the request body the agent's `flows` scenario sends (saved from `/__calls`) also passes the API's `parseFlowReport`. Add a small vitest that loads the `relay/test` fixture output, or a JSON copy of it, into `parseFlowReport`, so agent and API cannot drift.
+- Check that every endpoint, type, table row, env var and agent step added is in `docs/CONTRACT.md`.
+- Push the branch and open a PR against `main`. Note that it supersedes #15, and list that the console Flows page is a follow-up. Do not merge and do not deploy.
+- **Done when:** all four commands pass, the drift test passes, and the PR URL is recorded.
+
+## Critical files
+apps/api/src/policy/policy.compiler.ts
+apps/api/src/policy/policy.compiler.test.ts
+apps/api/src/policy/policy.service.ts
+apps/api/src/policy/policy.service.test.ts
+apps/api/src/policy/relayPolicy.controller.ts
+apps/api/src/policy/__snapshots__/sample-flowlog.nft
+apps/api/src/flows/flows.module.ts
+apps/api/src/flows/flows.types.ts
+apps/api/src/flows/flows.repository.ts
+apps/api/src/flows/flows.repository.test.ts
+apps/api/src/flows/flows.service.ts
+apps/api/src/flows/flows.service.test.ts
+apps/api/src/flows/flows.controller.ts
+apps/api/src/flows/relayFlows.controller.ts
+apps/api/src/flows/flows.csv.ts
+apps/api/src/flows/flows.csv.test.ts
+apps/api/src/app.module.ts
+apps/api/src/app.setup.ts
+apps/api/src/app.e2e.test.ts
+docs/CONTRACT.md
+relay/vipper-relay-agent.sh
+relay/cloud-init.yaml.tftpl
+relay/README.md
+relay/test/run-tests.sh
+relay/test/assert-run.js
+relay/test/mock-api.js
+relay/test/policy-fixtures.js
+relay/test/render-template.sh
+relay/test/fake-conntrack.sh
+relay/test/fake-journalctl.sh
+relay/test/fixtures/conntrack-extended.txt
+relay/test/fixtures/journal-deny.txt
+
+## Out of scope
+- The console Flows page (`infrastructure-vpn-wt/console/web`). This is a separate card; it needs a screenshot command and mockup 06 comparison.
+- Terraform: no new table, and no live Azure.
+- Re-creating existing relay VMs to get the `conntrack` package.
+
+## Open question (owner)
+The agent will grow by roughly 3–4 KB, and `custom_data` has about 800 bytes left. The only fix so far, gz+b64 embedding (`7ed815c`), sits on the unpushed local branch `feat/finish-throughput-metrics-relay-reports`. That branch also claims agent 0.4.0. Options:
+- **(Recommended)** Run this card after that branch lands on `main`. Step 1 then starts from it, and the agent becomes 0.5.0.
+- Cherry-pick `7ed815c` into step 3 now. That means two branches carry the same change, and whichever merges second must resolve the conflict.
+- Keep the agent under the limit by trimming comments in the embedded script. This is fragile, and the next feature hits the limit again.
