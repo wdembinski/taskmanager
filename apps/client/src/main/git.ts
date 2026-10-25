@@ -243,6 +243,69 @@ export async function addWorktree(
   return git(repoDir, args, host);
 }
 
+/**
+ * Add a worktree at `worktreePath` with a DETACHED head at `sha` — the read-only checkout
+ * an AI review runs against (F16).
+ *
+ * Unlike {@link addWorktree} this creates no branch and moves no ref: nothing in
+ * `refs/heads` changes, and the main checkout's HEAD and index are untouched. Removing it
+ * again ({@link removeWorktree}) therefore leaves no trace in the repo at all.
+ */
+export async function addDetachedWorktree(
+  repoDir: string,
+  worktreePath: string,
+  sha: string,
+  host?: ExecHost,
+): Promise<GitResult> {
+  return git(repoDir, ['worktree', 'add', '--detach', worktreePath, sha], host);
+}
+
+/** One record of `git worktree list --porcelain`. */
+export interface WorktreeEntry {
+  /** As git prints it — forward slashes even on Windows (`C:/Users/…`). */
+  path: string;
+  /** The checked-out commit; `''` for a bare repo, which has none. */
+  head: string;
+  detached: boolean;
+  /** Short name (`refs/heads/` stripped), or null when detached or bare. */
+  branch: string | null;
+}
+
+/**
+ * Parse `git worktree list --porcelain` — pure, so the record shapes can be checked without a
+ * repository. Records are separated by a blank line; each opens with `worktree <path>`,
+ * followed by `HEAD <sha>` and then `branch refs/heads/<name>` or `detached` (a bare repo has
+ * only `bare`). Other attribute lines (`locked`, `prunable`, …) are ignored.
+ */
+export function parseWorktreeList(stdout: string): WorktreeEntry[] {
+  const entries: WorktreeEntry[] = [];
+  for (const block of stdout.replace(/\r\n/g, '\n').split(/\n\s*\n/)) {
+    let entry: WorktreeEntry | null = null;
+    for (const line of block.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        entry = { path: line.slice('worktree '.length), head: '', detached: false, branch: null };
+      } else if (!entry) {
+        continue;
+      } else if (line.startsWith('HEAD ')) {
+        entry.head = line.slice('HEAD '.length).trim();
+      } else if (line.startsWith('branch ')) {
+        const ref = line.slice('branch '.length).trim();
+        entry.branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+      } else if (line.trim() === 'detached') {
+        entry.detached = true;
+      }
+    }
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
+/** Every worktree git knows for `repoDir`, the main checkout first. Empty on error. */
+export async function listWorktrees(repoDir: string, host?: ExecHost): Promise<WorktreeEntry[]> {
+  const res = await git(repoDir, ['worktree', 'list', '--porcelain'], host);
+  return res.code === 0 ? parseWorktreeList(res.stdout) : [];
+}
+
 /** Remove a worktree (force, so a dirty/locked one still detaches). Prunes admin files. */
 export async function removeWorktree(
   repoDir: string,

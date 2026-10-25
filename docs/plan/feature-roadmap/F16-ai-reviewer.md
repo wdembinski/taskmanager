@@ -345,7 +345,7 @@ debugging. A review is kept with its drafts and deleted when its subject's draft
   - Acceptance: verified with the drop-column + electron-as-node recipe (memory
     *the-store-has-no-tests*); round-trip tests of the pure row mapping.
 
-- [ ] F16.7 Manage detached review worktrees with a boot sweep
+- [x] F16.7 Manage detached review worktrees with a boot sweep
 
   - Add `addDetachedWorktree(repo, path, sha)` to `git.ts`, and
     `apps/client/src/main/review/reviewWorktrees.ts` (create under

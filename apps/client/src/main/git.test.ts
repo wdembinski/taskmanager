@@ -7,11 +7,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // duration is a function of how loaded the machine is rather than of anything under test.
 // `worktreeManager.test.ts` carries the same line for the same reason.
 vi.setConfig({ testTimeout: 30_000 });
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   abortRebase,
+  addDetachedWorktree,
   addWorktree,
   branchCommitMessages,
   changedInBranch,
@@ -33,9 +41,11 @@ import {
   isRepo,
   listBranches,
   listRemotes,
+  listWorktrees,
   mergeBase,
   mergeFfOnly,
   parsePorcelainPaths,
+  parseWorktreeList,
   pushBranch,
   rebasingBranch,
   rebaseOnto,
@@ -976,6 +986,101 @@ describe('git helpers — fetching a ref and pushing with a lease', () => {
         }
       });
     });
+  });
+});
+
+/**
+ * A DETACHED worktree at a fixed SHA — the read-only checkout an AI review runs against
+ * (F16.7). The whole point is that it leaves the repo exactly as it found it.
+ */
+describe('git helpers — a detached review worktree', () => {
+  /** Compare paths the way git prints them (forward slashes) against a native one. */
+  const norm = (p: string) => realpathSync.native(p).replace(/\\/g, '/').toLowerCase();
+
+  it('checks out the SHA with no branch, moving no ref and leaving the main checkout alone', async () => {
+    const first = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+    await commitFile(repo, 'b.txt', 'second\n', 'second');
+    const mainHead = (await git(repo, ['rev-parse', 'HEAD'])).stdout.trim();
+    const branches = await listBranches(repo);
+
+    const wt = join(repo, '..', `wt-detached-${Date.now()}`);
+    try {
+      expect((await addDetachedWorktree(repo, wt, first)).code).toBe(0);
+
+      expect((await git(wt, ['rev-parse', 'HEAD'])).stdout.trim()).toBe(first);
+      expect(await currentBranch(wt)).toBe('');
+      expect(await listBranches(repo)).toEqual(branches);
+      expect((await git(repo, ['rev-parse', 'HEAD'])).stdout.trim()).toBe(mainHead);
+      expect(await currentBranch(repo)).toBe(base);
+      expect(await isClean(repo)).toBe(true);
+
+      const listed = await listWorktrees(repo);
+      expect(listed).toHaveLength(2);
+      expect(norm(listed[0].path)).toBe(norm(repo));
+      expect(listed[0]).toMatchObject({ head: mainHead, detached: false, branch: base });
+      const mine = listed.find((w) => norm(w.path) === norm(wt));
+      expect(mine).toEqual({ path: mine?.path, head: first, detached: true, branch: null });
+
+      expect((await removeWorktree(repo, wt)).code).toBe(0);
+      expect(await listWorktrees(repo)).toHaveLength(1);
+      expect(await listBranches(repo)).toEqual(branches);
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
+  });
+
+  it('lists nothing for a folder that is not a repo', async () => {
+    const plain = mkdtempSync(join(tmpdir(), 'orch-plain-'));
+    try {
+      expect(await listWorktrees(plain)).toEqual([]);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('parseWorktreeList', () => {
+  it('reads a branch record, a detached record and a bare record', () => {
+    const out = [
+      'worktree /srv/bare.git',
+      'bare',
+      '',
+      'worktree C:/Users/me/repo',
+      'HEAD 1111111111111111111111111111111111111111',
+      'branch refs/heads/main',
+      '',
+      'worktree C:/Users/me/review/r1',
+      'HEAD 2222222222222222222222222222222222222222',
+      'detached',
+      'locked',
+      '',
+    ].join('\n');
+    expect(parseWorktreeList(out)).toEqual([
+      { path: '/srv/bare.git', head: '', detached: false, branch: null },
+      {
+        path: 'C:/Users/me/repo',
+        head: '1111111111111111111111111111111111111111',
+        detached: false,
+        branch: 'main',
+      },
+      {
+        path: 'C:/Users/me/review/r1',
+        head: '2222222222222222222222222222222222222222',
+        detached: true,
+        branch: null,
+      },
+    ]);
+  });
+
+  it('keeps a path with spaces, a slashed branch name, and CRLF line ends', () => {
+    const out = 'worktree /home/me/my repo\r\nHEAD abc\r\nbranch refs/heads/orch/feature-x\r\n\r\n';
+    expect(parseWorktreeList(out)).toEqual([
+      { path: '/home/me/my repo', head: 'abc', detached: false, branch: 'orch/feature-x' },
+    ]);
+  });
+
+  it('answers nothing for empty output', () => {
+    expect(parseWorktreeList('')).toEqual([]);
   });
 });
 
