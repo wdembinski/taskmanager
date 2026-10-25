@@ -880,6 +880,35 @@ export interface ReviewPermissionSink {
   onDenied(denial: ReviewToolDenial): void;
 }
 
+/**
+ * What an AI review's `result` says about the account (F16.9), from {@link
+ * Scheduler.classifyReviewWall}:
+ *
+ *  - `signin` / `limit` — an account-wide wall; the review parks behind that gate with
+ *    {@link Scheduler.parkReview}.
+ *  - `gate: null` — the CLI named a usage limit, but `/usage` says the account has budget
+ *    left. The task path asks a human at this point; nobody watches a review, so the runner
+ *    ends it `failed` with `reason` instead.
+ */
+export type ReviewWall =
+  | { gate: 'signin'; reason: string }
+  | { gate: 'limit'; reason: string; signal: LimitSignal }
+  | { gate: null; reason: string };
+
+/**
+ * A wall {@link Scheduler.parkReview} can park behind. A limit's `signal` may be left off
+ * when the gate is already up — the start-time park and a re-park — because the gate
+ * already knows when it resumes.
+ */
+export type ReviewPark =
+  { gate: 'signin'; reason: string } | { gate: 'limit'; reason?: string; signal?: LimitSignal };
+
+/** The runner's side of a review park — see {@link Scheduler.setReviewParkHandler}. */
+export interface ReviewParkHandler {
+  /** These parked reviews' gate lifted: restart each one from scratch. */
+  resume(reviewIds: string[]): void;
+}
+
 /** Bookkeeping for one task the scheduler currently has a session running for. */
 interface Run {
   taskId: string;
@@ -1642,6 +1671,14 @@ export class Scheduler {
    * undefined in tests, which is simply "no reading" and exercises the floor above.
    */
   private readUsage?: () => Promise<CliUsageReading | null>;
+  /** The review runner's resume hook (F16.9) — see {@link Scheduler.setReviewParkHandler}. */
+  private reviewParkHandler?: ReviewParkHandler;
+  /**
+   * Parked reviews whose gate lifted before any {@link reviewParkHandler} was set — at boot,
+   * `restoreLimitGate` can resume a gate before the runner exists. Handed over, once, when
+   * the handler is set: the gate already forgot these ids, so this is their only memory.
+   */
+  private readonly pendingReviewResumes: string[] = [];
 
   constructor(
     private readonly store: Store,
@@ -1788,6 +1825,19 @@ export class Scheduler {
    */
   setUsageProbe(read: () => Promise<CliUsageReading | null>): void {
     this.readUsage = read;
+  }
+
+  /**
+   * Wire the AI review runner's resume hook (F16.9). A setter for the same reason as
+   * {@link Scheduler.setUsageProbe}. Both gates call it with their `parkedReviewIds` as they
+   * lift; the runner re-checks {@link Scheduler.reviewBlockers} and re-parks behind whichever
+   * gate is still up, so neither resume path hands reviews to the other gate itself. Ids that
+   * lifted before this was called are handed over now.
+   */
+  setReviewParkHandler(handler: ReviewParkHandler): void {
+    this.reviewParkHandler = handler;
+    if (this.pendingReviewResumes.length === 0) return;
+    handler.resume(this.pendingReviewResumes.splice(0));
   }
 
   /** Wire the "these branches are mid-merge" notifier (see {@link Scheduler.integrating}). */
@@ -2698,6 +2748,11 @@ export class Scheduler {
    * Registered in `auxRuns`, so `stop(projectId)` and `dispose()` reach it. Usage and cost
    * are recorded as `'orchestrator'` against the subject's card, when it has one (F16.10
    * gives reviews a source of their own). Answers `{ runId: '' }` once disposed.
+   *
+   * A blocking `rate-limit` event parks the review (F16.9): the limit gate is raised with
+   * the review in it, every task run is parked beside it — the wall is the account's — and
+   * `onParked` gets the reason the row shows. Once per session; the runner settles and stops
+   * it from there.
    */
   startReviewSession(
     projectId: string,
@@ -2708,11 +2763,13 @@ export class Scheduler {
       onDenied(denial: ReviewToolDenial): void;
       onResult(event: Extract<SessionEvent, { kind: 'result' }>): void;
       onExit(): void;
+      onParked?(reason: string): void;
     },
   ): { runId: string } {
     if (this.disposed) return { runId: '' };
     const runId = randomUUID();
     const taskId = handlers.taskId ?? null;
+    let parked = false;
     this.registerReviewRun(runId, { reviewId, onDenied: (d) => handlers.onDenied(d) });
     this.auxRuns.set(runId, projectId);
     this.sessions.start(request, {
@@ -2720,6 +2777,18 @@ export class Scheduler {
       onEvent: (event) => {
         if (event.kind === 'usage') {
           this.recordUsage('orchestrator', projectId, taskId, runId, event);
+        } else if (event.kind === 'rate-limit') {
+          // Recorded whatever its status, as the task path does, so the dashboard's pressure
+          // read and the next text-only limit's reset fallback both see it.
+          const signal: LimitSignal = {
+            status: event.status,
+            rateLimitType: event.rateLimitType,
+            resetsAt: event.resetsAt,
+          };
+          this.lastRateLimit = signal;
+          if (parked || this.disposed || !isBlockingLimitStatus(event.status)) return;
+          parked = true;
+          handlers.onParked?.(this.parkReview(reviewId, { gate: 'limit', signal }));
         } else if (event.kind === 'result') {
           this.recordCost('orchestrator', projectId, taskId, runId, event.costUsd);
           handlers.onResult(event);
@@ -2751,8 +2820,10 @@ export class Scheduler {
 
   /**
    * What would stop an AI review from running right now: the usage-limit gate's and the
-   * sign-in gate's reasons, each null while that gate is down. F16.8 refuses on either;
-   * F16.9 parks the review behind it instead.
+   * sign-in gate's reasons, each null while that gate is down. A review started behind
+   * either is parked in that gate ({@link Scheduler.parkReview}) rather than refused, and
+   * the same strings are what a parked review's row shows. A gate that is lifting reads as
+   * down here: both null their state before `onResumeDue`.
    */
   reviewBlockers(): { limit: string | null; signin: string | null } {
     const limit = this.limitGate.state;
@@ -2763,6 +2834,94 @@ export class Scheduler {
         : null,
       signin: auth ? auth.reason || 'Claude Code is signed out' : null,
     };
+  }
+
+  /**
+   * Read an AI review's `result` for an account-wide wall (F16.9) — the same ladder the
+   * task path in `onRunEvent`'s `result` case climbs, minus the park itself, so the runner
+   * can re-check `settled` after the probe and before anything is engaged.
+   *
+   * Sign-in first (only on a failure), then the limit: held in {@link probingLimit} while
+   * `/usage` is asked, decided by `decideLimitPark` over the review's own text-park count
+   * (keyed `review:<id>`), and given the last `rate_limit_event`'s reset when the text named
+   * none. Null when the result shows no wall — including every successful one.
+   */
+  async classifyReviewWall(
+    reviewId: string,
+    event: Extract<SessionEvent, { kind: 'result' }>,
+  ): Promise<ReviewWall | null> {
+    const authReason = event.success ? null : detectAuthFailure(event);
+    if (authReason !== null) return { gate: 'signin', reason: authReason };
+    const limit = detectLimitFailure(event);
+    if (limit === null) return null;
+    const key = `review:${reviewId}`;
+    // Hold FIRST — synchronously, before the probe can yield — then confirm.
+    this.probingLimit.add(key);
+    const reading = this.readUsage ? await this.probeUsage() : null;
+    this.probingLimit.delete(key);
+    if (this.disposed) return null;
+    const parks = this.limitTextParks.get(key) ?? 0;
+    if (decideLimitPark(limit, reading, parks) === 'ask') {
+      this.limitTextParks.set(key, parks + 1);
+      return {
+        gate: null,
+        reason:
+          'the session reported a usage limit, but /usage shows budget left' +
+          (event.resultText?.trim() ? `: ${event.resultText.trim()}` : ''),
+      };
+    }
+    // Only a guess repeats itself — see the task path.
+    if (limit.tier === 'epoch' || reading !== null) this.limitTextParks.delete(key);
+    else this.limitTextParks.set(key, parks + 1);
+    const resetsAt = limit.resetsAt ?? this.lastRateLimit?.resetsAt ?? null;
+    const signal: LimitSignal = {
+      status: limit.status,
+      rateLimitType: limit.rateLimitType,
+      resetsAt,
+    };
+    this.lastRateLimit = { ...signal };
+    const resets = resetsAt ? ` — resets at ${new Date(resetsAt * 1000).toLocaleTimeString()}` : '';
+    return { gate: 'limit', reason: `usage limit reached${resets}`, signal };
+  }
+
+  /**
+   * Park an AI review behind an account-wide wall (F16.9) and answer the reason its row
+   * shows, worded as {@link reviewBlockers} words it.
+   *
+   * A gate that is down is raised with the review in it, and — the wall being the
+   * account's, not the review's — every task run is parked beside it, exactly as a task's
+   * own wall would. A gate already up (a review started behind it, or re-parked as the
+   * other gate lifted) just takes the id.
+   */
+  parkReview(reviewId: string, wall: ReviewPark): string {
+    if (wall.gate === 'signin') {
+      if (this.authGate.active) this.authGate.parkReviews([reviewId]);
+      else this.engageAuthFailure(null, wall.reason, [reviewId]);
+      return this.reviewBlockers().signin ?? wall.reason;
+    }
+    if (this.limitGate.active) {
+      this.limitGate.parkReviews([reviewId]);
+    } else {
+      // No signal only on a path that expected the gate up; the conservative fallback is
+      // the last one the CLI sent, else a rolling window's default wait.
+      const last = this.lastRateLimit;
+      this.engageLimit(
+        wall.signal ?? {
+          status: 'rejected',
+          rateLimitType: last?.rateLimitType ?? 'five_hour',
+          resetsAt: last?.resetsAt ?? null,
+        },
+        undefined,
+        [reviewId],
+      );
+    }
+    return this.reviewBlockers().limit ?? wall.reason ?? 'usage limit reached';
+  }
+
+  /** Take a parked review out of both gates — it was cancelled, or is being restarted. */
+  unparkReview(reviewId: string): void {
+    this.limitGate.unparkReviews([reviewId]);
+    this.authGate.unparkReviews([reviewId]);
   }
 
   /**
@@ -5704,7 +5863,7 @@ export class Scheduler {
    * limit would be the one run the gate never parked — left `running` behind a gate that
    * has no memory of it, which is the exact shape of card that never comes back.
    */
-  private engageLimit(signal: LimitSignal, failing?: Run): void {
+  private engageLimit(signal: LimitSignal, failing?: Run, reviewIds: readonly string[] = []): void {
     // Account-wide: park EVERY in-flight run, not only the one that hit the wall.
     const live = [...this.runs.values()];
     const active = failing && !this.runs.has(failing.runId) ? [failing, ...live] : live;
@@ -5716,9 +5875,12 @@ export class Scheduler {
     // draining into a standing wall re-enters here on every attempt, and only a task the
     // gate did NOT already hold gets a `parked` row.
     const alreadyParked = new Set(this.limitGate.state?.parkedTaskIds ?? []);
+    // An AI review that hit the wall (F16.9) is parked in the same engage; it is not a
+    // `Run`, so nothing below touches it — its runner settles and stops it.
     this.limitGate.engage(
       signal,
       active.map((r) => r.taskId),
+      reviewIds,
     );
     // What each of these runs IS, written down before the runs themselves are thrown away.
     // The gate remembers tasks, and a task cannot say whether it was releasing merged work
@@ -5880,6 +6042,9 @@ export class Scheduler {
           this.updateTask(taskId, { status: 'pending' }, null);
       }
       this.authGate.park(state.parkedTaskIds);
+      // Reviews are NOT handed over here: the runner re-checks `reviewBlockers()` and
+      // re-parks each one behind the sign-in gate itself.
+      this.resumeReviews(state.parkedReviewIds ?? []);
       return;
     }
     /** Cards that yielded to their chain above — advanced after the loop, once per card. */
@@ -5975,6 +6140,8 @@ export class Scheduler {
     }
     // Slots may have freed without a parked task — nudge every active queue.
     for (const projectId of this.activeProjects) this.pump(projectId);
+    // Parked AI reviews restart from scratch in their runner (F16.9).
+    this.resumeReviews(state.parkedReviewIds ?? []);
     // LAST, and that is the whole of its correctness: by now everything the gate parked has
     // re-reserved its slot and every queue has been pumped, so the chain sees those cards as
     // in flight and cannot start one a second time.
@@ -6011,8 +6178,16 @@ export class Scheduler {
    * and inventing an eighth status to mean the same thing would cost a migration, a board
    * column, a colour and five status maps to say something the banner says better once.
    * What makes it honest is the note: each card's timeline records why it stopped.
+   *
+   * `failing` is null when an AI review proved it (F16.9): the review is parked by id in
+   * `reviewIds`, and every task run is still parked beside it — the credential is the
+   * account's.
    */
-  private engageAuthFailure(failing: Run, reason: string): void {
+  private engageAuthFailure(
+    failing: Run | null,
+    reason: string,
+    reviewIds: readonly string[] = [],
+  ): void {
     const casualties = [...this.runs.values()];
     // Only the FIRST failure gets the timeline entries. The queue drains into this wall
     // within seconds, and one note per card per attempt would bury the run's real history.
@@ -6020,15 +6195,21 @@ export class Scheduler {
     // Snapshotted before `engage`, exactly as `engageLimit` does — only a task the gate did
     // NOT already hold gets a `parked` row (F2.7).
     const alreadyParked = new Set(this.authGate.state?.parkedTaskIds ?? []);
-    this.authGate.engage(reason, [failing.taskId, ...casualties.map((r) => r.taskId)]);
+    const failingRuns = failing ? [failing] : [];
+    this.authGate.engage(
+      reason,
+      [...failingRuns, ...casualties].map((r) => r.taskId),
+      reviewIds,
+    );
     // The same as the limit's, and including `failing` for the same reason the gate's own
     // parked set does: a run whose `exited` has already removed it from `runs` is still a
     // run this gate is holding, and it is the one that proved the credential is dead.
-    this.recordParkedRuns([failing, ...casualties]);
+    this.recordParkedRuns([...failingRuns, ...casualties]);
     // `failing` deduplicated against `casualties` the same way `engageLimit`'s `active` is:
     // if its own `exited` has already removed it from `runs` it is not among them, and the
     // run that PROVED the credential is dead still needs its `parked` row.
-    const parkedRuns = this.runs.has(failing.runId) ? casualties : [failing, ...casualties];
+    const parkedRuns =
+      !failing || this.runs.has(failing.runId) ? casualties : [failing, ...casualties];
     for (const run of parkedRuns) {
       if (!alreadyParked.has(run.taskId)) {
         this.recordParked({
@@ -6046,7 +6227,7 @@ export class Scheduler {
       // A question or a permission dies with its process; a parked failure or conflict
       // outlives it (see `OUTLIVES_ITS_RUN`) and is left exactly where it was.
       this.clearRunAttention(run.runId);
-      if (run.runId !== failing.runId) this.sessions.stop(run.runId);
+      if (run.runId !== failing?.runId) this.sessions.stop(run.runId);
       this.updateTask(run.taskId, { status: 'pending' }, null);
       if (first) {
         this.noteRun(
@@ -6133,9 +6314,25 @@ export class Scheduler {
       this.advanceSubtasks(parentId);
     }
     for (const projectId of this.activeProjects) this.pump(projectId);
+    this.resumeReviews(state.parkedReviewIds ?? []);
     // Last, for the reason `resumeParked` documents at length: by now everything the gate
     // held has re-reserved its slot, so the chain cannot start one of them a second time.
     this.chain.reconsider('limit-lifted');
+  }
+
+  /**
+   * Hand a lifted gate's parked reviews to the runner's {@link ReviewParkHandler}, or buffer
+   * them in {@link pendingReviewResumes} until one is set — the gate has already dropped them.
+   */
+  private resumeReviews(reviewIds: readonly string[]): void {
+    if (reviewIds.length === 0) return;
+    if (this.reviewParkHandler) {
+      this.reviewParkHandler.resume([...reviewIds]);
+      return;
+    }
+    for (const id of reviewIds) {
+      if (!this.pendingReviewResumes.includes(id)) this.pendingReviewResumes.push(id);
+    }
   }
 
   /** Persist the gate (so a limit survives a restart) and mirror it to the UI. */
