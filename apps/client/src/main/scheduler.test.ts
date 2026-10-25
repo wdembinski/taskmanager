@@ -1805,6 +1805,27 @@ describe('Scheduler.startReviewSession (the AI reviewer, F16.8)', () => {
     expect(result).toEqual({ behavior: 'deny', message: 'unknown session' });
   });
 
+  it('parks itself in the limit gate on a blocking rate-limit event, once', () => {
+    const h = makeScheduler();
+    const onParked = vi.fn();
+    h.scheduler.startReviewSession('p', 'r1', request, { ...h.handlers, onParked });
+    h.emit({
+      kind: 'rate-limit',
+      status: 'allowed_warning',
+      rateLimitType: 'five_hour',
+      resetsAt: null,
+    });
+    expect(onParked).not.toHaveBeenCalled();
+    expect(h.scheduler.currentLimit()).toBeNull();
+
+    h.emit({ kind: 'rate-limit', status: 'rejected', rateLimitType: 'five_hour', resetsAt: null });
+    h.emit({ kind: 'rate-limit', status: 'rejected', rateLimitType: 'five_hour', resetsAt: null });
+    expect(onParked).toHaveBeenCalledTimes(1);
+    expect(onParked).toHaveBeenCalledWith(expect.stringMatching(/^usage limit reached/));
+    expect(h.scheduler.currentLimit()?.parkedReviewIds).toEqual(['r1']);
+    h.scheduler.dispose();
+  });
+
   it('reports no blockers with both gates down, and the limit once it is engaged', () => {
     expect(makeScheduler().scheduler.reviewBlockers()).toEqual({ limit: null, signin: null });
     const h = makeScheduler({
@@ -2362,6 +2383,138 @@ describe('Scheduler run-failure handling', () => {
     // The UI was told to go and read it again, with no runId (the run is over).
     const announced = emitTask.mock.calls.map(([change]) => change as { task: Task; runId: null });
     expect(announced.some((c) => c.task.id === 't1' && c.runId === null)).toBe(true);
+  });
+
+  /**
+   * F16.9: an AI review's `result` is read for the same two account-wide walls, and a wall
+   * parks the review in the gate — beside every task run, because the wall is the account's.
+   */
+  describe('an AI review behind a wall (F16.9)', () => {
+    const reviewResult = (resultText: string, success = false) =>
+      ({ ...failResult, success, resultText, usage: null }) as never;
+
+    it('classifies a sign-in failure as the sign-in wall', async () => {
+      const { scheduler } = setup(1);
+      const wall = await scheduler.classifyReviewWall(
+        'rv1',
+        reviewResult('Failed to authenticate: token expired'),
+      );
+      expect(wall).toEqual({ gate: 'signin', reason: expect.any(String) });
+    });
+
+    it('classifies an epoch-stamped limit as the limit wall, with its reset', async () => {
+      const { scheduler } = setup(1);
+      const wall = await scheduler.classifyReviewWall(
+        'rv1',
+        reviewResult('Claude AI usage limit reached|1761400000'),
+      );
+      expect(wall).toMatchObject({ gate: 'limit', signal: { resetsAt: 1761400000 } });
+    });
+
+    it('believes a limit said only in prose when there is no probe to ask', async () => {
+      const { scheduler } = setup(1);
+      const wall = await scheduler.classifyReviewWall(
+        'rv1',
+        reviewResult('Claude AI usage limit reached'),
+      );
+      expect(wall?.gate).toBe('limit');
+      // Nothing was engaged: the park is the caller's to make, after it re-checks `settled`.
+      expect(scheduler.currentLimit()).toBeNull();
+      const held = (scheduler as unknown as { probingLimit: Set<string> }).probingLimit;
+      expect(held.size).toBe(0);
+    });
+
+    it('answers no gate for a prose limit /usage contradicts', async () => {
+      const { scheduler } = setup(1);
+      scheduler.setUsageProbe(() => Promise.resolve({ sessionPct: 20, weeklyPct: 3 }));
+      const wall = await scheduler.classifyReviewWall(
+        'rv1',
+        reviewResult('Claude AI usage limit reached'),
+      );
+      expect(wall).toEqual({ gate: null, reason: expect.stringMatching(/usage/) });
+    });
+
+    it('finds no wall in a successful result', async () => {
+      const { scheduler } = setup(1);
+      expect(
+        await scheduler.classifyReviewWall(
+          'rv1',
+          reviewResult('Claude AI usage limit reached', true),
+        ),
+      ).toBeNull();
+    });
+
+    it('parks the review in the limit gate and parks the live task run as well', async () => {
+      const { scheduler, task } = setup(1);
+      const wall = await scheduler.classifyReviewWall(
+        'rv1',
+        reviewResult('Claude AI usage limit reached|1761400000'),
+      );
+      const reason = scheduler.parkReview('rv1', wall as never);
+      expect(reason).toMatch(/^usage limit reached — resumes at /);
+      expect(scheduler.currentLimit()).toMatchObject({
+        parkedTaskIds: ['t1'],
+        parkedReviewIds: ['rv1'],
+      });
+      expect(task.status).toBe('blocked-by-limit');
+      // A second review behind the standing gate just joins it.
+      scheduler.parkReview('rv2', { gate: 'limit' });
+      expect(scheduler.currentLimit()?.parkedReviewIds).toEqual(['rv1', 'rv2']);
+      scheduler.unparkReview('rv1');
+      expect(scheduler.currentLimit()?.parkedReviewIds).toEqual(['rv2']);
+      scheduler.dispose();
+    });
+
+    it('parks the review in the sign-in gate and parks the live task run as well', () => {
+      const { scheduler, task } = setup(1);
+      const reason = scheduler.parkReview('rv1', { gate: 'signin', reason: 'token expired' });
+      expect(reason).toBe('token expired');
+      expect(scheduler.currentAuth()).toMatchObject({
+        parkedTaskIds: ['t1'],
+        parkedReviewIds: ['rv1'],
+      });
+      expect(task.status).toBe('pending');
+    });
+
+    it('hands the parked reviews to the resume handler as each gate lifts', () => {
+      const { scheduler } = setup(1);
+      const resume = vi.fn();
+      scheduler.setReviewParkHandler({ resume });
+      scheduler.parkReview('rv1', { gate: 'limit' });
+      scheduler.resumeLimitNow();
+      expect(resume).toHaveBeenCalledWith(['rv1']);
+
+      resume.mockClear();
+      scheduler.parkReview('rv2', { gate: 'signin', reason: 'token expired' });
+      scheduler.signedIn();
+      expect(resume).toHaveBeenCalledWith(['rv2']);
+    });
+
+    it('buffers the ids until a handler is set, and hands them over once', () => {
+      const { scheduler } = setup(1);
+      scheduler.parkReview('rv1', { gate: 'limit' });
+      scheduler.resumeLimitNow(); // the gate forgets rv1 here — nothing is listening yet
+      expect(scheduler.currentLimit()).toBeNull();
+
+      const resume = vi.fn();
+      scheduler.setReviewParkHandler({ resume });
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(resume).toHaveBeenCalledWith(['rv1']);
+      scheduler.setReviewParkHandler({ resume });
+      expect(resume).toHaveBeenCalledTimes(1);
+    });
+
+    it('hands limit-parked reviews to the runner even when the sign-in gate is still up', () => {
+      const { scheduler } = setup(1);
+      const resume = vi.fn();
+      scheduler.setReviewParkHandler({ resume });
+      scheduler.parkReview('rv1', { gate: 'limit' });
+      scheduler.parkReview('rv2', { gate: 'signin', reason: 'token expired' });
+      scheduler.resumeLimitNow();
+      // The runner re-checks `reviewBlockers()` and re-parks rv1 behind sign-in itself.
+      expect(resume).toHaveBeenCalledWith(['rv1']);
+      expect(scheduler.currentAuth()?.parkedReviewIds).toEqual(['rv2']);
+    });
   });
 });
 

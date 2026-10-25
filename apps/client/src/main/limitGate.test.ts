@@ -392,6 +392,79 @@ describe('LimitGate', () => {
     expect(h.gate.active).toBe(true);
   });
 
+  it('engage() parks reviews alongside tasks, and a merge keeps both sets', () => {
+    const h = harness(0);
+    h.gate.engage(rolling, ['t1'], ['r1']);
+    expect(h.gate.state).toMatchObject({ parkedTaskIds: ['t1'], parkedReviewIds: ['r1'] });
+    h.gate.engage(
+      { status: 'rejected', rateLimitType: 'weekly', resetsAt: 500 },
+      ['t2'],
+      ['r1', 'r2'],
+    );
+    expect(h.gate.state!.parkedTaskIds).toEqual(['t1', 't2']);
+    expect(h.gate.state!.parkedReviewIds).toEqual(['r1', 'r2']);
+    // A merge that brings no reviews must not drop the ones already parked.
+    h.gate.engage(rolling, ['t3']);
+    expect(h.gate.state!.parkedReviewIds).toEqual(['r1', 'r2']);
+  });
+
+  it('engage() with no reviews leaves the field off the state entirely', () => {
+    const h = harness(0);
+    expect(h.gate.engage(rolling, ['t1'])).not.toHaveProperty('parkedReviewIds');
+    expect(h.gate.engage(rolling, ['t2'], [])).not.toHaveProperty('parkedReviewIds');
+  });
+
+  it('parkReviews()/unparkReviews() add and drop reviews, persisting only real changes', () => {
+    const h = harness(0);
+    h.gate.engage(rolling, ['t1']);
+    const before = h.changes.length;
+    expect(h.gate.parkReviews(['r1', 'r1'])).toEqual(['r1']);
+    expect(h.gate.state!.parkedReviewIds).toEqual(['r1']);
+    expect(h.changes.at(-1)).toEqual(h.gate.state);
+    expect(h.gate.parkReviews(['r1'])).toEqual([]);
+    h.gate.unparkReviews(['nope']);
+    expect(h.changes).toHaveLength(before + 1); // neither no-op persisted
+    h.gate.unparkReviews(['r1']);
+    expect(h.gate.state).not.toHaveProperty('parkedReviewIds');
+    expect(h.gate.state!.parkedTaskIds).toEqual(['t1']);
+    expect(h.gate.active).toBe(true);
+    expect(h.changes).toHaveLength(before + 2);
+  });
+
+  it('parkReviews()/unparkReviews() are no-ops with no gate up', () => {
+    const h = harness(0);
+    expect(h.gate.parkReviews(['r1'])).toEqual([]);
+    h.gate.unparkReviews(['r1']);
+    expect(h.gate.active).toBe(false);
+    expect(h.changes).toEqual([]);
+  });
+
+  it('hands the parked reviews to onResumeDue at the reset and on resumeNow()', () => {
+    const h = harness(0);
+    h.gate.engage(rolling, ['t1'], ['r1']);
+    h.advanceTo(100_000);
+    expect(h.resumed[0].parkedReviewIds).toEqual(['r1']);
+
+    h.gate.engage(rolling, [], ['r2']);
+    h.gate.resumeNow();
+    expect(h.resumed[1].parkedReviewIds).toEqual(['r2']);
+  });
+
+  it('restores and fires a gate saved before F16.9, with no review field', () => {
+    const legacy: LimitState = {
+      limitType: 'rolling',
+      resetsAt: 100,
+      resumeAt: 100_000,
+      parkedTaskIds: ['t1'],
+    };
+    const h = harness(200_000);
+    h.gate.restore(legacy);
+    expect(h.gate.parkReviews([])).toEqual([]);
+    h.advanceTo(200_000);
+    expect(h.resumed).toEqual([legacy]);
+    expect(h.resumed[0].parkedReviewIds).toBeUndefined();
+  });
+
   it('dispose() cancels the timer and never resumes', () => {
     const h = harness(0);
     h.gate.engage(rolling, ['t1']);

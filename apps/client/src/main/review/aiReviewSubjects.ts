@@ -38,8 +38,7 @@ export type AiReviewRefusalCode =
   | 'duplicate'
   | 'already-reviewed'
   | 'card-running'
-  | 'sandbox-unsupported'
-  | 'gate-up';
+  | 'sandbox-unsupported';
 
 /** A refused start: no review row is created. `reason` is shown as the button's tooltip. */
 export interface AiReviewRefusal {

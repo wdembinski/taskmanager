@@ -188,4 +188,66 @@ describe('AuthGate', () => {
     expect(g.state).toEqual({ ...saved, source: 'restored' });
     expect(onChanged).toHaveBeenCalledWith(g.state);
   });
+
+  it('parks reviews alongside tasks, and a later engage keeps both sets', () => {
+    const { g } = gate();
+    g.engage('OAuth session expired', ['t1'], ['r1']);
+    const state = g.engage('401 Unauthorized', ['t2'], ['r1', 'r2']);
+    expect(state.reason).toBe('OAuth session expired');
+    expect(state.parkedTaskIds).toEqual(['t1', 't2']);
+    expect(state.parkedReviewIds).toEqual(['r1', 'r2']);
+    // A merge that brings no reviews must not drop the ones already parked.
+    expect(g.engage('x', ['t3']).parkedReviewIds).toEqual(['r1', 'r2']);
+  });
+
+  it('leaves the review field off a gate that parked no review', () => {
+    const { g } = gate();
+    expect(g.engage('OAuth session expired', ['t1'], [])).not.toHaveProperty('parkedReviewIds');
+  });
+
+  it('parkReviews()/unparkReviews() add and drop reviews, persisting only real changes', () => {
+    const { g, onChanged } = gate();
+    g.engage('OAuth session expired', ['t1']);
+    onChanged.mockClear();
+    expect(g.parkReviews(['r1', 'r1'])).toEqual(['r1']);
+    expect(g.state?.parkedReviewIds).toEqual(['r1']);
+    expect(onChanged).toHaveBeenLastCalledWith(g.state);
+    expect(g.parkReviews(['r1'])).toEqual([]);
+    g.unparkReviews(['nope']);
+    expect(onChanged).toHaveBeenCalledTimes(1); // neither no-op persisted
+    g.unparkReviews(['r1']);
+    expect(g.state).not.toHaveProperty('parkedReviewIds');
+    expect(g.state?.parkedTaskIds).toEqual(['t1']);
+    expect(g.active).toBe(true);
+    expect(onChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it('parkReviews()/unparkReviews() are no-ops with no gate up', () => {
+    const { g, onChanged } = gate();
+    expect(g.parkReviews(['r1'])).toEqual([]);
+    g.unparkReviews(['r1']);
+    expect(g.active).toBe(false);
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('hands the parked reviews to onResumeDue when it lifts', () => {
+    const { g, onResumeDue } = gate();
+    g.engage('OAuth session expired', ['t1'], ['r1']);
+    g.lift();
+    expect(onResumeDue.mock.calls[0][0].parkedReviewIds).toEqual(['r1']);
+  });
+
+  it('restores and lifts a gate saved before F16.9, with no review field', () => {
+    const { g, onResumeDue } = gate();
+    const legacy: AuthState = {
+      since: 5,
+      reason: 'OAuth session expired',
+      source: 'run',
+      parkedTaskIds: ['t1'],
+    };
+    g.restore(legacy);
+    g.lift();
+    expect(onResumeDue).toHaveBeenCalledWith({ ...legacy, source: 'restored' });
+    expect(onResumeDue.mock.calls[0][0].parkedReviewIds).toBeUndefined();
+  });
 });
