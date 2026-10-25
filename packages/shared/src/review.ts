@@ -169,12 +169,13 @@ export const WORKTREE_CAPABILITIES: ReviewCapabilities = {
 
 /**
  * `local-ref`'s capabilities: the diff comes from a clone of the project, so context can
- * still be expanded, but there is no worktree (F16) to run an AI reviewer in and no agent
- * to send a review to. Publishing is possible because a PR/MR already exists on the forge.
+ * still be expanded, and an AI reviewer can run in a detached worktree of that clone (F16.7).
+ * There is no agent to send a review to. Publishing is possible because a PR/MR already
+ * exists on the forge.
  */
 export const LOCAL_REF_CAPABILITIES: ReviewCapabilities = {
   expandContext: true,
-  aiReview: false,
+  aiReview: true,
   sendToAgent: false,
   publish: true,
 };

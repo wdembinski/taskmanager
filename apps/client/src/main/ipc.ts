@@ -259,6 +259,9 @@ import {
 import { attachmentFile } from './attachmentPaths';
 import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { ReviewWorktrees } from './review/reviewWorktrees';
+import { AiReviewRunner } from './review/aiReviewRunner';
+import { AiReviewSubjects } from './review/aiReviewSubjects';
+import { probeClaudeCapabilities } from './claudeCapabilities';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
@@ -483,6 +486,9 @@ export interface Engine {
   /** The three review queues (F15.9) — its own 5-minute timer, `stop()`ped like every other
    *  one here. */
   reviewQueueService: ReviewQueueService;
+  /** The AI review runner (F16.8) — disposed BEFORE the scheduler, which still owns the
+   *  review sessions it has to stop. */
+  aiReviews: AiReviewRunner;
 }
 
 /**
@@ -609,7 +615,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   // run settles — but a crash or a quit mid-review settles nothing, and leaves the checkout
   // behind. Nothing is live at boot (stale `running` reviews were already failed, F16.6), so
   // one pass removes every review worktree there is. Not awaited, like the sweeps above.
-  // `reviewWorktrees` stays in scope: the review runner (F16.8) creates and removes through it.
+  // The AI review runner (F16.8, constructed further down) creates and removes through it.
   const reviewWorktrees = new ReviewWorktrees(join(userData, 'review-worktrees'));
   void reviewWorktrees
     .sweep(store.listProjects())
@@ -2486,6 +2492,27 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     store,
     hostFor: (provider) => hostOf(forgeBaseUrl(provider, store.getSettings())),
   });
+
+  // --- AI review (F16.8) -------------------------------------------------------
+  // The engine only: F16.11 registers the aiReview channels and points `emitChanged` at the
+  // renderer push once that event has its `IpcEvents` entry and relay classification.
+  const aiReviews = new AiReviewRunner({
+    store,
+    scheduler,
+    worktrees: reviewWorktrees,
+    subjects: new AiReviewSubjects({
+      store,
+      diffs,
+      subjects: reviewSubjects,
+      hostFor: (project) => hostFor(project.target),
+      cardWorktree: async (project, ownerTaskId, branch) =>
+        (await worktrees.inspect(project, ownerTaskId, branch))?.cwd ?? null,
+    }),
+    probe: (project) => probeClaudeCapabilities(hostFor(project.target)),
+    emitChanged: (review) =>
+      logMain(`AI review ${review.id} (${review.subjectId}): ${review.status}`),
+  });
+
   const reviewHandlers = createReviewHandlers({
     subjects: reviewSubjects,
     queues: reviewQueueService,
@@ -6491,5 +6518,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     windowTracker,
     stopAutoArchiveSweep,
     reviewQueueService,
+    aiReviews,
   };
 }

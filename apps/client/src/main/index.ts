@@ -394,6 +394,8 @@ app.on('before-quit', () => {
           { name: 'focusTracker', run: () => live.focusTracker.dispose() },
           { name: 'claudeUsagePoller', run: () => live.claudeUsagePoller.dispose() },
           { name: 'watcher', run: () => live.watcher.dispose() },
+          // Before the scheduler: cancelling a live review stops its session through it.
+          { name: 'aiReviews', run: () => live.aiReviews.dispose() },
           { name: 'scheduler', run: () => live.scheduler.dispose() },
           { name: 'sessions', run: () => live.sessions.stopAll() },
           { name: 'broker', run: () => live.broker.close() },

@@ -1958,6 +1958,7 @@ export class Scheduler {
       if (pid !== projectId) continue;
       this.sessions.stop(runId);
       this.auxRuns.delete(runId);
+      this.unregisterReviewRun(runId); // an AI review run (F16.8); a no-op for any other
     }
     // If a usage limit has parked this project's tasks (Phase 5), stopping cancels
     // them too, so they are NOT resumed when the gate reopens.
@@ -2679,6 +2680,89 @@ export class Scheduler {
    */
   unregisterReviewRun(runId: string): void {
     this.reviewRuns.delete(runId);
+  }
+
+  /**
+   * Start one AI review session (F16.8) — a sibling of {@link startAuxiliarySession} with
+   * three differences that all follow from the review being unattended and read-only:
+   *
+   *  - The runId is RESERVED and registered with {@link registerReviewRun} BEFORE the
+   *    process starts, so the very first tool use already meets the deny-only review policy
+   *    rather than failing as an unknown session.
+   *  - It runs gated (`permission: this.gate`), as a task run does — that is how the review
+   *    policy is consulted at all.
+   *  - It is NOT stopped on `result`. A reply with broken JSON earns one repair turn through
+   *    {@link sendToReviewSession}, and that needs the session still open; the runner ends it
+   *    with {@link stopReviewSession} once it has settled.
+   *
+   * Registered in `auxRuns`, so `stop(projectId)` and `dispose()` reach it. Usage and cost
+   * are recorded as `'orchestrator'` against the subject's card, when it has one (F16.10
+   * gives reviews a source of their own). Answers `{ runId: '' }` once disposed.
+   */
+  startReviewSession(
+    projectId: string,
+    reviewId: string,
+    request: StartSessionRequest,
+    handlers: {
+      taskId?: string | null;
+      onDenied(denial: ReviewToolDenial): void;
+      onResult(event: Extract<SessionEvent, { kind: 'result' }>): void;
+      onExit(): void;
+    },
+  ): { runId: string } {
+    if (this.disposed) return { runId: '' };
+    const runId = randomUUID();
+    const taskId = handlers.taskId ?? null;
+    this.registerReviewRun(runId, { reviewId, onDenied: (d) => handlers.onDenied(d) });
+    this.auxRuns.set(runId, projectId);
+    this.sessions.start(request, {
+      runId,
+      onEvent: (event) => {
+        if (event.kind === 'usage') {
+          this.recordUsage('orchestrator', projectId, taskId, runId, event);
+        } else if (event.kind === 'result') {
+          this.recordCost('orchestrator', projectId, taskId, runId, event.costUsd);
+          handlers.onResult(event);
+        } else if (event.kind === 'exited') {
+          this.auxRuns.delete(runId);
+          this.unregisterReviewRun(runId);
+          handlers.onExit();
+        }
+      },
+      permission: this.gate ?? undefined,
+      host: hostFor(this.store.getProject(projectId)?.target),
+    });
+    return { runId };
+  }
+
+  /** Push a follow-up turn (the repair turn) into a live {@link startReviewSession} run. */
+  sendToReviewSession(runId: string, text: string): void {
+    if (!this.auxRuns.has(runId)) return;
+    this.sessions.send(runId, text);
+  }
+
+  /** End a {@link startReviewSession} run — a no-op for the session, once it has ended. */
+  stopReviewSession(runId: string): void {
+    this.unregisterReviewRun(runId);
+    if (!this.auxRuns.has(runId)) return;
+    this.auxRuns.delete(runId);
+    this.sessions.stop(runId);
+  }
+
+  /**
+   * What would stop an AI review from running right now: the usage-limit gate's and the
+   * sign-in gate's reasons, each null while that gate is down. F16.8 refuses on either;
+   * F16.9 parks the review behind it instead.
+   */
+  reviewBlockers(): { limit: string | null; signin: string | null } {
+    const limit = this.limitGate.state;
+    const auth = this.authGate.state;
+    return {
+      limit: limit
+        ? `usage limit reached — resumes at ${new Date(limit.resumeAt).toLocaleTimeString()}`
+        : null,
+      signin: auth ? auth.reason || 'Claude Code is signed out' : null,
+    };
   }
 
   /**
