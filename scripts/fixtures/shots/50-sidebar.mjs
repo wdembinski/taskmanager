@@ -40,18 +40,23 @@ export const MILESTONES = [shippedMilestone, mixedMilestone, pendingMilestone, e
 const sidebarShippedTicket = sidebarTicket({
   id: 'sb-1',
   title: 'Ship the Nordic locale pack',
+  // An owner for the board's initials circle (`boardShotsFixture.mjs`'s `PEOPLE`) — no epic,
+  // which would regroup this tree.
+  assigneeId: 'person-ola',
   status: 'done',
   milestoneId: shippedMilestone.id,
 });
 const sidebarMixedPending = sidebarTicket({
   id: 'sb-2',
   title: 'Wire the mobile build pipeline',
+  assigneeId: 'person-marek',
   status: 'pending',
   milestoneId: mixedMilestone.id,
 });
 const sidebarMixedDone = sidebarTicket({
   id: 'sb-3',
   title: 'Audit the mobile bundle size',
+  assigneeId: 'person-ania',
   status: 'done',
   milestoneId: mixedMilestone.id,
 });
@@ -80,6 +85,7 @@ const sidebarMixedEpic = sidebarTicket({
 const sidebarMixedEpicChildA = sidebarTicket({
   id: 'sb-7-a',
   title: 'Ship the dark palette',
+  assigneeId: 'person-marek',
   status: 'done',
   epicTaskId: sidebarMixedEpic.id,
   milestoneId: mixedMilestone.id,
@@ -87,6 +93,7 @@ const sidebarMixedEpicChildA = sidebarTicket({
 const sidebarMixedEpicChildB = sidebarTicket({
   id: 'sb-7-b',
   title: 'Retire the legacy tokens',
+  assigneeId: 'person-ania',
   status: 'done',
   epicTaskId: sidebarMixedEpic.id,
   milestoneId: mixedMilestone.id,
@@ -94,12 +101,14 @@ const sidebarMixedEpicChildB = sidebarTicket({
 const sidebarPendingA = sidebarTicket({
   id: 'sb-5',
   title: 'Draft the early-access invite flow',
+  assigneeId: 'person-ola',
   status: 'pending',
   milestoneId: pendingMilestone.id,
 });
 const sidebarPendingB = sidebarTicket({
   id: 'sb-6',
   title: 'Spec the invite quota limits',
+  assigneeId: 'person-human',
   status: 'pending',
   milestoneId: pendingMilestone.id,
 });

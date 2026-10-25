@@ -120,6 +120,41 @@ export function keyColumnWidth(keys: readonly string[]): string {
   return longest <= KEY_COLUMN_FIT ? '52px' : `calc(${longest}ch + 4px)`;
 }
 
+/** A list's tickets and merge requests, indexed once so each row reads its own slice. */
+export interface IssueRowIndex {
+  /** parent id → its steps (`parentTaskId`), in list order. */
+  subtasksByParent: ReadonlyMap<string, Task[]>;
+  /** task id → its merge requests. An MR with no `taskId` is an orphan and dropped. */
+  mergeRequestsByTask: ReadonlyMap<string, MergeRequest[]>;
+}
+
+function groupBy<T>(items: readonly T[], keyOf: (item: T) => string | null | undefined) {
+  const map = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyOf(item);
+    if (!key) continue;
+    const list = map.get(key);
+    if (list) list.push(item);
+    else map.set(key, [item]);
+  }
+  return map;
+}
+
+/**
+ * The board's own scoping (`MyTasks.tsx`'s subtasks filter and `mrsByTask`), built once per
+ * list rather than per row, so a list can hand `IssueRowContext` the same `subtasks` and
+ * `mergeRequests` a card gets.
+ */
+export function indexIssueRows(
+  tickets: readonly Task[],
+  mergeRequests: readonly MergeRequest[],
+): IssueRowIndex {
+  return {
+    subtasksByParent: groupBy(tickets, (t) => t.parentTaskId),
+    mergeRequestsByTask: groupBy(mergeRequests, (mr) => mr.taskId),
+  };
+}
+
 /**
  * Which optional parts this row draws. Priority and `issueType` never produce a part —
  * neither is read here at all.

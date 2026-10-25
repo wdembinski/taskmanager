@@ -35,7 +35,8 @@ const R = (SIZE - STROKE) / 2;
 const CIRCUMFERENCE = 2 * Math.PI * R;
 
 const useStyles = makeStyles({
-  item: { display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 },
+  // Centred on its own: the status bar aligns its row on the text baseline, and a ring has none.
+  item: { display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0, alignSelf: 'center' },
   /**
    * The ring inherits the bar's own colour rather than naming one. The status bar turns
    * orange the moment something wants a human, and anything with a fixed white or blue of

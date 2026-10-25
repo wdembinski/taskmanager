@@ -39,9 +39,9 @@ import {
   BranchRegular,
   ChevronDownRegular,
   ChevronRightRegular,
-  DesktopRegular,
   FlagRegular,
   FolderRegular,
+  LaptopRegular,
   MailInboxRegular,
   TaskListSquareLtrRegular,
   TicketDiagonalRegular,
@@ -52,7 +52,12 @@ import { useGlobalShortcut } from '../palette/shortcut';
 import { shortcutLabel } from '../palette/shortcutLabel';
 import { issueTypeGlyph } from '../projects/issueTypeGlyph';
 import { STATUS_LABEL } from '../taskStatus';
-import type { SidebarSection, SidebarTreeNode, SidebarView as ViewRow } from './sidebarModel';
+import type {
+  SidebarSection,
+  SidebarTreeNode,
+  SidebarView as ViewRow,
+  SidebarWorkspace,
+} from './sidebarModel';
 import { flattenVisible, treeKeyReducer, type TreeKeyState } from './sidebarTree';
 import type { TrackerProjectOption } from './useTrackerProject';
 
@@ -118,8 +123,10 @@ const useStyles = makeStyles({
     padding: '4px 12px 12px',
     color: 'var(--tm-text)',
   },
+  workspaceText: { display: 'flex', flexDirection: 'column', minWidth: 0 },
   workspaceName: { fontWeight: tokens.fontWeightSemibold },
-  workspaceSub: { color: 'var(--tm-text-muted)' },
+  /** v9-1's 10.5px muted line — "Cloud" or "Local". */
+  workspaceSub: { color: 'var(--tm-text-muted)', fontSize: '10.5px', lineHeight: '14px' },
   scroll: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
   section: { display: 'flex', flexDirection: 'column', padding: '2px 8px' },
   row: {
@@ -427,17 +434,9 @@ export function Sidebar({
   return (
     <nav className={styles.root} aria-label="Sidebar">
       {workspace?.kind === 'workspace' && (
-        <div className={styles.workspace}>
-          <DesktopRegular />
-          <div>
-            <div className={styles.workspaceName}>
-              <Body1>
-                {workspace.workspaces.find((w) => w.id === workspace.activeWorkspaceId)?.name ??
-                  'This machine'}
-              </Body1>
-            </div>
-          </div>
-        </div>
+        <WorkspaceHeader
+          active={workspace.workspaces.find((w) => w.id === workspace.activeWorkspaceId)}
+        />
       )}
 
       <div className={styles.scroll}>
@@ -580,9 +579,6 @@ export function Sidebar({
                         <span className={styles.chevronPlaceholder} />
                       )}
                       {treeIcon(node, styles)}
-                      {node.ticketKey && (
-                        <Caption1 className={styles.rowCount}>{node.ticketKey}</Caption1>
-                      )}
                       <span
                         className={mergeClasses(
                           styles.rowLabel,
@@ -650,7 +646,7 @@ export function Sidebar({
                   aria-current={selected || undefined}
                   onClick={() => onNavigate({ kind: 'machineProject', projectId: project.id })}
                 >
-                  <DesktopRegular />
+                  <LaptopRegular />
                   <span
                     className={mergeClasses(styles.rowLabel, selected && styles.rowLabelSelected)}
                   >
@@ -668,6 +664,21 @@ export function Sidebar({
         <NewIssueFooter shortcut={newIssue.shortcut} onNewIssue={onNewIssue} />
       )}
     </nav>
+  );
+}
+
+/** The workspace header: the cloud team or "Personal", over its "Cloud"/"Local" line. Only
+ *  the `machine` section below still says "This machine". */
+function WorkspaceHeader({ active }: { active: SidebarWorkspace | undefined }): JSX.Element {
+  const styles = useStyles();
+  return (
+    <div className={styles.workspace}>
+      <LaptopRegular />
+      <div className={styles.workspaceText}>
+        <Body1 className={styles.workspaceName}>{active?.name ?? 'Personal'}</Body1>
+        {active?.sub && <span className={styles.workspaceSub}>{active.sub}</span>}
+      </div>
+    </div>
   );
 }
 

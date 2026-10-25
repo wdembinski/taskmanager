@@ -224,6 +224,9 @@ const useStyles = makeStyles({
     overflow: 'hidden',
     overflowWrap: 'anywhere',
   },
+  /** A Done card's title steps back (mockup v9-7) — finished work stays legible but stops
+   *  competing with the cards still in motion. The key and footer keep their own colours. */
+  titleDone: { color: 'var(--tm-text-muted)' },
   /** The "×N" a leader wears once it has started variants (F10.5) — monochrome: how many
    *  rows exist is a standing fact about the card, not something in motion. */
   variantBadge: {
@@ -1138,7 +1141,14 @@ export function TaskCard({
         </div>
 
         <div className={styles.titleRow}>
-          <Text className={styles.title}>{task.title}</Text>
+          <Text
+            className={mergeClasses(
+              styles.title,
+              restingStatus(task) === 'done' && styles.titleDone,
+            )}
+          >
+            {task.title}
+          </Text>
         </div>
 
         {parts.statusLine && (

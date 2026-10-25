@@ -83,24 +83,62 @@ export const PEOPLE = [
     isMe: false,
     createdAt: now,
   },
+  // Three more humans so the board reads like a team's (mockup v9-7): most cards wear an
+  // initials circle at the top right, in a handful of distinct colours.
+  {
+    id: 'person-ania',
+    name: 'Ania Kowalska',
+    email: '',
+    initials: 'AK',
+    color: '#0F6CBD',
+    isMe: false,
+    createdAt: now,
+  },
+  {
+    id: 'person-marek',
+    name: 'Marek Zieliński',
+    email: '',
+    initials: 'MZ',
+    color: '#C239B3',
+    isMe: false,
+    createdAt: now,
+  },
+  {
+    id: 'person-ola',
+    name: 'Ola Wiśniewska',
+    email: '',
+    initials: 'OW',
+    color: '#13A10E',
+    isMe: false,
+    createdAt: now,
+  },
 ];
+
+/** The two epics the board's footers name: `epicCard` below (a native epic, resolved through
+ *  `epicTaskId`), and a mirrored tracker epic carried by name alone (`externalEpicName`). */
+const EPIC_TRACKER = 'Linear sync';
 
 // --- Backlog ---------------------------------------------------------------------------
 const plainBacklog = task({
   id: '1',
   title: 'Command palette actions for every issue field',
   order: 0,
+  assigneeId: 'person-ania',
+  epicTaskId: 'epic',
 });
 const dueToday = task({
   id: '9',
   title: 'Renew the usage-limit banner copy',
   order: 1,
+  assigneeId: 'person-marek',
   dueDate: now,
 });
 const dueFuture = task({
   id: '10',
   title: 'Publish a local workspace to the cloud',
   order: 2,
+  assigneeId: 'person-ola',
+  epicTaskId: 'epic',
   dueDate: now + 10 * DAY,
 });
 const trackerUnread = task({
@@ -114,6 +152,7 @@ const trackerUnread = task({
   externalType: 'Bug',
   latestCommentAt: now - 60_000,
   lastReadCommentAt: now - 2 * DAY,
+  externalEpicName: EPIC_TRACKER,
 });
 const epicCard = task({
   id: 'epic',
@@ -126,9 +165,15 @@ const epicChild = task({
   id: '11',
   title: 'Nordic theme tokens',
   order: 5,
+  assigneeId: 'person-marek',
   epicTaskId: epicCard.id,
 });
-const shelved = task({ id: '16', title: 'Audit the automation retry budget', order: 6 });
+const shelved = task({
+  id: '16',
+  title: 'Audit the automation retry budget',
+  order: 6,
+  assigneeId: 'person-ola',
+});
 
 // --- Todo --------------------------------------------------------------------------------
 const humanAssignee = task({
@@ -141,24 +186,35 @@ const chainWaitingPredecessor = task({
   id: '13a',
   title: 'Wire the retry queue to the dashboard',
   order: 1,
+  assigneeId: 'person-ania',
   status: 'in-progress',
 });
 const chainWaitingSuccessor = task({
   id: '13b',
   title: 'Surface the retry queue in the detail pane',
   order: 2,
+  assigneeId: 'person-ania',
+  externalEpicName: EPIC_TRACKER,
 });
 const chainReadyPredecessor = task({
   id: '14a',
   title: 'Draft the rollout checklist',
   order: 1,
+  assigneeId: 'person-ola',
+  epicTaskId: 'epic',
   status: 'done',
 });
-const chainReadySuccessor = task({ id: '14b', title: 'Publish the release notes', order: 3 });
+const chainReadySuccessor = task({
+  id: '14b',
+  title: 'Publish the release notes',
+  order: 3,
+  assigneeId: 'person-marek',
+});
 const variantsLeader = task({
   id: '15',
   title: 'Spike the GraphQL batching approach',
   order: 4,
+  assigneeId: 'person-human',
   pickedVariantId: null,
 });
 const variantRowA = task({
@@ -187,6 +243,7 @@ const agentRunningParent = task({
   // The status bar's branch segment (mockup v9-7): with nothing selected it names the
   // most recently started running task's card — `3-s2` below, newer than `sb-4`.
   agentBranch: 'tm-71-linear-identifiers',
+  externalEpicName: EPIC_TRACKER,
 });
 const agentRunningSteps = [
   task({
@@ -242,12 +299,15 @@ const mrChangesRequestedCard = task({
   id: '6',
   title: 'Send review comments back to the agent',
   order: 0,
+  assigneeId: 'person-marek',
   status: 'in-review',
 });
 const mrApprovedCard = task({
   id: '7',
   title: 'Approve the schema migration PR',
   order: 1,
+  assigneeId: 'person-ania',
+  epicTaskId: 'epic',
   status: 'in-review',
 });
 
@@ -256,6 +316,8 @@ const mrMergedCard = task({
   id: '8',
   title: 'Reconcile Linear issues onto the board',
   order: 0,
+  assigneeId: 'person-human',
+  externalEpicName: EPIC_TRACKER,
   status: 'done',
 });
 

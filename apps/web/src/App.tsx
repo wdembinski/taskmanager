@@ -531,8 +531,9 @@ function SignedInBoardView({
           // desktop shell applies (`apps/client/src/renderer/src/App.tsx`'s own `padded`).
           // Left unset here, every one of them (Projects' tabs, the Archived title, Settings,
           // …) sat flush against the rail and the top edge instead of getting the inset the
-          // desktop and the mockups both draw.
-          padded={screen !== 'mytasks'}
+          // desktop and the mockups both draw. Tickets and Settings are the exceptions here
+          // as there: their cards lay out their own 10px canvas inset.
+          padded={screen !== 'mytasks' && screen !== 'tickets' && screen !== 'settings'}
           banners={
             // The shell's own banner strip, which is where the desktop's outage bars go too —
             // above the screen rather than inside it, so the board below is the board and

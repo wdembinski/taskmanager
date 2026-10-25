@@ -56,6 +56,7 @@ import { TaskDetailHost } from '../TaskDetailHostView';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
 import { IssueFullPage, IssuePeek } from '../issues/IssueViewPanes';
+import { GlassPane } from '../shell/GlassPane';
 import {
   INITIAL_ISSUE_VIEW,
   isKeyTargetEditable,
@@ -73,8 +74,28 @@ import { useProjectTickets } from './useProjectTickets';
 import { useTicketRegistries } from './useTicketRegistries';
 
 const useStyles = makeStyles({
-  root: { display: 'flex', gap: '20px', minHeight: 0, height: '100%' },
-  backlog: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '10px' },
+  /** The tinted canvas the cards stand on (v9-1/v9-3): a 10px inset all round — the shell
+   *  gives this tab no padding of its own — and the same 10px between the list and the peek. */
+  root: {
+    display: 'flex',
+    gap: '10px',
+    minHeight: 0,
+    height: '100%',
+    boxSizing: 'border-box',
+    padding: '10px',
+  },
+  /** The list's own card — a `GlassPane`, like the peek beside it. */
+  backlog: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '10px',
+    overflow: 'hidden',
+    boxSizing: 'border-box',
+    padding: '12px 16px',
+  },
   header: { display: 'flex', alignItems: 'center', gap: '4px' },
   title: {
     fontSize: tokens.fontSizeBase500,
@@ -380,7 +401,7 @@ export function Projects({
 
   return (
     <div className={styles.root} onKeyDown={onKeyDown}>
-      <div className={styles.backlog}>
+      <GlassPane className={styles.backlog}>
         <div className={styles.header}>
           <Text as="h2" className={styles.title}>
             Issues
@@ -536,7 +557,7 @@ export function Projects({
             )}
           </>
         )}
-      </div>
+      </GlassPane>
 
       {viewState.layout === 'peek' && viewState.selectedId && (
         <IssuePeek

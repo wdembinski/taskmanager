@@ -18,7 +18,7 @@
  * Start) stay reachable under a "More fields" fold at the bottom.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Body1, Caption1, Link, Text, makeStyles, tokens } from '@fluentui/react-components';
+import { Body1, Caption1, Text, makeStyles, tokens } from '@fluentui/react-components';
 import { FlagRegular, PersonRegular } from '@fluentui/react-icons';
 import { columnForTask } from '@tm/shared/board';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
@@ -85,8 +85,16 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     gap: '2px',
   },
-  /** An icon and the text beside it — the icon on the first line when the text wraps. */
-  value: { display: 'inline-flex', alignItems: 'flex-start', gap: '6px', minWidth: 0 },
+  /** An icon and the text beside it, on one line — the column is 300px, as v9-2 draws it. */
+  value: {
+    display: 'inline-flex',
+    alignItems: 'flex-start',
+    gap: '6px',
+    minWidth: 0,
+    maxWidth: '100%',
+  },
+  /** The value's text: one line, cut with an ellipsis; its `title` carries the whole. */
+  valueText: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
   icon: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -106,11 +114,29 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground1,
     font: 'inherit',
     maxWidth: '100%',
+    minWidth: 0,
+    display: 'flex',
     ':focus-visible': { outline: `2px solid ${tokens.colorStrokeFocus2}`, borderRadius: '2px' },
   },
   empty: { color: tokens.colorNeutralForeground3 },
-  links: { display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' },
-  linkKey: { marginRight: '6px', color: tokens.colorNeutralForeground3 },
+  /**
+   * Blocked by reads as text, not a link — v9-2 draws a muted key and a plain title. The
+   * Links section below still opens the card.
+   */
+  links: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 },
+  blocker: {
+    lineHeight: tokens.lineHeightBase300,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  blockerKey: {
+    marginRight: '6px',
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    fontSize: '11.5px',
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+  },
+  blockerTitle: { fontSize: '12.5px', color: tokens.colorNeutralForeground1 },
   error: { color: tokens.colorPaletteRedForeground1 },
   more: { display: 'flex', flexDirection: 'column', gap: '8px' },
 });
@@ -137,7 +163,6 @@ export interface IssuePropertiesProps {
   onEdited?: () => void;
   /** The model for the next run — `null` hands the card back to its project's models. */
   onModelChange: (model: ClaudeModel | null) => void;
-  onOpenTask?: (taskId: string) => void;
   /** Which editor is open on first render — for the render test, which cannot click. */
   defaultEditing?: PropertyEditor | null;
 }
@@ -158,7 +183,6 @@ export function IssueProperties({
   onStatusSet,
   onEdited,
   onModelChange,
-  onOpenTask,
   defaultEditing = null,
 }: IssuePropertiesProps): JSX.Element {
   const styles = useStyles();
@@ -323,10 +347,15 @@ export function IssueProperties({
       return (
         <div className={styles.links}>
           {row.blockedBy.map((card) => (
-            <Link key={card.taskId} onClick={() => onOpenTask?.(card.taskId)}>
-              {card.key && <span className={styles.linkKey}>{card.key}</span>}
-              {card.title}
-            </Link>
+            <span
+              key={card.taskId}
+              className={styles.blocker}
+              title={card.key ? `${card.key} ${card.title}` : card.title}
+              data-blocked-by={card.taskId}
+            >
+              {card.key && <span className={styles.blockerKey}>{card.key}</span>}
+              <span className={styles.blockerTitle}>{card.title}</span>
+            </span>
           ))}
         </div>
       );
@@ -336,7 +365,12 @@ export function IssueProperties({
     const text = (
       <span className={styles.value}>
         {icon}
-        <Body1 className={empty ? styles.empty : undefined}>{row.value}</Body1>
+        <Body1
+          className={`${styles.valueText} ${empty ? styles.empty : ''}`}
+          title={row.value ?? undefined}
+        >
+          {row.value}
+        </Body1>
       </span>
     );
     if (!row.editor) return text;

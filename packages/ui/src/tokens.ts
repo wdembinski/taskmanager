@@ -36,6 +36,9 @@ export interface RunTokens {
   ink: string;
   /** The pill behind {@link RunTokens.ink}. */
   pill: string;
+  /** The 6px dot before the pill's label — the mockups' brighter cyan in light, the ink
+   *  itself in dark (v9-1, v9-3). */
+  dot: string;
 }
 
 export interface FluoPalette {
@@ -307,8 +310,10 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     attentionInk: '#1b1b1b',
     attentionTint: ATTENTION_TINT_BY_SCHEME.light,
     run: {
-      ink: '#07748C',
+      // v9-1's own pill ink and dot.
+      ink: '#06606F',
       pill: '#E6FAFE',
+      dot: '#0BA5C2',
     },
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.light,
@@ -350,6 +355,7 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     run: {
       ink: '#22E4FF',
       pill: 'rgba(34, 228, 255, 0.12)',
+      dot: '#22E4FF',
     },
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.dark,

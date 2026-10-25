@@ -105,6 +105,10 @@ const FULL_OVERRIDES = {
  * The dates come from the real `Date.now()`, not the fixture's fixed `now`: `BacklogTable`
  * reads "today" off the browser's own clock, so a date taken from the fixture's 2026-01-15
  * would always draw as overdue.
+ *
+ * The run pill and the PR refs need nothing extra here: the base `board:tasks` already carries
+ * FX-3's four steps (`3-s1`…`3-s4`, step 2 running — "Step 2 of 4"), and the base
+ * `mr:mergeRequests` already holds `!190`/`!191` on the In Review rows `'6'`/`'7'`.
  */
 const LIST_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
   t.id === '3'
@@ -157,18 +161,17 @@ export default [
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    // The Links section sits below the visual sign-off band, past the pane's fold; the scroll
-    // targets the section's own box (the parent of its "Blocked by" group) rather than the
-    // group itself, so `block: 'start'` keeps the "Links" heading in frame. That band
-    // (`TaskDetail.tsx`'s `cell`) never shrinks: once it and `headBand` outgrow the pane
-    // the region above the composer scrolls instead, so the heading and its rows show in
-    // full.
-    setup: [
-      { click: 'Tickets' },
-      { click: 'issue-row:first' },
-      { scrollToSelector: 'div:has(> [data-links-blocked-by])' },
-    ],
+    // The pane as it opens, not scrolled: the decision banner sits fixed above `body`
+    // (`TaskDetail.tsx`), so the row once scrolled to the Links section drew the title row
+    // and the details band scrolled out of sight under it, which read as the banner painting
+    // over them. `layoutCheck` holds the title row in full and clear of the banner. The Links
+    // section past the fold is `issue-peek-1100x800`'s own `layoutCheck`.
+    setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
     expect: '[data-decision-banner]',
+    layoutCheck: {
+      visible: '[data-title-row]',
+      clear: ['[data-decision-banner]'],
+    },
     mockup: 'v9-2-issue-detail-light.svg',
     channelOverrides: {
       'board:tasks': DECISION_TASKS,
