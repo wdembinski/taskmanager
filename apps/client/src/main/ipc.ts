@@ -258,6 +258,7 @@ import {
 } from './attachments';
 import { attachmentFile } from './attachmentPaths';
 import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
+import { ReviewWorktrees } from './review/reviewWorktrees';
 import { collectUploads } from './uploadedAttachments';
 import type { ServiceSyncState, SyncServiceId, SyncState } from '@shared/sync';
 import { hostFor, listWslDistros, readinessFor, statusForTargets } from './exec';
@@ -603,6 +604,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   // same backstop as the attachment sweep just above and for the same reason. Not awaited,
   // for the same reason too.
   void sweepPasteTemp().catch((e) => logMain('Sweeping pasted-file temp files failed', e));
+
+  // An AI review checks its subject out into a detached worktree of its own, removed when the
+  // run settles — but a crash or a quit mid-review settles nothing, and leaves the checkout
+  // behind. Nothing is live at boot (stale `running` reviews were already failed, F16.6), so
+  // one pass removes every review worktree there is. Not awaited, like the sweeps above.
+  // `reviewWorktrees` stays in scope: the review runner (F16.8) creates and removes through it.
+  const reviewWorktrees = new ReviewWorktrees(join(userData, 'review-worktrees'));
+  void reviewWorktrees
+    .sweep(store.listProjects())
+    .then(({ failed }) => {
+      if (failed.length === 0) return;
+      logMain(
+        `Review worktrees left behind:\n${failed.map((f) => `  ${f.path}: ${f.why}`).join('\n')}`,
+      );
+    })
+    .catch((e) => logMain('Sweeping review worktrees failed', e));
 
   // A card taken off the board keeps its row forever unless something eventually lets go, and
   // "forever" is the wrong answer for a board that removes cards every sync. So one pass at
