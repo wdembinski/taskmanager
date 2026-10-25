@@ -40,6 +40,7 @@ import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import { GATE_TRUST_ACTION } from '@shared/workflow';
 import { createActivityRecorder } from './activityRecorder';
 import { gateCommandHash } from './gateTrust';
+import type { ReviewToolDenial } from './permissionPolicy';
 import { BaseMovedConflictError } from './forge/createPr';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
@@ -675,6 +676,128 @@ describe('Scheduler.decidePermission — full auto (bypassPermissions)', () => {
         expect(result.message).toContain('→ SQLite');
       });
     });
+  });
+});
+
+describe('Scheduler.decidePermission — AI review runs (F16.5)', () => {
+  /**
+   * Same shape as the full-auto block's `makeScheduler`, but `run1` is registered as a
+   * REVIEW run, and the project is `bypassPermissions` — so an allow here could only come
+   * from the review policy, never from the task shortcut. `task1` is an ordinary task run
+   * beside it.
+   */
+  function makeScheduler() {
+    const project = { id: 'p', defaultPermissionMode: 'bypassPermissions' } as Project;
+    const task = { id: 'task', projectId: 'p', title: 'x' } as Task;
+    const emitAttention = vi.fn();
+    const store = {
+      getProject: (id: string) => (id === 'p' ? project : undefined),
+      getTask: (id: string) => (id === 'task' ? task : undefined),
+      updateTask: (_id: string, patch: Partial<Task>) => ({ ...task, ...patch }),
+      getSettings: () => ({ limitJitterMs: 0 }),
+      appendTaskEvent: vi.fn(),
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    const sessions = { send: vi.fn() } as unknown as SessionManager;
+    const scheduler = new Scheduler(
+      store,
+      sessions,
+      vi.fn(),
+      vi.fn(),
+      emitAttention,
+      vi.fn(),
+      vi.fn(),
+    );
+    (scheduler as unknown as { runs: Map<string, unknown> }).runs.set('task1', {
+      taskId: 'task',
+      projectId: 'p',
+      runId: 'task1',
+      settled: false,
+    });
+    const sink = { reviewId: 'review-1', onDenied: vi.fn() };
+    scheduler.registerReviewRun('run1', sink);
+    return { scheduler, emitAttention, sink };
+  }
+
+  it('allows a read-only git command, untouched, without recording anything', async () => {
+    const { scheduler, emitAttention, sink } = makeScheduler();
+    const input = { command: 'git log --oneline -5' };
+    const result = await scheduler.decidePermission({ runId: 'run1', toolName: 'Bash', input });
+    expect(result).toEqual({ behavior: 'allow', updatedInput: input });
+    expect(sink.onDenied).not.toHaveBeenCalled();
+    expect(emitAttention).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Edit', { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' }, 'Edit'],
+    ['WebFetch', { url: 'https://example.com' }, 'WebFetch'],
+    ['Bash', { command: 'git checkout main' }, 'git checkout'],
+    ['Bash', { command: 'git log; rm x' }, 'pipelines and chains'],
+  ])(
+    'denies %s at once, records it on the review and raises nothing',
+    async (toolName, input, inReason) => {
+      const { scheduler, emitAttention, sink } = makeScheduler();
+      // Resolved immediately: awaiting would hang the test if the tool were held instead.
+      const result = await scheduler.decidePermission({ runId: 'run1', toolName, input });
+      expect(result.behavior).toBe('deny');
+      if (result.behavior !== 'deny') return;
+      expect(result.message).toMatch(/^AI review is read-only — /);
+      expect(result.message).toContain(inReason);
+      expect(emitAttention).not.toHaveBeenCalled();
+      expect(sink.onDenied).toHaveBeenCalledTimes(1);
+      const denial = sink.onDenied.mock.calls[0][0] as ReviewToolDenial;
+      expect(denial.toolName).toBe(toolName);
+      expect(denial.reason).toContain(inReason);
+      expect(denial.detail.startsWith(toolName)).toBe(true);
+      expect(Number.isNaN(Date.parse(denial.at))).toBe(false);
+    },
+  );
+
+  it.each([
+    ['ExitPlanMode', { plan: '# Plan\n- [ ] step' }],
+    [
+      'AskUserQuestion',
+      { questions: [{ header: 'H', question: 'Q?', multiSelect: false, options: [] }] },
+    ],
+  ])('denies %s on a review run instead of raising an Attention item', async (toolName, input) => {
+    const { scheduler, emitAttention, sink } = makeScheduler();
+    const result = await scheduler.decidePermission({ runId: 'run1', toolName, input });
+    expect(result.behavior).toBe('deny');
+    expect(emitAttention).not.toHaveBeenCalled();
+    expect(sink.onDenied).toHaveBeenCalledTimes(1);
+  });
+
+  it('still denies when the sink throws', async () => {
+    const { scheduler, sink } = makeScheduler();
+    sink.onDenied.mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const result = await scheduler.decidePermission({
+      runId: 'run1',
+      toolName: 'Write',
+      input: { file_path: 'x', content: 'y' },
+    });
+    expect(result.behavior).toBe('deny');
+  });
+
+  it('fails safe as an unknown session once the review run is unregistered', async () => {
+    const { scheduler, sink } = makeScheduler();
+    scheduler.unregisterReviewRun('run1');
+    const result = await scheduler.decidePermission({
+      runId: 'run1',
+      toolName: 'Read',
+      input: { file_path: 'src/a.ts' },
+    });
+    expect(result).toEqual({ behavior: 'deny', message: 'unknown session' });
+    expect(sink.onDenied).not.toHaveBeenCalled();
+  });
+
+  it('leaves an ordinary task run on the task path (full auto still allows an Edit)', async () => {
+    const { scheduler, sink } = makeScheduler();
+    const input = { file_path: 'src/a.ts', old_string: 'a', new_string: 'b' };
+    const result = await scheduler.decidePermission({ runId: 'task1', toolName: 'Edit', input });
+    expect(result).toEqual({ behavior: 'allow', updatedInput: input });
+    expect(sink.onDenied).not.toHaveBeenCalled();
   });
 });
 
