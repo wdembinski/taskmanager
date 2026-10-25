@@ -33,6 +33,7 @@ import {
   type DiffSummaryResult,
   type ReviewSubjectKey,
 } from '@shared/review';
+import type { Project } from '@shared/model';
 import type { Store } from '../store';
 import { DiffService, type PrLocalResult, type ResolvedDiff } from './diffService';
 import { ForgeDiffSource, type PrSubject } from './forgeDiffSource';
@@ -58,7 +59,7 @@ export interface ReviewSubjectServiceDeps {
 
 /** What `summary()` decided for a `pr` subject, so a later read knows where to go. */
 type PrResolution =
-  | { source: 'local-ref'; subject: PrSubject; resolved: ResolvedDiff }
+  | { source: 'local-ref'; subject: PrSubject; resolved: ResolvedDiff; project: Project }
   | { source: 'forge-api'; subject: PrSubject };
 
 /** The human-readable reason a PR fell back to `forge-api`, for the source badge's tooltip. */
@@ -135,6 +136,16 @@ export class ReviewSubjectService {
     );
   }
 
+  /**
+   * The clone a `pr` subject's last `summary()` resolved it in, when that was `local-ref` —
+   * the project an AI review (F16.8) runs its worktree from. Null for `forge-api`, for a
+   * subject never summarized, and for a task (whose project the caller resolves itself).
+   */
+  localProject(id: string): Project | null {
+    const resolution = this.resolutions.get(id);
+    return resolution?.source === 'local-ref' ? resolution.project : null;
+  }
+
   private parseKey(id: string): ReviewSubjectKey {
     const key = parseSubjectId(id);
     if (!key) throw new Error(`Not a review subject: ${id}`);
@@ -157,7 +168,12 @@ export class ReviewSubjectService {
       baseBranch: revision.baseRef,
     });
     if (local.status === 'ok') {
-      this.resolutions.set(id, { source: 'local-ref', subject, resolved: local.resolved });
+      this.resolutions.set(id, {
+        source: 'local-ref',
+        subject,
+        resolved: local.resolved,
+        project: local.project,
+      });
       return { status: 'ok', summary: await this.deps.diffs.summaryFor(local.resolved) };
     }
     this.resolutions.set(id, { source: 'forge-api', subject });

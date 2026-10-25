@@ -42,6 +42,7 @@ import { createActivityRecorder } from './activityRecorder';
 import { gateCommandHash } from './gateTrust';
 import type { ReviewToolDenial } from './permissionPolicy';
 import { BaseMovedConflictError } from './forge/createPr';
+import type { PermissionGate } from './claudeSession';
 import type { SessionManager } from './sessionManager';
 import type { Store } from './store';
 import type { WorktreeManager } from './worktreeManager';
@@ -1686,6 +1687,139 @@ describe('Scheduler.startAuxiliarySession (the AI "Align plan" run)', () => {
     // ...so a later stop(projectId) is a no-op for it (not double-stopped).
     scheduler.stop('p');
     expect(stop).not.toHaveBeenCalled();
+  });
+});
+
+describe('Scheduler.startReviewSession (the AI reviewer, F16.8)', () => {
+  type Observer = (event: Record<string, unknown> & { kind: string }) => void;
+
+  function makeScheduler(opts: { limit?: LimitState } = {}) {
+    const store = {
+      getSettings: () => ({ limitJitterMs: 0 }),
+      getProject: () => undefined,
+      appendTokenUsage: vi.fn(),
+      loadLimitGate: () => opts.limit ?? null,
+      saveLimitGate: vi.fn(),
+      clearLimitGate: vi.fn(),
+      listProjects: () => [],
+      ...INERT_ATTENTION_STORE,
+    } as unknown as Store;
+    let observer: Observer | undefined;
+    let startOpts: { runId?: string; permission?: unknown } | undefined;
+    const registeredAtStart: boolean[] = [];
+    // Filled once the scheduler exists — the fake `start` asks it about the reserved runId.
+    const ref: { scheduler?: Scheduler } = {};
+    const start = vi.fn(
+      (_req: unknown, o: { runId?: string; permission?: unknown; onEvent?: Observer }) => {
+        observer = o.onEvent;
+        startOpts = o;
+        // Inside `start`, before any event: is the review policy already answering this run?
+        // A Read allowed here can only come from the review sink — a task run would be unknown.
+        void ref
+          .scheduler!.decidePermission({
+            runId: o.runId!,
+            toolName: 'Read',
+            input: { file_path: 'a.ts' },
+          })
+          .then((r) => registeredAtStart.push(r.behavior === 'allow'));
+        return { runId: o.runId! };
+      },
+    );
+    const stop = vi.fn();
+    const send = vi.fn();
+    const sessions = { start, stop, send } as unknown as SessionManager;
+    const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
+    ref.scheduler = scheduler;
+    const gate = { configPath: 'gate.json' } as unknown as PermissionGate;
+    scheduler.setPermissionGate(gate);
+    const handlers = { taskId: 'card', onDenied: vi.fn(), onResult: vi.fn(), onExit: vi.fn() };
+    return {
+      scheduler,
+      store,
+      gate,
+      handlers,
+      start,
+      stop,
+      send,
+      registeredAtStart,
+      emit: (event: Record<string, unknown> & { kind: string }) => observer?.(event),
+      startOpts: () => startOpts,
+    };
+  }
+
+  const request = { prompt: 'review', cwd: 'C:/rw/r1' } as never;
+
+  it('registers the review sink before the session starts, and runs gated', async () => {
+    const h = makeScheduler();
+    const { runId } = h.scheduler.startReviewSession('p', 'r1', request, h.handlers);
+    expect(runId).not.toBe('');
+    expect(h.startOpts()?.runId).toBe(runId);
+    expect(h.startOpts()?.permission).toBe(h.gate);
+    await Promise.resolve();
+    expect(h.registeredAtStart).toEqual([true]);
+  });
+
+  it('forwards a result without stopping the session, and records its cost', () => {
+    const h = makeScheduler();
+    h.scheduler.startReviewSession('p', 'r1', request, h.handlers);
+    h.emit({ kind: 'result', success: true, resultText: 'x', costUsd: 0.5, usage: null });
+    expect(h.handlers.onResult).toHaveBeenCalledTimes(1);
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.store.appendTokenUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'orchestrator', projectId: 'p', taskId: 'card' }),
+    );
+  });
+
+  it('sends the repair turn into the live session, and stops it on request', () => {
+    const h = makeScheduler();
+    const { runId } = h.scheduler.startReviewSession('p', 'r1', request, h.handlers);
+    h.scheduler.sendToReviewSession(runId, 'fix your JSON');
+    expect(h.send).toHaveBeenCalledWith(runId, 'fix your JSON');
+    h.scheduler.stopReviewSession(runId);
+    expect(h.stop).toHaveBeenCalledWith(runId);
+    // Gone from the registry: neither a second stop nor a send reaches the session again.
+    h.stop.mockClear();
+    h.scheduler.stopReviewSession(runId);
+    h.scheduler.sendToReviewSession(runId, 'again');
+    expect(h.stop).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('is stopped by stop(projectId)', () => {
+    const h = makeScheduler();
+    const { runId } = h.scheduler.startReviewSession('p', 'r1', request, h.handlers);
+    h.scheduler.stop('p');
+    expect(h.stop).toHaveBeenCalledWith(runId);
+  });
+
+  it('unregisters on exit, so a later tool use fails safe as an unknown session', async () => {
+    const h = makeScheduler();
+    const { runId } = h.scheduler.startReviewSession('p', 'r1', request, h.handlers);
+    h.emit({ kind: 'exited', code: 0 });
+    expect(h.handlers.onExit).toHaveBeenCalledTimes(1);
+    const result = await h.scheduler.decidePermission({
+      runId,
+      toolName: 'Read',
+      input: { file_path: 'a.ts' },
+    });
+    expect(result).toEqual({ behavior: 'deny', message: 'unknown session' });
+  });
+
+  it('reports no blockers with both gates down, and the limit once it is engaged', () => {
+    expect(makeScheduler().scheduler.reviewBlockers()).toEqual({ limit: null, signin: null });
+    const h = makeScheduler({
+      limit: {
+        limitType: 'rolling',
+        resetsAt: null,
+        resumeAt: Date.now() + 3_600_000,
+        parkedTaskIds: [],
+      },
+    });
+    h.scheduler.restoreLimitGate();
+    const blockers = h.scheduler.reviewBlockers();
+    expect(blockers.limit).toMatch(/usage limit/);
+    expect(blockers.signin).toBeNull();
+    h.scheduler.dispose();
   });
 });
 

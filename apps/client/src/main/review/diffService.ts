@@ -213,7 +213,8 @@ export interface PrLocalRequest {
 }
 
 export type PrLocalResult =
-  | { status: 'ok'; resolved: ResolvedDiff }
+  /** `project` is the clone the diff was resolved in — where an AI review (F16.8) runs. */
+  | { status: 'ok'; resolved: ResolvedDiff; project: Project }
   | { status: 'no-project' }
   | { status: 'fetch-failed'; reason: string }
   | { status: 'stale'; headSha: string; forgeHeadSha: string };
@@ -632,6 +633,7 @@ export class DiffService {
     this.fetchFailures.delete(id);
     return {
       status: 'ok',
+      project,
       resolved: {
         git: g,
         dir: project.path,

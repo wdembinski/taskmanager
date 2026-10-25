@@ -19,10 +19,14 @@ import {
   type ReviewSubject,
 } from '@shared/review';
 import type { MergeRequest } from '@shared/mergeRequest';
+import type { Project } from '@shared/model';
 import type { DiffGit, PrLocalResult, ResolvedDiff } from './diffService';
 import { ReviewSubjectService, type ReviewSubjectServiceDeps } from './subjectService';
 
 type PrSubject = Extract<ReviewSubject, { kind: 'pr' }>;
+
+/** The clone a `local-ref` resolution matched — `localProject` hands it back. */
+const LOCAL_PROJECT = { id: 'proj-local', path: '/repo' } as Project;
 
 function prSubject(over: Partial<PrSubject> = {}): PrSubject {
   return { kind: 'pr', provider: 'github', repoId: 1, repoPath: 'acme/web', number: 7, ...over };
@@ -271,7 +275,11 @@ describe('a PR found only in merge_requests', () => {
     const d = deps({
       store: { listMergeRequests: vi.fn(() => [mergeRequest()]) },
       diffs: {
-        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'ok', resolved })),
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({
+          status: 'ok',
+          resolved,
+          project: LOCAL_PROJECT,
+        })),
       },
     });
     const service = new ReviewSubjectService(d);
@@ -286,6 +294,7 @@ describe('a PR found only in merge_requests', () => {
       baseBranch: 'main',
     });
     expect(result).toEqual({ status: 'ok', summary: summary({ diffId: 'd1' }) });
+    expect(service.localProject('gh-1-7')).toBe(LOCAL_PROJECT);
   });
 });
 
@@ -304,7 +313,11 @@ describe('local-ref success', () => {
     const d = deps({
       store: { listReviewQueue: vi.fn(() => [queueRow(prSubject(), 'gh-1-7')]) },
       diffs: {
-        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'ok', resolved })),
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({
+          status: 'ok',
+          resolved,
+          project: LOCAL_PROJECT,
+        })),
         fileIn: vi.fn(async (): Promise<DiffFile> => file),
       },
     });
@@ -329,6 +342,7 @@ describe('fallback reasons', () => {
     });
     const service = new ReviewSubjectService(d);
     const result = await service.summary('gh-1-7');
+    expect(service.localProject('gh-1-7')).toBeNull();
     expect(result).toEqual({
       status: 'ok',
       summary: {
@@ -380,7 +394,11 @@ describe('a stale local-ref read', () => {
     const d = deps({
       store: { listReviewQueue: vi.fn(() => [queueRow(prSubject(), 'gh-1-7')]) },
       diffs: {
-        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({ status: 'ok', resolved })),
+        resolvePrLocal: vi.fn(async (): Promise<PrLocalResult> => ({
+          status: 'ok',
+          resolved,
+          project: LOCAL_PROJECT,
+        })),
       },
     });
     const service = new ReviewSubjectService(d);
