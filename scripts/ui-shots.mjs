@@ -52,6 +52,10 @@
  * - `viewport` — `{ width, height }` in CSS px. 1440×900 matches every `v9-*`/`v10-*` SVG's own
  *   `viewBox` (verified against the mockup files themselves); 390×844 matches the phone frame
  *   drawn inside `v9-4-mobile-light.svg`/`v9-5-mobile-dark.svg`, not the SVG's own (wider) canvas.
+ * - `path` — `'client'` rows only: appended to the renderer's origin for the navigation (e.g.
+ *   `'/?harness=review-workspace'`, `main.tsx`'s test route for a screen no host mounts yet).
+ *   Omit it to load the bare origin — the app itself. Storage is still cleared for the bare
+ *   origin either way.
  * - `scheme` — `'light'` or `'dark'`, fed to the same `appearance` setting
  *   `shots-board.mjs`'s `clientInitScript` already threads through.
  * - `transparency` — the `transparency` setting the row boots with. Omit it for `'reduced'`
@@ -929,7 +933,7 @@ async function main() {
         let initScript;
         if (row.app === 'client') {
           initScript = clientInitScript(clientDefaultSettings, row, attachmentUrls);
-          await freshLoad(cdp, clientOrigin, initScript);
+          await freshLoad(cdp, clientOrigin, initScript, row.path ?? '');
         } else {
           relayHandle.state.settings.appearance = row.scheme;
           initScript = webInitScript(DESKTOP_CLIENT_ID);

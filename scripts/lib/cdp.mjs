@@ -227,8 +227,11 @@ export async function screenshot(cdp, filePath, clip) {
  * clear nor the init script about to run would ever reach a fresh page. Resolves once React's
  * first (synchronous, data-less) render has painted; callers needing to wait for async data on
  * top of that run their own follow-up wait.
+ *
+ * `path` (e.g. `'/?harness=review-workspace'`) is appended to `originUrl` for the navigation
+ * only — `Storage.clearDataForOrigin` takes a bare origin, never a path or a query.
  */
-export async function freshLoad(cdp, originUrl, initScript = '') {
+export async function freshLoad(cdp, originUrl, initScript = '', path = '') {
   await cdp.send('Storage.clearDataForOrigin', { origin: originUrl, storageTypes: 'all' });
   if (cdp._initScriptId) {
     await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: cdp._initScriptId });
@@ -238,7 +241,7 @@ export async function freshLoad(cdp, originUrl, initScript = '') {
   });
   cdp._initScriptId = identifier;
   await cdp.send('Page.navigate', { url: 'about:blank' });
-  await cdp.send('Page.navigate', { url: originUrl });
+  await cdp.send('Page.navigate', { url: `${originUrl}${path}` });
   try {
     await waitFor(
       async () =>
