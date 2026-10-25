@@ -20,7 +20,9 @@
  *      card, with a decoy `acme/tools#7` sitting on the same board to prove it;
  *   4. a comment somebody ELSE left on a pull request raises its unread mark, and one of your
  *      own does not — read from all **three** endpoints GitHub scatters a discussion across;
- *   5. a merged pull request sets {@link Task.landedAt}, which opens an `after-merge` gate.
+ *   5. a merged pull request sets {@link Task.landedAt} — at its `merged_at` — which opens an
+ *      `after-merge` gate; and one the open search never saw, with no key in its text, is
+ *      found by the merged-PR search and filed by its card's `agentBranch` (section 4b).
  *
  * The numbered SECTIONS below are the scenario's own running order and do not line up one to
  * one: claims 3 and 4 are both asserted in section 3, off the same pair of pull requests,
@@ -36,7 +38,8 @@
  *   - `resolveGitHubColumn`, on BOTH sides of the same drag — the resolver that decides the
  *     column and the one that decides whether the move "took";
  *   - `planLabelChange` and `githubMove.resolveMove`, against the issue's real current labels;
- *   - `describePullRequest`, `reconcilePullRequests`, `prMatch`, `landedTaskIds`;
+ *   - `describePullRequest`, `reconcilePullRequests`, `prMatch`, `buildBoardIndex`,
+ *     `mergedRowsToLand`, `unlandedBranchCandidates`, `discoverMergedPullRequests`;
  *   - `foldNotes` + `forge/notes.ts`'s `latestForeignNoteAt`, against three real endpoints —
  *     including `/pulls/{n}/comments`, whose absence is invisible to any assertion that only
  *     asks whether SOME comment was found;
@@ -100,10 +103,12 @@
  *     is yours, grows an unread mark it should never have. That is the ring that never goes
  *     out, and it is why both halves are asserted rather than only the lighting-up one. This
  *     is also the mutation the mirror's missing `identity` reproduced exactly, above.
- *   - **Claim 5.** Change `landedTaskIds` (`main/gitlab/gitlabSync.ts`) to count `closed`
- *     rather than `merged`: **5 red**, and section 3 stays entirely green. `landedAt` is
- *     never stamped, so the gate stays shut and the successor is never ready to release.
- *     That is the pair that isolates the landing from the filing.
+ *   - **Claim 5.** The landing now goes through `mergedRowsToLand` (`main/forge/landings.ts`),
+ *     not `landedTaskIds`, so the mutation that once reddened this claim no longer reaches
+ *     it. Re-run on 2026-10-25: make `branchTaskId` in `main/github/githubPrSync.ts` return
+ *     null unconditionally, so a PR is never filed by its branch: **4 red**, all in section
+ *     4b — the keyless PR stays nobody's, the card never lands, its successor is never ready.
+ *     The rest of section 4 stays green, because PR 41 is filed by its closing reference.
  *
  * The app is NEVER launched (RELEASE.md rule 6 — there is no single-instance lock, and a
  * second instance killed a live session on 2026-08-02). Nothing here opens the real profile:
@@ -143,6 +148,8 @@ const require = createRequire(import.meta.url);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** `@shared` lives in the packages/shared workspace package, not under this app. */
 const sharedSrc = join(repo, '..', '..', 'packages', 'shared', 'src');
+/** …and `@protocol` in packages/protocol — `store.ts` reaches it through the cloud mirror. */
+const protocolSrc = join(repo, '..', '..', 'packages', 'protocol', 'src');
 
 /**
  * The bundle, INSIDE the repo: it keeps `better-sqlite3` external, so it must sit somewhere
@@ -190,7 +197,7 @@ async function bundle(entry, outDir) {
   await build({
     configFile: false,
     logLevel: 'error',
-    resolve: { alias: { '@shared': sharedSrc, electron: stub } },
+    resolve: { alias: { '@shared': sharedSrc, '@protocol': protocolSrc, electron: stub } },
     build: {
       ssr: entry,
       outDir,
@@ -320,7 +327,10 @@ import {
   reconcilePullRequests,
   rematchPullRequests,
 } from '__REPO__/src/main/github/githubPrSync';
-import { landedTaskIds, PIPELINE_IN_FLIGHT } from '__REPO__/src/main/gitlab/gitlabSync';
+import { PIPELINE_IN_FLIGHT } from '__REPO__/src/main/gitlab/gitlabSync';
+import { buildBoardIndex } from '__REPO__/src/main/forge/boardIndex';
+import { mergedRowsToLand, unlandedBranchCandidates } from '__REPO__/src/main/forge/landings';
+import { discoverMergedPullRequests } from '__REPO__/src/main/github/mergedDiscovery';
 import { githubIdentityFrom } from '__REPO__/src/main/github/identity';
 import { resolveMove } from '__REPO__/src/main/jira/jiraMove';
 
@@ -544,9 +554,16 @@ const server = createServer((req, res) => {
       // The stub reads the two qualifiers our own queries actually use. is:open is what makes
       // a closed issue drop out of the answer, which is the whole trap section 2 walks into.
       const wantsPulls = q.indexOf('is:pr') >= 0;
+      // The merged-PR discovery search: is:merged plus a merged:>=YYYY-MM-DD floor.
+      const wantsMerged = q.indexOf('is:merged') >= 0;
+      const mergedFloor = (/merged:>=(\S+)/.exec(q) || [])[1] || '';
       const items = wantsPulls
         ? [...pulls.entries()]
-            .filter((e) => e[1].state === 'open')
+            .filter((e) =>
+              wantsMerged
+                ? Boolean(e[1].merged_at) && e[1].merged_at.slice(0, 10) >= mergedFloor
+                : e[1].state === 'open',
+            )
             .map((e) => prSearchRow(e[0].split('#')[0], e[1]))
         : [...issues.values()].filter((i) => i.state === 'open');
       json(res, 200, { total_count: items.length, incomplete_results: false, items });
@@ -685,15 +702,24 @@ const client = new GitHubClient({ baseUrl: BASE, token: '  ghp_a-pasted-token\n'
 // that need the closure (safeStorage, send, logMain, trackSync, the scheduler). Assertions
 // are never on this code's own wording.
 
-/** boardKeyIndex, verbatim: the archived-excluding read, keyed case-insensitively. */
+/**
+ * boardKeyIndex, verbatim: buildBoardIndex over the archived-excluding read of every board —
+ * keys, card ids, and the agentBranch index a hand-opened pull request is filed by.
+ */
 function boardKeyIndex() {
-  const taskIdByKey = new Map();
-  for (const task of store.getPersonalTasks()) {
-    if (task.externalSource && task.externalKey) {
-      taskIdByKey.set(task.externalKey.toUpperCase(), task.id);
-    }
-  }
-  return { knownKeys: [...taskIdByKey.keys()], taskIdByKey };
+  return buildBoardIndex(store.getAllBoardTasks());
+}
+
+/** checkedMergedRefs: merged-search hits found to be nobody's, for this "app run". */
+const checkedMergedRefs = new Set();
+
+/**
+ * landMergedPullRequests, minus the auto-merge note: every merged row in the upserts, plus
+ * every stored merged GitHub row whose card has not landed — stamped at the PR's merged_at.
+ */
+function landMerged(upserts, now) {
+  const landings = mergedRowsToLand(upserts, store.listMergeRequests(), (id) => store.getTask(id));
+  for (const l of landings) noteWorkLanded(l.taskId, l.mr.mergedAt ?? now);
 }
 
 /** learnLabelColumn, verbatim minus the send(). */
@@ -782,9 +808,8 @@ async function syncIssues(now) {
     now,
     retentionMs: Math.max(0, github.doneRetentionDays) * DAY,
   });
-  // Restore, then upsert, then archive — the order ipc.ts uses, so an issue back in the query
-  // lands on its own card rather than beside the archived one.
-  for (const id of outcome.restoreIds) store.unarchiveTask(id);
+  // Upsert, then archive — the order ipc.ts uses. (The reconciler stopped returning
+  // restoreIds; ipc.ts no longer restores here, so neither does the mirror.)
   for (const t of outcome.upserts) store.upsertJiraTask(t);
   for (const r of outcome.removals) store.archiveTask(r.taskId, now, r.reason);
   return { tasks: store.getPersonalTasks(), outcome };
@@ -929,17 +954,38 @@ async function syncPullRequests(now) {
     }
   }
 
+  // Merged PRs the open search never saw — one extra search while a worked card waits on a
+  // branch no stored row explains. Never allowed to fail the sync.
+  try {
+    detailed.push(
+      ...(await discoverMergedPullRequests({
+        client,
+        candidates: unlandedBranchCandidates(store.getAllBoardTasks(), stored, now),
+        stored,
+        checked: checkedMergedRefs,
+        onError: (e) => console.error('GitHub merged pull request search failed', e),
+      })),
+    );
+  } catch (e) {
+    console.error('GitHub merged pull request discovery failed', e);
+  }
+
   const index = boardKeyIndex();
   const reconciled = reconcilePullRequests(stored, detailed, {
     knownKeys: index.knownKeys,
     taskIdByKey: index.taskIdByKey,
+    knownTaskIds: index.knownTaskIds,
+    taskIdByBranch: index.taskIdByBranch,
     identity,
     now,
   });
   for (const mr of reconciled.upserts) store.upsertMergeRequest(mr);
   store.deleteMergeRequests(reconciled.deleteIds);
   // The hand-off that makes an after-merge gate work on a GitHub repository at all.
-  for (const taskId of landedTaskIds(reconciled.upserts)) noteWorkLanded(taskId, now);
+  landMerged(reconciled.upserts, now);
+  // syncGitHub's tail, folded in here like its toggles: re-match, then land what it filed.
+  rematchStored();
+  landMerged([], now);
   return { mrs: store.listMergeRequests(), reconciled };
 }
 
@@ -1299,11 +1345,17 @@ check(
   after41 && String(after41.latestNoteAt),
 );
 
-// The claim.
+// The claim — landed when GitHub merged it, not when this sync happened to notice.
+const MERGED41 = Date.parse(pr41.merged_at);
 check(
-  'the card\'s work is now recorded as landed',
-  store.getTask(crash.id).landedAt === T3,
+  'the card\'s work is now recorded as landed, at the pull request\'s merged_at',
+  store.getTask(crash.id).landedAt === MERGED41 && MERGED41 !== T3,
   String(store.getTask(crash.id).landedAt),
+);
+check(
+  'and the merge time survived the round trip through SQLite',
+  after41 && after41.mergedAt === MERGED41,
+  after41 && String(after41.mergedAt),
 );
 check('so the gate is open', linkSatisfied(store.listTaskLinks()[0], store.getTask(crash.id)) === true);
 check(
@@ -1320,13 +1372,74 @@ check(
 await syncPullRequests(T3 + 5 * DAY);
 check(
   'a later poll repeating "merged" does not restamp the landing',
-  store.getTask(crash.id).landedAt === T3,
+  store.getTask(crash.id).landedAt === MERGED41,
   String(store.getTask(crash.id).landedAt),
 );
 check(
   'and the merged pull request is still retained on the card',
   Boolean(store.listMergeRequests().find((mr) => mr.number === 41)),
 );
+
+// ---------------------------------------------------------------------------
+section('4b. A PR the app never saw open, with no key, lands the card whose branch it is');
+
+// The VPN shape: the agent opened it itself with gh pr create (no openedForTaskId), its text
+// names no key, and it was opened AND merged between two polls — so the is:open search never
+// returned it and no row exists. Only the card's agentBranch says whose work it is.
+const native = store.createTask(PERSONAL_PROJECT_ID, { title: 'Audit trail' });
+store.updateTask(native.id, { agentBranch: 'feat/audit-trail', workedAt: T3, status: 'in-progress' });
+const follower = store.createTask(PERSONAL_PROJECT_ID, { title: 'The console page that needs it' });
+const nativeLink = store.addTaskLink(native.id, follower.id, 'after-merge');
+pulls.set(WIDGETS + '#43', {
+  id: 4300,
+  number: 43,
+  title: 'Audit trail: record events and expose GET /audit',
+  body: 'Adds the audit table.',
+  state: 'closed',
+  draft: false,
+  merged: true,
+  merged_at: '2026-08-12T13:00:00Z',
+  html_url: 'https://github.example.com/' + WIDGETS + '/pull/43',
+  updated_at: '2026-08-12T13:00:00Z',
+  mergeable: null,
+  mergeable_state: 'unknown',
+  head: { ref: 'feat/audit-trail', sha: 'a0d17a0d17', repo: { id: 7001, full_name: WIDGETS } },
+  base: { ref: 'main', repo: { id: 7001, full_name: WIDGETS } },
+});
+const MERGED43 = Date.parse('2026-08-12T13:00:00Z');
+
+mark = seen.length;
+await syncPullRequests(T3 + DAY);
+const mergedSearch = since(mark).find(
+  (r) => r.path === '/api/v3/search/issues' && decodeURIComponent(r.query).indexOf('is:merged') >= 0,
+);
+check(
+  'one extra search asked for merged PRs since the card started work',
+  Boolean(mergedSearch) &&
+    decodeURIComponent(mergedSearch.query).indexOf('is:pr is:merged author:@me merged:>=' + new Date(T3).toISOString().slice(0, 10)) >= 0,
+  mergedSearch && decodeURIComponent(mergedSearch.query),
+);
+const stored43 = store.listMergeRequests().find((mr) => mr.number === 43);
+check('the PR now has a row', Boolean(stored43), 'no row');
+check(
+  'filed under the card by its branch, with no key and no openedForTaskId',
+  stored43 && stored43.taskId === native.id && stored43.openedForTaskId === null && keys(stored43).length === 0,
+  stored43 && JSON.stringify({ taskId: stored43.taskId, keys: keys(stored43) }),
+);
+check(
+  'and the card landed at the PR\'s merged_at, on this first sync',
+  store.getTask(native.id).landedAt === MERGED43,
+  String(store.getTask(native.id).landedAt),
+);
+check('so its after-merge successor is ready', readyToRelease(follower, store.listTaskLinks(), byId()) === true && Boolean(nativeLink));
+
+mark = seen.length;
+await syncPullRequests(T3 + 2 * DAY);
+check(
+  'a landed card is no longer a candidate, so the extra search stops',
+  !since(mark).some((r) => decodeURIComponent(r.query || '').indexOf('is:merged') >= 0),
+);
+check('and the landing was not restamped', store.getTask(native.id).landedAt === MERGED43, String(store.getTask(native.id).landedAt));
 
 // ---------------------------------------------------------------------------
 section('5. Past the retention window, the card leaves — taking its pull request with it');
@@ -1342,7 +1455,7 @@ check(
   'but not deleted — the row keeps its timeline, its links and its files',
   Boolean(store.getTask(crash.id)) && store.getArchivedTasks().some((t) => t.id === crash.id),
 );
-check('and the landing it recorded is still on it', store.getTask(crash.id).landedAt === T3, String(store.getTask(crash.id).landedAt));
+check('and the landing it recorded is still on it', store.getTask(crash.id).landedAt === MERGED41, String(store.getTask(crash.id).landedAt));
 
 await syncPullRequests(T4 + 1000);
 check(

@@ -141,6 +141,23 @@ describe('GitHubClient — pull requests and their checks', () => {
     expect(url).toContain('sort=updated');
   });
 
+  it('asks for your merged PRs since a date, one page by default', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ items: [{ number: 9 }] }, 200, {
+        link: '<https://api.github.com/search/issues?q=x&page=2>; rel="next"',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const prs = await client().searchMergedPullRequests('2026-10-01');
+
+    expect(prs.map((p) => p.number)).toEqual([9]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = decodeURIComponent(String(fetchMock.mock.calls[0][0]));
+    expect(url).toContain('q=is:pr is:merged author:@me merged:>=2026-10-01');
+    expect(url).toContain('advanced_search=true');
+  });
+
   // Search wraps its rows in `items`, unlike every list endpoint — and pages by `Link`.
   it('unwraps `items` and follows the search’s own next link', async () => {
     const fetchMock = vi

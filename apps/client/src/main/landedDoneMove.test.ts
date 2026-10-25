@@ -389,4 +389,54 @@ describe('landThenMoveToDone', () => {
     expect(await landThenMoveToDone(throwing, 'c', github)).toBeNull();
     expect(logged).toEqual(['Moving landed card c to Done failed']);
   });
+
+  /** A merged PR's own `merged_at`, not the moment the sync noticed, is when it landed. */
+  describe('a landing stamped at the PR’s merge time', () => {
+    const MERGED_AT = 400;
+    const landingDeps = (h: ReturnType<typeof harness>, calls: unknown[][]): LandThenMoveDeps => ({
+      ...h.deps,
+      noteWorkLanded: (id, at) => {
+        calls.push([id, at]);
+        // What `chain.landed` does: the given time, else now.
+        const t = h.byId.get(id)!;
+        if (t.landedAt == null) t.landedAt = at ?? LANDED_AT;
+      },
+      logError: () => {},
+    });
+
+    it('forwards mr.mergedAt to noteWorkLanded', async () => {
+      const h = harness([task({ id: 'c' })]);
+      const calls: unknown[][] = [];
+      await landThenMoveToDone(landingDeps(h, calls), 'c', { ...github, mergedAt: MERGED_AT });
+      expect(calls).toEqual([['c', MERGED_AT]]);
+      expect(h.byId.get('c')?.landedAt).toBe(MERGED_AT);
+      expect(restingStatus(h.byId.get('c')!)).toBe('done');
+    });
+
+    it('passes undefined when the forge never said (GitLab)', async () => {
+      const h = harness([task({ id: 'c' })]);
+      const calls: unknown[][] = [];
+      await landThenMoveToDone(landingDeps(h, calls), 'c', gitlab);
+      expect(calls).toEqual([['c', undefined]]);
+    });
+
+    /**
+     * The gap a past `landedAt` opens: between the merge and the sync that learns of it. Every
+     * writer of a `status` row is a human move (see `movedSince`), so a row in that gap is a
+     * person who moved the card AFTER it merged — and their move still wins. A row from
+     * before the merge does not count, exactly as before.
+     */
+    it('lets a human move made after the merge, before the sync, win', async () => {
+      const h = harness([task({ id: 'c' })], { activity: [statusRow(MERGED_AT + 50)] });
+      await landThenMoveToDone(landingDeps(h, []), 'c', { ...github, mergedAt: MERGED_AT });
+      expect(h.byId.get('c')?.landedAt).toBe(MERGED_AT);
+      expect(h.changes).toEqual([]);
+    });
+
+    it('still moves a card whose last human move predates the merge', async () => {
+      const h = harness([task({ id: 'c' })], { activity: [statusRow(MERGED_AT - 50)] });
+      await landThenMoveToDone(landingDeps(h, []), 'c', { ...github, mergedAt: MERGED_AT });
+      expect(h.changes).toEqual([{ id: 'c', from: 'in-progress', to: 'done' }]);
+    });
+  });
 });

@@ -6010,8 +6010,8 @@ describe('Scheduler — a lifting usage limit restarts a card chain', () => {
     resetsAt: null,
   };
 
-  /** Two cards, `b` chained to start after `a` merges, and a limit already in force. */
-  function setup() {
+  /** Two cards, `b` chained to start after `a` merges, and (unless told not to) a limit already in force. */
+  function setup({ limit = true }: { limit?: boolean } = {}) {
     const project = {
       id: 'agent-1',
       name: 'Checkout service',
@@ -6075,9 +6075,11 @@ describe('Scheduler — a lifting usage limit restarts a card chain', () => {
     const scheduler = new Scheduler(store, sessions, vi.fn(), vi.fn(), vi.fn(), vi.fn(), vi.fn());
     // A limit is in force account-wide — some other run hit the wall — with nothing parked:
     // neither of these cards was running when it did.
-    (
-      scheduler as unknown as { limitGate: { engage: (s: unknown, ids: string[]) => void } }
-    ).limitGate.engage(limited, []);
+    if (limit) {
+      (
+        scheduler as unknown as { limitGate: { engage: (s: unknown, ids: string[]) => void } }
+      ).limitGate.engage(limited, []);
+    }
     return { scheduler, start, a, b, comments };
   }
 
@@ -6118,6 +6120,22 @@ describe('Scheduler — a lifting usage limit restarts a card chain', () => {
     scheduler.resumeLimitNow();
     // `b` is both the queue's next pending task and a released chain card. The re-ask runs
     // after the pump, by which time `b` is in flight — so it is started once, not twice.
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(runTaskIds(scheduler)).toEqual(['b']);
+  });
+
+  /**
+   * The repeat poll: the GitHub sync now lands every stored merged row whose card has not
+   * landed, and the same PR is reported by both passes of one sync and by the next poll.
+   * The successor starts once, and the FIRST landing time — the PR's `merged_at` — stands.
+   */
+  it('starts an after-merge successor once across repeated landings, keeping the first landedAt', () => {
+    const { scheduler, start, a } = setup({ limit: false });
+    scheduler.noteWorkLanded('a', 400);
+    scheduler.noteWorkLanded('a', 900);
+    scheduler.noteWorkLanded('a');
+
+    expect(a.landedAt).toBe(400);
     expect(start).toHaveBeenCalledTimes(1);
     expect(runTaskIds(scheduler)).toEqual(['b']);
   });

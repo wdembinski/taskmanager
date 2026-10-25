@@ -141,6 +141,18 @@ describe('ChainRunner — a card lands', () => {
     expect(notes[0].body).toContain('VIP-3');
   });
 
+  it('stamps exactly the merge time it is given, and only the first one', () => {
+    const { runner, byId, started } = harness(
+      [task({ id: 'a' }), successor('b')],
+      [link('a', 'b')],
+    );
+    runner.landed('a', 400);
+    expect(byId.get('a')?.landedAt).toBe(400);
+    runner.landed('a', 700);
+    expect(byId.get('a')?.landedAt).toBe(400);
+    expect(started).toEqual(['b']);
+  });
+
   it('is idempotent: a second landing neither restamps nor re-releases', () => {
     const { runner, byId, started, notes } = harness(
       [task({ id: 'a' }), successor('b')],

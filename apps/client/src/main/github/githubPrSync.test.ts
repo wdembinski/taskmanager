@@ -50,6 +50,8 @@ const opts = {
   // Both cards, plus one that carries no key at all — the shape a pull request opened by the
   // button on a native ticket has to survive on.
   knownTaskIds: new Set(['task-1', 'task-9', 'task-keyless']),
+  // No card claims a branch here; the branch-match tests build their own index.
+  taskIdByBranch: new Map<string, string>(),
   identity: ME,
   now: NOW,
 };
@@ -451,6 +453,7 @@ describe('rematchPullRequests', () => {
       knownKeys: [],
       taskIdByKey: new Map(),
       knownTaskIds: new Set(),
+      taskIdByBranch: new Map(),
     });
     expect(changed[0].taskId).toBeNull();
   });
@@ -478,7 +481,91 @@ describe('rematchPullRequests', () => {
       knownKeys: ['ENG-1'],
       taskIdByKey: new Map([['ENG-1', 'task-9']]),
       knownTaskIds: new Set(['task-9']),
+      taskIdByBranch: new Map(),
     });
     expect(changed[0].taskId).toBe('task-9');
+  });
+});
+
+/**
+ * Filing by `agentBranch`: the shape that left VPN-2/3/4/6/7 unlanded. The agent opened those
+ * PRs itself with `gh pr create`, so `openedForTaskId` was null, and their text named no key —
+ * nothing filed them, and the next sync deleted the merged, card-less row.
+ */
+describe('a hand-opened pull request on a card’s own branch', () => {
+  const BRANCH = 'feat/audit-trail-record-events-and-expose';
+  const branchOpts = {
+    ...opts,
+    knownTaskIds: new Set([...opts.knownTaskIds, 'task-branch']),
+    taskIdByBranch: new Map([[BRANCH, 'task-branch']]),
+  };
+  const handOpened = (over: Partial<FetchedMergeRequest> = {}): FetchedMergeRequest =>
+    fetched({
+      title: 'Audit trail: record events and expose GET /audit',
+      description: null,
+      sourceBranch: BRANCH,
+      ...over,
+    });
+
+  it('is filed under the card whose branch it is', () => {
+    const { upserts } = reconcilePullRequests([], [handOpened()], branchOpts);
+    expect(upserts[0]).toMatchObject({ taskId: 'task-branch', openedForTaskId: null });
+  });
+
+  it('stays filed after a force-push: a new head SHA on the same branch', () => {
+    const first = reconcilePullRequests([], [handOpened()], branchOpts).upserts[0];
+    const { upserts } = reconcilePullRequests(
+      [first],
+      [handOpened({ headSha: 'sha-force-pushed', updatedAt: 950 })],
+      branchOpts,
+    );
+    expect(upserts[0]).toMatchObject({ taskId: 'task-branch', headSha: 'sha-force-pushed' });
+  });
+
+  it('keeps a merged row on that branch rather than deleting it', () => {
+    const merged = reconcilePullRequests([], [handOpened({ state: 'merged' })], branchOpts)
+      .upserts[0];
+    const { deleteIds } = reconcilePullRequests([merged], [], branchOpts);
+    expect(deleteIds).toEqual([]);
+    // …and the same row with no branch index is the old bug: deleted on the next sync.
+    expect(reconcilePullRequests([merged], [], opts).deleteIds).toEqual([merged.id]);
+  });
+
+  it('is found by a re-match once the card appears on the board', () => {
+    const orphan = reconcilePullRequests([], [handOpened()], opts).upserts[0];
+    expect(orphan.taskId).toBeNull();
+    expect(rematchPullRequests([orphan], branchOpts)).toEqual([
+      { ...orphan, taskId: 'task-branch' },
+    ]);
+  });
+
+  it('beats a key in the title that names another card', () => {
+    const { upserts } = reconcilePullRequests(
+      [],
+      [handOpened({ title: 'ENG-1: audit trail', description: 'Closes #123' })],
+      branchOpts,
+    );
+    expect(upserts[0].taskId).toBe('task-branch');
+    expect(rematchPullRequests(upserts, branchOpts)).toEqual([]);
+  });
+
+  it('still loses to the card this app opened it for', () => {
+    const prior = {
+      ...reconcilePullRequests([], [handOpened()], branchOpts).upserts[0],
+      openedForTaskId: 'task-keyless',
+    };
+    const { upserts } = reconcilePullRequests([prior], [handOpened()], branchOpts);
+    expect(upserts[0].taskId).toBe('task-keyless');
+  });
+
+  it('carries GitHub’s merge time, and keeps it once read', () => {
+    const merged = reconcilePullRequests(
+      [],
+      [handOpened({ state: 'merged', mergedAt: 1_234 })],
+      branchOpts,
+    ).upserts[0];
+    expect(merged.mergedAt).toBe(1_234);
+    const again = reconcilePullRequests([merged], [handOpened({ state: 'merged' })], branchOpts);
+    expect(again.upserts[0].mergedAt).toBe(1_234);
   });
 });

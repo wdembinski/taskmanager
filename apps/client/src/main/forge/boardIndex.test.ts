@@ -69,4 +69,42 @@ describe('buildBoardIndex', () => {
     expect(buildBoardIndex([mirrored, ticket]).taskIdByKey.get('DUP-1')).toBe('task-mirrored');
     expect(buildBoardIndex([ticket, mirrored]).taskIdByKey.get('DUP-1')).toBe('task-mirrored');
   });
+
+  describe('taskIdByBranch', () => {
+    it('maps a top-level card’s agentBranch to the card', () => {
+      const index = buildBoardIndex([card({ id: 'a', agentBranch: 'feat/a' })]);
+      expect(index.taskIdByBranch.get('feat/a')).toBe('a');
+    });
+
+    it('falls back to the legacy orch/<id> branch when none was chosen', () => {
+      const index = buildBoardIndex([card({ id: 'a', agentBranch: null })]);
+      expect(index.taskIdByBranch.get('orch/a')).toBe('a');
+    });
+
+    it('never lets a step win its parent’s branch, whichever comes first', () => {
+      const parent = card({ id: 'parent', agentBranch: 'feat/p' });
+      const step = card({ id: 'step', parentTaskId: 'parent', agentBranch: 'feat/p' });
+      expect(buildBoardIndex([step, parent]).taskIdByBranch.get('feat/p')).toBe('parent');
+      expect(buildBoardIndex([parent, step]).taskIdByBranch.get('feat/p')).toBe('parent');
+    });
+
+    it('matches neither of two top-level cards on one branch', () => {
+      const index = buildBoardIndex([
+        card({ id: 'a', agentBranch: 'feat/shared' }),
+        card({ id: 'b', agentBranch: 'feat/shared' }),
+        card({ id: 'c', agentBranch: 'feat/shared' }),
+      ]);
+      expect(index.taskIdByBranch.has('feat/shared')).toBe(false);
+    });
+
+    it('is exact and case-sensitive, as git is', () => {
+      const index = buildBoardIndex([card({ id: 'a', agentBranch: 'feat/Login' })]);
+      expect(index.taskIdByBranch.get('feat/login')).toBeUndefined();
+    });
+
+    it('skips an archived card', () => {
+      const index = buildBoardIndex([card({ id: 'a', agentBranch: 'feat/a', archivedAt: 5 })]);
+      expect(index.taskIdByBranch.has('feat/a')).toBe(false);
+    });
+  });
 });
