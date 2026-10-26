@@ -429,7 +429,9 @@ export const CHAIN_LINKS = [
   },
 ];
 
-export const ACTIVE_RUNS = [{ taskId: '3-s2', runId: 'run-3-s2' }];
+// Started 4m 12s before the fixture was built, so the Tickets peek's "Agent run" checklist
+// times the running step the way v9-1 draws it.
+export const ACTIVE_RUNS = [{ taskId: '3-s2', runId: 'run-3-s2', startedAt: now - 252_000 }];
 
 // `board.hiddenColumns` is set by `shots-board.mjs` itself (it already imports
 // `DEFAULT_SETTINGS` to merge against) to an explicit `[]` — absent means "legacy", which

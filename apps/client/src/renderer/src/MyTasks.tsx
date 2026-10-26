@@ -18,20 +18,9 @@ import {
   MessageBar,
   MessageBarActions,
   MessageBarBody,
-  Overflow,
-  OverflowItem,
-  Switch,
-  ToggleButton,
   mergeClasses,
 } from '@fluentui/react-components';
-import {
-  AddRegular,
-  ArchiveRegular,
-  ArrowRoutingRegular,
-  BranchForkRegular,
-  PanelRightContractRegular,
-  PanelRightExpandRegular,
-} from '@fluentui/react-icons';
+import { AddRegular } from '@fluentui/react-icons';
 import {
   hasPlan,
   hasRepo,
@@ -59,12 +48,7 @@ import {
 } from '@shared/taskChain';
 import { isVariantRow } from '@shared/board';
 import { AddTaskDialog } from '@ui/AddTaskDialog';
-import {
-  ArchivedCardsDialog,
-  archivedCards,
-  archivedCountLabel,
-  archivedCountTitle,
-} from '@ui/board/ArchivedCardsDialog';
+import { ArchivedCardsDialog, archivedCards } from '@ui/board/ArchivedCardsDialog';
 import { dictationAvailable } from '@ui/dictation/dictationModel';
 import { GitGraphPane } from '@ui/GitGraphPane';
 import { PaneLoading } from '@ui/PaneLoading';
@@ -79,13 +63,9 @@ import { doneSwitchLabel, doneSwitchTitle } from '@ui/board/doneSwitchLabel';
 import { ChainLegend, ChainOverlay } from '@ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@ui/board/ChainLinkPopover';
 import { LinkModeSwitch } from '@ui/board/LinkModeSwitch';
+import { BoardMoreMenu } from '@ui/board/BoardMoreMenu';
 import { BoardTitlePicker, BoardViewTabs } from '@ui/board/BoardHeader';
 import { GlassPane } from '@ui/shell/GlassPane';
-import {
-  TOOLBAR_OVERFLOW_PADDING,
-  ToolbarOverflowMenu,
-  ToolbarOverflowMenuItem,
-} from '@ui/board/ToolbarOverflow';
 import { linkView, nextLinkMode, type LinkMode } from '@ui/board/linkMode';
 import { linkChips } from '@ui/board/linkChips';
 import { buildChainDrawing, linkMidpoint } from '@ui/board/chainArrows';
@@ -1307,215 +1287,81 @@ export function MyTasks({
       {/* The board's own card (v9-7): `GlassPane` paints the surface, `layout.board` is its
           body — the header row, then the columns grid running to the bottom padding. */}
       <GlassPane className={layout.board}>
-        {/* One row, never two or three (the 2026-10-18 screenshot review). `Overflow` clones
-            its single child — the toolbar row — and hides whichever `OverflowItem`s no
-            longer fit behind the "···" menu at the end.
+        {/* One row (v9-7): title, tabs, spacer, the `Links:` pill, "…" and "+". Every other
+            board control — Show Done, Current sprint, chain focus, the commit graph, the
+            detail pane, Removed cards, Sync — lives behind "…" at every width
+            (`BoardMoreMenu`, the same menu the web board draws). */}
+        <div className={layout.header} data-board-header="">
+          {/* Which board's cards are shown, as the card's own title (v9-7): every board
+            unioned (the default), or one board alone. Fed by `board:scopes`, seeded from and
+            saved to `settings.boardScopeId` so the board opens where it was left. The one
+            control in the row that ellipsizes when the row runs short (`layout.header`). */}
+          <BoardTitlePicker
+            scope={scope}
+            scopes={scopes}
+            onScopeChange={(next) => void setBoardScope(next)}
+          />
+          <BoardViewTabs onOpenList={onOpenList} />
+          <span className={layout.grow} />
+          {/* Off/Focus/All: how the chain links over the board draw at all — distinct from
+            chain focus in "…", which FILTERS which cards are on the board. `L` cycles it
+            without reaching for the mouse (see the shortcut registered above). */}
+          <LinkModeSwitch mode={boardLinks} onChange={setBoardLinks} />
+          {/* The Done entry's count is its whole job while the column is shut: DONE is the
+            one column a card can reach without anybody dragging it there, so the numeral
+            makes a hidden card impossible to mistake for a lost one.
 
-            EVERY real control is an `OverflowItem`, the always-visible ones included
-            (`pinned`) — the overflow manager's own `occupiedSize()` only ever sums the width
-            of REGISTERED items against the container's full width (`overflowManager.js`), so
-            a plain unwrapped child is invisible to its budget math: the row would keep every
-            registered item visible, regardless of how much width an unregistered sibling had
-            already spent, and overflow the viewport instead of the menu. Only the spacer
-            stays unregistered — its `flex: 1` width is not a fixed cost to budget for. */}
-        <Overflow minimumVisible={1} padding={TOOLBAR_OVERFLOW_PADDING}>
-          <div className={layout.header} data-board-header="">
-            {/* Which board's cards are shown, as the card's own title (v9-7): every board
-              unioned (the default), or one board alone. Fed by `board:scopes`, seeded from
-              and saved to `settings.boardScopeId` so the board opens where it was left.
-              Pinned — it is the heading — and the one pinned item that may ellipsize, so the
-              row still fits at the narrowest widths (`layout.titleSlot`). */}
-            <OverflowItem id="scope" pinned>
-              <BoardTitlePicker
-                scope={scope}
-                scopes={scopes}
-                onScopeChange={(next) => void setBoardScope(next)}
-              />
-            </OverflowItem>
-            <OverflowItem id="view" pinned>
-              <BoardViewTabs onOpenList={onOpenList} />
-            </OverflowItem>
-            {/* The count is the toggle's whole job while it is off: DONE is the one column a
-              card can reach without anybody dragging it there, so a card that failed, or
-              whose ticket moved to a Done status, used to leave the board with nothing said
-              anywhere. The column stays shut until you open it — a board that opens its own
-              columns cannot be reasoned about — but the numeral makes it impossible to
-              mistake a hidden card for a lost one. */}
-            <OverflowItem id="done" pinned>
-              <Switch
-                label={doneSwitchLabel(showDone, hiddenDone)}
-                title={doneSwitchTitle(showDone, hiddenDone) ?? undefined}
-                checked={showDone}
-                onChange={(_e, d) => setShowDone(d.checked)}
-              />
-            </OverflowItem>
-            {jiraEnabled && (
-              <OverflowItem id="sprint">
-                <Switch
-                  label="Current sprint"
-                  checked={currentSprintOnly}
-                  disabled={syncing}
-                  onChange={(_e, d) => void setCurrentSprintOnly(d.checked)}
-                />
-              </OverflowItem>
-            )}
-            <span className={layout.grow} />
-            {/* Focus the board on ONE route through it: the selected card, everything it
-              waits for and everything waiting on it. A busy board is where a chain is
-              hardest to follow and where you most need to — this reduces it to the piece
-              of work you are actually reasoning about, in the board's own columns.
+            Chain focus is keyed on the ANCHOR, not on `selectedTaskId`: the two differ for a
+            selected step, and the entry has to be live in exactly the cases focus does
+            something — offering it for a selection that resolves to no card is how the
+            board went blank in the first place.
 
-              A `ToggleButton` rather than an accent-filled one: an on-state is a fact about
-              the VIEW, and this board spends colour only on things that move (the running
-              band, the travelling dash). Its pressed shade says it without borrowing that.
-
-              `disabledFocusable` rather than `disabled`: focus follows the selection, so
-              with nothing selected the control has something to SAY, and a plainly
-              disabled button can be neither hovered for its tooltip nor tabbed to.
-
-              Keyed on the ANCHOR, not on `selectedTaskId`: the two differ for a selected
-              step, and the button has to be live in exactly the cases focus does something
-              — offering it for a selection that resolves to no card is how the board went
-              blank in the first place. */}
-            <OverflowItem id="chain">
-              <ToggleButton
-                size="small"
-                appearance="subtle"
-                icon={<ArrowRoutingRegular />}
-                checked={chainFocus}
-                disabledFocusable={!focusAnchor}
-                title={
-                  !focusAnchor
-                    ? 'Pick a card first — focus follows the selected card’s chain'
-                    : chainFocus
-                      ? 'Showing this card’s chain only — click for the whole board'
-                      : 'Show only this card’s chain: what it waits for, and what waits on it'
-                }
-                onClick={() => setChainFocus((v) => !v)}
-              >
-                Chain
-              </ToggleButton>
-            </OverflowItem>
-            {/* Off/Focus/All: how the chain links over the board draw at all, distinct from
-              the Chain toggle above — that one FILTERS which cards are on the board, this
-              one changes how the links between whatever cards ARE there look. `L` cycles it
-              without reaching for the mouse (see the shortcut registered above). */}
-            <OverflowItem id="linkmode">
-              <LinkModeSwitch mode={boardLinks} onChange={setBoardLinks} />
-            </OverflowItem>
-            {/* What actually happened in the repo, beside what the board believes about it.
-              The same kind of control as the fold beside it — a view, not a filter — and off
-              by default, because it costs a `git log` on the project it is pointed at. */}
-            <OverflowItem id="graph">
-              <Button
-                size="small"
-                appearance="subtle"
-                icon={<BranchForkRegular />}
-                title={showGraph ? 'Hide the commit graph' : 'Show the repository’s commit graph'}
-                aria-label={showGraph ? 'Hide the commit graph' : 'Show the commit graph'}
-                aria-pressed={showGraph}
-                onClick={() => setShowGraph(!showGraph)}
-              />
-            </OverflowItem>
-            {/* Fold the detail pane away. An icon button rather than a third switch: this
-              one is a view control, not a filter on what the board contains. */}
-            <OverflowItem id="detail">
-              <Button
-                size="small"
-                appearance="subtle"
-                icon={showDetail ? <PanelRightContractRegular /> : <PanelRightExpandRegular />}
-                title={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
-                aria-label={showDetail ? 'Hide the detail pane' : 'Show the detail pane'}
-                aria-pressed={showDetail}
-                onClick={() => setShowDetail(!showDetail)}
-              />
-            </OverflowItem>
-            {/* What is NOT on the board. Rendered only when something has left it: on a healthy
-              board this is an empty list, and a permanent button for an empty list is a
-              permanent invitation to check whether anything has gone missing.
-
-              The bare count, because the archive glyph beside it already supplies the noun —
-              and no colour, no badge: these are cards that are not moving, and a count that
-              demanded attention would make an ordinary sync look like an incident. */}
-            {removedCards.length > 0 && (
-              <OverflowItem id="archived">
-                <Button
-                  size="small"
-                  appearance="subtle"
-                  icon={<ArchiveRegular />}
-                  title={archivedCountTitle(removedCards.length)}
-                  aria-label={archivedCountTitle(removedCards.length)}
-                  onClick={() => setArchivedOpenedAt(Date.now())}
-                >
-                  {archivedCountLabel(removedCards.length)}
-                </Button>
-              </OverflowItem>
-            )}
-            {/* One button for every enabled service — it was called "Sync JIRA" while also
-              refreshing GitLab, which made the merge-request rows look stale on purpose. */}
-            {(jiraEnabled || gitlabEnabled || githubEnabled) && (
-              <OverflowItem id="sync">
-                <Button size="small" disabled={syncing} onClick={() => void sync()}>
-                  {syncing ? 'Syncing…' : 'Sync'}
-                </Button>
-              </OverflowItem>
-            )}
-            <ToolbarOverflowMenu>
-              {jiraEnabled && (
-                <ToolbarOverflowMenuItem
-                  id="sprint"
-                  onClick={() => void setCurrentSprintOnly(!currentSprintOnly)}
-                >
-                  {currentSprintOnly ? '✓ ' : ''}Current sprint
-                </ToolbarOverflowMenuItem>
-              )}
-              <ToolbarOverflowMenuItem id="chain" onClick={() => setChainFocus((v) => !v)}>
-                {chainFocus ? '✓ ' : ''}Focus this card’s chain
-              </ToolbarOverflowMenuItem>
-              <ToolbarOverflowMenuItem
-                id="linkmode"
-                onClick={() => setBoardLinks(nextLinkMode(boardLinks))}
-              >
-                Chain links:{' '}
-                {boardLinks === 'off' ? 'Off' : boardLinks === 'focus' ? 'Focus' : 'All'}
-              </ToolbarOverflowMenuItem>
-              <ToolbarOverflowMenuItem id="graph" onClick={() => setShowGraph(!showGraph)}>
-                {showGraph ? 'Hide' : 'Show'} the commit graph
-              </ToolbarOverflowMenuItem>
-              <ToolbarOverflowMenuItem id="detail" onClick={() => setShowDetail(!showDetail)}>
-                {showDetail ? 'Hide' : 'Show'} the detail pane
-              </ToolbarOverflowMenuItem>
-              {removedCards.length > 0 && (
-                <ToolbarOverflowMenuItem
-                  id="archived"
-                  onClick={() => setArchivedOpenedAt(Date.now())}
-                >
-                  {archivedCountLabel(removedCards.length)}
-                </ToolbarOverflowMenuItem>
-              )}
-              {(jiraEnabled || gitlabEnabled || githubEnabled) && (
-                <ToolbarOverflowMenuItem id="sync" onClick={() => void sync()}>
-                  {syncing ? 'Syncing…' : 'Sync'}
-                </ToolbarOverflowMenuItem>
-              )}
-            </ToolbarOverflowMenu>
-            {/* The v9 mockup's brand-filled square "+", the row's LAST control — after the
-              "···" menu, so the one primary action sits at the far right edge. */}
-            <OverflowItem id="add" pinned>
-              <Button
-                size="small"
-                appearance="primary"
-                icon={<AddRegular />}
-                title="Add task"
-                aria-label="Add task"
-                onClick={() => {
-                  setAddColumn(null);
-                  setAddOpen(true);
-                }}
-              />
-            </OverflowItem>
-          </div>
-        </Overflow>
+            Removed cards is offered only when something has left the board: on a healthy
+            board that is an empty list, and a permanent entry for one is a permanent
+            invitation to check whether anything has gone missing. */}
+          <BoardMoreMenu
+            doneLabel={doneSwitchLabel(showDone, hiddenDone)}
+            doneTitle={doneSwitchTitle(showDone, hiddenDone)}
+            doneChecked={showDone}
+            onToggleDone={() => setShowDone(!showDone)}
+            sprint={
+              jiraEnabled
+                ? {
+                    checked: currentSprintOnly,
+                    disabled: syncing,
+                    onToggle: () => void setCurrentSprintOnly(!currentSprintOnly),
+                  }
+                : undefined
+            }
+            chainFocus={chainFocus}
+            chainFocusDisabled={!focusAnchor}
+            onToggleChainFocus={() => setChainFocus((v) => !v)}
+            showGraph={showGraph}
+            onToggleGraph={() => setShowGraph(!showGraph)}
+            showDetail={showDetail}
+            onToggleDetail={() => setShowDetail(!showDetail)}
+            archivedCount={removedCards.length}
+            onOpenArchived={() => setArchivedOpenedAt(Date.now())}
+            sync={
+              jiraEnabled || gitlabEnabled || githubEnabled
+                ? { syncing, onSync: () => void sync() }
+                : undefined
+            }
+          />
+          {/* The v9 mockup's brand-filled square "+", the row's LAST control, so the one
+            primary action sits at the far right edge. */}
+          <Button
+            size="small"
+            appearance="primary"
+            icon={<AddRegular />}
+            title="Add task"
+            aria-label="Add task"
+            onClick={() => {
+              setAddColumn(null);
+              setAddOpen(true);
+            }}
+          />
+        </div>
 
         {error && (
           <MessageBar intent="error">

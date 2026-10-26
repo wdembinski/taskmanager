@@ -37,15 +37,10 @@ import {
   MessageBarActions,
   MessageBarBody,
   Text,
-  ToggleButton,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import {
-  DismissRegular,
-  PanelRightContractRegular,
-  PanelRightExpandRegular,
-} from '@fluentui/react-icons';
+import { DismissRegular } from '@fluentui/react-icons';
 import { agentProjectsOf } from '@tm/shared/agentProjects';
 import '@xyflow/react/dist/style.css';
 import { ownsTickets, type Project } from '@tm/shared/model';
@@ -62,10 +57,12 @@ import {
   isKeyTargetEditable,
   issueBreadcrumb,
   issueViewReduce,
+  peekEpic,
   type KeyTargetLike,
 } from '../issues/issueView';
 import { BacklogTable } from './BacklogTable';
 import { GraphPane } from './GraphPane';
+import { IssueListMoreMenu, type IssueViewMenu } from './IssueListMoreMenu';
 import { EMPTY_HISTORY, backHistory, pushHistory, type PanelHistory } from './panelHistory';
 import { ArchivedPane } from './ArchivedPane';
 import { ProjectSwitcher } from './ProjectSwitcher';
@@ -384,8 +381,8 @@ export function Projects({
       ticketFold={{ key: 'tm.projects.ticketOpen', defaultOpen: true }}
       readOnlyNotice={readOnlyNotice}
       hostUnreachable={hostUnreachable}
-      // Full screen is the two-column issue page; the peek keeps the stacked pane.
-      layout={viewState.layout === 'full' ? 'full' : undefined}
+      // Full screen is the two-column issue page; the peek is its read-only summary.
+      layout={viewState.layout === 'full' ? 'full' : 'peek'}
     />
   );
 
@@ -399,92 +396,53 @@ export function Projects({
     );
   }
 
+  // No chip on the Archived view (F14.8) — it is not scoped to picking a project to browse the
+  // way Backlog/Timeline/Graph are; its own Projects tab lists every archived ticket project
+  // regardless of which one is open here.
+  const projectChip =
+    projects.length > 0 && view !== 'archived' ? (
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        onSelect={setSelectedProjectId}
+      />
+    ) : null;
+
+  // The View switch and the peek toggle, folded into the list header's "…". The peek entry
+  // dispatches `space`, the same key its title names, and is disabled with no selection:
+  // there is nothing yet for a peek to show.
+  const viewMenu: IssueViewMenu | undefined = selectedProject
+    ? {
+        view,
+        onViewChange: setView,
+        peekOpen: viewState.layout === 'peek',
+        peekDisabled: !viewState.selectedId,
+        onTogglePeek: () => dispatch({ type: 'space' }),
+      }
+    : undefined;
+
   return (
     <div className={styles.root} onKeyDown={onKeyDown}>
       <GlassPane className={styles.backlog}>
-        <div className={styles.header}>
-          {/* The Backlog draws "Issues" itself, beside its Active / Backlog / All tabs. */}
-          {!(selectedProject && view === 'backlog') && (
+        {/* The Backlog draws the one header row itself (chip, "Issues", its Active / Backlog
+            / All tabs, search, "…", "+"), so there is no strip above it. Every other view
+            gets this slim row: chip, "Issues", and the same "…" to switch back. */}
+        {!(selectedProject && view === 'backlog') && (
+          <div className={styles.header}>
+            {projectChip}
             <Text as="h2" className={styles.title}>
               Issues
             </Text>
-          )}
-          {projects.length === 0 ? (
-            <Body1 className={styles.hint}>
-              No ticket projects yet — add one on the Projects tab and choose &quot;its own ticket
-              board&quot;.
-            </Body1>
-          ) : (
-            <>
-              {/* No switcher on the Archived view (F14.8) — it is not scoped to picking a
-                  project to browse the way Backlog/Timeline/Graph are; its own Projects tab
-                  lists every archived ticket project regardless of which one is open here. */}
-              {view !== 'archived' && (
-                <ProjectSwitcher
-                  projects={projects}
-                  selectedProjectId={selectedProjectId}
-                  onSelect={setSelectedProjectId}
-                />
-              )}
-              {selectedProject && (
-                <>
-                  <ToggleButton
-                    size="small"
-                    appearance="subtle"
-                    checked={view === 'backlog'}
-                    onClick={() => setView('backlog')}
-                  >
-                    Backlog
-                  </ToggleButton>
-                  <ToggleButton
-                    size="small"
-                    appearance="subtle"
-                    checked={view === 'timeline'}
-                    onClick={() => setView('timeline')}
-                  >
-                    Timeline
-                  </ToggleButton>
-                  <ToggleButton
-                    size="small"
-                    appearance="subtle"
-                    checked={view === 'graph'}
-                    onClick={() => setView('graph')}
-                  >
-                    Graph
-                  </ToggleButton>
-                  <div className={styles.headerSpacer} />
-                  {/* The peek toggle — dispatches `space`, the same key this button's title
-                      names. Disabled with no selection: there is nothing yet for a peek to
-                      show. */}
-                  <Button
-                    size="small"
-                    appearance="subtle"
-                    icon={
-                      viewState.layout === 'peek' ? (
-                        <PanelRightContractRegular />
-                      ) : (
-                        <PanelRightExpandRegular />
-                      )
-                    }
-                    title={
-                      viewState.layout === 'peek'
-                        ? 'Close the ticket panel'
-                        : 'Open the ticket panel'
-                    }
-                    aria-label={
-                      viewState.layout === 'peek'
-                        ? 'Close the ticket panel'
-                        : 'Open the ticket panel'
-                    }
-                    aria-pressed={viewState.layout === 'peek'}
-                    disabled={!viewState.selectedId}
-                    onClick={() => dispatch({ type: 'space' })}
-                  />
-                </>
-              )}
-            </>
-          )}
-        </div>
+            {projects.length === 0 && (
+              <Body1 className={styles.hint}>
+                No ticket projects yet — add one on the Projects tab and choose &quot;its own ticket
+                board&quot;.
+              </Body1>
+            )}
+            <div className={styles.headerSpacer} />
+            {viewMenu && <IssueListMoreMenu viewMenu={viewMenu} />}
+          </div>
+        )}
         {viewState.notice && (
           <MessageBar intent="info">
             <MessageBarBody>{viewState.notice}</MessageBarBody>
@@ -523,6 +481,8 @@ export function Projects({
                 archiveIndex={archiveIndex}
                 includeArchived={includeArchived}
                 onIncludeArchivedChange={setIncludeArchived}
+                leading={projectChip}
+                viewMenu={viewMenu}
               />
             )}
             {view === 'timeline' && (
@@ -564,8 +524,8 @@ export function Projects({
 
       {viewState.layout === 'peek' && viewState.selectedId && (
         <IssuePeek
-          breadcrumb={breadcrumb}
           ticketKey={selectedTask?.ticketKey ?? selectedTask?.externalKey ?? undefined}
+          epic={selectedTask ? peekEpic(selectedTask, ticketsById) : undefined}
           onExpand={() => dispatch({ type: 'expand' })}
           onClose={() => dispatch({ type: 'close' })}
         >

@@ -1,9 +1,13 @@
 /**
  * The two surfaces `issueView.ts`'s `layout` puts a ticket in, on the Tickets screen
  * (F13.13): `IssuePeek`, a slide-in panel beside the list, and `IssueFullPage`, which
- * replaces the list entirely. Each takes the same `TaskDetailHost` element as `children` —
- * both panes show the identical pane, just framed differently — so `Projects.tsx` builds it
- * once and hands it to whichever of the two is showing.
+ * replaces the list entirely. Each takes the same `TaskDetailHost` element as `children`, so
+ * `Projects.tsx` builds it once and hands it to whichever of the two is showing; the host
+ * itself draws the peek's read-only body or the full page's layout.
+ *
+ * The headers differ, per v9-1 and v9-2: the peek prints just the mono key and the muted epic
+ * title (`TM-71   F4 Linear integration`), wrapping rather than ellipsized, while the full
+ * page keeps the whole project › milestone › epic breadcrumb.
  *
  * Both sit on `GlassPane` (`shell/GlassPane.tsx`), per F13's restraint rule that glass means
  * *panes* — matching the attached peek and full-screen mockups. `IssuePeek` keeps the 40%
@@ -13,7 +17,7 @@
  * over `GlassPane`'s own styles for any property both declare.
  */
 import type { ReactNode } from 'react';
-import { Button, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
+import { Button, Text, makeStyles, tokens } from '@fluentui/react-components';
 import { ArrowLeftRegular, ArrowMaximizeRegular, DismissRegular } from '@fluentui/react-icons';
 import { GlassPane } from '../shell/GlassPane';
 
@@ -40,10 +44,27 @@ const useStyles = makeStyles({
     gap: '2px',
     padding: '6px',
   },
-  // Takes the header's free width so the two icons stay pinned right, and lets the crumb
-  // itself shrink to an ellipsis rather than push them out.
-  peekCrumb: { flex: 1, minWidth: 0, paddingLeft: '10px', paddingRight: '6px' },
-  peekKey: { marginRight: '10px' },
+  // Takes the header's free width so the two icons stay pinned right; a long epic title wraps
+  // onto a second line instead of being cut to an ellipsis.
+  peekCrumb: {
+    flex: 1,
+    minWidth: 0,
+    paddingLeft: '10px',
+    paddingRight: '6px',
+    whiteSpace: 'normal',
+    overflowWrap: 'anywhere',
+  },
+  // The list rows' key token (`IssueRow`'s `key`): mono, small, faint.
+  peekKey: {
+    marginRight: '10px',
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+  },
+  peekEpic: {
+    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
+  },
   peekBody: { flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' },
   full: {
     flex: 1,
@@ -71,10 +92,11 @@ const useStyles = makeStyles({
 });
 
 export interface IssuePeekProps {
-  /** The project/milestone/epic breadcrumb (`issueBreadcrumb`), same as `IssueFullPage`'s. */
-  breadcrumb: readonly string[];
-  /** The ticket's own key (`TM-71`, or a tracker's `ENG-1`), drawn ahead of the crumbs. */
+  /** The ticket's own key (`TM-71`, or a tracker's `ENG-1`), drawn first, in mono. */
   ticketKey?: string;
+  /** The ticket's epic title, drawn muted after the key — omitted when it has no epic. The
+   *  project and milestone stay on `IssueFullPage`'s breadcrumb only. */
+  epic?: string;
   /** The peek header's "Open full screen" icon button — dispatches `expand`. */
   onExpand: () => void;
   /** The peek header's "Close" icon button — dispatches `close`. */
@@ -84,10 +106,10 @@ export interface IssuePeekProps {
 }
 
 /** The peek: a `GlassPane` beside the list, matching the attached peek mockup's two
- *  top-right icons, with the key and breadcrumb to their left. */
+ *  top-right icons, with the key and epic to their left. */
 export function IssuePeek({
-  breadcrumb,
   ticketKey,
+  epic,
   onExpand,
   onClose,
   children,
@@ -96,9 +118,9 @@ export function IssuePeek({
   return (
     <GlassPane className={styles.peek}>
       <div className={styles.peekHeader}>
-        <Text className={mergeClasses(styles.crumbText, styles.peekCrumb)} data-issue-breadcrumb>
+        <Text className={styles.peekCrumb} data-issue-peek-crumb>
           {ticketKey && <span className={styles.peekKey}>{ticketKey}</span>}
-          {breadcrumb.join(' › ')}
+          {epic && <span className={styles.peekEpic}>{epic}</span>}
         </Text>
         <Button
           appearance="subtle"

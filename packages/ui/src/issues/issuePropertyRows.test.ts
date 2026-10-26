@@ -6,6 +6,7 @@ import {
   formatDue,
   issuePropertyRows,
   nextEditing,
+  peekAssigneeValue,
   type IssuePropertiesInput,
 } from './issuePropertyRows';
 
@@ -177,5 +178,42 @@ describe('nextEditing', () => {
 
   it('never opens one while read-only', () => {
     expect(nextEditing(null, { type: 'open', editor: 'status' }, true)).toBeNull();
+  });
+});
+
+describe('peekAssigneeValue', () => {
+  const card = { assigneeId: null };
+
+  it('names the machine the agent runs on', () => {
+    expect(
+      peekAssigneeValue({ task: card, people, agentName: 'Fixture', hostname: 'WD-DESKTOP' }),
+    ).toBe('Agent on WD-DESKTOP');
+  });
+
+  it("falls back to the agent project's name when the hostname is unknown", () => {
+    expect(peekAssigneeValue({ task: card, people, agentName: 'Fixture' })).toBe(
+      'Agent on Fixture',
+    );
+    expect(peekAssigneeValue({ task: card, people, agentName: 'Fixture', hostname: '  ' })).toBe(
+      'Agent on Fixture',
+    );
+  });
+
+  it('leads with the person when one is assigned as well', () => {
+    expect(
+      peekAssigneeValue({
+        task: { assigneeId: 'p1' },
+        people,
+        agentName: 'Fixture',
+        hostname: 'WD-DESKTOP',
+      }),
+    ).toBe('Wojciech · Agent on WD-DESKTOP');
+  });
+
+  it('is the person alone without an agent, and null with nobody', () => {
+    expect(peekAssigneeValue({ task: { assigneeId: 'p1' }, people, hostname: 'WD-DESKTOP' })).toBe(
+      'Wojciech',
+    );
+    expect(peekAssigneeValue({ task: card, people, hostname: 'WD-DESKTOP' })).toBeNull();
   });
 });

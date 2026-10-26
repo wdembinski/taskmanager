@@ -5,6 +5,12 @@
  */
 import { BOOT_CHANNELS } from '../../fixtures/uiShotsFixture.mjs';
 
+/** `'13a'`'s ticket text — the peek reads it under the title, the full page in its main column. */
+const DESCRIPTION_13A =
+  'The retry queue drains in the background, but nobody can see it. Show its depth and ' +
+  'the last failure on the dashboard, refreshed every minute.\n\n' +
+  'Done means: the dashboard card shows the queue depth and the newest failure.';
+
 /**
  * The card `'issue-row:first'` opens (`'13a'`, see `30-attachments.mjs`'s own note on that
  * row order) carrying an open owner decision, a milestone and an epic — handed to `issue-peek` alone through its
@@ -21,6 +27,7 @@ const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
         // header breadcrumb draws the full `Project › Milestone › Epic` after the key.
         milestoneId: 'ms-mixed',
         epicTaskId: 'sb-7',
+        externalDescription: DESCRIPTION_13A,
       }
     : // Landed, so the "Blocked by" row below reads Done + "merged" (an `after-merge` arrow
       // is satisfied by `landedAt`, not by the column).
@@ -28,6 +35,38 @@ const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
       ? { ...t, landedAt: Date.now() - 86_400_000 }
       : t,
 );
+
+/**
+ * Two steps under `'13a'`, so the peek draws v9-1's "Agent run" checklist between the property
+ * rows and the timeline — cloned from `'3-s1'` (a plain fixture step) for every other field.
+ */
+const STEP_TEMPLATE = BOOT_CHANNELS['board:tasks'].find((t) => t.id === '3-s1');
+const PEEK_STEPS = [
+  { title: 'Read the queue depth from the worker', status: 'done' },
+  { title: 'Draw the dashboard card', status: 'pending' },
+].map((step, order) => ({
+  ...STEP_TEMPLATE,
+  ...step,
+  id: `13a-s${order + 1}`,
+  parentTaskId: '13a',
+  order,
+}));
+
+/** `'13a'`'s own note, dated off the real clock (see `LIST_ACTIVITY`), for the timeline. */
+const PEEK_ACTIVITY = {
+  ...BOOT_CHANNELS['task:activity'],
+  byArgTable: {
+    ...BOOT_CHANNELS['task:activity'].byArgTable,
+    '13a': [
+      {
+        kind: 'chat',
+        id: 40,
+        body: 'The yearly plan is fine if the discount holds past the first renewal.',
+        createdAt: Date.now() - 12 * 60_000,
+      },
+    ],
+  },
+};
 
 /**
  * Two order arrows INTO `'13a'` on top of the fixture's own `13a → 13b`, so the Links
@@ -55,10 +94,7 @@ const FULL_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
         workedAt: null,
         sessionId: null,
         agentBranch: 'fx-13a-retry-queue',
-        externalDescription:
-          'The retry queue drains in the background, but nobody can see it. Show its depth and ' +
-          'the last failure on the dashboard, refreshed every minute.\n\n' +
-          'Done means: the dashboard card shows the queue depth and the newest failure.',
+        externalDescription: DESCRIPTION_13A,
         milestoneId: 'ms-mixed',
         epicTaskId: 'sb-7',
         assigneeId: 'person-human',
@@ -109,14 +145,50 @@ const FULL_OVERRIDES = {
  * The run pill and the PR refs need nothing extra here: the base `board:tasks` already carries
  * FX-3's four steps (`3-s1`…`3-s4`, step 2 running — "Step 2 of 4"), and the base
  * `mr:mergeRequests` already holds `!190`/`!191` on the In Review rows `'6'`/`'7'`.
+ *
+ * `'3'` is also filed under a milestone (`50-sidebar.mjs`'s `ms-mixed`) and given ticket text,
+ * so the peek draws the mockup's Milestone row with its flag and the description under the
+ * title; its header's epic is the card's own tracker epic (`externalEpicName`).
  */
 const LIST_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
   t.id === '3'
-    ? { ...t, dueAt: Date.now() + 3 * 86_400_000 }
+    ? {
+        ...t,
+        dueAt: Date.now() + 3 * 86_400_000,
+        milestoneId: 'ms-mixed',
+        externalDescription:
+          'A Linear-backed card shows its identifier chip linking to Linear; Linear comments ' +
+          'interleave in the timeline with an add-comment box.',
+      }
     : t.id === '4'
       ? { ...t, dueAt: Date.now(), assigneeId: 'person-human' }
       : t,
 );
+
+/**
+ * `'3'`'s activity re-dated off the real `Date.now()`, for the same reason as `LIST_TASKS`'
+ * dates: the peek's comment ages tick on the browser's own clock (`useElapsedClock`), so the
+ * fixture's fixed 2026-01-15 `now` drew the note as "284d" old instead of the mockup's "12m".
+ */
+const LIST_ACTIVITY = {
+  ...BOOT_CHANNELS['task:activity'],
+  byArgTable: {
+    ...BOOT_CHANNELS['task:activity'].byArgTable,
+    3: BOOT_CHANNELS['task:activity'].byArgTable[3].map((entry, i) => ({
+      ...entry,
+      createdAt: Date.now() - (12 + i) * 60_000,
+    })),
+  },
+};
+
+const LIST_OVERRIDES = { 'board:tasks': LIST_TASKS, 'task:activity': LIST_ACTIVITY };
+
+/** What both peek rows hand the stub: the decision card with its steps, arrows and note. */
+const PEEK_OVERRIDES = {
+  'board:tasks': [...DECISION_TASKS, ...PEEK_STEPS],
+  'chain:links': PEEK_CHAIN_LINKS,
+  'task:activity': PEEK_ACTIVITY,
+};
 
 export default [
   {
@@ -138,7 +210,7 @@ export default [
     expect: '[role="option"][aria-selected="true"]',
     allowPersistentSpinner: true,
     mockup: 'v9-1-issues-list-light.svg',
-    channelOverrides: { 'board:tasks': LIST_TASKS },
+    channelOverrides: LIST_OVERRIDES,
   },
   {
     name: 'issue-list-dark',
@@ -149,51 +221,47 @@ export default [
     expect: '[role="option"][aria-selected="true"]',
     allowPersistentSpinner: true,
     mockup: 'v9-3-issues-list-dark.svg',
-    channelOverrides: { 'board:tasks': LIST_TASKS },
+    channelOverrides: LIST_OVERRIDES,
   },
   {
     // `IssueViewLayout` (packages/ui/src/issues/issueView.ts) opens 'closed' -> 'peek' on the
     // first click of an issue row — addressed by position (`'issue-row:first'`), not by the
     // fixture's own title text; see `SCREENS`' own doc comment on that sentinel. The card it
     // opens carries an open decision (`DECISION_TASKS`), so the shot proves `DecisionBanner`
-    // draws at the top of the pane — the question, the answer box, Answer and Withdraw.
+    // still draws in the read-only peek (`IssuePeekBody`) — compact, one "Decision needed"
+    // line with Answer, beside the one-line "Visual sign-off" row with Review.
     name: 'issue-peek',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    // The pane as it opens, not scrolled: the decision banner sits fixed above `body`
-    // (`TaskDetail.tsx`), so the row once scrolled to the Links section drew the title row
-    // and the details band scrolled out of sight under it, which read as the banner painting
-    // over them. `layoutCheck` holds the title row in full and clear of the banner. The Links
-    // section past the fold is `issue-peek-1100x800`'s own `layoutCheck`.
+    // The pane as it opens, not scrolled. `layoutCheck` holds the Status/Assignee/Milestone/
+    // Due rows in full, clear of the decision banner below them and of the Reply box pinned
+    // to the pane's foot.
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
     expect: '[data-decision-banner]',
     layoutCheck: {
-      visible: '[data-title-row]',
-      clear: ['[data-decision-banner]'],
+      visible: '[data-peek-props]',
+      clear: ['[data-decision-banner]', 'input[aria-label="Reply"]'],
     },
-    mockup: 'v9-2-issue-detail-light.svg',
-    channelOverrides: {
-      'board:tasks': DECISION_TASKS,
-      'chain:links': PEEK_CHAIN_LINKS,
-    },
+    mockup: 'v9-1-issues-list-light.svg',
+    channelOverrides: PEEK_OVERRIDES,
   },
   {
-    // Same pane as `issue-peek`, at the shorter 1100x800 viewport where band + the
-    // conversation's floor outgrow the pane — proves `TaskDetail.tsx`'s `body` scrolls
-    // rather than squeezing `headBand`/`cell`, so the Links heading lays out in full and
-    // clear of the conversation.
+    // Same peek as `issue-peek`, at the shorter 1100x800 viewport where the peek is ~300px
+    // wide — proves the label/value rows still lay out in full above the Reply box, which
+    // stays pinned to the pane's foot while the rest scrolls.
     name: 'issue-peek-1100x800',
     app: 'client',
     viewport: { width: 1100, height: 800 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
-    expect: 'button[aria-label="Open full screen"]',
+    expect: '[data-decision-banner]',
     layoutCheck: {
-      visible: '[data-links-heading]',
-      clear: ['[role="log"][aria-label="Conversation"]'],
+      visible: '[data-peek-props]',
+      clear: ['[data-decision-banner]', 'input[aria-label="Reply"]'],
     },
-    mockup: 'v9-2-issue-detail-light.svg',
+    mockup: 'v9-1-issues-list-light.svg',
+    channelOverrides: PEEK_OVERRIDES,
   },
   {
     // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full' —

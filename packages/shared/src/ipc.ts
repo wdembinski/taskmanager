@@ -371,6 +371,11 @@ export interface AppInfo {
   node: string;
   chrome: string;
   platform: NodeJS.Platform;
+  /**
+   * The desktop's machine name (`os.hostname()`) — where its agents run. Relayed, so the web
+   * reads the desktop's own; optional because a desktop older than the field never sends it.
+   */
+  hostname?: string;
 }
 
 /**

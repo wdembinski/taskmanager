@@ -25,6 +25,11 @@
  * and the selected one takes the inverted neutral fill, the others a `colorNeutralStroke2`
  * outline. The chip is local state: leaving the tab resets it to "Needs you", which is
  * everything.
+ *
+ * Each item is an `InboxCard` (`InboxCardView.tsx`): kind line, mono key + task title, the
+ * question, and inline actions that go through the same `answer` (and the same `opened`) the
+ * detail view uses — `inboxCard.ts` decides which actions a card offers. The key comes from a
+ * `board:tasks` read, since an `AttentionItem` carries none.
  */
 import {
   useCallback,
@@ -38,11 +43,9 @@ import {
 import {
   Body1,
   Button,
-  Caption1,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
-  Text,
   makeStyles,
   mergeClasses,
   tokens,
@@ -50,12 +53,13 @@ import {
 import { ArrowLeftRegular, DismissRegular } from '@fluentui/react-icons';
 import type { AttentionAnswer, AttentionItem } from '@tm/shared/attention';
 import type { TaskAttachment } from '@tm/shared/attachments';
-import { InboxItem, KindBadge } from './Attention';
+import { InboxItem } from './Attention';
 import { invokeAttentionAnswer } from './attentionAnswer';
 import { questionDeadline, sortByUrgency } from './attentionUrgency';
 import { CompactAnswerView } from './CompactAnswerView';
-import { formatAge, formatCountdown } from './countdown';
 import { draftKey, parkDraft, readDraft } from './drafts';
+import { InboxCard } from './InboxCardView';
+import { runInboxCardAction, taskDisplayKey } from './inboxCard';
 import { INBOX_CHIPS, filterInbox, type InboxChip } from './inboxFilter';
 import {
   EMPTY_INBOX_STATE,
@@ -154,26 +158,6 @@ const useStyles = makeStyles({
     padding: '12px',
     overflowY: 'auto',
     minHeight: 0,
-  },
-  // Wraps each row's own `Button` — see the module header on why glass wraps rather than
-  // replaces it (the 44px touch target and click behaviour stay the Button's).
-  card: { padding: '12px' },
-  row: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    minHeight: '44px',
-    width: '100%',
-    justifyContent: 'flex-start',
-    textAlign: 'left',
-  },
-  rowTitle: { flex: 1, minWidth: 0 },
-  rowMeta: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    flexShrink: 0,
-    color: tokens.colorNeutralForeground3,
   },
   empty: { color: tokens.colorNeutralForeground3, padding: '12px 20px' },
   detail: { display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', minHeight: 0 },
@@ -284,6 +268,41 @@ export function CompactInbox(): JSX.Element {
     };
   }, [transport]);
   const attachmentsByTask = useMemo(() => byTask(attachments), [attachments]);
+
+  // Each card's mono ticket key — `AttentionItem` carries none, so it comes from the board.
+  // Best-effort: a failed read leaves the map empty and the cards print the title alone.
+  const [taskKeys, setTaskKeys] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    let live = true;
+    transport.invoke('board:tasks', 'all').then(
+      (tasks) => {
+        if (!live) return;
+        const keys = new Map<string, string>();
+        for (const task of tasks) {
+          const key = taskDisplayKey(task);
+          if (key) keys.set(task.id, key);
+        }
+        setTaskKeys(keys);
+      },
+      () => undefined,
+    );
+    const off = transport.on('task:changed', ({ task }) => {
+      const key = taskDisplayKey(task);
+      setTaskKeys((prev) => {
+        if ((prev.get(task.id) ?? null) === key) return prev;
+        const next = new Map(prev);
+        if (key) next.set(task.id, key);
+        else next.delete(task.id);
+        return next;
+      });
+    });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [transport]);
+
+  const open = useCallback((id: string) => dispatch({ type: 'opened', id }), []);
 
   const hasCountingItem = useMemo(
     () => (state.items ?? []).some((item) => questionDeadline(item, now)?.kind === 'counting'),
@@ -446,33 +465,17 @@ export function CompactInbox(): JSX.Element {
         </Body1>
       ) : (
         <div className={styles.list}>
-          {sorted.map((item) => {
-            const deadline = questionDeadline(item, now);
-            return (
-              <GlassPane key={item.id} className={styles.card}>
-                <Button
-                  appearance="subtle"
-                  className={styles.row}
-                  onClick={() => dispatch({ type: 'opened', id: item.id })}
-                >
-                  <Text truncate wrap={false} className={styles.rowTitle}>
-                    {item.taskTitle}
-                  </Text>
-                  <div className={styles.rowMeta}>
-                    <KindBadge kind={item.kind} />
-                    <Caption1>{formatAge(item.createdAt, now)}</Caption1>
-                    {deadline && (
-                      <Caption1>
-                        {deadline.kind === 'expired'
-                          ? 'expired'
-                          : formatCountdown(deadline.remainingMs)}
-                      </Caption1>
-                    )}
-                  </div>
-                </Button>
-              </GlassPane>
-            );
-          })}
+          {sorted.map((item) => (
+            <InboxCard
+              key={item.id}
+              item={item}
+              taskKey={taskKeys.get(item.taskId) ?? null}
+              now={now}
+              busy={state.answeringId === item.id}
+              onOpen={() => open(item.id)}
+              onAction={(action) => runInboxCardAction(item, action, { answer, open })}
+            />
+          ))}
         </div>
       )}
     </div>

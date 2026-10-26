@@ -155,6 +155,25 @@ export function issuePropertyRows(input: IssuePropertiesInput): PropertyRow[] {
   );
 }
 
+/**
+ * The peek's Assignee value, after v9-1's "Agent on WD-DESKTOP": a delegated card names the
+ * machine its agent runs on — the desktop's `hostname` — falling back to the agent project's
+ * name when that is unknown (an older desktop seen from the web). A person assigned as well
+ * leads: `<person> · Agent on <machine>`. `null` when nobody is assigned. Only the peek reads
+ * this; the full page's `issuePropertyRows` keeps its own `<person> / <agent>` text.
+ */
+export function peekAssigneeValue(input: {
+  task: Pick<Task, 'assigneeId'>;
+  people: readonly Person[];
+  agentName?: string;
+  hostname?: string;
+}): string | null {
+  const person = input.people.find((p) => p.id === input.task.assigneeId)?.name;
+  const machine = input.hostname?.trim() || input.agentName;
+  const agent = input.agentName ? `Agent on ${machine}` : undefined;
+  return [person, agent].filter(Boolean).join(' · ') || null;
+}
+
 /** What can happen to the row being edited. */
 export type PropertyEditEvent =
   | { type: 'open'; editor: PropertyEditor }

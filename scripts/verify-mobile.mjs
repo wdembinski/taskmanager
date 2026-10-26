@@ -933,6 +933,18 @@ async function row1_signIn(cdp, origin, size) {
   check(`${label}: a seeded token renders the seeded inbox`, true);
   await assertNoOverflow(cdp, label);
   await screenshot(cdp, `row1-${size.label}-signed-in`);
+
+  // The card's own inline option (`InboxCard`): one tap from the LIST answers a single-select
+  // question without opening it — same `attention:answer` the detail view sends.
+  await tap(cdp, 'Yes');
+  await waitFor(async () => state.answeredLog.length === 1, {
+    label: 'inline attention:answer recorded',
+  });
+  check(
+    `${label}: tapping a card's inline option answers it from the list`,
+    state.answeredLog[0]?.id === 'seed-1' &&
+      JSON.stringify(state.answeredLog[0]?.answer?.selections) === JSON.stringify([['Yes']]),
+  );
 }
 
 async function row2_answerQuestion(cdp, origin, size) {

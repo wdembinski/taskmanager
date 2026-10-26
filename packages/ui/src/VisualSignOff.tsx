@@ -22,6 +22,11 @@
  * section cannot get handed down, since nothing above it reloads on its behalf. Flagging
  * changes ALSO hands the composer a starting line (`onNeedsChanges`), so the human's own words
  * land right under a message that already says which screens they mean.
+ *
+ * `compact` is the issue peek's form: one line — a glyph, "Visual sign-off · <state>"
+ * (`visualSignOffSummary`) and a Review button that expands the full section in place, with a
+ * Collapse link to fold it again. Only `IssuePeekBody` passes it; the board pane and the full
+ * page render the section as before.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -33,6 +38,7 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
+  Link,
   MessageBar,
   MessageBarBody,
   Spinner,
@@ -45,6 +51,7 @@ import {
   CheckmarkCircleRegular,
   ClockRegular,
   DismissRegular,
+  ImageMultipleRegular,
   OpenRegular,
   WarningRegular,
 } from '@fluentui/react-icons';
@@ -114,6 +121,26 @@ const useStyles = makeStyles({
   dialogImages: { display: 'flex', gap: '12px', flexWrap: 'wrap' },
   dialogFigure: { flex: '1 1 0', minWidth: 0 },
   dialogImg: { display: 'block', width: '100%', borderRadius: tokens.borderRadiusSmall },
+  compact: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    minWidth: 0,
+    padding: '4px 4px 4px 8px',
+    borderRadius: tokens.borderRadiusMedium,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  compactGlyph: { flexShrink: 0, fontSize: '16px', color: tokens.colorNeutralForeground3 },
+  compactText: {
+    flex: '1 1 auto',
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  compactLabel: { fontWeight: tokens.fontWeightSemibold },
+  compactButton: { flexShrink: 0 },
+  collapse: { alignSelf: 'flex-start' },
 });
 
 export interface VisualSignOffProps {
@@ -123,9 +150,20 @@ export interface VisualSignOffProps {
   activity: readonly TaskActivityEntry[];
   /** Flagging changes hands the composer this starting line. */
   onNeedsChanges: (text: string) => void;
+  /** Start as the one-line row that expands on click — the issue peek's form only. */
+  compact?: boolean;
 }
 
 type Busy = 'approve' | 'needs-changes' | null;
+
+/** The compact row's state words: how many screens wait, or the latest verdict. */
+export function visualSignOffSummary(state: VisualSignOffState, screenCount: number): string {
+  if (state.human === 'approved') {
+    return state.signedOffBy === 'ai' ? 'Approved (AI reviewer)' : 'Approved';
+  }
+  if (state.human === 'needs-changes') return 'Needs changes';
+  return screenCount === 1 ? '1 screen needs a look' : `${screenCount} screens need a look`;
+}
 
 /**
  * Posts a human's verdict through `task:visualSignOff` — the one channel both buttons below
@@ -204,9 +242,11 @@ export function VisualSignOff({
   attachments,
   activity,
   onNeedsChanges,
+  compact = false,
 }: VisualSignOffProps): JSX.Element | null {
   const styles = useStyles();
   const transport = useTransport();
+  const [expanded, setExpanded] = useState(false);
   /**
    * A freshly re-fetched activity list, standing in for `activity` until the parent's OWN
    * reload catches up — nothing above this section reloads on its behalf after Approve or
@@ -269,6 +309,21 @@ export function VisualSignOff({
       return;
     }
     openComparisonOnDesktop(transport, pair, indexHtml);
+  }
+
+  if (compact && !expanded) {
+    const summary = visualSignOffSummary(state, pairs.length);
+    return (
+      <div className={styles.compact} data-visual-signoff data-compact="">
+        <ImageMultipleRegular className={styles.compactGlyph} aria-hidden />
+        <Text size={200} className={styles.compactText} title={summary}>
+          <span className={styles.compactLabel}>Visual sign-off</span> · {summary}
+        </Text>
+        <Button size="small" className={styles.compactButton} onClick={() => setExpanded(true)}>
+          Review
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -376,6 +431,12 @@ export function VisualSignOff({
           );
         })}
       </div>
+
+      {compact && (
+        <Link as="button" className={styles.collapse} onClick={() => setExpanded(false)}>
+          Collapse
+        </Link>
+      )}
 
       {dialogRow && (
         <Dialog open onOpenChange={(_e, d) => !d.open && setDialogRow(null)}>

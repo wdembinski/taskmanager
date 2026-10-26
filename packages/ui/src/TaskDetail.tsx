@@ -90,7 +90,9 @@ import { AttachmentGallery } from './AttachmentGallery';
 import { FilesSection } from './FilesSection';
 import { TaskAgentPanel, useStartAction } from './TaskAgentPanel';
 import { IssueBuilt, IssueTested } from './issues/IssueBuilt';
+import { IssuePeekBody } from './issues/IssuePeekBody';
 import { IssueProperties } from './issues/IssueProperties';
+import { issuePropertyRows, peekAssigneeValue } from './issues/issuePropertyRows';
 import { TaskDetailsCell } from './TaskDetailsCell';
 import { VisualSignOff } from './VisualSignOff';
 import { TaskLinksSection } from './projects/TaskLinksSection';
@@ -113,6 +115,8 @@ import {
   trackerOf,
 } from './tracker';
 import { runPhase } from '@tm/shared/board';
+import { runStartedAtOf } from '@tm/shared/scheduler';
+import { delegatedAgentName } from '@tm/shared/tickets';
 import { useDelayedFlag } from './useDelayedFlag';
 import { useTransport } from './transport';
 import type { AttentionIndex } from './attentionIndex';
@@ -584,10 +588,12 @@ export interface TaskDetailProps {
    * description as text, the steps, **Built**, **Tested**, then what the mockup does not draw
    * (the agent controls, the visual sign-off), Links/Files, the merge requests, and the
    * conversation and composer — and a fixed-width right column holds the ticket's
-   * properties. Absent — the peek, the board's pane — keeps the stacked
-   * layout above. Ignored when {@link section} is set.
+   * properties. `'peek'` — the Tickets screen's peek beside the list (after
+   * `v9-1-issues-list-light.svg`): the read-only `IssuePeekBody`, with every editing control
+   * left to the full page. Absent — the board's own pane — keeps the stacked editor above.
+   * Ignored when {@link section} is set.
    */
-  layout?: 'full';
+  layout?: 'full' | 'peek';
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
@@ -596,6 +602,8 @@ const NO_TASKS: ReadonlyMap<string, Task> = new Map();
 const NO_PEOPLE: Person[] = [];
 const NO_MILESTONES: Milestone[] = [];
 const NO_LABELS: TicketLabel[] = [];
+/** The property rows the peek prints, after v9-1 — the rest live on the full page. */
+const PEEK_ROWS: ReadonlySet<string> = new Set(['status', 'assignee', 'milestone', 'due']);
 
 export function TaskDetail({
   task,
@@ -1029,6 +1037,48 @@ export function TaskDetail({
   // The full page's Run button — the agent panel's own Start, hoisted (`useStartAction`), so
   // the two can never disagree. Called above the empty-state return: it is a hook.
   const start = useStartAction(task, subtasks, liveRunTaskIds);
+  const peek = layout === 'peek' && section === undefined;
+  /**
+   * When each of this card's live runs started — the peek's running-step timer. The same
+   * `scheduler:activeRuns` snapshot the run tracking above reads, re-read only when the set of
+   * this card's live runs changes, and only for the peek: the board's pane draws no timer.
+   */
+  const [runStartedAt, setRunStartedAt] = useState<ReadonlyMap<string, number>>(new Map());
+  const liveKey = [taskId, ...subtasks.map((s) => s.id)]
+    .filter((id): id is string => id !== null && liveRunTaskIds?.has(id) === true)
+    .join(',');
+  useEffect(() => {
+    if (!peek || !liveKey) return;
+    let cancelled = false;
+    void transport
+      .invoke('scheduler:activeRuns')
+      .then((runs) => {
+        if (!cancelled) setRunStartedAt(runStartedAtOf(runs));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [peek, liveKey, transport]);
+  /**
+   * The desktop's machine name — the peek's Assignee reads "Agent on <machine>". Read once per
+   * peek; `app:getInfo` is relayed, so the web gets the desktop's own name, and an older
+   * desktop that sends none leaves the agent project's name in its place.
+   */
+  const [hostname, setHostname] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (!peek) return;
+    let cancelled = false;
+    void transport
+      .invoke('app:getInfo')
+      .then((info) => {
+        if (!cancelled) setHostname(info.hostname);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [peek, transport]);
 
   if (!task) {
     return (
@@ -1775,6 +1825,70 @@ export function TaskDetail({
       />
     </div>
   );
+
+  if (peek) {
+    const replyToAgent = chat?.offered === true && chat.can;
+    const peekAgentName = delegatedAgentName(task, agentProject?.name);
+    const peekRows = issuePropertyRows({
+      task,
+      people,
+      milestones,
+      agentName: peekAgentName,
+      modelCaption: '',
+      chainLinks,
+      chainTasksById,
+      readOnly: true,
+    })
+      .filter((row) => PEEK_ROWS.has(row.key))
+      .map((row) =>
+        row.key === 'assignee'
+          ? {
+              ...row,
+              value:
+                peekAssigneeValue({ task, people, agentName: peekAgentName, hostname }) ??
+                row.value,
+            }
+          : row,
+      );
+    return (
+      <div className={styles.root}>
+        {readOnlyNotice && (
+          <div className={styles.notice}>
+            <MessageBar intent="warning">
+              <MessageBarBody>{readOnlyNotice}</MessageBarBody>
+            </MessageBar>
+          </div>
+        )}
+        <IssuePeekBody
+          task={task}
+          rows={peekRows}
+          people={people}
+          agentName={peekAgentName}
+          subtasks={subtasks}
+          liveRunTaskIds={liveRunTaskIds}
+          runStartedAt={runStartedAt}
+          turns={turns}
+          statusKeywords={statusKeywords}
+          onDeleteNote={(id) => void deleteComment(id)}
+          attachments={attachments}
+          activity={timeline.activity}
+          onNeedsChanges={(text) => composer.set({ ...EMPTY_COMPOSER, text })}
+          readOnly={ticketReadOnly}
+          onTaskChanged={(updated) => onStatusChanged?.(updated)}
+          onAnswered={() => void loadActivity()}
+          reply={comment.text}
+          // A plain reply: no mentions, no files — those are the full page's composer.
+          onReplyChange={(text) => composer.set({ ...EMPTY_COMPOSER, text })}
+          // The composer's own default send: the agent when it can be talked to, a note
+          // otherwise.
+          onSend={() => void (replyToAgent ? sendChat() : addComment())}
+          replyToAgent={replyToAgent}
+          sending={busy !== null}
+          error={error}
+        />
+      </div>
+    );
+  }
 
   if (full) {
     // The key above the title, small and muted, the way the mockup prints `TM-71` — the

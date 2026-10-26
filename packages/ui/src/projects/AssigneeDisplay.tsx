@@ -62,7 +62,8 @@ export interface AssigneeDisplayProps {
    * `'text'` adds their name beside it, for a row with room to spell it out.
    *
    * The agent's name is shown either way, in both variants: the AI icon alone can't tell two
-   * agents apart the way an avatar's initials can two people.
+   * agents apart the way an avatar's initials can two people — unless `hideAgentName` says
+   * the surface has no room for it.
    */
   variant?: AssigneeDisplayVariant;
   /** The avatar/icon size in px, in `PersonAvatar`'s own steps. */
@@ -72,6 +73,11 @@ export interface AssigneeDisplayProps {
    * already has its own wording (the board card's "Assigned to …").
    */
   title?: string;
+  /**
+   * Draw the agent as its icon alone, its name left to the tooltip — for a dense list row
+   * (`IssueRow`), where the same repo name on every delegated row is noise, not information.
+   */
+  hideAgentName?: boolean;
 }
 
 export function AssigneeDisplay({
@@ -80,6 +86,7 @@ export function AssigneeDisplay({
   variant = 'compact',
   size = 20,
   title,
+  hideAgentName = false,
 }: AssigneeDisplayProps): JSX.Element | null {
   const styles = useStyles();
   const parts = assigneeDisplayParts(assignee, agentName, title);
@@ -99,7 +106,7 @@ export function AssigneeDisplay({
           <span className={styles.agentIcon} style={{ fontSize: `${size - 4}px` }}>
             <AgentsRegular />
           </span>
-          <Text className={styles.name}>{parts.agentName}</Text>
+          {!hideAgentName && <Text className={styles.name}>{parts.agentName}</Text>}
         </>
       )}
     </span>
