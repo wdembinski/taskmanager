@@ -150,6 +150,19 @@ export function issueBreadcrumb(
   return crumbs;
 }
 
+/**
+ * The peek header's epic, after v9-1's `TM-71   F4 Linear integration`: the linked epic's own
+ * title when `task.epicTaskId` resolves, else a mirrored card's tracker epic by name
+ * (`externalEpicName`) — the same fallback the board's epic chip uses (`cardParts.ts`).
+ */
+export function peekEpic(
+  task: Pick<Task, 'epicTaskId' | 'externalEpicName'>,
+  ticketsById: ReadonlyMap<string, Pick<Task, 'title'>>,
+): string | undefined {
+  const linked = task.epicTaskId ? ticketsById.get(task.epicTaskId)?.title : undefined;
+  return linked ?? task.externalEpicName ?? undefined;
+}
+
 /** A structural subset of `EventTarget`/`HTMLElement` so tests can pass plain objects without
  *  jsdom — the same shape `palette/shortcut.ts`'s `EditableTargetLike` uses, plus `closest`. */
 export interface KeyTargetLike {

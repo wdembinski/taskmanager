@@ -113,7 +113,7 @@ export default [
     // label/value rows in full, clear of the Reply box.
     layoutCheck: {
       visible: '[data-peek-props]',
-      clear: ['textarea[aria-label="Reply"]'],
+      clear: ['input[aria-label="Reply"]'],
     },
     mockup: 'v9-1-issues-list-light.svg',
   },

@@ -57,6 +57,7 @@ import {
   isKeyTargetEditable,
   issueBreadcrumb,
   issueViewReduce,
+  peekEpic,
   type KeyTargetLike,
 } from '../issues/issueView';
 import { BacklogTable } from './BacklogTable';
@@ -524,9 +525,7 @@ export function Projects({
       {viewState.layout === 'peek' && viewState.selectedId && (
         <IssuePeek
           ticketKey={selectedTask?.ticketKey ?? selectedTask?.externalKey ?? undefined}
-          epic={
-            selectedTask?.epicTaskId ? ticketsById.get(selectedTask.epicTaskId)?.title : undefined
-          }
+          epic={selectedTask ? peekEpic(selectedTask, ticketsById) : undefined}
           onExpand={() => dispatch({ type: 'expand' })}
           onClose={() => dispatch({ type: 'close' })}
         >

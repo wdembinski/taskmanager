@@ -37,6 +37,38 @@ const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
 );
 
 /**
+ * Two steps under `'13a'`, so the peek draws v9-1's "Agent run" checklist between the property
+ * rows and the timeline — cloned from `'3-s1'` (a plain fixture step) for every other field.
+ */
+const STEP_TEMPLATE = BOOT_CHANNELS['board:tasks'].find((t) => t.id === '3-s1');
+const PEEK_STEPS = [
+  { title: 'Read the queue depth from the worker', status: 'done' },
+  { title: 'Draw the dashboard card', status: 'pending' },
+].map((step, order) => ({
+  ...STEP_TEMPLATE,
+  ...step,
+  id: `13a-s${order + 1}`,
+  parentTaskId: '13a',
+  order,
+}));
+
+/** `'13a'`'s own note, dated off the real clock (see `LIST_ACTIVITY`), for the timeline. */
+const PEEK_ACTIVITY = {
+  ...BOOT_CHANNELS['task:activity'],
+  byArgTable: {
+    ...BOOT_CHANNELS['task:activity'].byArgTable,
+    '13a': [
+      {
+        kind: 'chat',
+        id: 40,
+        body: 'The yearly plan is fine if the discount holds past the first renewal.',
+        createdAt: Date.now() - 12 * 60_000,
+      },
+    ],
+  },
+};
+
+/**
  * Two order arrows INTO `'13a'` on top of the fixture's own `13a → 13b`, so the Links
  * section's "Blocked by" group draws both statuses — `'14a'` (Done, merged) and `'2'` (To Do,
  * not merged) — and its "Blocks" group draws `'13b'`. Row-local, like `DECISION_TASKS`.
@@ -113,14 +145,50 @@ const FULL_OVERRIDES = {
  * The run pill and the PR refs need nothing extra here: the base `board:tasks` already carries
  * FX-3's four steps (`3-s1`…`3-s4`, step 2 running — "Step 2 of 4"), and the base
  * `mr:mergeRequests` already holds `!190`/`!191` on the In Review rows `'6'`/`'7'`.
+ *
+ * `'3'` is also filed under a milestone (`50-sidebar.mjs`'s `ms-mixed`) and given ticket text,
+ * so the peek draws the mockup's Milestone row with its flag and the description under the
+ * title; its header's epic is the card's own tracker epic (`externalEpicName`).
  */
 const LIST_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
   t.id === '3'
-    ? { ...t, dueAt: Date.now() + 3 * 86_400_000 }
+    ? {
+        ...t,
+        dueAt: Date.now() + 3 * 86_400_000,
+        milestoneId: 'ms-mixed',
+        externalDescription:
+          'A Linear-backed card shows its identifier chip linking to Linear; Linear comments ' +
+          'interleave in the timeline with an add-comment box.',
+      }
     : t.id === '4'
       ? { ...t, dueAt: Date.now(), assigneeId: 'person-human' }
       : t,
 );
+
+/**
+ * `'3'`'s activity re-dated off the real `Date.now()`, for the same reason as `LIST_TASKS`'
+ * dates: the peek's comment ages tick on the browser's own clock (`useElapsedClock`), so the
+ * fixture's fixed 2026-01-15 `now` drew the note as "284d" old instead of the mockup's "12m".
+ */
+const LIST_ACTIVITY = {
+  ...BOOT_CHANNELS['task:activity'],
+  byArgTable: {
+    ...BOOT_CHANNELS['task:activity'].byArgTable,
+    3: BOOT_CHANNELS['task:activity'].byArgTable[3].map((entry, i) => ({
+      ...entry,
+      createdAt: Date.now() - (12 + i) * 60_000,
+    })),
+  },
+};
+
+const LIST_OVERRIDES = { 'board:tasks': LIST_TASKS, 'task:activity': LIST_ACTIVITY };
+
+/** What both peek rows hand the stub: the decision card with its steps, arrows and note. */
+const PEEK_OVERRIDES = {
+  'board:tasks': [...DECISION_TASKS, ...PEEK_STEPS],
+  'chain:links': PEEK_CHAIN_LINKS,
+  'task:activity': PEEK_ACTIVITY,
+};
 
 export default [
   {
@@ -142,7 +210,7 @@ export default [
     expect: '[role="option"][aria-selected="true"]',
     allowPersistentSpinner: true,
     mockup: 'v9-1-issues-list-light.svg',
-    channelOverrides: { 'board:tasks': LIST_TASKS },
+    channelOverrides: LIST_OVERRIDES,
   },
   {
     name: 'issue-list-dark',
@@ -153,15 +221,15 @@ export default [
     expect: '[role="option"][aria-selected="true"]',
     allowPersistentSpinner: true,
     mockup: 'v9-3-issues-list-dark.svg',
-    channelOverrides: { 'board:tasks': LIST_TASKS },
+    channelOverrides: LIST_OVERRIDES,
   },
   {
     // `IssueViewLayout` (packages/ui/src/issues/issueView.ts) opens 'closed' -> 'peek' on the
     // first click of an issue row — addressed by position (`'issue-row:first'`), not by the
     // fixture's own title text; see `SCREENS`' own doc comment on that sentinel. The card it
     // opens carries an open decision (`DECISION_TASKS`), so the shot proves `DecisionBanner`
-    // still draws in the read-only peek (`IssuePeekBody`) — the question, the answer box,
-    // Answer and Withdraw — under the ticket's label/value rows.
+    // still draws in the read-only peek (`IssuePeekBody`) — compact, one "Decision needed"
+    // line with Answer, beside the one-line "Visual sign-off" row with Review.
     name: 'issue-peek',
     app: 'client',
     viewport: { width: 1440, height: 900 },
@@ -173,13 +241,10 @@ export default [
     expect: '[data-decision-banner]',
     layoutCheck: {
       visible: '[data-peek-props]',
-      clear: ['[data-decision-banner]', 'textarea[aria-label="Reply"]'],
+      clear: ['[data-decision-banner]', 'input[aria-label="Reply"]'],
     },
     mockup: 'v9-1-issues-list-light.svg',
-    channelOverrides: {
-      'board:tasks': DECISION_TASKS,
-      'chain:links': PEEK_CHAIN_LINKS,
-    },
+    channelOverrides: PEEK_OVERRIDES,
   },
   {
     // Same peek as `issue-peek`, at the shorter 1100x800 viewport where the peek is ~300px
@@ -190,12 +255,13 @@ export default [
     viewport: { width: 1100, height: 800 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
-    expect: 'button[aria-label="Open full screen"]',
+    expect: '[data-decision-banner]',
     layoutCheck: {
       visible: '[data-peek-props]',
-      clear: ['textarea[aria-label="Reply"]'],
+      clear: ['[data-decision-banner]', 'input[aria-label="Reply"]'],
     },
     mockup: 'v9-1-issues-list-light.svg',
+    channelOverrides: PEEK_OVERRIDES,
   },
   {
     // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full' —

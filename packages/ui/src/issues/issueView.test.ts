@@ -4,6 +4,7 @@ import {
   isKeyTargetEditable,
   issueBreadcrumb,
   issueViewReduce,
+  peekEpic,
   type IssueViewState,
   type IssueViewTicket,
 } from './issueView';
@@ -258,6 +259,29 @@ describe('issueBreadcrumb', () => {
       ticketsById,
     );
     expect(crumbs).toEqual(['Task Manager']);
+  });
+});
+
+describe('peekEpic', () => {
+  const ticketsById = new Map([['e4', { title: 'F4 Linear integration' }]]);
+
+  it('prefers the linked epic title', () => {
+    expect(peekEpic({ epicTaskId: 'e4', externalEpicName: 'Linear sync' }, ticketsById)).toBe(
+      'F4 Linear integration',
+    );
+  });
+
+  it("falls back to a mirrored card's tracker epic by name", () => {
+    expect(peekEpic({ epicTaskId: null, externalEpicName: 'Linear sync' }, ticketsById)).toBe(
+      'Linear sync',
+    );
+    expect(peekEpic({ epicTaskId: 'unknown', externalEpicName: 'Linear sync' }, ticketsById)).toBe(
+      'Linear sync',
+    );
+  });
+
+  it('is undefined when neither is set', () => {
+    expect(peekEpic({ epicTaskId: null, externalEpicName: null }, ticketsById)).toBeUndefined();
   });
 });
 
