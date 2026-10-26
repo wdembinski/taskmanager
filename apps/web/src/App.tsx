@@ -524,6 +524,7 @@ function SignedInBoardView({
                 selectedProjectId={tracker.projectId}
                 onSelectProject={tracker.selectProject}
                 loading={!sidebarData.loaded}
+                onSearch={openPalette}
               />
             )
           }

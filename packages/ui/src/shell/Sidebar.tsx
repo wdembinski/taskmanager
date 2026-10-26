@@ -44,6 +44,7 @@ import {
   FolderRegular,
   LaptopRegular,
   MailInboxRegular,
+  SearchRegular,
   TaskListSquareLtrRegular,
   TicketDiagonalRegular,
 } from '@fluentui/react-icons';
@@ -103,6 +104,9 @@ export interface SidebarProps {
   /** True while the project list has not loaded yet — holds off the "no tickets" empty
    *  state so a still-loading tree does not flash it first. */
   loading?: boolean;
+  /** Opens the command palette from v9-1's header search icon — the icon only renders once
+   *  this is passed. */
+  onSearch?: () => void;
 }
 
 const useStyles = makeStyles({
@@ -372,6 +376,7 @@ export function Sidebar({
   selectedProjectId,
   onSelectProject,
   loading = false,
+  onSearch,
 }: SidebarProps): JSX.Element {
   const styles = useStyles();
 
@@ -460,6 +465,7 @@ export function Sidebar({
         <WorkspaceHeader
           workspaces={workspace.workspaces}
           active={workspace.workspaces.find((w) => w.id === workspace.activeWorkspaceId)}
+          onSearch={onSearch}
         />
       )}
 
@@ -694,13 +700,17 @@ export function Sidebar({
 /** The workspace switcher row (v9-1): an initial tile, the cloud team or "Personal" over its
  *  "Cloud"/"Local" line, and a chevron menu of the workspaces the sidebar data already holds,
  *  the active one checked. It has no switch action: until F19 there is only ever the one
- *  workspace. Only the `machine` section below still says "This machine". */
+ *  workspace. Only the `machine` section below still says "This machine". v9-1's search icon
+ *  opens the command palette; its collapse icon has no feature behind it yet, so it is not
+ *  drawn. */
 function WorkspaceHeader({
   workspaces,
   active,
+  onSearch,
 }: {
   workspaces: readonly SidebarWorkspace[];
   active: SidebarWorkspace | undefined;
+  onSearch?: () => void;
 }): JSX.Element {
   const styles = useStyles();
   const name = active?.name ?? 'Personal';
@@ -713,6 +723,17 @@ function WorkspaceHeader({
         <Body1 className={styles.workspaceName}>{name}</Body1>
         {active?.sub && <span className={styles.workspaceSub}>{active.sub}</span>}
       </div>
+      {onSearch && (
+        <Button
+          appearance="subtle"
+          size="small"
+          className={styles.workspaceSwitch}
+          icon={<SearchRegular />}
+          aria-label="Search"
+          title="Search"
+          onClick={onSearch}
+        />
+      )}
       <Menu>
         <MenuTrigger disableButtonEnhancement>
           <Button

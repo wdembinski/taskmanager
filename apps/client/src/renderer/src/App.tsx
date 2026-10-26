@@ -555,6 +555,7 @@ export function App(): JSX.Element {
               selectedProjectId={tracker.projectId}
               onSelectProject={tracker.selectProject}
               loading={!sidebarData.loaded}
+              onSearch={() => setPaletteOpen(true)}
             />
           )
         }
