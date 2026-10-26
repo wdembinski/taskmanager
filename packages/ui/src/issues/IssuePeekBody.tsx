@@ -53,7 +53,6 @@ const useStyles = makeStyles({
     // banner drew under the sign-off below it.
     '& > *': { flexShrink: 0 },
   },
-  muted: { color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})` },
   title: {
     margin: 0,
     fontSize: tokens.fontSizeBase500,
@@ -99,10 +98,6 @@ const useStyles = makeStyles({
 
 export interface IssuePeekBodyProps {
   task: Task;
-  /** The ticket's key as it is printed (`TM-71`), or null for a card that has none. */
-  ticketKey: string | null;
-  /** The epic's title, when `task.epicTaskId` resolves. */
-  epicTitle?: string | null;
   /** The label/value rows to print, in order — already narrowed to the four the peek shows. */
   rows: readonly PropertyRow[];
   /** The card's steps, in chain order. */
@@ -160,8 +155,6 @@ function StepGlyph({ step, running }: { step: Task; running: boolean }): JSX.Ele
 
 export function IssuePeekBody({
   task,
-  ticketKey,
-  epicTitle,
   rows,
   subtasks,
   liveRunTaskIds,
@@ -187,7 +180,6 @@ export function IssuePeekBody({
   const now = useElapsedClock(running !== undefined);
   const startedAt = running ? runStartedAt?.get(running.id) : undefined;
   const description = task.externalDescription ?? task.description ?? '';
-  const keyLine = [ticketKey, epicTitle].filter(Boolean).join(' · ');
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>): void {
     // Enter sends, Shift+Enter is a newline — the composer's own contract.
@@ -200,12 +192,8 @@ export function IssuePeekBody({
   return (
     <div className={styles.root} data-issue-peek-body>
       <div className={styles.scroll}>
+        {/* No key line: IssuePeek's header already prints the key and its crumbs. */}
         <div className={styles.head}>
-          {keyLine && (
-            <Caption1 className={styles.muted} data-peek-key>
-              {keyLine}
-            </Caption1>
-          )}
           <h2 className={styles.title}>{task.title}</h2>
         </div>
         {description.trim() && (

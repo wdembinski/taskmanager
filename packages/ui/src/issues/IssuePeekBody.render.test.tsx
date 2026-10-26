@@ -90,9 +90,12 @@ describe('IssuePeekBody, through TaskDetail layout="peek"', () => {
   const html = peek();
   const words = text(html);
 
-  it('reads top to bottom: key · epic, title, description, rows, steps', () => {
+  it('leaves the key to the IssuePeek header, so it is printed once', () => {
+    expect(words).not.toContain('TM-71');
+  });
+
+  it('reads top to bottom: title, description, rows, steps', () => {
     const order = [
-      'TM-71 · F4 Linear integration',
       'Sync Linear issues both ways',
       'Linear issue into the board',
       'Status',
@@ -167,7 +170,6 @@ describe('IssuePeekBody', () => {
     const html = render(
       <IssuePeekBody
         task={task()}
-        ticketKey="TM-71"
         rows={[]}
         subtasks={steps}
         runStartedAt={new Map([['s2', Date.now() - (4 * 60 + 12) * 1000]])}

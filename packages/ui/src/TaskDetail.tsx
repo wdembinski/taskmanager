@@ -1819,7 +1819,6 @@ export function TaskDetail({
       chainTasksById,
       readOnly: true,
     }).filter((row) => PEEK_ROWS.has(row.key));
-    const epicTitle = task.epicTaskId ? chainTasksById.get(task.epicTaskId)?.title : null;
     return (
       <div className={styles.root}>
         {readOnlyNotice && (
@@ -1831,8 +1830,6 @@ export function TaskDetail({
         )}
         <IssuePeekBody
           task={task}
-          ticketKey={shortTicketKey(task) ?? task.ticketKey ?? null}
-          epicTitle={epicTitle}
           rows={peekRows}
           subtasks={subtasks}
           liveRunTaskIds={liveRunTaskIds}
