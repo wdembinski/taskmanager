@@ -31,6 +31,10 @@ table. The table below is generated from `tokenCssVars('light')` and `tokenCssVa
 | `--tm-code-bg` | `#F3F6FA` | `#16202e` |
 | `--tm-code-border` | `#D6DEE8` | `#26364a` |
 | `--tm-code-inline-bg` | `#EAF0F7` | `#1d2a3a` |
+| `--tm-diff-add` | `rgba(46, 160, 67, 0.09)` | `rgba(63, 185, 80, 0.14)` |
+| `--tm-diff-add-word` | `rgba(46, 160, 67, 0.22)` | `rgba(63, 185, 80, 0.35)` |
+| `--tm-diff-del` | `rgba(207, 34, 46, 0.07)` | `rgba(248, 81, 73, 0.14)` |
+| `--tm-diff-del-word` | `rgba(207, 34, 46, 0.18)` | `rgba(248, 81, 73, 0.35)` |
 | `--tm-fluo-amber` | `#B7791F` | `#FFC53D` |
 | `--tm-fluo-cyan` | `#07748C` | `#22E4FF` |
 | `--tm-fluo-cyan-deep` | `#8FD3E0` | `#285258` |

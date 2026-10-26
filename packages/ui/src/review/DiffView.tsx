@@ -55,6 +55,7 @@ import type {
   WordSegment,
 } from '@tm/shared/review';
 import { MONO, SYNTAX, fontPx } from '../theme';
+import { DIFF_VAR } from '../tokens';
 import { useTransport } from '../transport';
 import { CommentThread } from './CommentThread';
 import type { HunkHighlight } from './highlight';
@@ -132,8 +133,9 @@ const useStyles = makeStyles({
     '&:hover [data-add-comment]': { opacity: 1, pointerEvents: 'auto' },
   },
   lineNoWrap: { whiteSpace: 'pre' },
-  lineAdd: { backgroundColor: tokens.colorPaletteGreenBackground1 },
-  lineDel: { backgroundColor: tokens.colorPaletteRedBackground1 },
+  // The mockups' muted tints, not Fluent's palette solids — see `DiffTintTokens`.
+  lineAdd: { backgroundColor: DIFF_VAR.add },
+  lineDel: { backgroundColor: DIFF_VAR.del },
   // The open editor's range, applied LAST in `mergeClasses` so it wins over the add/del tint —
   // the human is looking at what they selected, not at what changed.
   lineSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
@@ -177,8 +179,8 @@ const useStyles = makeStyles({
     '&:disabled': { cursor: 'default', opacity: 0.5 },
   },
   text: { flex: 1, minWidth: 0, paddingRight: '8px' },
-  wordAdd: { backgroundColor: tokens.colorPaletteGreenBackground2 },
-  wordDel: { backgroundColor: tokens.colorPaletteRedBackground2 },
+  wordAdd: { backgroundColor: DIFF_VAR.addWord },
+  wordDel: { backgroundColor: DIFF_VAR.delWord },
   // Syntax highlighting (F15.11) — colour only, never a background: the add/del tint above
   // already owns that, and `DiffLineRow`'s merge rule relies on these never fighting it.
   synKeyword: { color: SYNTAX.keyword },

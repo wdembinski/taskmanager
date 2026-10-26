@@ -220,6 +220,21 @@ export const CODE_BY_SCHEME: Record<ColorScheme, CodeSurfaceTokens> = {
   },
 };
 
+/**
+ * A diff line's add/del tint, and the stronger tint a changed word takes on top of it.
+ *
+ * Translucent rather than Fluent's `colorPalette{Green,Red}Background{1,2}`: those are
+ * saturated solids in the dark theme, so every changed line read as a green or red block
+ * and the word highlight on top of it was barely distinguishable. These are the v9-6/v9-6b
+ * mockups' own values, so the code's ink stays the loudest thing on the line.
+ */
+export interface DiffTintTokens {
+  add: string;
+  del: string;
+  addWord: string;
+  delWord: string;
+}
+
 export interface SemanticTokens {
   /** The window behind everything. */
   canvas: string;
@@ -265,6 +280,8 @@ export interface SemanticTokens {
   /** Code surfaces in agent output — inline spans and fenced blocks. Identical object to
    * {@link CODE_BY_SCHEME}`[scheme]`, not a copy. */
   code: CodeSurfaceTokens;
+  /** A diff line's add/del tint and its changed-word tint — see {@link DiffTintTokens}. */
+  diff: DiffTintTokens;
   /** The status bar's own furniture — the live/dead dot and the quota bars. Identical
    * object to {@link STATUS_BAR} in both schemes; see its own docstring for why. */
   statusBar: StatusBarTokens;
@@ -318,6 +335,13 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.light,
     code: CODE_BY_SCHEME.light,
+    // v9-6's own add/del rects.
+    diff: {
+      add: 'rgba(46, 160, 67, 0.09)',
+      del: 'rgba(207, 34, 46, 0.07)',
+      addWord: 'rgba(46, 160, 67, 0.22)',
+      delWord: 'rgba(207, 34, 46, 0.18)',
+    },
     statusBar: STATUS_BAR,
     windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
@@ -360,6 +384,13 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.dark,
     code: CODE_BY_SCHEME.dark,
+    // v9-6b's own add/del rects.
+    diff: {
+      add: 'rgba(63, 185, 80, 0.14)',
+      del: 'rgba(248, 81, 73, 0.14)',
+      addWord: 'rgba(63, 185, 80, 0.35)',
+      delWord: 'rgba(248, 81, 73, 0.35)',
+    },
     statusBar: STATUS_BAR,
     windowClose: WINDOW_CLOSE,
     mono: 'Cascadia Code, JetBrains Mono, Consolas',
@@ -384,10 +415,9 @@ export interface SyntaxTokens {
 /**
  * Muted per scheme, picked so every hue clears 4.5:1 against the surfaces code actually
  * renders on: {@link CODE_BY_SCHEME}'s `bg`/`inlineBg`, the pane's own neutral backgrounds
- * (`SEMANTIC[scheme].paneOpaque`/`canvas`), and a diff line's own add/del tint
- * (`colorPaletteGreenBackground1`/`colorPaletteRedBackground1` — `DiffView.tsx`'s `lineAdd`/
- * `lineDel`, "a line's own tint at its subtlest step"). `contrast.test.ts` asserts the pairs
- * that are not already covered by the shell's own suite.
+ * (`SEMANTIC[scheme].paneOpaque`/`canvas`), and a diff line's add/del and changed-word tints
+ * (`SEMANTIC[scheme].diff` — `DiffView.tsx`'s `lineAdd`/`lineDel`/`wordAdd`/`wordDel`).
+ * `contrast.test.ts` asserts the pairs that are not already covered by the shell's own suite.
  */
 export const SYNTAX_BY_SCHEME: Record<ColorScheme, SyntaxTokens> = {
   light: {
@@ -535,6 +565,17 @@ export const CODE_VAR: CodeSurfaceTokens = {
   bg: 'var(--tm-code-bg)',
   inlineBg: 'var(--tm-code-inline-bg)',
   border: 'var(--tm-code-border)',
+};
+
+/**
+ * {@link DiffTintTokens}, but every value is a `var(--tm-diff-*)` reference — see
+ * {@link FLUO_VAR}.
+ */
+export const DIFF_VAR: DiffTintTokens = {
+  add: 'var(--tm-diff-add)',
+  del: 'var(--tm-diff-del)',
+  addWord: 'var(--tm-diff-add-word)',
+  delWord: 'var(--tm-diff-del-word)',
 };
 
 function roleToFluoVar(role: IndicatorRole): string {
