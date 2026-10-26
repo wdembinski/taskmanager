@@ -136,7 +136,7 @@ export function ReviewWorkspace({
   const [keysOpen, setKeysOpen] = useState(false);
   const [state, setState] = useState<ReviewState>(EMPTY_REVIEW);
   const [error, setError] = useState<string | null>(null);
-  const [layout, setLayout] = useDiffLayout();
+  const [layout, setLayout] = useDiffLayout('split');
   const seq = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
 

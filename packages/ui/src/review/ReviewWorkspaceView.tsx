@@ -5,10 +5,15 @@
  * owns the loading; a headless test seeds a `ReviewState` through `reviewState.ts`'s own
  * transitions and renders exactly what a human would see.
  *
- * Layout (the v9-6 mockup): a header across the top, then three columns — the queues (≈280px),
- * the file tree with its viewed boxes (≈248px) and the diff (`1fr`). The two narrow columns are
- * panes, so they paint through `GlassPane` (the only thing allowed to paint glass); the diff is
- * a code surface and stays fully opaque, because translucent text backgrounds hurt reading.
+ * Layout (the v9-6 mockup): ONE pane — a single `GlassPane` (`data-panel="review"`, the only
+ * thing allowed to paint glass) holding a `280px 248px 1fr` × `auto 1fr` grid. The queues span
+ * both rows on the left; the two-line header spans the files and the diff; 1px hairlines
+ * separate the cells, with no inner radii or gaps. The diff cell is a code surface and stays
+ * fully opaque, because translucent text backgrounds hurt reading.
+ *
+ * The header's first line is the ref, the title, then Unified|Split, the AI slot, the drafts
+ * and the actions; its second is `head → base · N files · +a −d · ● pipeline · GitLab`, then the
+ * source badge.
  *
  * `data-state` reads `loading` while the queues or the selected subject's summary are still on
  * their way, `empty` with nothing selected, and `loaded` once there is a summary to draw.
@@ -19,7 +24,8 @@
  * only. `data-slot="ai-review"` is the empty slot F16's *Ask AI to review* fills.
  *
  * Colour budget (memory *board-colour-budget*): the source badge, counts and refs are static
- * facts, so the chrome stays on neutral tokens; the only colour is the diff's own +/−.
+ * facts, so the chrome stays on neutral tokens; the only colour is the diff's own +/− and the
+ * pipeline dot, because a pipeline moves.
  */
 import type { JSX } from 'react';
 import {
@@ -35,6 +41,7 @@ import {
   ToggleButton,
   Tooltip,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import {
@@ -50,44 +57,77 @@ import type {
   ReviewQueueItem,
   ReviewQueuesSnapshot,
 } from '@tm/shared/review';
+import { PIPELINE_WORD } from '../issues/IssueBuilt';
 import { GlassPane } from '../shell/GlassPane';
 import { MONO } from '../theme';
+import { PIPELINE_VAR } from '../tokens';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
 import { ReviewKeysDialog } from './ReviewKeysDialog';
 import { ReviewQueueList } from './ReviewQueueList';
 import { useWidePaneWidth } from './ReviewPaneView';
 import { canComment, canSend, unsentCount, viewedStatuses, type ReviewState } from './reviewState';
-import { buildFileTree, effectiveDiffLayout, summaryTotals, type DiffLayout } from './reviewView';
-import { sourceBadge, subjectLabel, viewedLabel } from './reviewWorkspaceModel';
+import {
+  effectiveDiffLayout,
+  summaryTotals,
+  WORKSPACE_SPLIT_MIN_WIDTH_PX,
+  type DiffLayout,
+} from './reviewView';
+import {
+  branchLine,
+  buildDirGroups,
+  knownPipeline,
+  providerName,
+  sourceBadge,
+  subjectLabel,
+  viewedLabel,
+} from './reviewWorkspaceModel';
+
+const HAIRLINE = `1px solid ${tokens.colorNeutralStroke2}`;
 
 const useStyles = makeStyles({
-  root: {
+  // The margin the window keeps around the one panel.
+  frame: { height: '100%', minHeight: 0, padding: '10px', boxSizing: 'border-box' },
+  panel: {
     display: 'grid',
     gridTemplateColumns: '280px 248px 1fr',
     gridTemplateRows: 'auto 1fr',
-    gap: '10px',
     height: '100%',
     minHeight: 0,
-    padding: '10px',
-    boxSizing: 'border-box',
+    // Clips the opaque diff cell to the pane's own rounded corner.
+    overflow: 'hidden',
   },
+  queues: { gridColumn: '1', gridRow: '1 / span 2', borderRight: HAIRLINE },
   // The header and any error bar share the grid's first row, so an error never adds a row.
-  top: { gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '8px' },
-  header: {
+  top: {
+    gridColumn: '2 / span 2',
+    gridRow: '1',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    padding: '10px 14px',
+    borderBottom: HAIRLINE,
+    minWidth: 0,
+  },
+  header: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 },
+  line: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, minHeight: '32px' },
+  meta: {
     display: 'flex',
     alignItems: 'center',
-    gap: '10px',
-    flexWrap: 'wrap',
-    minHeight: '32px',
+    gap: '6px',
+    minWidth: 0,
+    whiteSpace: 'nowrap',
+    color: tokens.colorNeutralForeground3,
   },
   title: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
+  ref: { flexShrink: 0, fontFamily: MONO, color: tokens.colorNeutralForeground3 },
   mono: { fontFamily: MONO, color: tokens.colorNeutralForeground2 },
   faint: { color: tokens.colorNeutralForeground3 },
   added: { color: tokens.colorPaletteGreenForeground1 },
   deleted: { color: tokens.colorPaletteRedForeground1 },
+  dot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
   spacer: { flex: 1 },
-  layoutPill: { display: 'flex', gap: '2px' },
+  layoutPill: { display: 'flex', gap: '2px', flexShrink: 0 },
   aiSlot: { display: 'contents' },
   column: {
     display: 'flex',
@@ -95,11 +135,15 @@ const useStyles = makeStyles({
     gap: '8px',
     padding: '10px',
     minHeight: 0,
+    minWidth: 0,
     overflowY: 'auto',
   },
+  files: { gridColumn: '2', gridRow: '2', borderRight: HAIRLINE },
   columnHeader: { display: 'flex', alignItems: 'center', gap: '6px' },
   // The code surface: opaque, never glass.
   diff: {
+    gridColumn: '3',
+    gridRow: '2',
     display: 'flex',
     flexDirection: 'column',
     gap: '8px',
@@ -107,9 +151,7 @@ const useStyles = makeStyles({
     minHeight: 0,
     overflow: 'auto',
     padding: '10px',
-    borderRadius: '12px',
     backgroundColor: tokens.colorNeutralBackground1,
-    border: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   notice: { color: tokens.colorNeutralForeground3 },
 });
@@ -125,7 +167,7 @@ export interface ReviewWorkspaceViewProps {
   state: ReviewState;
   /** A failed summary/file/queue call — not part of `ReviewState` itself. */
   error: string | null;
-  /** The viewer's preferred layout; narrower than `SPLIT_MIN_WIDTH_PX` still draws unified. */
+  /** The viewer's preferred layout; narrower than `WORKSPACE_SPLIT_MIN_WIDTH_PX` draws unified. */
   layout: DiffLayout;
   monochrome: boolean;
   collapsedGroups: readonly ReviewQueue[];
@@ -185,66 +227,134 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
   const status = workspaceState(queues, selected, state);
 
   return (
-    <div className={styles.root} data-review-workspace data-state={status}>
-      <div className={styles.top}>
-        <div className={styles.header}>
+    <div className={styles.frame} data-review-workspace data-state={status}>
+      <GlassPane className={styles.panel} data-panel="review">
+        <div className={mergeClasses(styles.column, styles.queues)} data-column="queues">
+          <div className={styles.columnHeader}>
+            <Subtitle2>Queues</Subtitle2>
+            <span className={styles.spacer} />
+            <Button
+              size="small"
+              appearance="subtle"
+              icon={<ArrowClockwiseRegular />}
+              aria-label="Refresh the queues"
+              title="Re-read the queues from the forge"
+              onClick={onRefresh}
+            />
+          </div>
+          {queues === null ? (
+            <Spinner size="tiny" label="Loading reviews…" labelPosition="after" />
+          ) : (
+            <ReviewQueueList
+              snapshot={queues}
+              selectedSubjectId={selected?.subjectId ?? null}
+              collapsed={collapsedGroups}
+              onToggleGroup={onToggleGroup}
+              onSelect={onSelectSubject}
+            />
+          )}
+        </div>
+
+        <div className={styles.top} data-region="header">
           {selected ? (
             <SubjectHeader {...props} selected={selected} />
           ) : (
-            <Subtitle2>Reviews</Subtitle2>
+            <div className={styles.line}>
+              <Subtitle2>Reviews</Subtitle2>
+            </div>
+          )}
+          {error && (
+            <MessageBar intent="error">
+              <MessageBarBody>{error}</MessageBarBody>
+              <MessageBarActions>
+                <Button size="small" onClick={selected ? onReload : onRefresh}>
+                  Retry
+                </Button>
+              </MessageBarActions>
+            </MessageBar>
           )}
         </div>
-        {error && (
-          <MessageBar intent="error">
-            <MessageBarBody>{error}</MessageBarBody>
-            <MessageBarActions>
-              <Button size="small" onClick={selected ? onReload : onRefresh}>
-                Retry
-              </Button>
-            </MessageBarActions>
-          </MessageBar>
-        )}
-      </div>
 
-      <GlassPane className={styles.column} data-column="queues">
-        <div className={styles.columnHeader}>
-          <Subtitle2>Queues</Subtitle2>
-          <span className={styles.spacer} />
-          <Button
-            size="small"
-            appearance="subtle"
-            icon={<ArrowClockwiseRegular />}
-            aria-label="Refresh the queues"
-            title="Re-read the queues from the forge"
-            onClick={onRefresh}
-          />
+        <div className={mergeClasses(styles.column, styles.files)} data-column="files">
+          <FilesColumn {...props} />
         </div>
-        {queues === null ? (
-          <Spinner size="tiny" label="Loading reviews…" labelPosition="after" />
-        ) : (
-          <ReviewQueueList
-            snapshot={queues}
-            selectedSubjectId={selected?.subjectId ?? null}
-            collapsed={collapsedGroups}
-            onToggleGroup={onToggleGroup}
-            onSelect={onSelectSubject}
-          />
-        )}
-      </GlassPane>
 
-      <GlassPane className={styles.column} data-column="files">
-        <FilesColumn {...props} />
+        <DiffColumn {...props} status={status} />
       </GlassPane>
-
-      <DiffColumn {...props} status={status} />
 
       <ReviewKeysDialog open={keysOpen} onClose={onCloseKeys} />
     </div>
   );
 }
 
-function SubjectHeader({
-  selected,
+function SubjectHeader(
+  props: ReviewWorkspaceViewProps & { selected: ReviewQueueItem },
+): JSX.Element {
+  const { selected, state } = props;
+  const styles = useStyles();
+  const summary = state.summary?.status === 'ok' ? state.summary.summary : null;
+  const badge = summary ? sourceBadge(summary) : null;
+  const isTask = selected.subject.kind === 'task';
+  const drafts = selected.taskId !== null ? unsentCount(state) : selected.draftCount;
+  const ref = subjectLabel(selected);
+  const totals = summary ? summaryTotals(summary) : null;
+  const pipeline = knownPipeline(selected);
+  const provider = providerName(selected);
+
+  return (
+    <div className={styles.header}>
+      <div className={styles.line}>
+        {ref !== '' && (
+          <Caption1 className={styles.ref} title={selected.repoPath} data-subject-ref>
+            {ref}
+          </Caption1>
+        )}
+        <Subtitle2 className={styles.title} title={selected.title}>
+          {selected.title}
+        </Subtitle2>
+        <span className={styles.spacer} />
+        <HeaderActions {...props} selected={selected} drafts={drafts} isTask={isTask} />
+      </div>
+      {summary && totals && (
+        <Caption1 className={styles.meta} data-header-meta>
+          <span className={styles.mono} data-branch-line>
+            {branchLine(selected, summary)}
+          </span>
+          <span>
+            · {totals.files} file{totals.files === 1 ? '' : 's'} ·{' '}
+            <span className={styles.added}>+{totals.additions}</span>{' '}
+            <span className={styles.deleted}>−{totals.deletions}</span>
+          </span>
+          {pipeline && (
+            <>
+              <span>·</span>
+              <span
+                className={styles.dot}
+                style={{ backgroundColor: PIPELINE_VAR[pipeline] }}
+                aria-hidden
+              />
+              <span data-pipeline={pipeline}>pipeline {PIPELINE_WORD[pipeline]}</span>
+            </>
+          )}
+          {provider && <span>· {provider}</span>}
+          {badge && (
+            <Badge
+              appearance="outline"
+              color="informative"
+              size="small"
+              data-source-badge
+              title={badge.title}
+            >
+              {badge.text}
+            </Badge>
+          )}
+        </Caption1>
+      )}
+    </div>
+  );
+}
+
+function HeaderActions({
   state,
   layout,
   copyEnabled,
@@ -252,30 +362,12 @@ function SubjectHeader({
   onLayoutChange,
   onSend,
   onCopyMarkdown,
-}: ReviewWorkspaceViewProps & { selected: ReviewQueueItem }): JSX.Element {
+  drafts,
+  isTask,
+}: ReviewWorkspaceViewProps & { drafts: number; isTask: boolean }): JSX.Element {
   const styles = useStyles();
-  const summary = state.summary?.status === 'ok' ? state.summary.summary : null;
-  const badge = summary ? sourceBadge(summary) : null;
-  const isTask = selected.subject.kind === 'task';
-  const drafts = selected.taskId !== null ? unsentCount(state) : selected.draftCount;
-
   return (
     <>
-      <Caption1 className={styles.mono}>{subjectLabel(selected)}</Caption1>
-      <Subtitle2 className={styles.title} title={selected.title}>
-        {selected.title}
-      </Subtitle2>
-      {summary && (
-        <Caption1 className={styles.mono}>
-          {summary.baseRef} ← {summary.headSha.slice(0, 7)}
-        </Caption1>
-      )}
-      {badge && (
-        <Badge appearance="outline" color="informative" data-source-badge title={badge.title}>
-          {badge.text}
-        </Badge>
-      )}
-      <span className={styles.spacer} />
       <div className={styles.layoutPill} role="group" aria-label="Diff layout">
         <ToggleButton
           size="small"
@@ -369,7 +461,7 @@ function FilesColumn({
       </div>
       {summary && (
         <FileTree
-          nodes={buildFileTree(summary.files)}
+          nodes={buildDirGroups(summary.files)}
           selectedPath={state.selectedPath}
           onSelectFile={onSelectFile}
           viewed={byPath}
@@ -387,6 +479,7 @@ function DiffColumn({
   monochrome,
   onReload,
   onToggleExpanded,
+  onToggleViewed,
   onClickLine,
   onEditDraft,
   onSave,
@@ -423,15 +516,11 @@ function DiffColumn({
     );
   } else {
     const { summary } = result;
-    const totals = summaryTotals(summary);
+    const { byPath } = viewedStatuses(state);
+    // The file count and +/− live on the header's second line; this row only refreshes.
     body = (
       <>
         <div className={styles.columnHeader}>
-          <Caption1 className={styles.faint}>
-            {totals.files} file{totals.files === 1 ? '' : 's'} ·{' '}
-            <span className={styles.added}>+{totals.additions}</span>{' '}
-            <span className={styles.deleted}>−{totals.deletions}</span>
-          </Caption1>
           <span className={styles.spacer} />
           {state.loading ? (
             <Spinner size="extra-tiny" />
@@ -466,8 +555,10 @@ function DiffColumn({
           comments={selected.taskId !== null ? state.comments : []}
           editor={state.editor}
           canComment={selected.taskId !== null && canComment(state)}
-          layout={effectiveDiffLayout(layout, widthPx, false)}
+          layout={effectiveDiffLayout(layout, widthPx, false, WORKSPACE_SPLIT_MIN_WIDTH_PX)}
           monochrome={monochrome}
+          viewed={byPath}
+          onToggleViewed={onToggleViewed}
           onToggleExpanded={onToggleExpanded}
           onClickLine={onClickLine}
           onEditDraft={onEditDraft}

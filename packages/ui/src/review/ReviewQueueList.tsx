@@ -20,12 +20,11 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
-import type { PipelineStatus } from '@tm/shared/mergeRequest';
 import type { ReviewQueue, ReviewQueueItem, ReviewQueuesSnapshot } from '@tm/shared/review';
 import { PIPELINE_WORD } from '../issues/IssueBuilt';
 import { MONO } from '../theme';
 import { PIPELINE_VAR } from '../tokens';
-import { groupQueue } from './reviewWorkspaceModel';
+import { groupQueue, knownPipeline } from './reviewWorkspaceModel';
 
 const useStyles = makeStyles({
   root: { display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto' },
@@ -75,12 +74,6 @@ const useStyles = makeStyles({
   },
   dot: { width: '6px', height: '6px', borderRadius: '50%', flexShrink: 0 },
 });
-
-/** A pipeline worth naming on a row — `unknown` and `none` say nothing a reader can use. */
-function knownPipeline(item: ReviewQueueItem): PipelineStatus | null {
-  const status = item.pipeline ?? null;
-  return status === null || status === 'unknown' || status === 'none' ? null : status;
-}
 
 /**
  * A row's meta line before the pipeline: the author, then `+a −d` once both counts are known.

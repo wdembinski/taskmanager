@@ -3,6 +3,7 @@
  * header, which badge its diff source earns, where it lives on the forge and how the viewed
  * count reads — with no React in it, the same split `reviewView.ts` makes for the Changes pane.
  */
+import { forgeName, mrRef, type PipelineStatus } from '@tm/shared/mergeRequest';
 import type {
   DiffFileEntry,
   DiffSummary,
@@ -74,10 +75,38 @@ export function forgeUrlFor(item: Pick<ReviewQueueItem, 'subject'>): string | nu
   return `https://github.com/${subject.repoPath}/pull/${subject.number}`;
 }
 
-/** The header's `owner/repo#N` for a PR; a card's own branch `ref` otherwise. */
+/**
+ * The header's ref: the row's own `ref` (`!412` on GitLab, `#88` on GitHub), or — when a PR row
+ * carries none — `mrRef`'s spelling of its subject. A card with no ref reads `''`, so the header
+ * draws only its title. The repo path goes in the tooltip, not here.
+ */
 export function subjectLabel(item: Pick<ReviewQueueItem, 'subject' | 'ref'>): string {
+  if (item.ref !== '') return item.ref;
   const { subject } = item;
-  return subject.kind === 'pr' ? `${subject.repoPath}#${subject.number}` : item.ref;
+  return subject.kind === 'pr' ? mrRef(subject) : '';
+}
+
+/**
+ * The header's second line starts `head → base`: the branch names when the row knows its head
+ * branch, else the head's 7-char SHA — a SHA only as the last resort.
+ */
+export function branchLine(
+  item: Pick<ReviewQueueItem, 'headRef'>,
+  summary: Pick<DiffSummary, 'baseRef' | 'headSha'>,
+): string {
+  const head = item.headRef ? item.headRef : summary.headSha.slice(0, 7);
+  return `${head} → ${summary.baseRef}`;
+}
+
+/** `GitLab`/`GitHub` for a PR subject; `null` for a card, which lives on no forge. */
+export function providerName(item: Pick<ReviewQueueItem, 'subject'>): string | null {
+  return item.subject.kind === 'pr' ? forgeName(item.subject.provider) : null;
+}
+
+/** A pipeline worth naming — `unknown` and `none` say nothing a reader can use. */
+export function knownPipeline(item: Pick<ReviewQueueItem, 'pipeline'>): PipelineStatus | null {
+  const status = item.pipeline ?? null;
+  return status === null || status === 'unknown' || status === 'none' ? null : status;
 }
 
 /**

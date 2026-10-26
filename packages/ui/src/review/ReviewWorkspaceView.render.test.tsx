@@ -22,6 +22,7 @@ import {
   viewedLoadStarted,
   type ReviewState,
 } from './reviewState';
+import { GlassPane } from '../shell/GlassPane';
 import { ReviewWorkspaceView, type ReviewWorkspaceViewProps } from './ReviewWorkspaceView';
 
 function item(over: Partial<ReviewQueueItem> & { subjectId: string }): ReviewQueueItem {
@@ -44,7 +45,13 @@ function item(over: Partial<ReviewQueueItem> & { subjectId: string }): ReviewQue
   };
 }
 
-const pr = item({ subjectId: 'pr:github:7:412' });
+const pr = item({
+  subjectId: 'gl-7-412',
+  subject: { kind: 'pr', provider: 'gitlab', repoId: 7, repoPath: 'acme/up', number: 412 },
+  ref: '!412',
+  headRef: 'marta/retry-uploads',
+  pipeline: 'success',
+});
 const task = item({
   subjectId: 'task:t1',
   queue: 'agent',
@@ -119,7 +126,7 @@ function render(over: Partial<ReviewWorkspaceViewProps> = {}): string {
       selected={null}
       state={EMPTY_REVIEW}
       error={null}
-      layout="unified"
+      layout="split"
       monochrome={false}
       collapsedGroups={[]}
       copyEnabled
@@ -145,6 +152,21 @@ function render(over: Partial<ReviewWorkspaceViewProps> = {}): string {
       {...over}
     />,
   );
+}
+
+/** The markup from `marker` to the end of the element that carries it — a rough region cut. */
+function region(html: string, marker: string, until: string): string {
+  const start = html.indexOf(marker);
+  return start === -1 ? '' : html.slice(start, html.indexOf(until, start));
+}
+
+/** How many elements carry every atomic class a bare `GlassPane` paints with. */
+function glassPaneCount(html: string): number {
+  const bare = /class="([^"]*)"/.exec(renderToStaticMarkup(<GlassPane />))?.[1] ?? '';
+  // The `___…` sequence hash changes under `mergeClasses`; the atomic classes survive it.
+  const atomic = bare.split(' ').filter((c) => c !== '' && !c.startsWith('___'));
+  const classLists = [...html.matchAll(/class="([^"]*)"/g)].map((m) => m[1].split(' '));
+  return classLists.filter((list) => atomic.every((c) => list.includes(c))).length;
 }
 
 /** The text of a queue group's count. */
@@ -201,16 +223,65 @@ describe('ReviewWorkspaceView', () => {
       expect(count(prHtml, 'agent')).toBe('2');
     });
 
-    it('counts the viewed files and ticks exactly one box', () => {
+    it('counts the viewed files and ticks exactly one box in the tree', () => {
       expect(prHtml).toContain('data-viewed-count="1"');
       expect(prHtml).toContain('1 / 7 viewed');
-      expect(prHtml.match(/type="checkbox"/g)).toHaveLength(7);
-      expect(prHtml.match(/<input[^>]*type="checkbox"[^>]*\schecked/g)).toHaveLength(1);
+      const tree = region(prHtml, 'data-column="files"', 'data-column="diff"');
+      expect(tree.match(/type="checkbox"/g)).toHaveLength(7);
+      expect(tree.match(/<input[^>]*type="checkbox"[^>]*\schecked/g)).toHaveLength(1);
+    });
+
+    it('groups the tree by directory, full path as the label', () => {
+      const tree = region(prHtml, 'data-column="files"', 'data-column="diff"');
+      expect(tree).toContain('>src/upload<');
+      expect(tree).toContain('>src/net<');
+    });
+
+    it('gives every diff file header its own Viewed box, the same one ticked', () => {
+      const diff = prHtml.slice(prHtml.indexOf('data-column="diff"'));
+      expect(diff.match(/data-diff-viewed/g)?.length).toBeGreaterThan(0);
+      expect(diff).toContain('aria-label="Viewed src/upload/retry.ts"');
+    });
+
+    it('draws the header as two lines: the ref and title, then the branch line', () => {
+      const header = region(prHtml, 'data-region="header"', 'data-column="files"');
+      expect(header).toMatch(/data-subject-ref[^>]*>!412</);
+      expect(header).toContain('title="acme/up"');
+      expect(header).toContain('Retry uploads on a dropped link');
+      expect(header).toMatch(/data-branch-line[^>]*>marta\/retry-uploads → development</);
+      expect(header).toContain('7 files');
+      expect(header).toContain('+21');
+      expect(header).toContain('−7');
+      expect(header).toMatch(/data-pipeline="success"[^>]*>pipeline passed</);
+      expect(header).toContain('· GitLab');
+    });
+
+    it('falls back to the head SHA when the row knows no head branch', () => {
+      const header = region(taskHtml, 'data-region="header"', 'data-column="files"');
+      expect(header).toMatch(/data-branch-line[^>]*>abc1234 → development</);
+      expect(header).not.toContain('GitLab');
+      expect(header).not.toContain('GitHub');
     });
 
     it('names the diff source', () => {
       expect(prHtml).toMatch(/data-source-badge[^>]*>local clone</);
       expect(taskHtml).toMatch(/data-source-badge[^>]*>forge API · read only</);
+    });
+
+    it('is one panel: exactly one GlassPane, holding every column', () => {
+      for (const html of [prHtml, taskHtml]) {
+        expect(glassPaneCount(html)).toBe(1);
+        expect(html.match(/data-panel="review"/g)).toHaveLength(1);
+      }
+      const panel = prHtml.slice(prHtml.indexOf('data-panel="review"'));
+      for (const column of ['queues', 'files', 'diff']) {
+        expect(panel).toContain(`data-column="${column}"`);
+      }
+    });
+
+    it('opens on Split, pressed, with Unified one click away', () => {
+      expect(prHtml).toMatch(/aria-pressed="true"[^>]*>Split</);
+      expect(prHtml).toMatch(/aria-pressed="false"[^>]*>Unified</);
     });
 
     it('offers Copy and Open on forge for a PR, never Send to agent', () => {

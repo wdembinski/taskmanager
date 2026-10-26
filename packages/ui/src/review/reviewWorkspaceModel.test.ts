@@ -9,10 +9,13 @@ import type { FileTreeNode } from './reviewView';
 import {
   QUEUE_LABELS,
   QUEUE_ORDER,
+  branchLine,
   buildDirGroups,
   firstFilePath,
   forgeUrlFor,
   groupQueue,
+  knownPipeline,
+  providerName,
   sourceBadge,
   subjectLabel,
   viewedLabel,
@@ -123,13 +126,52 @@ describe('forgeUrlFor', () => {
 });
 
 describe('subjectLabel', () => {
-  it('reads repo#N for a PR on either provider', () => {
-    expect(subjectLabel(item({ subject: github }))).toBe('acme/uploader#412');
-    expect(subjectLabel(item({ subject: gitlab }))).toBe('group/sub/uploader#412');
+  it("reads the row's own ref", () => {
+    expect(subjectLabel(item({ subject: gitlab, ref: '!412' }))).toBe('!412');
+    expect(subjectLabel(item({ subject: github, ref: '#412' }))).toBe('#412');
   });
 
-  it("reads the row's ref for a task", () => {
-    expect(subjectLabel(item({ subject: task, ref: 'orch/t1' }))).toBe('orch/t1');
+  it("falls back to the forge's spelling of a PR subject with no ref", () => {
+    expect(subjectLabel(item({ subject: github, ref: '' }))).toBe('#412');
+    expect(subjectLabel(item({ subject: gitlab, ref: '' }))).toBe('!412');
+  });
+
+  it('reads empty for a task with no ref', () => {
+    expect(subjectLabel(item({ subject: task, ref: '' }))).toBe('');
+  });
+});
+
+describe('branchLine', () => {
+  const summary = { baseRef: 'development', headSha: 'abc1234def567' };
+
+  it('reads head → base with the branch names when the row knows its head', () => {
+    expect(branchLine(item({ headRef: 'marta/retry-uploads' }), summary)).toBe(
+      'marta/retry-uploads → development',
+    );
+  });
+
+  it("falls back to the head's 7-char SHA only when the head branch is unknown", () => {
+    expect(branchLine(item({ headRef: null }), summary)).toBe('abc1234 → development');
+    expect(branchLine(item({ headRef: '' }), summary)).toBe('abc1234 → development');
+    expect(branchLine(item(), summary)).toBe('abc1234 → development');
+  });
+});
+
+describe('providerName', () => {
+  it('names the forge for a PR and nothing for a task', () => {
+    expect(providerName(item({ subject: gitlab }))).toBe('GitLab');
+    expect(providerName(item({ subject: github }))).toBe('GitHub');
+    expect(providerName(item({ subject: task }))).toBeNull();
+  });
+});
+
+describe('knownPipeline', () => {
+  it('keeps a status worth naming and drops unknown, none and absent', () => {
+    expect(knownPipeline(item({ pipeline: 'success' }))).toBe('success');
+    expect(knownPipeline(item({ pipeline: 'unknown' }))).toBeNull();
+    expect(knownPipeline(item({ pipeline: 'none' }))).toBeNull();
+    expect(knownPipeline(item({ pipeline: null }))).toBeNull();
+    expect(knownPipeline(item())).toBeNull();
   });
 });
 
