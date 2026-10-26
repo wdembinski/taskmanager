@@ -193,6 +193,18 @@ describe('gitlabRowToItem', () => {
     const item = gitlabRowToItem(gitlabRow({ draft: undefined, work_in_progress: true }));
     expect(item.draft).toBe(true);
   });
+
+  it('carries the source branch and a known head pipeline', () => {
+    const item = gitlabRowToItem(gitlabRow({ head_pipeline: { status: 'success' } }));
+    expect(item.headRef).toBe('fix');
+    expect(item.pipeline).toBe('success');
+    expect(item.ref).toBe('!12');
+  });
+
+  it('leaves the pipeline unknown when the list row omits or misspells it', () => {
+    expect(gitlabRowToItem(gitlabRow()).pipeline).toBeNull();
+    expect(gitlabRowToItem(gitlabRow({ head_pipeline: { status: 'weird' } })).pipeline).toBeNull();
+  });
 });
 
 describe('mergeRequestToItem', () => {
@@ -204,6 +216,15 @@ describe('mergeRequestToItem', () => {
     expect(item.queue).toBe('mine');
     expect(item.taskId).toBe('task-5');
     expect(item.ref).toBe('#7');
+  });
+
+  it('carries the source branch and the stored pipeline status', () => {
+    const item = mergeRequestToItem(
+      mergeRequest({ sourceBranch: 'marta/retry-uploads', pipelineStatus: 'running' }),
+      () => 'me',
+    );
+    expect(item.headRef).toBe('marta/retry-uploads');
+    expect(item.pipeline).toBe('running');
   });
 });
 

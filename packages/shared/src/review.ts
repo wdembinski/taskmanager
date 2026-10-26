@@ -22,7 +22,7 @@
  */
 
 import type { AiFindingSeverity, ReviewDraftOrigin } from './aiReview';
-import type { ForgeProvider } from './mergeRequest';
+import type { ForgeProvider, PipelineStatus } from './mergeRequest';
 import type { ChatRefusal } from './model';
 
 export const DIFF_FILE_MAX_BYTES = 256_000; // one file's patch text
@@ -123,6 +123,24 @@ export interface ReviewQueueItem {
   draftCount: number;
   viewedCount: number;
   fileCount: number | null;
+  /**
+   * The PR's source branch, when the row's own payload carries it (a GitLab list row, a
+   * board `merge_requests` row). GitHub's search rows do not, and a task row has none — so
+   * absent/`null` means "not known", never "no branch".
+   */
+  headRef?: string | null;
+  /**
+   * Lines added across the subject's diff. No forge's list API carries it, so a row only has
+   * it once something has read the diff; absent/`null` means not known yet.
+   */
+  additions?: number | null;
+  /** Lines removed across the subject's diff — same rules as {@link additions}. */
+  deletions?: number | null;
+  /**
+   * The head pipeline's status, when the row's own payload carries one. Absent/`null` is
+   * "not known"; `unknown`/`none` are passed through as the forge reported them.
+   */
+  pipeline?: PipelineStatus | null;
 }
 
 /**

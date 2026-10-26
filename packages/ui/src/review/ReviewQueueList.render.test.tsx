@@ -1,6 +1,7 @@
 /**
  * Static-markup coverage for `ReviewQueueList`: the three groups and their counts, a collapsed
- * group dropping its rows, the selected row and the draft badge appearing only with drafts.
+ * group dropping its rows, the selected row, the draft badge appearing only with drafts, and
+ * the two-line row: the PR ref first, then the `author · +a −d · pipeline` meta.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -94,6 +95,38 @@ describe('ReviewQueueList', () => {
     );
     expect(r1).toContain('data-drafts');
     expect(r1).toContain('>3<');
+  });
+
+  it('leads a row with its ref and puts the known meta on a second line', () => {
+    const html = renderToStaticMarkup(
+      <ReviewQueueList
+        snapshot={{
+          ...snapshot,
+          items: [
+            item({
+              subjectId: 'gl-1-412',
+              ref: '!412',
+              additions: 184,
+              deletions: 32,
+              pipeline: 'success',
+            }),
+            item({ subjectId: 'task:71', queue: 'agent', ref: '', author: '' }),
+          ],
+        }}
+        selectedSubjectId={null}
+        collapsed={[]}
+        onToggleGroup={() => {}}
+        onSelect={() => {}}
+      />,
+    );
+    const row = html.slice(html.indexOf('data-subject-id="gl-1-412"'), html.indexOf('</section>'));
+    expect(/>([^<]+)</.exec(row)?.[1]).toBe('!412');
+    const meta = /<span[^>]*data-meta[^>]*>(.*?)<\/span><\/div>/.exec(row)?.[1] ?? '';
+    expect(meta.replace(/<[^>]*>/g, '')).toBe('Marta · +184 −32 · passed');
+    const agent = section(html, 'agent');
+    expect(agent).toContain('Title task:71');
+    expect(agent).not.toContain('data-ref');
+    expect(agent).not.toContain('data-meta');
   });
 
   it('marks the selected row', () => {
