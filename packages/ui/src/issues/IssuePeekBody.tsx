@@ -272,6 +272,7 @@ export function IssuePeekBody({
             readOnly={readOnly}
             onTaskChanged={onTaskChanged}
             onAnswered={onAnswered}
+            compact
           />
         )}
         {!task.parentTaskId && (
@@ -279,6 +280,7 @@ export function IssuePeekBody({
             attachments={attachments}
             activity={activity}
             onNeedsChanges={onNeedsChanges}
+            compact
           />
         )}
         {subtasks.length > 0 && (

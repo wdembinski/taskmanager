@@ -11,10 +11,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { PERSONAL_PROJECT_ID, type Task, type TaskActivityEntry } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
-import { formatSignOff } from '@tm/shared/visualSignOff';
+import { formatSignOff, type VisualSignOffState } from '@tm/shared/visualSignOff';
 import { TransportProvider, type Transport } from './transport';
 import { TaskDetail } from './TaskDetail';
-import { VisualSignOff } from './VisualSignOff';
+import { VisualSignOff, visualSignOffSummary } from './VisualSignOff';
 
 const desktopTransport: Transport = {
   invoke: () => new Promise(() => {}) as never,
@@ -195,5 +195,75 @@ describe('VisualSignOff, signed off by the AI reviewer', () => {
 
     expect(html).toContain('Pending');
     expect(html).toContain('AI review: round 1 of 2');
+  });
+});
+
+describe('VisualSignOff, compact (the issue peek)', () => {
+  const comment = (id: number, body: string): TaskActivityEntry => ({
+    kind: 'comment',
+    id,
+    body,
+    createdAt: id,
+  });
+  const compact = (activity: TaskActivityEntry[] = []): string =>
+    render(
+      <VisualSignOff
+        attachments={shotPairAttachments}
+        activity={activity}
+        onNeedsChanges={() => {}}
+        compact
+      />,
+    );
+
+  it('is one line: the state summary and a Review button, with no thumbnails', () => {
+    const html = compact();
+
+    expect(html).toContain('data-visual-signoff');
+    expect(html).toContain('data-compact');
+    expect(html).toContain('Visual sign-off');
+    expect(html).toContain('1 screen needs a look');
+    expect(html).toContain('>Review<');
+    expect(html).not.toMatch(/<img\b/);
+    expect(html).not.toContain('Approve');
+    expect(html).not.toContain('Open comparison');
+  });
+
+  it('names the latest verdict once someone has signed off', () => {
+    expect(compact([comment(1, formatSignOff('approved'))])).toContain('Approved');
+    expect(compact([comment(1, formatSignOff('needs-changes', ['board-light']))])).toContain(
+      'Needs changes',
+    );
+  });
+
+  it('is the full section when compact is unset', () => {
+    const html = render(
+      <VisualSignOff attachments={shotPairAttachments} activity={[]} onNeedsChanges={() => {}} />,
+    );
+
+    expect(html).not.toContain('data-compact');
+    expect(html.match(/<img\b/g) ?? []).toHaveLength(2);
+    expect(html).not.toContain('>Collapse<');
+  });
+});
+
+describe('visualSignOffSummary', () => {
+  const state = (over: Partial<VisualSignOffState> = {}): VisualSignOffState => ({
+    human: 'pending',
+    needsChangesScreens: [],
+    signedOffBy: null,
+    rows: new Map(),
+    ...over,
+  });
+
+  it('counts the screens while pending, and names the verdict after', () => {
+    expect(visualSignOffSummary(state(), 18)).toBe('18 screens need a look');
+    expect(visualSignOffSummary(state(), 1)).toBe('1 screen needs a look');
+    expect(visualSignOffSummary(state({ human: 'approved', signedOffBy: 'human' }), 18)).toBe(
+      'Approved',
+    );
+    expect(visualSignOffSummary(state({ human: 'approved', signedOffBy: 'ai' }), 18)).toBe(
+      'Approved (AI reviewer)',
+    );
+    expect(visualSignOffSummary(state({ human: 'needs-changes' }), 18)).toBe('Needs changes');
   });
 });

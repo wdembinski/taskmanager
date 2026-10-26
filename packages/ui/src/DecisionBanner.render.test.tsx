@@ -97,6 +97,26 @@ describe('DecisionBannerView', () => {
   it('prints no age line without askedAt', () => {
     expect(view({ askedAt: null })).not.toContain('Asked');
   });
+
+  it('is one line with an Answer button and no answer box when compact', () => {
+    const html = view({ compact: true });
+    expect(html).toContain('data-decision-banner');
+    expect(html).toContain('data-compact');
+    expect(html).toContain('Decision needed');
+    expect(html).toContain('Which hosting plan do we pay for?');
+    expect(html).toContain('>Answer<');
+    expect(html).not.toContain('<textarea');
+    expect(html).not.toContain('>Withdraw<');
+    expect(html).not.toContain('Asked 2 days ago');
+    expect(html).not.toContain('fui-MessageBar ');
+    // The whole question rides in a `title` too, since the line itself ellipsizes.
+    expect(html).toContain('title="Which hosting plan do we pay for?"');
+  });
+
+  it('offers a Collapse link once an expanded compact bar is open', () => {
+    expect(view({ onCollapse: () => {} })).toContain('>Collapse<');
+    expect(view()).not.toContain('>Collapse<');
+  });
 });
 
 describe('DecisionBanner', () => {
@@ -114,6 +134,17 @@ describe('DecisionBanner', () => {
     expect(html).toContain('Which hosting plan?');
     expect(html).toContain('Asked today');
     expect(html).toContain('>Answer<');
+    expect(html).not.toContain('data-compact');
+  });
+
+  it('starts collapsed when compact', () => {
+    const html = wrap(
+      <DecisionBanner task={task({ decisionQuestion: 'Which hosting plan?' })} compact />,
+    );
+    expect(html).toContain('data-compact');
+    expect(html).toContain('Which hosting plan?');
+    expect(html).toContain('>Answer<');
+    expect(html).not.toContain('<textarea');
   });
 });
 

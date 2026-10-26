@@ -10,6 +10,11 @@
  * through `renderToStaticMarkup`; `DecisionBanner` owns the draft and the two channel calls,
  * and renders `null` for a card with no open decision (the common case).
  *
+ * `compact` is the issue peek's form: one line — a glyph, "Decision needed · <question>"
+ * ellipsized, and an Answer button that expands the full bar in place (with a Collapse link to
+ * fold it again). The view stays hook-free, so the expanded flag lives in `DecisionBanner`;
+ * only `IssuePeekBody` passes it, so the board pane and the full page are unchanged.
+ *
  * `RaiseDecisionButton` is the other end: the "Needs a decision…" control that opens a small
  * dialog for the question and calls `task:setDecision`.
  *
@@ -27,11 +32,13 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
+  Link,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
   MessageBarTitle,
   Spinner,
+  Text,
   Textarea,
   makeStyles,
   tokens,
@@ -48,6 +55,25 @@ const useStyles = makeStyles({
   answer: { width: '100%' },
   error: { color: tokens.colorPaletteRedForeground1 },
   dialogField: { width: '100%' },
+  compact: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    minWidth: 0,
+    padding: '4px 4px 4px 8px',
+    borderRadius: tokens.borderRadiusMedium,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  compactGlyph: { flexShrink: 0, fontSize: '16px', color: tokens.colorNeutralForeground3 },
+  compactText: {
+    flex: '1 1 auto',
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  compactLabel: { fontWeight: tokens.fontWeightSemibold },
+  compactButton: { flexShrink: 0 },
 });
 
 export interface DecisionBannerViewProps {
@@ -64,6 +90,12 @@ export interface DecisionBannerViewProps {
   busy: 'answer' | 'withdraw' | null;
   /** A refusal from either call, shown inside the same bar. */
   error: string | null;
+  /** Render the one-line collapsed row instead of the bar — see this file's header. */
+  compact?: boolean;
+  /** The collapsed row's button: expand the full bar in place. */
+  onExpand?: () => void;
+  /** Present on an expanded compact bar: the "Collapse" link that folds it again. */
+  onCollapse?: () => void;
 }
 
 /** The bar itself — hook-free, see this file's own header. */
@@ -77,9 +109,25 @@ export function DecisionBannerView({
   onWithdraw,
   busy,
   error,
+  compact = false,
+  onExpand,
+  onCollapse,
 }: DecisionBannerViewProps): JSX.Element {
   const styles = useStyles();
   const editable = Boolean(onAnswer);
+  if (compact) {
+    return (
+      <div className={styles.compact} data-decision-banner="" data-compact="">
+        <QuestionCircleRegular className={styles.compactGlyph} aria-hidden />
+        <Text size={200} className={styles.compactText} title={question}>
+          <span className={styles.compactLabel}>Decision needed</span> · {question}
+        </Text>
+        <Button size="small" className={styles.compactButton} onClick={onExpand}>
+          {editable ? 'Answer' : 'Show'}
+        </Button>
+      </div>
+    );
+  }
   return (
     <MessageBar
       intent="warning"
@@ -107,6 +155,11 @@ export function DecisionBannerView({
           />
         )}
         {error && <Caption1 className={styles.error}>{error}</Caption1>}
+        {onCollapse && (
+          <Link as="button" onClick={onCollapse}>
+            Collapse
+          </Link>
+        )}
       </MessageBarBody>
       {editable && (
         <MessageBarActions>
@@ -137,6 +190,8 @@ export interface DecisionBannerProps {
   /** After an answer lands: its comment is on the card's timeline now. */
   onAnswered?: () => void;
   readOnly?: boolean;
+  /** Start as the one-line row that expands on click — the issue peek's form only. */
+  compact?: boolean;
 }
 
 export function DecisionBanner({
@@ -144,8 +199,10 @@ export function DecisionBanner({
   onTaskChanged,
   onAnswered,
   readOnly = false,
+  compact = false,
 }: DecisionBannerProps): JSX.Element | null {
   const transport = useTransport();
+  const [expanded, setExpanded] = useState(false);
   const [answer, setAnswer] = useState('');
   const [busy, setBusy] = useState<'answer' | 'withdraw' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -191,6 +248,9 @@ export function DecisionBanner({
       onWithdraw={readOnly ? undefined : () => void withdraw()}
       busy={busy}
       error={error}
+      compact={compact && !expanded}
+      onExpand={() => setExpanded(true)}
+      onCollapse={compact && expanded ? () => setExpanded(false) : undefined}
     />
   );
 }
