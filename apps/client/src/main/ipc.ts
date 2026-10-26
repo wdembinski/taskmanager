@@ -982,6 +982,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     node: process.versions.node,
     chrome: process.versions.chrome,
     platform: process.platform,
+    hostname: hostname(),
   }));
 
   /**

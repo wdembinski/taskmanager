@@ -92,7 +92,7 @@ import { TaskAgentPanel, useStartAction } from './TaskAgentPanel';
 import { IssueBuilt, IssueTested } from './issues/IssueBuilt';
 import { IssuePeekBody } from './issues/IssuePeekBody';
 import { IssueProperties } from './issues/IssueProperties';
-import { issuePropertyRows } from './issues/issuePropertyRows';
+import { issuePropertyRows, peekAssigneeValue } from './issues/issuePropertyRows';
 import { TaskDetailsCell } from './TaskDetailsCell';
 import { VisualSignOff } from './VisualSignOff';
 import { TaskLinksSection } from './projects/TaskLinksSection';
@@ -1060,6 +1060,25 @@ export function TaskDetail({
       cancelled = true;
     };
   }, [peek, liveKey, transport]);
+  /**
+   * The desktop's machine name — the peek's Assignee reads "Agent on <machine>". Read once per
+   * peek; `app:getInfo` is relayed, so the web gets the desktop's own name, and an older
+   * desktop that sends none leaves the agent project's name in its place.
+   */
+  const [hostname, setHostname] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    if (!peek) return;
+    let cancelled = false;
+    void transport
+      .invoke('app:getInfo')
+      .then((info) => {
+        if (!cancelled) setHostname(info.hostname);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [peek, transport]);
 
   if (!task) {
     return (
@@ -1809,16 +1828,28 @@ export function TaskDetail({
 
   if (peek) {
     const replyToAgent = chat?.offered === true && chat.can;
+    const peekAgentName = delegatedAgentName(task, agentProject?.name);
     const peekRows = issuePropertyRows({
       task,
       people,
       milestones,
-      agentName: delegatedAgentName(task, agentProject?.name),
+      agentName: peekAgentName,
       modelCaption: '',
       chainLinks,
       chainTasksById,
       readOnly: true,
-    }).filter((row) => PEEK_ROWS.has(row.key));
+    })
+      .filter((row) => PEEK_ROWS.has(row.key))
+      .map((row) =>
+        row.key === 'assignee'
+          ? {
+              ...row,
+              value:
+                peekAssigneeValue({ task, people, agentName: peekAgentName, hostname }) ??
+                row.value,
+            }
+          : row,
+      );
     return (
       <div className={styles.root}>
         {readOnlyNotice && (
@@ -1831,6 +1862,8 @@ export function TaskDetail({
         <IssuePeekBody
           task={task}
           rows={peekRows}
+          people={people}
+          agentName={peekAgentName}
           subtasks={subtasks}
           liveRunTaskIds={liveRunTaskIds}
           runStartedAt={runStartedAt}

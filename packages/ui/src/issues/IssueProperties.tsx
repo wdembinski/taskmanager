@@ -19,14 +19,11 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Body1, Caption1, Text, makeStyles, tokens } from '@fluentui/react-components';
-import { FlagRegular, PersonRegular } from '@fluentui/react-icons';
-import { columnForTask } from '@tm/shared/board';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { ManualStatus, Milestone, Person, Project, Task, TicketLabel } from '@tm/shared/model';
 import type { ClaudeModel } from '@tm/shared/session';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { delegatedAgentName, isNativeTicket } from '@tm/shared/tickets';
-import { AgentGlyph } from '../AgentGlyph';
 import { FoldToggle } from '../FoldToggle';
 import { ModelField, useModelLabels } from '../ModelField';
 import {
@@ -37,7 +34,6 @@ import {
 } from '../modelChoice';
 import { ArchivedTicketBanner } from '../projects/ArchivedTicketBanner';
 import { useDeviceFold } from '../projects/deviceFold';
-import { PersonAvatar } from '../projects/PersonAvatar';
 import {
   TicketAssigneeField,
   TicketFieldsSection,
@@ -51,7 +47,7 @@ import {
   type PropertyEditor,
   type PropertyRow,
 } from './issuePropertyRows';
-import { STATUS_GLYPH } from './IssueRow';
+import { PropertyGlyph } from './PropertyGlyph';
 
 const useStyles = makeStyles({
   column: { display: 'flex', flexDirection: 'column', gap: '16px' },
@@ -95,14 +91,6 @@ const useStyles = makeStyles({
   },
   /** The value's text: one line, cut with an ellipsis; its `title` carries the whole. */
   valueText: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
-  icon: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    height: tokens.lineHeightBase300,
-    flexShrink: 0,
-    fontSize: '16px',
-    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
-  },
   /** The value as a control — reads as plain text, with no button chrome. */
   valueButton: {
     background: 'none',
@@ -304,44 +292,6 @@ export function IssueProperties({
     return null;
   }
 
-  /** The icon before a value — Status, Assignee and Milestone only, as the mockup draws. */
-  function iconFor(row: PropertyRow): JSX.Element | null {
-    if (row.key === 'status') {
-      const column = columnForTask(task);
-      return (
-        <span className={styles.icon} data-property-icon={`status-${column}`}>
-          {STATUS_GLYPH[column]}
-        </span>
-      );
-    }
-    if (row.key === 'assignee') {
-      // A delegated card reads as the agent's; a person alone shows their avatar.
-      const person = people.find((p) => p.id === task.assigneeId);
-      return (
-        <span
-          className={styles.icon}
-          data-property-icon={agentName ? 'agent' : person ? 'person' : 'unassigned'}
-        >
-          {agentName ? (
-            <AgentGlyph />
-          ) : person ? (
-            <PersonAvatar person={person} size={16} />
-          ) : (
-            <PersonRegular />
-          )}
-        </span>
-      );
-    }
-    if (row.key === 'milestone') {
-      return (
-        <span className={styles.icon} data-property-icon="milestone">
-          <FlagRegular />
-        </span>
-      );
-    }
-    return null;
-  }
-
   function valueFor(row: PropertyRow): JSX.Element {
     if (row.blockedBy) {
       return (
@@ -361,10 +311,9 @@ export function IssueProperties({
       );
     }
     const empty = row.value === 'None' || row.value === 'Unassigned';
-    const icon = iconFor(row);
     const text = (
       <span className={styles.value}>
-        {icon}
+        <PropertyGlyph rowKey={row.key} task={task} people={people} agentName={agentName} />
         <Body1
           className={`${styles.valueText} ${empty ? styles.empty : ''}`}
           title={row.value ?? undefined}

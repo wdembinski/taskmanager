@@ -20,6 +20,8 @@ export const APP_INFO = {
   node: 'headless',
   chrome: 'headless',
   platform: 'win32',
+  // v9-1's Assignee reads "Agent on WD-DESKTOP" — the peek names the desktop by this.
+  hostname: 'WD-DESKTOP',
 };
 
 export const CLAUDE_STATUS = {

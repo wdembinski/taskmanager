@@ -2,7 +2,8 @@
  * The Tickets screen's peek, read-only (`TaskDetail`'s `layout="peek"`), after
  * `v9-1-issues-list-light.svg` / `v9-3-issues-list-dark.svg`: key · epic, the title, the
  * description, four label/value rows (Status, Assignee, Milestone, Due — a row with nothing to
- * say is left out), the open decision and the visual sign-off when they apply, the "Agent run"
+ * say is left out; the first three with their `PropertyGlyph`, Assignee as "Agent on <machine>"
+ * for a delegated card), the open decision and the visual sign-off when they apply, the "Agent run"
  * checklist with a timer on the running step, the conversation, and one Reply box.
  *
  * Nothing here edits the ticket. Every dropdown, the agent controls, the merge buttons and the
@@ -27,7 +28,7 @@ import {
 } from '@fluentui/react-components';
 import { CheckmarkCircleFilled, CircleRegular } from '@fluentui/react-icons';
 import { formatElapsed } from '@tm/shared/elapsed';
-import type { Task, TaskActivityEntry } from '@tm/shared/model';
+import type { Person, Task, TaskActivityEntry } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
 import { ChatTurns } from '../chat/ChatTurns';
@@ -38,6 +39,7 @@ import { STATUS_INDICATOR_VAR } from '../tokens';
 import { useElapsedClock } from '../useElapsedClock';
 import { VisualSignOff } from '../VisualSignOff';
 import type { PropertyRow } from './issuePropertyRows';
+import { PropertyGlyph } from './PropertyGlyph';
 
 const useStyles = makeStyles({
   root: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
@@ -69,7 +71,15 @@ const useStyles = makeStyles({
     margin: 0,
   },
   propLabel: { color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})` },
-  propValue: { margin: 0, minWidth: 0, overflowWrap: 'anywhere' },
+  // The glyph, then the value — v9-1 draws Status, Assignee and Milestone with one; Due without.
+  propValue: {
+    margin: 0,
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    overflowWrap: 'anywhere',
+  },
   section: { display: 'flex', flexDirection: 'column', gap: '6px' },
   sectionHead: { fontWeight: tokens.fontWeightSemibold },
   steps: { listStyleType: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' },
@@ -100,6 +110,9 @@ export interface IssuePeekBodyProps {
   task: Task;
   /** The label/value rows to print, in order — already narrowed to the four the peek shows. */
   rows: readonly PropertyRow[];
+  /** App-wide roster and the delegated agent's name — the rows' glyphs (`PropertyGlyph`). */
+  people?: readonly Person[];
+  agentName?: string;
   /** The card's steps, in chain order. */
   subtasks: readonly Task[];
   /** Tasks with a live run right now — a step in it is the running one. */
@@ -156,6 +169,8 @@ function StepGlyph({ step, running }: { step: Task; running: boolean }): JSX.Ele
 export function IssuePeekBody({
   task,
   rows,
+  people = [],
+  agentName,
   subtasks,
   liveRunTaskIds,
   runStartedAt,
@@ -209,6 +224,12 @@ export function IssuePeekBody({
                   <Caption1>{row.label}</Caption1>
                 </dt>
                 <dd className={styles.propValue}>
+                  <PropertyGlyph
+                    rowKey={row.key}
+                    task={task}
+                    people={people}
+                    agentName={agentName}
+                  />
                   <Text size={200}>{row.value}</Text>
                 </dd>
               </div>
