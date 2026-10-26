@@ -82,7 +82,7 @@ import {
   type ReviewState,
 } from './reviewState';
 import { defaultExpanded, fetchablePaths } from './reviewView';
-import { buildDirGroups, firstFilePath, forgeUrlFor, QUEUE_ORDER } from './reviewWorkspaceModel';
+import { forgeUrlFor, QUEUE_ORDER } from './reviewWorkspaceModel';
 import { ReviewWorkspaceView } from './ReviewWorkspaceView';
 import { useDiffLayout } from './useDiffLayout';
 
@@ -216,11 +216,13 @@ export function ReviewWorkspace({
                 (acc, path) => toggleExpanded(acc, path),
                 next,
               );
-        // Nothing selected yet: the first file the tree draws, so a highlight is always on
-        // screen. After the seeding, or its toggle would collapse the file this just opened.
+        // Nothing selected yet: the first file the DIFF draws (summary order), so the tree's
+        // highlight names the file on screen — the tree sorts its groups by path, so its own
+        // first row can be a file the diff draws much further down. After the seeding, or its
+        // toggle would collapse the file this just opened.
         if (seeded.selectedPath !== null) return seeded;
-        const first = firstFilePath(buildDirGroups(files));
-        return first === null ? seeded : selectFile(seeded, first);
+        const first = files[0]?.path;
+        return first === undefined ? seeded : selectFile(seeded, first);
       });
     } catch (e: unknown) {
       setState((s) => summaryFailed(s, subjectId, mySeq));

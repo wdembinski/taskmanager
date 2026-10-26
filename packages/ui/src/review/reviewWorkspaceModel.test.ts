@@ -11,7 +11,6 @@ import {
   QUEUE_ORDER,
   branchLine,
   buildDirGroups,
-  firstFilePath,
   forgeUrlFor,
   groupQueue,
   knownPipeline,
@@ -238,14 +237,6 @@ describe('buildDirGroups', () => {
 
   it('answers an empty list for no files', () => {
     expect(buildDirGroups([])).toEqual([]);
-  });
-});
-
-describe('firstFilePath', () => {
-  it('answers the first file in render order, depth first', () => {
-    expect(firstFilePath(buildDirGroups(['b/x.ts', 'a/y.ts'].map(file)))).toBe('a/y.ts');
-    expect(firstFilePath(buildDirGroups(['b/x.ts', 'z.md'].map(file)))).toBe('z.md');
-    expect(firstFilePath([])).toBeNull();
   });
 });
 

@@ -145,16 +145,6 @@ export function buildDirGroups(files: readonly DiffFileEntry[]): FileTreeNode[] 
   return [...root.sort(byPath).map((entry): FileTreeNode => ({ kind: 'file', entry })), ...groups];
 }
 
-/** The first file `nodes` render, depth first — what the workspace selects on first load. */
-export function firstFilePath(nodes: readonly FileTreeNode[]): string | null {
-  for (const node of nodes) {
-    if (node.kind === 'file') return node.entry.path;
-    const inner = firstFilePath(node.children);
-    if (inner !== null) return inner;
-  }
-  return null;
-}
-
 /** The file column's "N / M viewed". */
 export function viewedLabel(viewed: number, total: number): string {
   return `${viewed} / ${total} viewed`;
