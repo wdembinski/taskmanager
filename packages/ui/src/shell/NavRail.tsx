@@ -58,6 +58,24 @@ const useStyles = makeStyles({
     // selected one; `selectedTab` below recolours the selected tile's own glyph to `brand`.
     '& svg': { fontSize: '20px', color: 'var(--tm-text-muted)' },
   },
+  /** v9-1's "TM" logo tile atop the rail: 24px, radius 6, brand fill — a mark, not a tab. */
+  logo: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    width: '24px',
+    height: '24px',
+    marginBottom: '8px',
+    flexShrink: 0,
+    borderRadius: '6px',
+    backgroundColor: 'var(--tm-brand)',
+    color: tokens.colorNeutralForegroundOnBrand,
+    fontSize: '10px',
+    lineHeight: '10px',
+    fontWeight: tokens.fontWeightBold,
+    userSelect: 'none',
+  },
   /** The destination tabs, growing to fill the rail so the Account tile sits at its foot. */
   tabs: { flex: 1, display: 'flex', flexDirection: 'column' },
   /** The spacer between the bar group and the foot group (Settings), pushing Settings to the
@@ -148,6 +166,9 @@ export function NavRail({
   const styles = useStyles();
   return (
     <div className={styles.rail}>
+      <div className={styles.logo} aria-hidden="true">
+        TM
+      </div>
       <TabList
         vertical
         size="large"

@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
   Body1,
+  Button,
   Caption1,
   Menu,
   MenuButton,
@@ -120,13 +121,35 @@ const useStyles = makeStyles({
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    padding: '4px 12px 12px',
+    padding: '4px 8px 12px 12px',
     color: 'var(--tm-text)',
   },
-  workspaceText: { display: 'flex', flexDirection: 'column', minWidth: 0 },
-  workspaceName: { fontWeight: tokens.fontWeightSemibold },
+  /** v9-1's 26px neutral initial tile, radius 7 — the workspace's first letter. */
+  workspaceTile: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '26px',
+    height: '26px',
+    flexShrink: 0,
+    borderRadius: '7px',
+    backgroundColor: tokens.colorNeutralBackground3,
+    color: tokens.colorNeutralForeground2,
+    fontSize: '12px',
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  workspaceText: { display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 },
+  workspaceName: {
+    fontSize: '13px',
+    lineHeight: '17px',
+    fontWeight: tokens.fontWeightSemibold,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
   /** v9-1's 10.5px muted line — "Cloud" or "Local". */
   workspaceSub: { color: 'var(--tm-text-muted)', fontSize: '10.5px', lineHeight: '14px' },
+  workspaceSwitch: { flexShrink: 0, color: 'var(--tm-text-muted)' },
   scroll: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' },
   section: { display: 'flex', flexDirection: 'column', padding: '2px 8px' },
   row: {
@@ -435,6 +458,7 @@ export function Sidebar({
     <nav className={styles.root} aria-label="Sidebar">
       {workspace?.kind === 'workspace' && (
         <WorkspaceHeader
+          workspaces={workspace.workspaces}
           active={workspace.workspaces.find((w) => w.id === workspace.activeWorkspaceId)}
         />
       )}
@@ -667,17 +691,49 @@ export function Sidebar({
   );
 }
 
-/** The workspace header: the cloud team or "Personal", over its "Cloud"/"Local" line. Only
- *  the `machine` section below still says "This machine". */
-function WorkspaceHeader({ active }: { active: SidebarWorkspace | undefined }): JSX.Element {
+/** The workspace switcher row (v9-1): an initial tile, the cloud team or "Personal" over its
+ *  "Cloud"/"Local" line, and a chevron menu of the workspaces the sidebar data already holds,
+ *  the active one checked. It has no switch action: until F19 there is only ever the one
+ *  workspace. Only the `machine` section below still says "This machine". */
+function WorkspaceHeader({
+  workspaces,
+  active,
+}: {
+  workspaces: readonly SidebarWorkspace[];
+  active: SidebarWorkspace | undefined;
+}): JSX.Element {
   const styles = useStyles();
+  const name = active?.name ?? 'Personal';
   return (
     <div className={styles.workspace}>
-      <LaptopRegular />
+      <span className={styles.workspaceTile} aria-hidden="true">
+        {name.charAt(0).toUpperCase()}
+      </span>
       <div className={styles.workspaceText}>
-        <Body1 className={styles.workspaceName}>{active?.name ?? 'Personal'}</Body1>
+        <Body1 className={styles.workspaceName}>{name}</Body1>
         {active?.sub && <span className={styles.workspaceSub}>{active.sub}</span>}
       </div>
+      <Menu>
+        <MenuTrigger disableButtonEnhancement>
+          <Button
+            appearance="subtle"
+            size="small"
+            className={styles.workspaceSwitch}
+            icon={<ChevronDownRegular />}
+            aria-label="Switch workspace"
+            title="Switch workspace"
+          />
+        </MenuTrigger>
+        <MenuPopover>
+          <MenuList checkedValues={{ workspace: active ? [active.id] : [] }}>
+            {workspaces.map((w) => (
+              <MenuItemRadio key={w.id} name="workspace" value={w.id} secondaryContent={w.sub}>
+                {w.name}
+              </MenuItemRadio>
+            ))}
+          </MenuList>
+        </MenuPopover>
+      </Menu>
     </div>
   );
 }

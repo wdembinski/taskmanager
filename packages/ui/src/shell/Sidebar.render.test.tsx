@@ -74,6 +74,9 @@ describe('Sidebar', () => {
     );
     expect(markup).toContain('>Personal<');
     expect(markup).toContain('>Local<');
+    // The initial tile, and the chevron that opens the workspace menu.
+    expect(markup).toContain('aria-hidden="true">P<');
+    expect(markup).toContain('aria-label="Switch workspace"');
     expect(markup).not.toContain('This machine');
   });
 
@@ -85,6 +88,7 @@ describe('Sidebar', () => {
       />,
     );
     expect(markup).toContain('>Personal<');
+    expect(markup).toContain('aria-label="Switch workspace"');
     expect(markup).not.toContain('This machine');
   });
 
