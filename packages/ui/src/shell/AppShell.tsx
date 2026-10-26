@@ -18,7 +18,8 @@ const useStyles = makeStyles({
     flexDirection: 'column',
     height: '100%',
     overflow: 'hidden',
-    backgroundColor: tokens.colorNeutralBackground2,
+    /* No fill: the canvas and its wash come from `useGlobalStyles` on `#root` (`theme.ts`),
+       and a colour here — even the same canvas colour — would cover the wash back up. */
   },
   /** Nav rail + content, side by side under the title bar. `position: relative` so
    *  `scrim` can cover exactly this band — never the title bar or status bar above/below it. */

@@ -301,126 +301,140 @@ function schemeVars(scheme: ColorScheme): Record<string, string> {
  * The one thing that stays behind is `.app-drag`/`.app-no-drag` in the client's `index.css`:
  * `-webkit-app-region` is a frameless-Electron-window mechanism, and meaningless in a tab.
  */
-export const useGlobalStyles = makeStaticStyles({
-  ':root': {
-    colorScheme: 'dark',
-    ...schemeVars('dark'),
-  },
-  ':root[data-scheme="light"]': {
-    colorScheme: 'light',
-    ...schemeVars('light'),
-  },
-  'html, body, #root': {
-    margin: 0,
-    padding: 0,
-    height: '100%',
-    /* The wash is a background-IMAGE layer; if the custom property it reads is ever unset
+export const useGlobalStyles = makeStaticStyles([
+  {
+    ':root': {
+      colorScheme: 'dark',
+      ...schemeVars('dark'),
+    },
+    ':root[data-scheme="light"]': {
+      colorScheme: 'light',
+      ...schemeVars('light'),
+    },
+    'html, body, #root': {
+      margin: 0,
+      padding: 0,
+      height: '100%',
+      /* The wash is a background-IMAGE layer; if the custom property it reads is ever unset
        this whole declaration is dropped as invalid, which is exactly why backgroundColor is
        stated again below rather than folded into this one shorthand — the canvas still has
        to paint even when the wash does not. */
-    background: 'var(--tm-page-wash), var(--tm-page-bg)',
-    backgroundColor: 'var(--tm-page-bg)',
-  },
+      background: 'var(--tm-page-wash), var(--tm-page-bg)',
+      backgroundColor: 'var(--tm-page-bg)',
+    },
 
-  /**
-   * `glass: 'native'` (F13.7): the OS material — Mica or Acrylic — is already painting
-   * behind the window (`main/index.ts`'s transparent `backgroundColor` is what lets it
-   * through), so the wash and the canvas colour would just cover it back up. Dropping both
-   * here, rather than teaching `html, body, #root` above to read `data-glass`, keeps that
-   * rule's own job — paint the one thing every OTHER mode needs — undisturbed; this is the
-   * one mode that wants nothing painted at all.
-   *
-   * `.fui-FluentProvider` needs the same treatment: Fluent's own `useFluentProviderStyles`
-   * paints `colorNeutralBackground1` as an opaque fill on the provider root, which sits
-   * right on top of `#root` and would hide the material just as completely. Panes keep
-   * painting `paneGlass`/`paneOpaque` over this unchanged (`GlassPane.tsx`) — only the
-   * canvas beneath them goes see-through.
-   */
-  ':root[data-glass="native"], :root[data-glass="native"] body, :root[data-glass="native"] #root': {
-    background: 'transparent',
-    backgroundColor: 'transparent',
-  },
-  ':root[data-glass="native"] .fui-FluentProvider': {
-    backgroundColor: 'transparent',
-  },
+    /**
+     * `glass: 'native'` (F13.7): the OS material — Mica or Acrylic — is already painting
+     * behind the window (`main/index.ts`'s transparent `backgroundColor` is what lets it
+     * through), so the wash and the canvas colour would just cover it back up. Dropping both
+     * here, rather than teaching `html, body, #root` above to read `data-glass`, keeps that
+     * rule's own job — paint the one thing every OTHER mode needs — undisturbed; this is the
+     * one mode that wants nothing painted at all.
+     *
+     */
+    ':root[data-glass="native"], :root[data-glass="native"] body, :root[data-glass="native"] #root':
+      {
+        background: 'transparent',
+        backgroundColor: 'transparent',
+      },
+    /**
+     * The provider root, in EVERY mode. Fluent's own `useFluentProviderStyles` paints
+     * `colorNeutralBackground1` as an opaque fill on it, right on top of `#root` — under
+     * `native` that hid the OS material, and under `css`/`opaque` it hid the wash just as
+     * completely, which is why every screen read as a flat canvas. The canvas and the wash
+     * live on `#root` underneath (above), so the provider has nothing of its own to paint.
+     * Panes keep painting `paneGlass`/`paneOpaque` over this unchanged (`GlassPane.tsx`).
+     *
+     * `:root` is load-bearing, not decoration: this sheet is inserted before the provider's
+     * atomic class, in the same Griffel bucket, so at equal specificity Fluent's later rule
+     * would win (`canvasWash.render.test.tsx`).
+     */
+    ':root .fui-FluentProvider': {
+      backgroundColor: 'transparent',
+    },
 
-  /* The shell never scrolls; inner panes manage their own overflow. */
-  body: {
-    overflow: 'hidden',
-  },
+    /* The shell never scrolls; inner panes manage their own overflow. */
+    body: {
+      overflow: 'hidden',
+    },
 
-  /**
-   * Every spinner in the app, recoloured to {@link FLUO_VAR.cyan}.
-   *
-   * Global rather than per-component because a spinner means one thing wherever it appears —
-   * "this is moving right now" — and there are a dozen of them; a per-component version would
-   * have to be remembered at each new one. Fluent's own is `colorBrandStroke1`, a mid blue that
-   * at `extra-tiny` (16px, the size the board uses) is hard to pick out of the grey it spins
-   * against.
-   *
-   * Written here rather than in `index.css` so the colour has ONE definition: the agent glyph
-   * animates in the same two values, and a third hardcoded copy of a hex is a colour that
-   * drifts — the thing `accent.ts` exists to prevent.
-   *
-   * Both properties are needed and it is not obvious why: Fluent paints the moving arc as a
-   * conic-gradient off `currentcolor` on the tail's pseudo-elements, so `color` is the arc,
-   * and `background-color` is the track behind it.
-   */
-  '.fui-Spinner__spinnerTail': {
-    color: FLUO_VAR.cyan,
-    backgroundColor: FLUO_VAR.cyanDim,
-  },
+    /**
+     * Every spinner in the app, recoloured to {@link FLUO_VAR.cyan}.
+     *
+     * Global rather than per-component because a spinner means one thing wherever it appears —
+     * "this is moving right now" — and there are a dozen of them; a per-component version would
+     * have to be remembered at each new one. Fluent's own is `colorBrandStroke1`, a mid blue that
+     * at `extra-tiny` (16px, the size the board uses) is hard to pick out of the grey it spins
+     * against.
+     *
+     * Written here rather than in `index.css` so the colour has ONE definition: the agent glyph
+     * animates in the same two values, and a third hardcoded copy of a hex is a colour that
+     * drifts — the thing `accent.ts` exists to prevent.
+     *
+     * Both properties are needed and it is not obvious why: Fluent paints the moving arc as a
+     * conic-gradient off `currentcolor` on the tail's pseudo-elements, so `color` is the arc,
+     * and `background-color` is the track behind it.
+     */
+    '.fui-Spinner__spinnerTail': {
+      color: FLUO_VAR.cyan,
+      backgroundColor: FLUO_VAR.cyanDim,
+    },
 
-  /*
-   * Scrollbars: thin, rounded, no track, no arrows — and invisible until you are actually
-   * over the thing that scrolls.
-   *
-   * Done globally rather than per-pane because every scrolling surface in the app wants the
-   * same treatment, and a `makeStyles` version would have to be remembered at each new one.
-   *
-   * The thumb fades on hover of the SCROLLING ELEMENT, not of the scrollbar: a 8px target
-   * you must already be touching to make visible is not a target. `:hover` on the element
-   * and a transition on the thumb is the whole mechanism — Chromium animates
-   * `::-webkit-scrollbar-thumb` background like any other property.
-   *
-   * `scrollbar-gutter: stable` keeps the fade from reflowing text: without it the content
-   * would shift by the scrollbar's width every time the pointer entered a pane.
-   */
-  '*': {
-    scrollbarWidth: 'thin',
-    scrollbarColor: 'transparent transparent',
+    /*
+     * Scrollbars: thin, rounded, no track, no arrows — and invisible until you are actually
+     * over the thing that scrolls.
+     *
+     * Done globally rather than per-pane because every scrolling surface in the app wants the
+     * same treatment, and a `makeStyles` version would have to be remembered at each new one.
+     *
+     * The thumb fades on hover of the SCROLLING ELEMENT, not of the scrollbar: a 8px target
+     * you must already be touching to make visible is not a target. `:hover` on the element
+     * and a transition on the thumb is the whole mechanism — Chromium animates
+     * `::-webkit-scrollbar-thumb` background like any other property.
+     *
+     * `scrollbar-gutter: stable` keeps the fade from reflowing text: without it the content
+     * would shift by the scrollbar's width every time the pointer entered a pane.
+     */
+    '*': {
+      scrollbarWidth: 'thin',
+      scrollbarColor: 'transparent transparent',
+    },
+    '*::-webkit-scrollbar': {
+      width: '8px',
+      height: '8px',
+    },
+    '*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner': {
+      background: 'transparent',
+    },
+    '*::-webkit-scrollbar-thumb': {
+      backgroundColor: 'transparent',
+      borderRadius: '4px',
+      /* Inset by a transparent border so the visible thumb is 6px inside an 8px lane. */
+      border: '1px solid transparent',
+      backgroundClip: 'padding-box',
+      transition: 'background-color 160ms ease-in-out',
+    },
+    /* Chromium has no arrow buttons by default, but a stray platform theme can add them. */
+    '*::-webkit-scrollbar-button': {
+      display: 'none',
+      width: 0,
+      height: 0,
+    },
+    ':hover::-webkit-scrollbar-thumb': {
+      backgroundColor: 'var(--tm-thumb)',
+    },
+    ':hover::-webkit-scrollbar-thumb:hover': {
+      backgroundColor: 'var(--tm-thumb-hover)',
+    },
+    ':hover::-webkit-scrollbar-thumb:active': {
+      backgroundColor: 'var(--tm-thumb-active)',
+    },
   },
-  '*::-webkit-scrollbar': {
-    width: '8px',
-    height: '8px',
-  },
-  '*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner': {
-    background: 'transparent',
-  },
-  '*::-webkit-scrollbar-thumb': {
-    backgroundColor: 'transparent',
-    borderRadius: '4px',
-    /* Inset by a transparent border so the visible thumb is 6px inside an 8px lane. */
-    border: '1px solid transparent',
-    backgroundClip: 'padding-box',
-    transition: 'background-color 160ms ease-in-out',
-  },
-  /* Chromium has no arrow buttons by default, but a stray platform theme can add them. */
-  '*::-webkit-scrollbar-button': {
-    display: 'none',
-    width: 0,
-    height: 0,
-  },
-  ':hover::-webkit-scrollbar-thumb': {
-    backgroundColor: 'var(--tm-thumb)',
-  },
-  ':hover::-webkit-scrollbar-thumb:hover': {
-    backgroundColor: 'var(--tm-thumb-hover)',
-  },
-  ':hover::-webkit-scrollbar-thumb:active': {
-    backgroundColor: 'var(--tm-thumb-active)',
-  },
-});
+  /* High contrast paints the system canvas only: drop the wash outright rather than trust
+     the UA to discard a gradient image. (A string because Griffel's object form for static
+     styles cannot nest a selector inside an at-rule.) */
+  '@media (forced-colors: active) { html, body, #root { background-image: none; } }',
+]);
 
 /** The single `<Toaster>`'s id. Shared so any screen can dispatch into the same surface. */
 export const TOASTER_ID = 'app-toaster';
