@@ -28,10 +28,10 @@
  */
 import type { FluentIcon } from '@fluentui/react-icons';
 import {
-  AppsListDetailRegular,
+  BoardRegular,
   DataTrendingRegular,
   FlashRegular,
-  PulseRegular,
+  MailInboxRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
@@ -62,9 +62,9 @@ export interface ShellNavEntry {
  *  own header. Each host maps it onto `NavRail`'s `items`, supplying only its own
  *  `unavailable` reasons and `badges`. */
 export const SHELL_NAV: readonly ShellNavEntry[] = [
-  { id: 'tickets', label: 'Tickets', icon: AppsListDetailRegular, group: 'bar' },
-  { id: 'mytasks', label: 'My Tasks', icon: TaskListSquareLtrRegular, group: 'bar' },
-  { id: 'activity', label: 'Activity', icon: PulseRegular, group: 'bar' },
+  { id: 'tickets', label: 'Tickets', icon: TaskListSquareLtrRegular, group: 'bar' },
+  { id: 'mytasks', label: 'My Tasks', icon: BoardRegular, group: 'bar' },
+  { id: 'activity', label: 'Activity', icon: MailInboxRegular, group: 'bar' },
   { id: 'performance', label: 'Performance', icon: DataTrendingRegular, group: 'bar' },
   { id: 'automations', label: 'Automations', icon: FlashRegular, group: 'bar' },
   { id: 'settings', label: 'Settings', icon: SettingsRegular, group: 'foot' },

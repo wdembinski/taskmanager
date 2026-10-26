@@ -57,6 +57,11 @@ export interface ShelfStripProps {
   onMoveTask?: (id: string) => void;
   /** A card dropped onto the strip — always shelves it, whichever column it came from. */
   onDropOnShelf: (id: string) => void;
+  /**
+   * How many columns the strip crosses when it is a row of the wide board's columns grid
+   * (`boardLayout`'s `shelf`). Absent where the strip is not a grid child (the compact board).
+   */
+  span?: number;
 }
 
 export function ShelfStrip(props: ShelfStripProps): JSX.Element {
@@ -67,6 +72,7 @@ export function ShelfStrip(props: ShelfStripProps): JSX.Element {
   return (
     <div
       className={mergeClasses(layout.shelf, over && layout.shelfOver)}
+      style={props.span ? { gridColumn: `1 / span ${props.span}` } : undefined}
       onDragOver={(e) => {
         if (isChainLinkDrag(e.dataTransfer.types)) return;
         e.preventDefault();

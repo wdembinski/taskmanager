@@ -38,6 +38,9 @@ const PROJECT = {
   defaultModel: 'sonnet',
 } as unknown as Project;
 
+/** A limit reset an hour out: in the past, the gate's resume timer fires inside `flush()`. */
+const FUTURE_RESET = Math.floor(Date.now() / 1000) + 60 * 60;
+
 /** `a.ts` as the reviewer was shown it: line 2 is the added `const b = 2;`. */
 const FILE_A: DiffFile = {
   diffId: 'd1',
@@ -574,7 +577,7 @@ describe('AiReviewRunner — the queue and launch failures', () => {
     ],
     [
       'a usage limit',
-      'Claude AI usage limit reached|1792918800',
+      `Claude AI usage limit reached|${FUTURE_RESET}`,
       'parked-limit',
       'usage limit reached',
     ],

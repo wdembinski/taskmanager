@@ -555,6 +555,7 @@ export function App(): JSX.Element {
               selectedProjectId={tracker.projectId}
               onSelectProject={tracker.selectProject}
               loading={!sidebarData.loaded}
+              onSearch={() => setPaletteOpen(true)}
             />
           )
         }
@@ -684,6 +685,7 @@ export function App(): JSX.Element {
             openAddTask={pendingAddTask}
             onOpenAddTaskHandled={() => setPendingAddTask(false)}
             onSelectedTaskIdChange={setSelectedTaskId}
+            onOpenList={() => setTab('tickets')}
           />
         ) : tab === 'projects' ? (
           <Projects />

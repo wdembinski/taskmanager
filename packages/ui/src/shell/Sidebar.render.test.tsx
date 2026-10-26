@@ -74,7 +74,30 @@ describe('Sidebar', () => {
     );
     expect(markup).toContain('>Personal<');
     expect(markup).toContain('>Local<');
+    // The initial tile, and the chevron that opens the workspace menu.
+    expect(markup).toContain('aria-hidden="true">P<');
+    expect(markup).toContain('aria-label="Switch workspace"');
     expect(markup).not.toContain('This machine');
+    // No onSearch, no search icon.
+    expect(markup).not.toContain('aria-label="Search"');
+  });
+
+  it('draws the header search icon only once onSearch is passed', () => {
+    const markup = renderToStaticMarkup(
+      <Sidebar
+        {...baseProps}
+        onSearch={() => {}}
+        sections={[
+          {
+            kind: 'workspace',
+            workspaces: [{ id: 'w1', name: 'Personal', sub: 'Local' }],
+            activeWorkspaceId: 'w1',
+          },
+          teamSection(),
+        ]}
+      />,
+    );
+    expect(markup).toContain('aria-label="Search"');
   });
 
   it('falls back to "Personal" when no workspace is active', () => {
@@ -85,6 +108,7 @@ describe('Sidebar', () => {
       />,
     );
     expect(markup).toContain('>Personal<');
+    expect(markup).toContain('aria-label="Switch workspace"');
     expect(markup).not.toContain('This machine');
   });
 

@@ -2,6 +2,59 @@
  * The `@tm/web` target's own screens — see `ui-shots.mjs`'s header doc for the row shape and
  * `scripts/lib/shotModules.mjs` for how this file is merged with its siblings.
  */
+/** v9-4's own Inbox, one item per narrower chip, so the phone rows show real rows and the tab
+ *  bar's orange count, and the filter row proves "Questions" drops the other two. */
+const minutesAgo = (m) => Date.now() - m * 60_000;
+const PHONE_ATTENTION = [
+  {
+    id: 'phone-q',
+    runId: 'run-phone-q',
+    taskId: 'task-phone-q',
+    projectId: 'proj-1',
+    taskTitle: 'In-app code review',
+    kind: 'agent-question',
+    prompt: 'Which base branch should the review compare against?',
+    options: [],
+    toolName: null,
+    reason: null,
+    createdAt: minutesAgo(2),
+    questions: [
+      {
+        header: 'Base',
+        question: 'Which base branch should the review compare against?',
+        multiSelect: false,
+        options: [{ label: 'development' }, { label: 'main' }],
+      },
+    ],
+  },
+  {
+    id: 'phone-plan',
+    runId: 'run-phone-plan',
+    taskId: 'task-phone-plan',
+    projectId: 'proj-1',
+    taskTitle: 'Billing export',
+    kind: 'plan-approval',
+    prompt: 'Approve the plan?',
+    options: [],
+    toolName: null,
+    reason: null,
+    createdAt: minutesAgo(14),
+  },
+  {
+    id: 'phone-failed',
+    runId: 'run-phone-failed',
+    taskId: 'task-phone-failed',
+    projectId: 'proj-1',
+    taskTitle: 'Flaky upload test',
+    kind: 'task-failed',
+    prompt: 'The run failed.',
+    options: [],
+    toolName: null,
+    reason: null,
+    createdAt: minutesAgo(60),
+  },
+];
+
 export default [
   {
     // The web mirrors the desktop's own Tickets screen (see `web-mirrors-the-desktop` plan
@@ -52,6 +105,7 @@ export default [
     viewport: { width: 390, height: 844 },
     scheme: 'light',
     setup: null,
+    attention: PHONE_ATTENTION,
     mockup: 'v9-4-mobile-light.svg',
   },
   {
@@ -60,6 +114,19 @@ export default [
     viewport: { width: 390, height: 844 },
     scheme: 'dark',
     setup: null,
+    attention: PHONE_ATTENTION,
     mockup: 'v9-5-mobile-dark.svg',
+  },
+  {
+    // The Inbox's chip row filters: "Questions" checked instead of the default "Needs you".
+    // Seeded with all three `PHONE_ATTENTION` items, the list keeps only the question.
+    name: 'web-phone-inbox-filter-light',
+    app: 'web',
+    viewport: { width: 390, height: 844 },
+    scheme: 'light',
+    setup: [{ click: 'Questions' }],
+    attention: PHONE_ATTENTION,
+    expect: '[role="radio"][aria-checked="true"]',
+    mockup: 'v9-4-mobile-light.svg',
   },
 ];

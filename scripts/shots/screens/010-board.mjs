@@ -9,6 +9,9 @@ export default [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: null,
+    // The card's one-row header (`boardLayout.ts`'s `header`) — proves the board, not a
+    // loading pane, is what was shot.
+    expect: '[data-board-header]',
     mockup: 'v9-7-board-light.svg',
   },
   {
@@ -17,6 +20,9 @@ export default [
     viewport: { width: 1440, height: 900 },
     scheme: 'dark',
     setup: null,
+    // The card's one-row header (`boardLayout.ts`'s `header`) — proves the board, not a
+    // loading pane, is what was shot.
+    expect: '[data-board-header]',
     mockup: 'v9-7b-board-dark.svg',
   },
   {
@@ -28,6 +34,9 @@ export default [
     scheme: 'light',
     transparency: 'full',
     setup: null,
+    // The card's one-row header (`boardLayout.ts`'s `header`) — proves the board, not a
+    // loading pane, is what was shot.
+    expect: '[data-board-header]',
     mockup: 'v9-7-board-light.svg',
   },
 ];

@@ -8,8 +8,8 @@
  *
  * ## Design decisions fixed here (do not re-derive in later edits)
  *
- * - **Four tabs**: Inbox (a danger `CounterBadge` carrying `attentionCount`, the same badge
- *   `App.tsx`'s `NavRail` shows today), Board, Search, Settings. `useHashRoute()` is this
+ * - **Four tabs**: Inbox (`MailInboxRegular`, with `attentionCount` as `BottomTabBar`'s own
+ *   small orange count at the pill's corner), Board, Search, Settings. `useHashRoute()` is this
  *   component's only navigation state — `tabForRoute`/`routeForTab` (`compactRoute.ts`)
  *   translate between the active route and which tab reads as selected in `BottomTabBar`.
  * - **Screens are placeholders where a later step owns the real one**:
@@ -47,9 +47,9 @@
  *   component gates nothing on a relay of its own.
  */
 import { useState } from 'react';
-import { Button, CounterBadge, Input, makeStyles } from '@fluentui/react-components';
+import { Button, Input, makeStyles } from '@fluentui/react-components';
 import {
-  AlertRegular,
+  MailInboxRegular,
   SearchRegular,
   SettingsRegular,
   TaskListSquareLtrRegular,
@@ -162,10 +162,8 @@ export function CompactApp({
     {
       id: 'inbox',
       label: 'Inbox',
-      icon: <AlertRegular />,
-      badge: attentionCount > 0 && (
-        <CounterBadge count={attentionCount} color="danger" size="small" appearance="filled" />
-      ),
+      icon: <MailInboxRegular />,
+      badge: attentionCount,
     },
     { id: 'board', label: 'Board', icon: <TaskListSquareLtrRegular /> },
     { id: 'search', label: 'Search', icon: <SearchRegular /> },

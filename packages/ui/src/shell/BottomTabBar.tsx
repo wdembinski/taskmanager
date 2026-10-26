@@ -30,6 +30,11 @@
  *   pill instead of resizing the tile around it. The attention badge (e.g. the Inbox count)
  *   renders inside this icon slot too, absolutely positioned at the pill's corner — not inside
  *   the label — because the label's own width has to track the tile, not the badge.
+ * - **Sized to v9-4/v9-5, so it reads as an icon bar, not "labelled tabs".** A 22px glyph in
+ *   the pill, 8px from the bar's top edge; an 11.5px label in muted `colorNeutralForeground3`
+ *   (brand when selected) a few pixels under it. The badge is a small count in
+ *   `var(--tm-attention)` orange — the same orange as the attention hairline — drawn here from
+ *   a number rather than a caller-supplied `CounterBadge`, so every host gets one look.
  * - **`role`/accessible selection state come from `TabList` itself** — no bespoke
  *   `aria-current` or `role="tab"` written by hand, the same reason `NavRail` doesn't either.
  * - **No `unavailable` concept here**, unlike `NavRail`'s own `unavailable` map (F13.8) —
@@ -62,7 +67,6 @@
  *   bolding on selection never resizes the tile either.
  */
 import { Tab, TabList, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
-import type { ReactNode } from 'react';
 import { useGlassStyles } from './GlassPane';
 
 const useStyles = makeStyles({
@@ -109,7 +113,9 @@ const useStyles = makeStyles({
     gridAutoFlow: 'row',
     justifyItems: 'center',
     alignContent: 'center',
-    rowGap: tokens.spacingVerticalXS,
+    rowGap: '4px',
+    paddingTop: '8px',
+    paddingBottom: '6px',
     paddingLeft: tokens.spacingHorizontalXXS,
     paddingRight: tokens.spacingHorizontalXXS,
     // This bar draws its own selection cue (the icon pill, below) — Fluent's default
@@ -125,8 +131,9 @@ const useStyles = makeStyles({
   content: {
     gridColumnStart: 1,
     gridRowStart: 2,
-    fontSize: tokens.fontSizeBase200,
-    lineHeight: tokens.lineHeightBase200,
+    // v9-4's 11.5px — between `fontSizeBase100` (10px) and `fontSizeBase200` (12px).
+    fontSize: '11.5px',
+    lineHeight: '14px',
     whiteSpace: 'nowrap',
     maxWidth: '100%',
   },
@@ -141,6 +148,18 @@ const useStyles = makeStyles({
     overflow: 'visible',
     position: 'relative',
   },
+  /** Wraps the glyph so its ink is decided here: Fluent colours the icon slot from the Tab
+   *  root (`.root .fui-Tab__icon`), which out-ranks any class on the slot itself, but the svg
+   *  inherits from its nearest parent — this span. Same reason the label has its own span. */
+  glyph: {
+    display: 'flex',
+    color: tokens.colorNeutralForeground3,
+    '& > svg': { width: '22px', height: '22px' },
+  },
+  /** v9-4's muted resting ink for an unselected tab's label. */
+  labelResting: {
+    color: tokens.colorNeutralForeground3,
+  },
   /** The selected tab's icon pill — see the module header. Paint only: size and shape come
    *  from `icon` above, so selecting a tab never changes tile width. */
   iconSelected: {
@@ -150,14 +169,32 @@ const useStyles = makeStyles({
   labelSelected: {
     color: `var(--tm-brand, ${tokens.colorBrandForeground1})`,
   },
-  /** The attention badge, positioned against the icon pill (`icon` is `position: relative`)
-   *  instead of sitting inside the label — see the module header. Half out at the pill's
-   *  top-right corner, as in the mockup's dot. */
+  glyphSelected: {
+    color: `var(--tm-brand, ${tokens.colorBrandForeground1})`,
+  },
+  /** The attention count, positioned against the icon pill (`icon` is `position: relative`)
+   *  instead of sitting inside the label — see the module header. At the pill's top-right,
+   *  just off the glyph's corner, where the mockup draws its orange dot. */
   badge: {
     position: 'absolute',
-    top: 0,
-    right: 0,
-    transform: 'translate(50%, -50%)',
+    top: '-3px',
+    right: '5px',
+    minWidth: '16px',
+    height: '16px',
+    paddingLeft: '4px',
+    paddingRight: '4px',
+    boxSizing: 'border-box',
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundColor: `var(--tm-attention, ${tokens.colorPaletteDarkOrangeBackground3})`,
+    color: tokens.colorNeutralForegroundOnBrand,
+    fontSize: '10px',
+    fontWeight: tokens.fontWeightSemibold,
+    lineHeight: '16px',
+    textAlign: 'center',
+    '@media (forced-colors: active)': {
+      backgroundColor: 'Highlight',
+      color: 'HighlightText',
+    },
   },
 });
 
@@ -168,8 +205,8 @@ export interface BottomTabBarItem {
   label: string;
   icon: JSX.Element;
   /** The one thing the desktop rail also shows inline — e.g. the Inbox tab's attention
-   *  count, drawn as a `CounterBadge`. */
-  badge?: ReactNode;
+   *  count. Drawn as the small orange count at the pill's corner when above zero. */
+  badge?: number;
 }
 
 export interface BottomTabBarProps {
@@ -209,8 +246,14 @@ export function BottomTabBar({
               icon={{
                 children: (
                   <>
-                    {item.icon}
-                    {item.badge && <span className={styles.badge}>{item.badge}</span>}
+                    <span
+                      className={mergeClasses(styles.glyph, isSelected && styles.glyphSelected)}
+                    >
+                      {item.icon}
+                    </span>
+                    {!!item.badge && item.badge > 0 && (
+                      <span className={styles.badge}>{item.badge > 99 ? '99+' : item.badge}</span>
+                    )}
                   </>
                 ),
                 className: mergeClasses(styles.icon, isSelected && styles.iconSelected),
@@ -218,7 +261,9 @@ export function BottomTabBar({
               content={{ className: styles.content }}
               className={styles.tab}
             >
-              <span className={isSelected ? styles.labelSelected : undefined}>{item.label}</span>
+              <span className={isSelected ? styles.labelSelected : styles.labelResting}>
+                {item.label}
+              </span>
             </Tab>
           );
         })}

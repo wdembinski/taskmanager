@@ -403,9 +403,12 @@ export function Projects({
     <div className={styles.root} onKeyDown={onKeyDown}>
       <GlassPane className={styles.backlog}>
         <div className={styles.header}>
-          <Text as="h2" className={styles.title}>
-            Issues
-          </Text>
+          {/* The Backlog draws "Issues" itself, beside its Active / Backlog / All tabs. */}
+          {!(selectedProject && view === 'backlog') && (
+            <Text as="h2" className={styles.title}>
+              Issues
+            </Text>
+          )}
           {projects.length === 0 ? (
             <Body1 className={styles.hint}>
               No ticket projects yet — add one on the Projects tab and choose &quot;its own ticket

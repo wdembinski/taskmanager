@@ -21,18 +21,36 @@ import { makeStyles, tokens } from '@fluentui/react-components';
 export const BOARD_COLUMN_MIN_WIDTH = '260px';
 
 export const useBoardLayoutStyles = makeStyles({
-  // No gap: the detail pane's own surface runs to the board's edge, and the change of
-  // shade is the seam.
-  root: { display: 'flex', minHeight: 0, flex: 1 },
+  /**
+   * The tinted canvas the cards stand on (v9-7/v9-7b): a 10px inset all round — the shell
+   * gives this tab no padding of its own — and the same 10px between the board, the detail
+   * pane and the commit graph. The Tickets screen's own `root` (`Projects.tsx`), so the two
+   * screens stand on the same canvas.
+   */
+  root: {
+    display: 'flex',
+    gap: '10px',
+    minHeight: 0,
+    flex: 1,
+    height: '100%',
+    boxSizing: 'border-box',
+    padding: '10px',
+  },
+  /** The compact (phone) board stands flat on the screen: no canvas to inset a card from. */
+  rootCompact: { padding: 0, gap: 0 },
+  /**
+   * The board's own card — rendered as `<GlassPane className={layout.board}>` in both hosts,
+   * so the surface, the 12px radius and the shadow are `GlassPane`'s and this rule is only the
+   * card's BODY: the header row, then the columns grid running to the bottom padding.
+   */
   board: {
     // `auto` rather than a 60% basis: with the graph pane open there are THREE panes in this
     // row, and a board that insists on 60% of the window plus the detail pane's 40% plus the
     // graph's own width adds up to more than there is — so something would be squeezed by
     // whichever flex rule happened to lose. The board simply takes what the other two leave.
     flex: '1 1 auto',
-    // The screen owns its insets now that the shell adds none, and only the board side
-    // needs them — the detail pane runs to the window's edges on purpose.
-    padding: '12px 16px 12px 12px',
+    padding: '12px 16px 16px',
+    boxSizing: 'border-box',
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
@@ -42,20 +60,95 @@ export const useBoardLayoutStyles = makeStyles({
     // to the scrolling columns grid, so it can never become a grid track of its own again.
     position: 'relative',
   },
-  // One row, never two or three: a toolbar that wraps hides its own trailing buttons behind
-  // whatever the viewport clips rather than behind a menu it offers. `minWidth: 0` lets the
-  // row shrink below its children's natural width so `Overflow` (the Fluent primitive each
-  // host wraps this in) has something to measure against; `Overflow` itself only ever hides
-  // the items that do not fit (`[data-overflowing]`), it does not touch the row's own CSS.
-  toolbar: {
+  /**
+   * The card's one-row header (v9-7): the title picker, the Board/List tabs, the filters, a
+   * spacer, the view controls, "···" and the "+". `data-board-header` in both hosts.
+   *
+   * One row, never two or three: a header that wraps hides its own trailing buttons behind
+   * whatever the viewport clips rather than behind a menu it offers. `minWidth: 0` lets the
+   * row shrink below its children's natural width so `Overflow` (the Fluent primitive each
+   * host wraps this in) has something to measure against; `Overflow` itself only ever hides
+   * the items that do not fit (`[data-overflowing]`), it does not touch the row's own CSS.
+   */
+  header: {
     display: 'flex',
     alignItems: 'center',
-    gap: '10px',
+    gap: '8px',
     flexWrap: 'nowrap',
     overflow: 'hidden',
     minWidth: 0,
+    minHeight: '32px',
+    flexShrink: 0,
+    // Nothing in the row gives up width by shrinking or wrapping (a Switch's label would rather
+    // break onto a second line, and a title would rather ellipsize to nothing, than let the
+    // `Overflow` manager see the row is full and move a control into the menu).
+    '& > *': { flexShrink: 0, whiteSpace: 'nowrap' },
+    // A Switch's own 8px margins either side of its track and its label, inside a row that
+    // already spaces its items: at 1100px with the detail pane open they are what pushes the
+    // pinned "+" past the card's edge.
+    '& .fui-Switch__indicator': { marginLeft: 0, marginRight: 0 },
+    '& .fui-Switch__label': { paddingLeft: '6px', paddingRight: 0 },
   },
   grow: { flex: 1 },
+  /**
+   * The title picker (`BoardTitlePicker`): which board the card shows, set as the card's
+   * title — Title3, 20px semibold, the mockup's "M4 · Reach" — with a chevron that says it
+   * opens. A bare button rather than a `Dropdown`: a title with a field's border round it
+   * reads as a form, not a heading. A long board name ellipsizes at `maxWidth`; the title
+   * never shrinks below that, so the `Overflow` manager hides the other controls first.
+   */
+  title: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    minWidth: 0,
+    maxWidth: '260px',
+    padding: '0 4px',
+    margin: '0 2px 0 -4px',
+    border: 'none',
+    borderRadius: tokens.borderRadiusMedium,
+    background: 'none',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: tokens.fontSizeBase500,
+    lineHeight: tokens.lineHeightBase500,
+    fontWeight: tokens.fontWeightSemibold,
+    color: `var(--tm-text, ${tokens.colorNeutralForeground1})`,
+    ':hover': { backgroundColor: tokens.colorSubtleBackgroundHover },
+  },
+  // The picker's own slot in the row (`data-board-title`).
+  titleSlot: { display: 'flex' },
+  titleText: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  titleChevron: {
+    display: 'flex',
+    flexShrink: 0,
+    fontSize: '14px',
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+  },
+  /** The Board / List pill tabs (`BoardViewTabs`). */
+  tabs: { display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 },
+  tab: {
+    height: '26px',
+    padding: '0 10px',
+    borderRadius: '13px',
+    border: 'none',
+    background: 'none',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: tokens.fontSizeBase300,
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    whiteSpace: 'nowrap',
+    ':hover': { color: tokens.colorNeutralForeground1 },
+    ':disabled': { cursor: 'default', color: tokens.colorNeutralForegroundDisabled },
+  },
+  // The mockup's selected pill: a filled neutral pill, no brand colour — the selection is a
+  // fact about the view, and this board spends colour only on things that move.
+  tabSelected: {
+    backgroundColor: tokens.colorNeutralBackground3,
+    color: `var(--tm-text, ${tokens.colorNeutralForeground1})`,
+    fontWeight: tokens.fontWeightSemibold,
+    cursor: 'default',
+  },
   /**
    * The chain legend (`ChainLegend`), anchored to the board itself rather than drawn inside
    * `columns` — see `ChainOverlay.tsx`'s own `legend` style comment for the bug this replaces
@@ -102,6 +195,20 @@ export const useBoardLayoutStyles = makeStyles({
     // ring both live ON the card's top edge, and with the sticky header sitting directly
     // on top of the list they had nothing to breathe into.
     paddingTop: '4px',
+    // A size container, so each column can ask for `100cqh` — the grid's own visible
+    // height — as its floor (`& > [data-board-column]` below). The grid is sized by the card
+    // (`flex: 1`), never by its content, so the containment costs nothing.
+    containerType: 'size',
+    // Every column pane runs to the card's bottom padding, however few cards it holds. This
+    // is what used to stop at ~735px of a 900px window: the shelf strip was the grid's
+    // SIBLING, so the grid — and every pane stretched to its one row — ended where the strip
+    // began. The strip is now a second row INSIDE this grid (`shelf`), below the panes'
+    // one-screen floor, and this stays the board's only scroll container.
+    '& > [data-board-column]': { gridRow: 1, minHeight: '100cqh', boxSizing: 'border-box' },
+    // Row 1's floor is its tallest column's CONTENT, not just the `100cqh` above: a set
+    // `minHeight` replaces a grid item's automatic (content-based) minimum, so an `auto` row
+    // would otherwise hold a twelve-card column to one screen and spill the rest out of it.
+    gridTemplateRows: 'minmax(min-content, auto)',
   },
   /**
    * The same grid, while a chain's links are actually drawn over it (`mode !== 'off'` and
@@ -116,9 +223,16 @@ export const useBoardLayoutStyles = makeStyles({
    * every column — giving it one more would put it right back in the thing it left.
    * `flex: '0 0 auto'` so it takes only what its own content needs and never competes with
    * `columns` for the board's one scrollbar.
+   *
+   * On the wide board it is the columns grid's SECOND row (`ShelfStrip`'s `span` sets the
+   * columns it crosses), below the panes' one-screen floor — scrolled to, in the board's one
+   * scroll container, rather than standing in the panes' way. As the grid's sibling it used
+   * to shorten every pane by its own height (the ~735px stop), and floated over them it
+   * covered the same strip of every lane.
    */
   shelf: {
     flex: '0 0 auto',
+    gridRow: 2,
     display: 'flex',
     flexDirection: 'column',
     borderRadius: tokens.borderRadiusMedium,
@@ -177,9 +291,8 @@ export const useBoardLayoutStyles = makeStyles({
     minHeight: 0,
     // No inset: the detail pane's top band is full-bleed (it is a section of the pane,
     // not a card in it), so each of the pane's other rows carries its own padding.
-    // One surface for the whole pane, a step LIGHTER than the board — that contrast is
-    // what separates the two halves of the screen, so no dividing line is needed.
-    backgroundColor: tokens.colorNeutralBackground1,
+    // No fill of its own either: it is rendered as a `GlassPane`, a card of its own beside
+    // the board's, and the canvas between the two is the seam.
   },
   /**
    * The commit graph's pane (`GitGraphPane`), last in the row. A fixed px basis rather than
@@ -195,9 +308,7 @@ export const useBoardLayoutStyles = makeStyles({
     display: 'flex',
     minHeight: 0,
     overflow: 'hidden',
-    backgroundColor: tokens.colorNeutralBackground1,
-    // A rule rather than a change of shade: with the detail pane open this sits against
-    // another pane of the same surface, and two identical surfaces need an edge.
-    borderLeft: `1px solid ${tokens.colorNeutralStroke2}`,
+    // Rendered as a `GlassPane` — its own card, so the canvas gap is the edge and the
+    // surface is `GlassPane`'s.
   },
 });

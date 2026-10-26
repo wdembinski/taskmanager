@@ -524,6 +524,7 @@ function SignedInBoardView({
                 selectedProjectId={tracker.projectId}
                 onSelectProject={tracker.selectProject}
                 loading={!sidebarData.loaded}
+                onSearch={openPalette}
               />
             )
           }
@@ -626,6 +627,7 @@ function SignedInBoardView({
                 }
                 hostUnreachable={hostUnreachable}
                 paletteRequest={paletteRequest ?? undefined}
+                onOpenList={() => setScreen('tickets')}
               />
             ) : (
               <SyncCurtain

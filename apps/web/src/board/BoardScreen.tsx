@@ -63,6 +63,7 @@ import { TaskDetailHost } from '@tm/ui/TaskDetailHostView';
 import { useTicketRegistries } from '@tm/ui/projects/useTicketRegistries';
 import { useTransport } from '@tm/ui/transport';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
+import { GlassPane } from '@tm/ui/shell/GlassPane';
 import { ArchivedCardsDialog, archivedCards } from '@tm/ui/board/ArchivedCardsDialog';
 import { CompactCardScreen } from '@tm/ui/board/CompactCardScreen';
 import type { CardSection } from '@tm/ui/layout/compactRoute';
@@ -183,6 +184,9 @@ export interface BoardScreenProps {
    */
   paletteRequest?:
     { kind: 'select'; taskId: string; nonce: number } | { kind: 'add'; nonce: number };
+  /** The header's List tab: leave the board for the same tickets as a list (the Tickets
+   *  screen) — the desktop's own `MyTasksProps.onOpenList`. */
+  onOpenList?: () => void;
 }
 
 export function BoardScreen({
@@ -194,6 +198,7 @@ export function BoardScreen({
   onSelectedTaskChange,
   hostUnreachable,
   paletteRequest,
+  onOpenList,
 }: BoardScreenProps): JSX.Element {
   const layout = useBoardLayoutStyles();
   const styles = useStyles();
@@ -744,6 +749,38 @@ export function BoardScreen({
     onSubtasksChanged: extras.refresh,
   };
 
+  /** The parked shelf — a row of the wide board's columns grid (`span` columns wide), or a
+   *  plain strip below the compact board. */
+  const shelfStrip = (span?: number): JSX.Element | null =>
+    settings.features.shelf ? (
+      <ShelfStrip
+        cards={shelvedCards}
+        folded={settings.shelfFolded}
+        onToggleFolded={toggleShelfFolded}
+        epicNameOf={epicNameOf}
+        assigneeOf={assigneeOf}
+        agentNameOf={agentNameOf}
+        attentionTaskIds={extras.attention.taskIds}
+        liveRunTaskIds={extras.liveRunTaskIds}
+        runPurposes={extras.runPurposes}
+        runStartedAt={extras.runStartedAt}
+        mergingTaskIds={extras.mergingTaskIds}
+        selectedTaskId={selectedTaskId}
+        draggingId={draggingId}
+        onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
+        onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
+        onSelectTask={selectTask}
+        onDragStartTask={setDraggingId}
+        onDragEndTask={() => setDraggingId(null)}
+        onToggleShelved={toggleShelved}
+        onMoveTask={compact ? setMoveSheetTaskId : undefined}
+        onDropOnShelf={dropOnShelf}
+        span={span}
+      />
+    ) : null;
+
+  const BoardBody = compact ? 'div' : GlassPane;
+
   // Full-screen: none of `layout.root`'s board/detail-pane/graph row applies — there is no
   // second pane sharing this screen with the card the way the wide layout's sidebar does.
   if (compact?.card) {
@@ -759,11 +796,15 @@ export function BoardScreen({
   }
 
   return (
-    <div className={layout.root}>
-      <div className={layout.board}>
+    <div className={mergeClasses(layout.root, compact && layout.rootCompact)}>
+      {/* The board's own card (v9-7) on the wide board — `GlassPane` paints the surface,
+          `layout.board` is its body. The compact board stays flat: a phone has no canvas
+          to inset a card from. */}
+      <BoardBody className={layout.board}>
         <BoardToolbar
+          compact={Boolean(compact)}
+          onOpenList={onOpenList}
           scope={scope}
-          scopeLabel={scopeLabel}
           scopes={scopes}
           onScopeChange={(next) =>
             void saveSettings({ ...settings, boardScopeId: next }).catch(reportError)
@@ -1004,6 +1045,7 @@ export function BoardScreen({
                 onRemove={() => void extras.removeLink(selectedLink.id).catch(reportError)}
               />
             )}
+            {shelfStrip(allowedDropColumns({ hiddenColumns, pending: false }).length)}
           </div>
         )}
         {/* Anchored to the BOARD (`layout.chainLegend`), never a child of the columns grid —
@@ -1014,31 +1056,9 @@ export function BoardScreen({
             <ChainLegend />
           </div>
         )}
-        {settings.features.shelf && (
-          <ShelfStrip
-            cards={shelvedCards}
-            folded={settings.shelfFolded}
-            onToggleFolded={toggleShelfFolded}
-            epicNameOf={epicNameOf}
-            assigneeOf={assigneeOf}
-            agentNameOf={agentNameOf}
-            attentionTaskIds={extras.attention.taskIds}
-            liveRunTaskIds={extras.liveRunTaskIds}
-            runPurposes={extras.runPurposes}
-            runStartedAt={extras.runStartedAt}
-            mergingTaskIds={extras.mergingTaskIds}
-            selectedTaskId={selectedTaskId}
-            draggingId={draggingId}
-            onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}
-            onResumeTask={(taskId) => void extras.resumeTask(taskId).catch(reportError)}
-            onSelectTask={selectTask}
-            onDragStartTask={setDraggingId}
-            onDragEndTask={() => setDraggingId(null)}
-            onToggleShelved={toggleShelved}
-            onMoveTask={compact ? setMoveSheetTaskId : undefined}
-            onDropOnShelf={dropOnShelf}
-          />
-        )}
+        {/* The wide board's shelf is a row of its columns grid (above); here only where there
+            is no grid to hold it — the compact board, or a board with no cards to draw. */}
+        {(compact || boardTasks.length === 0) && shelfStrip()}
         {compact && (
           <MoveToSheet
             options={
@@ -1055,7 +1075,7 @@ export function BoardScreen({
             onClose={() => setMoveSheetTaskId(null)}
           />
         )}
-      </div>
+      </BoardBody>
 
       {/* The desktop's own pane, the same component — and now with the same props, so it
           draws the same sections rather than degrading to a card and a timeline. Never on
@@ -1064,13 +1084,13 @@ export function BoardScreen({
           with nothing selected — the empty-state placeholder used to hold the pane's full
           width for nothing (the 2026-10-18 screenshot review); see `MyTasks.tsx`'s own fix. */}
       {!compact && showDetail && selectedTask && (
-        <div className={layout.right}>
+        <GlassPane className={layout.right}>
           <TaskDetailHost
             taskId={selectedTask?.id ?? null}
             task={selectedTask}
             {...taskDetailProps}
           />
-        </div>
+        </GlassPane>
       )}
 
       {/* The desktop's commit graph, over the relay. Last in the row so folding it away never
@@ -1079,7 +1099,7 @@ export function BoardScreen({
           re-read a repository every time a card changes. Never on the compact board — same
           reason as the detail pane above. */}
       {!compact && showGraph && (
-        <div className={layout.graph}>
+        <GlassPane className={layout.graph}>
           <GitGraphPane
             projects={agentProjects}
             selectedTask={selectedTask}
@@ -1088,7 +1108,7 @@ export function BoardScreen({
             // The only thing on the drawing allowed a colour — see `GRAPH_INK`.
             runningTaskIds={extras.liveRunTaskIds}
           />
-        </div>
+        </GlassPane>
       )}
 
       {/* The desktop's own add-task dialog, the same component with the same props — so a

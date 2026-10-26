@@ -18,8 +18,23 @@
  * `InboxState`, so leaving the Inbox tab and coming back — which unmounts this whole
  * component, unlike the wide board — reopens whatever was open rather than dropping back to
  * the list.
+ *
+ * The list view opens with the v9-4/v9-5 header: a large "Inbox" title over a horizontally
+ * scrolling chip row (`inboxFilter.ts` decides which kinds each chip shows). The chips are a
+ * `radiogroup` of `radio` buttons — one is always selected, and arrow keys move between them —
+ * and the selected one takes the inverted neutral fill, the others a `colorNeutralStroke2`
+ * outline. The chip is local state: leaving the tab resets it to "Needs you", which is
+ * everything.
  */
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react';
 import {
   Body1,
   Button,
@@ -29,6 +44,7 @@ import {
   MessageBarBody,
   Text,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import { ArrowLeftRegular, DismissRegular } from '@fluentui/react-icons';
@@ -40,6 +56,7 @@ import { questionDeadline, sortByUrgency } from './attentionUrgency';
 import { CompactAnswerView } from './CompactAnswerView';
 import { formatAge, formatCountdown } from './countdown';
 import { draftKey, parkDraft, readDraft } from './drafts';
+import { INBOX_CHIPS, filterInbox, type InboxChip } from './inboxFilter';
 import {
   EMPTY_INBOX_STATE,
   answerFailed,
@@ -77,6 +94,59 @@ const useStyles = makeStyles({
     minHeight: 0,
     height: '100%',
   },
+  header: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+    paddingTop: '16px',
+    flexShrink: 0,
+  },
+  /** The mockup's 30px/600 title, inset 20px from the screen edge. */
+  title: {
+    margin: 0,
+    paddingLeft: '20px',
+    paddingRight: '20px',
+    fontSize: '30px',
+    lineHeight: '38px',
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+  },
+  /** Scrolls sideways rather than wrapping — the chip row is one line on any width. */
+  chips: {
+    display: 'flex',
+    gap: '8px',
+    overflowX: 'auto',
+    paddingLeft: '20px',
+    paddingRight: '20px',
+    scrollbarWidth: 'none',
+  },
+  chip: {
+    flexShrink: 0,
+    height: '32px',
+    paddingLeft: '12px',
+    paddingRight: '12px',
+    borderRadius: tokens.borderRadiusCircular,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    backgroundColor: 'transparent',
+    color: tokens.colorNeutralForeground2,
+    fontFamily: tokens.fontFamilyBase,
+    fontSize: tokens.fontSizeBase300,
+    fontWeight: tokens.fontWeightRegular,
+    whiteSpace: 'nowrap',
+    cursor: 'pointer',
+    ':hover': { backgroundColor: tokens.colorSubtleBackgroundHover },
+    ':focus-visible': {
+      outline: `2px solid ${tokens.colorStrokeFocus2}`,
+      outlineOffset: '1px',
+    },
+  },
+  chipSelected: {
+    border: `1px solid ${tokens.colorNeutralBackgroundInverted}`,
+    backgroundColor: tokens.colorNeutralBackgroundInverted,
+    color: tokens.colorNeutralForegroundInverted,
+    fontWeight: tokens.fontWeightSemibold,
+    ':hover': { backgroundColor: tokens.colorNeutralBackgroundInverted },
+  },
   list: {
     display: 'flex',
     flexDirection: 'column',
@@ -105,7 +175,7 @@ const useStyles = makeStyles({
     flexShrink: 0,
     color: tokens.colorNeutralForeground3,
   },
-  empty: { color: tokens.colorNeutralForeground3, padding: '12px' },
+  empty: { color: tokens.colorNeutralForeground3, padding: '12px 20px' },
   detail: { display: 'flex', flexDirection: 'column', gap: '8px', overflowY: 'auto', minHeight: 0 },
   back: { alignSelf: 'flex-start' },
   detailPane: { padding: '12px' },
@@ -153,6 +223,23 @@ export function CompactInbox(): JSX.Element {
     openId: readDraft<string>(OPEN_ID_KEY) ?? null,
   }));
   const [now, setNow] = useState(() => Date.now());
+  const [chip, setChip] = useState<InboxChip>('needs-you');
+  const chipRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  // A radiogroup's own keyboard contract: arrows move the selection (wrapping) and focus with it.
+  const onChipKey = (e: KeyboardEvent<HTMLButtonElement>, index: number): void => {
+    const step =
+      e.key === 'ArrowRight' || e.key === 'ArrowDown'
+        ? 1
+        : e.key === 'ArrowLeft' || e.key === 'ArrowUp'
+          ? -1
+          : 0;
+    if (step === 0) return;
+    e.preventDefault();
+    const next = (index + step + INBOX_CHIPS.length) % INBOX_CHIPS.length;
+    setChip(INBOX_CHIPS[next].id);
+    chipRefs.current[next]?.focus();
+  };
 
   // Survives this component unmounting — switching away from the Inbox tab and back, unlike
   // the wide board, tears the whole tree down. `seeded`/`resolved` already close the view (with
@@ -305,10 +392,36 @@ export function CompactInbox(): JSX.Element {
     );
   }
 
-  const sorted = sortByUrgency(state.items, now);
+  const sorted = filterInbox(sortByUrgency(state.items, now), chip);
 
   return (
     <div className={styles.root}>
+      <div className={styles.header}>
+        <h1 className={styles.title}>Inbox</h1>
+        <div role="radiogroup" aria-label="Filter" className={styles.chips}>
+          {INBOX_CHIPS.map((c, index) => {
+            const checked = c.id === chip;
+            return (
+              <button
+                key={c.id}
+                ref={(el) => {
+                  chipRefs.current[index] = el;
+                }}
+                type="button"
+                role="radio"
+                aria-checked={checked}
+                tabIndex={checked ? 0 : -1}
+                className={mergeClasses(styles.chip, checked && styles.chipSelected)}
+                onClick={() => setChip(c.id)}
+                onKeyDown={(e) => onChipKey(e, index)}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {state.notice && (
         <MessageBar intent="info">
           <MessageBarBody>{state.notice}</MessageBarBody>
@@ -327,8 +440,9 @@ export function CompactInbox(): JSX.Element {
 
       {sorted.length === 0 ? (
         <Body1 className={styles.empty}>
-          Nothing needs you right now. When a task asks a question or hits a risky action, it
-          appears here.
+          {chip === 'needs-you'
+            ? 'Nothing needs you right now. When a task asks a question or hits a risky action, it appears here.'
+            : 'Nothing here right now'}
         </Body1>
       ) : (
         <div className={styles.list}>
