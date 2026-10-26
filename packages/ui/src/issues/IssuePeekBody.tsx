@@ -17,21 +17,22 @@
  */
 import type { KeyboardEvent } from 'react';
 import {
+  Button,
   Caption1,
+  Input,
   MessageBar,
   MessageBarBody,
   Spinner,
   Text,
-  Textarea,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import { CheckmarkCircleFilled, CircleRegular } from '@fluentui/react-icons';
+import { CheckmarkCircleFilled, CircleRegular, SendRegular } from '@fluentui/react-icons';
 import { formatElapsed } from '@tm/shared/elapsed';
 import type { Person, Task, TaskActivityEntry } from '@tm/shared/model';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { StatusKeyword } from '@tm/shared/statusKeywords';
-import { ChatTurns } from '../chat/ChatTurns';
 import { Markdown } from '../chat/MarkdownView';
 import type { Turn } from '../chat/turns';
 import { DecisionBanner } from '../DecisionBanner';
@@ -39,6 +40,7 @@ import { STATUS_INDICATOR_VAR } from '../tokens';
 import { useElapsedClock } from '../useElapsedClock';
 import { VisualSignOff } from '../VisualSignOff';
 import type { PropertyRow } from './issuePropertyRows';
+import { PeekTimeline } from './PeekTimeline';
 import { PropertyGlyph } from './PropertyGlyph';
 
 const useStyles = makeStyles({
@@ -81,6 +83,11 @@ const useStyles = makeStyles({
     overflowWrap: 'anywhere',
   },
   section: { display: 'flex', flexDirection: 'column', gap: '6px' },
+  // v9-1's 1px rule above the Agent run checklist and above the conversation.
+  divided: {
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+    paddingTop: '16px',
+  },
   sectionHead: { fontWeight: tokens.fontWeightSemibold },
   steps: { listStyleType: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' },
   step: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', minWidth: 0 },
@@ -102,8 +109,27 @@ const useStyles = makeStyles({
     backgroundColor: STATUS_INDICATOR_VAR.running,
   },
   timer: { color: STATUS_INDICATOR_VAR.running, fontVariantNumeric: 'tabular-nums', flexShrink: 0 },
-  reply: { flex: '0 0 auto', padding: '8px 20px 16px', display: 'flex', flexDirection: 'column' },
-  replyBox: { width: '100%' },
+  reply: {
+    flex: '0 0 auto',
+    padding: '8px 20px 16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+  },
+  // v9-1's Reply: a 40px pill on the subtle neutral fill, no border, the send icon inside it.
+  // Fluent's focus underline is a straight bottom stroke, which a pill cannot carry — focus
+  // shows as a ring instead.
+  replyBox: {
+    width: '100%',
+    height: '40px',
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundColor: tokens.colorNeutralBackground3,
+    border: 'none',
+    paddingLeft: '8px',
+    '::after': { display: 'none' },
+    ':focus-within': { outline: `1px solid ${tokens.colorNeutralStroke1}` },
+  },
+  send: { color: tokens.colorBrandForeground1 },
 });
 
 export interface IssuePeekBodyProps {
@@ -119,8 +145,12 @@ export interface IssuePeekBodyProps {
   liveRunTaskIds?: ReadonlySet<string>;
   /** When each live run started, by task id — the running step's timer. */
   runStartedAt?: ReadonlyMap<string, number>;
-  /** The conversation, already folded (`foldTurns`). */
+  /** The conversation, already folded (`foldTurns`) — drawn bubble-free by `PeekTimeline`. */
   turns: Turn[];
+  /**
+   * Accepted for `TaskDetail`'s one call shape, but the peek's timeline reads neither: a
+   * status note prints as text, and deleting a note stays on the full page.
+   */
   statusKeywords?: readonly StatusKeyword[];
   onDeleteNote?: (commentId: number) => void;
   /** The card's own attachments and timeline — the visual sign-off reads them. */
@@ -175,8 +205,6 @@ export function IssuePeekBody({
   liveRunTaskIds,
   runStartedAt,
   turns,
-  statusKeywords,
-  onDeleteNote,
   attachments,
   activity,
   onNeedsChanges,
@@ -196,11 +224,13 @@ export function IssuePeekBody({
   const startedAt = running ? runStartedAt?.get(running.id) : undefined;
   const description = task.externalDescription ?? task.description ?? '';
 
-  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>): void {
-    // Enter sends, Shift+Enter is a newline — the composer's own contract.
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+  const canSend = !sending && reply.trim().length > 0;
+
+  function onKeyDown(e: KeyboardEvent<HTMLInputElement>): void {
+    // Enter sends — one line, so there is no newline to keep Shift+Enter for.
+    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      if (!sending && reply.trim()) onSend();
+      if (canSend) onSend();
     }
   }
 
@@ -252,7 +282,11 @@ export function IssuePeekBody({
           />
         )}
         {subtasks.length > 0 && (
-          <section className={styles.section} aria-label="Agent run" data-peek-steps>
+          <section
+            className={mergeClasses(styles.section, styles.divided)}
+            aria-label="Agent run"
+            data-peek-steps
+          >
             <Text className={styles.sectionHead}>Agent run</Text>
             <ol className={styles.steps}>
               {subtasks.map((step) => (
@@ -272,8 +306,8 @@ export function IssuePeekBody({
           </section>
         )}
         {turns.length > 0 && (
-          <div role="log" aria-label="Conversation">
-            <ChatTurns turns={turns} statusKeywords={statusKeywords} onDeleteNote={onDeleteNote} />
+          <div role="log" aria-label="Conversation" className={styles.divided}>
+            <PeekTimeline turns={turns} now={now} />
           </div>
         )}
       </div>
@@ -283,17 +317,32 @@ export function IssuePeekBody({
             <MessageBarBody>{error}</MessageBarBody>
           </MessageBar>
         )}
-        <Textarea
+        <Input
           className={styles.replyBox}
           aria-label="Reply"
           placeholder={replyToAgent ? 'Reply to the agent…' : 'Reply…'}
-          resize="vertical"
           value={reply}
           disabled={sending}
           onChange={(_e, d) => onReplyChange(d.value)}
           onKeyDown={onKeyDown}
+          contentAfter={
+            sending ? (
+              <Spinner size="tiny" />
+            ) : (
+              <Button
+                appearance="subtle"
+                shape="circular"
+                size="small"
+                className={styles.send}
+                icon={<SendRegular />}
+                aria-label="Send"
+                title="Send"
+                disabled={!canSend}
+                onClick={onSend}
+              />
+            )
+          }
         />
-        {sending && <Spinner size="tiny" />}
       </div>
     </div>
   );

@@ -27,7 +27,7 @@ const useStyles = makeStyles({
   row: { display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 },
   mine: { alignItems: 'flex-end' },
   theirs: { alignItems: 'flex-start' },
-  /** The one bubble shape. */
+  /** The one bubble shape — marked `data-chat-bubble`, so a pane that must not draw one can say so. */
   bubble: {
     maxWidth: '82%',
     padding: '8px 10px',
@@ -151,6 +151,7 @@ export function ChatTurns({ turns, onDeleteNote, statusKeywords }: ChatTurnsProp
                   turn.variant === 'note' || turn.variant === 'status' ? styles.note : styles.chat,
                   turn.variant === 'status' && styles.statusBubble,
                 )}
+                data-chat-bubble
                 style={accent ? { borderLeftColor: accent } : undefined}
                 onDoubleClick={
                   turn.commentId !== null && onDeleteNote
@@ -188,7 +189,7 @@ export function ChatTurns({ turns, onDeleteNote, statusKeywords }: ChatTurnsProp
               <Caption1 className={styles.meta}>
                 {turn.author} · {TRACKER_NAME[turn.tracker]}
               </Caption1>
-              <div className={mergeClasses(styles.bubble, styles.them)}>
+              <div className={mergeClasses(styles.bubble, styles.them)} data-chat-bubble>
                 {turn.rich?.length ? (
                   <RichComment blocks={turn.rich} attachments={turn.attachments} />
                 ) : (

@@ -144,9 +144,10 @@ describe('IssuePeekBody, through TaskDetail layout="peek"', () => {
     expect(html).toContain('data-step-glyph="pending"');
   });
 
-  it('offers exactly one Reply textbox', () => {
-    expect(html.match(/<textarea[^>]*aria-label="Reply"/g)).toHaveLength(1);
-    expect(html.match(/<textarea/g)).toHaveLength(1);
+  it('offers exactly one Reply field — a one-line input, not a textarea — and a Send button', () => {
+    expect(html.match(/<input[^>]*aria-label="Reply"/g)).toHaveLength(1);
+    expect(html).not.toMatch(/<textarea/);
+    expect(html).toMatch(/<button[^>]*aria-label="Send"/);
   });
 
   it('has no combobox and none of the editing buttons', () => {
@@ -199,8 +200,10 @@ describe('IssuePeekBody', () => {
     // On the running step's row, not another.
     const runningRow = html.match(/<li[^>]*>(?:(?!<\/li>).)*Write the sync(?:(?!<\/li>).)*<\/li>/);
     expect(runningRow?.[0]).toContain('data-step-timer');
-    // The timeline.
+    // The timeline — the peek's own, not ChatTurns' bubbles.
     expect(html).toContain('aria-label="Conversation"');
+    expect(html).toContain('data-peek-timeline');
+    expect(html).not.toContain('data-chat-bubble');
     expect(html).toContain('Mapped the status field.');
   });
 });
