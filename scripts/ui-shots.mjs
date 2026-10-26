@@ -90,7 +90,7 @@
  *       `'menuitemradio:NAME'` clicks the visible `[role="menuitemradio"]` whose text is
  *       exactly `NAME` — a Fluent `MenuItemRadio` is not in `candidates()` either, and a plain
  *       text click on "Epic" could land on a row whose title contains it (the Backlog's
- *       "Group by" menu, opened first with `'title:Group by'`).
+ *       "Group by" modes in its "…", opened first with `'title:More options'`).
  *     - `{ key: spec }` — dispatches a bubbling `keydown` on `document.activeElement` (or
  *       `document.body`), parsed the same `"mod+k"`/`"shift+mod+k"` way
  *       `packages/ui/src/palette/shortcut.ts`'s own spec is, plus the named keys `space`,

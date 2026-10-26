@@ -6,8 +6,9 @@
  * sub-headers the way the sidebar does; folds are per device under `tm.backlog.folds`.
  *
  * A row click opens the ticket in `Projects.tsx`'s own shared detail pane (F12.8) — this
- * component's job stays what it always was: the header row (the "Issues" title, the Active /
- * Backlog / All tabs, the search box, the group menu, the "···" menu and "+"), and rendering
+ * component's job stays what it always was: the list's ONE header row (`BacklogHeader`: the
+ * project chip `Projects` hands in as `leading`, the "Issues" title, the Active / Backlog / All
+ * tabs, a search icon that opens into the box, the "…" menu and "+"), and rendering
  * `backlogGrouping`'s sections with `IssueRow`. Loading the project's tickets itself moved
  * to `useProjectTickets` (F13.13), so `Projects.tsx` can feed the same list into the issue
  * view reducer without a second fetch; this component takes the result as a `tickets` prop.
@@ -20,13 +21,6 @@ import { type CSSProperties, type KeyboardEvent, type ReactNode, useMemo, useSta
 import {
   Button,
   Input,
-  Menu,
-  MenuButton,
-  MenuItemCheckbox,
-  MenuItemRadio,
-  MenuList,
-  MenuPopover,
-  MenuTrigger,
   Body1,
   Text,
   mergeClasses,
@@ -37,8 +31,6 @@ import {
   AddRegular,
   ChevronDownRegular,
   ChevronRightRegular,
-  GroupListRegular,
-  MoreHorizontalRegular,
   SearchRegular,
 } from '@fluentui/react-icons';
 import type { Milestone, Person, Project, Task } from '@tm/shared/model';
@@ -57,14 +49,8 @@ import {
   useBacklogGroupMode,
 } from './backlogGrouping';
 import { BACKLOG_TAB_LABEL, type BacklogTab, ticketsForTab, useBacklogTab } from './backlogTabs';
+import { IssueListMoreMenu, type IssueViewMenu } from './IssueListMoreMenu';
 import { NewTicketDialog } from './NewTicketDialog';
-
-/** The "Group by" menu's modes, in menu order — also the button's own visible text. */
-const GROUP_MODE_LABEL: Record<BacklogGroupMode, string> = {
-  status: 'Status',
-  epic: 'Epic',
-  milestone: 'Milestone',
-};
 
 const useStyles = makeStyles({
   // `minWidth: 0`: a flex item's default `min-width: auto` holds it to its content's
@@ -72,10 +58,10 @@ const useStyles = makeStyles({
   // own box — undetected, because nothing here clips — and bleed into the peek pane opening
   // beside it (`Projects.tsx`'s `.backlog` already shrinks; this is what refused to follow).
   root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, minWidth: 0 },
-  // One row, never two (v9-1/v9-3): the title and tabs on the left, a spacer, then search,
-  // Group by, "···" and "+". `nowrap`, because a wrapped header pushed "+" onto a second line
-  // under the peek at 1100px; what gives instead is the search box, down to its floor. Every
-  // other item is `flexShrink: 0`, so nothing narrows past its own text.
+  // One row, never two (v9-1/v9-3): the project chip, the title and tabs on the left, a
+  // spacer, then search, "…" and "+". `nowrap`, because a wrapped header pushed "+" onto a
+  // second line under the peek at 1100px; what gives instead is the open search box, down to
+  // its floor. Every other item is `flexShrink: 0`, so nothing narrows past its own text.
   toolbar: {
     display: 'flex',
     flexWrap: 'nowrap',
@@ -92,9 +78,8 @@ const useStyles = makeStyles({
     color: `var(--tm-text, ${tokens.colorNeutralForeground1})`,
   },
   spacer: { flex: 1, minWidth: 0 },
-  // The floor is what the list card has left with the peek open at 1100px (~420px inside,
-  // ~330 of it title, tabs and the three buttons): a 140px floor held the search whole and
-  // pushed "···" and "+" out past the card's edge instead.
+  // The floor is what the list card has left with the peek open at 1100px: a 140px floor held
+  // the search whole and pushed "…" and "+" out past the card's edge instead.
   search: { flex: '0 1 240px', minWidth: '80px' },
   toolbarButton: { flexShrink: 0 },
   scroll: {
@@ -232,6 +217,126 @@ export function BacklogSectionView({
   );
 }
 
+export interface BacklogHeaderProps {
+  /** Drawn first in the row — `Projects` hands in its project chip (`ProjectSwitcher`). */
+  leading?: ReactNode;
+  tab: BacklogTab;
+  onTabChange: (tab: BacklogTab) => void;
+  query: string;
+  onQueryChange: (query: string) => void;
+  /** The search box is open. It also stays open while `query` holds anything. */
+  searchOpen: boolean;
+  onSearchOpenChange: (open: boolean) => void;
+  groupMode: BacklogGroupMode;
+  onGroupModeChange: (mode: BacklogGroupMode) => void;
+  includeArchived: boolean;
+  onIncludeArchivedChange: (includeArchived: boolean) => void;
+  /** `Projects`'s View switch and ticket-panel toggle, folded into the same "…". */
+  viewMenu?: IssueViewMenu;
+  onNewTicket: () => void;
+  /** Test only: render the "…" menu open, in place. */
+  menuOpen?: boolean;
+}
+
+/**
+ * The Backlog's one header row (v9-1/v9-3) — hook-free past its styles, so it renders
+ * statically under test. Search is an icon button until it is wanted: the always-open box was
+ * the widest thing in the row, for a filter used now and then. Opening it focuses the box;
+ * leaving it empty (blur, or Escape) folds it back to the icon.
+ */
+export function BacklogHeader({
+  leading,
+  tab,
+  onTabChange,
+  query,
+  onQueryChange,
+  searchOpen,
+  onSearchOpenChange,
+  groupMode,
+  onGroupModeChange,
+  includeArchived,
+  onIncludeArchivedChange,
+  viewMenu,
+  onNewTicket,
+  menuOpen,
+}: BacklogHeaderProps): JSX.Element {
+  const styles = useStyles();
+  const layout = useBoardLayoutStyles();
+  const showSearch = searchOpen || query !== '';
+  return (
+    <div className={styles.toolbar} data-backlog-header="">
+      {leading}
+      <Text as="h2" className={styles.title}>
+        Issues
+      </Text>
+      <div className={layout.tabs} role="tablist" aria-label="Which issues">
+        {(Object.keys(BACKLOG_TAB_LABEL) as BacklogTab[]).map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={t === tab}
+            className={mergeClasses(layout.tab, t === tab && layout.tabSelected)}
+            onClick={() => onTabChange(t)}
+          >
+            {BACKLOG_TAB_LABEL[t]}
+          </button>
+        ))}
+      </div>
+      <div className={styles.spacer} />
+      {showSearch ? (
+        <Input
+          className={styles.search}
+          size="small"
+          contentBefore={<SearchRegular />}
+          value={query}
+          onChange={(_e, d) => onQueryChange(d.value)}
+          onBlur={() => {
+            if (query === '') onSearchOpenChange(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return;
+            // Defaulted, so `Projects.tsx`'s pane-level Escape does not also close the peek.
+            e.preventDefault();
+            onQueryChange('');
+            onSearchOpenChange(false);
+          }}
+          placeholder="Search title, key or label…"
+          aria-label="Search issues"
+          // Opened by a click on the icon a moment ago — the box is what was asked for.
+          autoFocus
+        />
+      ) : (
+        <Button
+          className={styles.toolbarButton}
+          size="small"
+          appearance="subtle"
+          icon={<SearchRegular />}
+          title="Search"
+          aria-label="Search issues"
+          onClick={() => onSearchOpenChange(true)}
+        />
+      )}
+      <IssueListMoreMenu
+        viewMenu={viewMenu}
+        groupBy={{ mode: groupMode, onChange: onGroupModeChange }}
+        includeArchived={{ checked: includeArchived, onChange: onIncludeArchivedChange }}
+        open={menuOpen}
+        inline={menuOpen}
+      />
+      <Button
+        className={styles.toolbarButton}
+        size="small"
+        appearance="primary"
+        icon={<AddRegular />}
+        title="New ticket"
+        aria-label="New ticket"
+        onClick={onNewTicket}
+      />
+    </div>
+  );
+}
+
 export interface BacklogTableProps {
   projectId: string;
   /** This project's tickets (`useProjectTickets`), or `null` while the seed is still
@@ -261,6 +366,10 @@ export interface BacklogTableProps {
    *  switch the Archived view and a direct link already flip. */
   includeArchived: boolean;
   onIncludeArchivedChange: (includeArchived: boolean) => void;
+  /** Drawn first in the header row — `Projects`'s project chip. */
+  leading?: ReactNode;
+  /** `Projects`'s View switch and ticket-panel toggle, for the header's "…". */
+  viewMenu?: IssueViewMenu;
 }
 
 /** The agent delegated to a ticket, by name — `undefined` for anything not native or
@@ -286,10 +395,12 @@ export function BacklogTable({
   archiveIndex,
   includeArchived,
   onIncludeArchivedChange,
+  leading,
+  viewMenu,
 }: BacklogTableProps): JSX.Element {
   const styles = useStyles();
-  const layout = useBoardLayoutStyles();
   const [query, setQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [tab, setTab] = useBacklogTab();
   const [groupMode, setGroupMode] = useBacklogGroupMode();
   const [folds, toggleFold] = useDeviceFolds('tm.backlog.folds');
@@ -329,9 +440,32 @@ export function BacklogTable({
     [sections],
   );
 
+  // Drawn while the seed loads too: the chip and the view switch live in this row now, so a
+  // slow load must not take the way to another project or view away with it.
+  const header = (
+    <BacklogHeader
+      leading={leading}
+      tab={tab}
+      onTabChange={setTab}
+      query={query}
+      onQueryChange={setQuery}
+      searchOpen={searchOpen}
+      onSearchOpenChange={setSearchOpen}
+      groupMode={groupMode}
+      onGroupModeChange={setGroupMode}
+      includeArchived={includeArchived}
+      onIncludeArchivedChange={onIncludeArchivedChange}
+      viewMenu={viewMenu}
+      onNewTicket={() => setNewTicketDialog({ epicTaskId: null })}
+    />
+  );
+
   if (tickets === null) {
     return (
-      <PaneLoading label="Loading backlog…" error={loadError} onRetry={loadRetry} shape="rows" />
+      <div className={styles.root}>
+        {header}
+        <PaneLoading label="Loading backlog…" error={loadError} onRetry={loadRetry} shape="rows" />
+      </div>
     );
   }
 
@@ -361,99 +495,7 @@ export function BacklogTable({
 
   return (
     <div className={styles.root}>
-      <div className={styles.toolbar} data-backlog-header="">
-        <Text as="h2" className={styles.title}>
-          Issues
-        </Text>
-        <div className={layout.tabs} role="tablist" aria-label="Which issues">
-          {(Object.keys(BACKLOG_TAB_LABEL) as BacklogTab[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              role="tab"
-              aria-selected={t === tab}
-              className={mergeClasses(layout.tab, t === tab && layout.tabSelected)}
-              onClick={() => setTab(t)}
-            >
-              {BACKLOG_TAB_LABEL[t]}
-            </button>
-          ))}
-        </div>
-        <div className={styles.spacer} />
-        <Input
-          className={styles.search}
-          size="small"
-          contentBefore={<SearchRegular />}
-          value={query}
-          onChange={(_e, d) => setQuery(d.value)}
-          placeholder="Search title, key or label…"
-          aria-label="Search issues"
-        />
-        {/* One icon-only menu button, not a caption and three toggles: with the peek open at
-            1440 those pushed "New ticket" onto a second toolbar line, and so did a button that
-            still spelled out the current mode. The mode is in its `aria-label` and checked item. */}
-        <Menu>
-          <MenuTrigger disableButtonEnhancement>
-            <MenuButton
-              className={styles.toolbarButton}
-              size="small"
-              appearance="subtle"
-              icon={<GroupListRegular />}
-              title="Group by"
-              aria-label={`Group by: ${GROUP_MODE_LABEL[groupMode]}`}
-            />
-          </MenuTrigger>
-          <MenuPopover>
-            <MenuList
-              checkedValues={{ group: [groupMode] }}
-              onCheckedValueChange={(_e, { checkedItems }) => {
-                const next = checkedItems[0] as BacklogGroupMode | undefined;
-                if (next && next !== groupMode) setGroupMode(next);
-              }}
-            >
-              {(Object.keys(GROUP_MODE_LABEL) as BacklogGroupMode[]).map((mode) => (
-                <MenuItemRadio key={mode} name="group" value={mode}>
-                  {GROUP_MODE_LABEL[mode]}
-                </MenuItemRadio>
-              ))}
-            </MenuList>
-          </MenuPopover>
-        </Menu>
-        {/* The list's rarer switches, behind "···" as on the board's own header. */}
-        <Menu
-          checkedValues={{ options: includeArchived ? ['archived'] : [] }}
-          onCheckedValueChange={(_e, { checkedItems }) =>
-            onIncludeArchivedChange(checkedItems.includes('archived'))
-          }
-        >
-          <MenuTrigger disableButtonEnhancement>
-            <Button
-              className={styles.toolbarButton}
-              size="small"
-              appearance="subtle"
-              icon={<MoreHorizontalRegular />}
-              title="More options"
-              aria-label="More options"
-            />
-          </MenuTrigger>
-          <MenuPopover>
-            <MenuList>
-              <MenuItemCheckbox name="options" value="archived">
-                Include archived
-              </MenuItemCheckbox>
-            </MenuList>
-          </MenuPopover>
-        </Menu>
-        <Button
-          className={styles.toolbarButton}
-          size="small"
-          appearance="primary"
-          icon={<AddRegular />}
-          title="New ticket"
-          aria-label="New ticket"
-          onClick={() => setNewTicketDialog({ epicTaskId: null })}
-        />
-      </div>
+      {header}
 
       {tickets.length === 0 || sections.length === 0 ? (
         <Body1 className={styles.empty}>

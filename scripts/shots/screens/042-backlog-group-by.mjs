@@ -8,8 +8,9 @@
  * or milestone modes (an owner-approved addition to the v9 list), so every row compares against
  * the v9 list mockup — status closely, the other two for header and row styling only.
  *
- * A non-default mode is picked the way a person would: open the toolbar's icon-only menu
- * button (named by its `title`) and choose the `MenuItemRadio` —
+ * A non-default mode is picked the way a person would: open the header's "…" (named by its
+ * `title`; Group by lives there since the header folded into one row) and choose the
+ * `MenuItemRadio` —
  * both by exact-match sentinels, so a row title containing "Epic" can never take the click.
  */
 
@@ -22,7 +23,7 @@ function groupRow(mode, scheme, extraExpect = '') {
     mode === 'status'
       ? []
       : [
-          { click: 'title:Group by' },
+          { click: 'title:More options' },
           { click: mode === 'epic' ? 'menuitemradio:Epic' : 'menuitemradio:Milestone' },
         ];
   return {

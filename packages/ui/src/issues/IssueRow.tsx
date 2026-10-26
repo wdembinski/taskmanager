@@ -211,6 +211,7 @@ export function IssueRow({
             agentName={parts.avatar.agentName}
             title={parts.avatar.title}
             size={20}
+            hideAgentName
           />
         )}
       </span>
