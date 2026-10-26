@@ -6,14 +6,15 @@
  * sub-headers the way the sidebar does; folds are per device under `tm.backlog.folds`.
  *
  * A row click opens the ticket in `Projects.tsx`'s own shared detail pane (F12.8) — this
- * component's job stays what it always was: the search box, the sort and group toggles, and
- * rendering `backlogGrouping`'s sections with `IssueRow`. Loading the project's tickets itself moved
+ * component's job stays what it always was: the header row (the "Issues" title, the Active /
+ * Backlog / All tabs, the search box, the group menu, the "···" menu and "+"), and rendering
+ * `backlogGrouping`'s sections with `IssueRow`. Loading the project's tickets itself moved
  * to `useProjectTickets` (F13.13), so `Projects.tsx` can feed the same list into the issue
  * view reducer without a second fetch; this component takes the result as a `tickets` prop.
  *
  * Keyed by `projectId` at the call site (`Projects.tsx`) rather than reacting to it changing
- * in place: switching the selected project is rare enough that a remount — a fresh search and
- * sort state — is simpler than reconciling this component's state to a new project mid-life.
+ * in place: switching the selected project is rare enough that a remount — a fresh search
+ * state — is simpler than reconciling this component's state to a new project mid-life.
  */
 import { type CSSProperties, type KeyboardEvent, type ReactNode, useMemo, useState } from 'react';
 import {
@@ -21,12 +22,13 @@ import {
   Input,
   Menu,
   MenuButton,
+  MenuItemCheckbox,
   MenuItemRadio,
   MenuList,
   MenuPopover,
   MenuTrigger,
-  ToggleButton,
   Body1,
+  Text,
   mergeClasses,
   makeStyles,
   tokens,
@@ -36,6 +38,7 @@ import {
   ChevronDownRegular,
   ChevronRightRegular,
   GroupListRegular,
+  MoreHorizontalRegular,
   SearchRegular,
 } from '@fluentui/react-icons';
 import type { Milestone, Person, Project, Task } from '@tm/shared/model';
@@ -44,6 +47,7 @@ import { archivedBy, type ArchiveIndex } from '@tm/shared/trackerArchive';
 import { IssueRow } from '../issues/IssueRow';
 import { indexIssueRows, type IssueRowContext, keyColumnWidth } from '../issues/issueRowParts';
 import { useIssueRowFeeds } from '../issues/useIssueRowFeeds';
+import { useBoardLayoutStyles } from '../board/boardLayout';
 import { PaneLoading } from '../PaneLoading';
 import { useDeviceFolds } from '../shell/sidebarFolds';
 import {
@@ -52,7 +56,7 @@ import {
   backlogGroups,
   useBacklogGroupMode,
 } from './backlogGrouping';
-import { type BacklogSortKey } from './backlogView';
+import { BACKLOG_TAB_LABEL, type BacklogTab, ticketsForTab, useBacklogTab } from './backlogTabs';
 import { NewTicketDialog } from './NewTicketDialog';
 
 /** The "Group by" menu's modes, in menu order — also the button's own visible text. */
@@ -68,15 +72,30 @@ const useStyles = makeStyles({
   // own box — undetected, because nothing here clips — and bleed into the peek pane opening
   // beside it (`Projects.tsx`'s `.backlog` already shrinks; this is what refused to follow).
   root: { display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, minWidth: 0 },
-  // `flexWrap: 'wrap'`: once the column has actually shrunk, the toolbar's own buttons wrap
-  // onto a second line rather than clipping — "Sort by due date" and "New ticket" staying
-  // reachable instead of sitting, unreachable, under the peek.
-  toolbar: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' },
-  search: { flex: 1, minWidth: '160px', maxWidth: '320px' },
-  // The default flex-shrink let each button narrow past its own text's width before the row
-  // ever wrapped — "Sort by due date" breaking word-by-word into an unreadable column rather
-  // than moving to a second line as a whole. `flexShrink: 0` makes the wrap decision (above)
-  // the only thing a tight column can do to these; shrinking the search box is still fine.
+  // One row, never two (v9-1/v9-3): the title and tabs on the left, a spacer, then search,
+  // Group by, "···" and "+". `nowrap`, because a wrapped header pushed "+" onto a second line
+  // under the peek at 1100px; what gives instead is the search box, down to its floor. Every
+  // other item is `flexShrink: 0`, so nothing narrows past its own text.
+  toolbar: {
+    display: 'flex',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    gap: '6px',
+    minWidth: 0,
+  },
+  title: {
+    flexShrink: 0,
+    margin: '0 2px 0 0',
+    fontSize: tokens.fontSizeBase500,
+    lineHeight: tokens.lineHeightBase500,
+    fontWeight: tokens.fontWeightSemibold,
+    color: `var(--tm-text, ${tokens.colorNeutralForeground1})`,
+  },
+  spacer: { flex: 1, minWidth: 0 },
+  // The floor is what the list card has left with the peek open at 1100px (~420px inside,
+  // ~330 of it title, tabs and the three buttons): a 140px floor held the search whole and
+  // pushed "···" and "+" out past the card's edge instead.
+  search: { flex: '0 1 240px', minWidth: '80px' },
   toolbarButton: { flexShrink: 0 },
   scroll: {
     overflowY: 'auto',
@@ -269,8 +288,9 @@ export function BacklogTable({
   onIncludeArchivedChange,
 }: BacklogTableProps): JSX.Element {
   const styles = useStyles();
+  const layout = useBoardLayoutStyles();
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<BacklogSortKey>('key');
+  const [tab, setTab] = useBacklogTab();
   const [groupMode, setGroupMode] = useBacklogGroupMode();
   const [folds, toggleFold] = useDeviceFolds('tm.backlog.folds');
   const foldedSet = useMemo(() => new Set(folds), [folds]);
@@ -289,18 +309,20 @@ export function BacklogTable({
     [tickets, mergeRequests],
   );
 
+  // The tab first, so whichever grouping is picked only ever sees the tab's tickets. Rows read
+  // in key order: the sort strip went with the tabs (v9-1 has none).
   const sections = useMemo(
     () =>
       tickets
         ? backlogGroups(groupMode, {
-            tickets,
+            tickets: ticketsForTab(tickets, tab),
             milestones,
             query,
-            sortKey,
+            sortKey: 'key',
             archive: { index: archiveIndex, includeArchived },
           })
         : [],
-    [groupMode, tickets, milestones, query, sortKey, archiveIndex, includeArchived],
+    [groupMode, tickets, tab, milestones, query, archiveIndex, includeArchived],
   );
   const keyWidth = useMemo(
     () => ({ '--tm-key-width': keyColumnWidth(sectionKeys(sections)) }) as CSSProperties,
@@ -339,41 +361,34 @@ export function BacklogTable({
 
   return (
     <div className={styles.root}>
-      <div className={styles.toolbar}>
+      <div className={styles.toolbar} data-backlog-header="">
+        <Text as="h2" className={styles.title}>
+          Issues
+        </Text>
+        <div className={layout.tabs} role="tablist" aria-label="Which issues">
+          {(Object.keys(BACKLOG_TAB_LABEL) as BacklogTab[]).map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={t === tab}
+              className={mergeClasses(layout.tab, t === tab && layout.tabSelected)}
+              onClick={() => setTab(t)}
+            >
+              {BACKLOG_TAB_LABEL[t]}
+            </button>
+          ))}
+        </div>
+        <div className={styles.spacer} />
         <Input
           className={styles.search}
+          size="small"
           contentBefore={<SearchRegular />}
           value={query}
           onChange={(_e, d) => setQuery(d.value)}
           placeholder="Search title, key or label…"
+          aria-label="Search issues"
         />
-        <ToggleButton
-          className={styles.toolbarButton}
-          size="small"
-          appearance="subtle"
-          checked={includeArchived}
-          onClick={() => onIncludeArchivedChange(!includeArchived)}
-        >
-          Include archived
-        </ToggleButton>
-        <ToggleButton
-          className={styles.toolbarButton}
-          size="small"
-          appearance="subtle"
-          checked={sortKey === 'key'}
-          onClick={() => setSortKey('key')}
-        >
-          Sort by key
-        </ToggleButton>
-        <ToggleButton
-          className={styles.toolbarButton}
-          size="small"
-          appearance="subtle"
-          checked={sortKey === 'due'}
-          onClick={() => setSortKey('due')}
-        >
-          Sort by due date
-        </ToggleButton>
         {/* One icon-only menu button, not a caption and three toggles: with the peek open at
             1440 those pushed "New ticket" onto a second toolbar line, and so did a button that
             still spelled out the current mode. The mode is in its `aria-label` and checked item. */}
@@ -404,19 +419,46 @@ export function BacklogTable({
             </MenuList>
           </MenuPopover>
         </Menu>
+        {/* The list's rarer switches, behind "···" as on the board's own header. */}
+        <Menu
+          checkedValues={{ options: includeArchived ? ['archived'] : [] }}
+          onCheckedValueChange={(_e, { checkedItems }) =>
+            onIncludeArchivedChange(checkedItems.includes('archived'))
+          }
+        >
+          <MenuTrigger disableButtonEnhancement>
+            <Button
+              className={styles.toolbarButton}
+              size="small"
+              appearance="subtle"
+              icon={<MoreHorizontalRegular />}
+              title="More options"
+              aria-label="More options"
+            />
+          </MenuTrigger>
+          <MenuPopover>
+            <MenuList>
+              <MenuItemCheckbox name="options" value="archived">
+                Include archived
+              </MenuItemCheckbox>
+            </MenuList>
+          </MenuPopover>
+        </Menu>
         <Button
           className={styles.toolbarButton}
           size="small"
           appearance="primary"
           icon={<AddRegular />}
+          title="New ticket"
+          aria-label="New ticket"
           onClick={() => setNewTicketDialog({ epicTaskId: null })}
-        >
-          New ticket
-        </Button>
+        />
       </div>
 
-      {tickets.length === 0 ? (
-        <Body1 className={styles.empty}>No tickets in this project yet.</Body1>
+      {tickets.length === 0 || sections.length === 0 ? (
+        <Body1 className={styles.empty}>
+          {tickets.length === 0 ? 'No tickets in this project yet.' : 'No tickets here.'}
+        </Body1>
       ) : (
         <div
           className={styles.scroll}
