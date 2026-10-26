@@ -34,7 +34,12 @@
  * read time, so a row that stops being deduped (the human's `mine` row lands, or the PR
  * closes) does not need `refresh()` to run again first.
  */
-import { mrRef, type ForgeProvider, type MergeRequest } from '@shared/mergeRequest';
+import {
+  mrRef,
+  type ForgeProvider,
+  type MergeRequest,
+  type PipelineStatus,
+} from '@shared/mergeRequest';
 import type { Task } from '@shared/model';
 import {
   subjectId,
@@ -48,7 +53,11 @@ import type { AppSettings } from '@shared/settings';
 import { repoRefFromApiUrl } from '../github/describePullRequest';
 import type { GitHubClient, GitHubSearchIssueItem } from '../github/githubClient';
 import { projectPathOf } from '../gitlab/describeMergeRequest';
-import type { GitLabClient, GitLabMergeRequest } from '../gitlab/gitlabClient';
+import {
+  toPipelineStatus,
+  type GitLabClient,
+  type GitLabMergeRequest,
+} from '../gitlab/gitlabClient';
 import type { Store } from '../store';
 import type { DiffService } from './diffService';
 
@@ -157,7 +166,18 @@ export function gitlabRowToItem(row: GitLabMergeRequest): ReviewQueueItem {
     draftCount: 0,
     viewedCount: 0,
     fileCount: null,
+    headRef: row.source_branch,
+    pipeline: gitlabRowPipeline(row),
   };
+}
+
+/**
+ * The list row's head pipeline, when it carries one GitLab spelled in a way we know — the
+ * list endpoint often omits `head_pipeline`, and that absence is "not known", not `unknown`.
+ */
+function gitlabRowPipeline(row: GitLabMergeRequest): PipelineStatus | null {
+  const status = toPipelineStatus(row.head_pipeline?.status);
+  return status === 'unknown' ? null : status;
 }
 
 /**
@@ -193,6 +213,8 @@ export function mergeRequestToItem(
     draftCount: 0,
     viewedCount: 0,
     fileCount: null,
+    headRef: mr.sourceBranch,
+    pipeline: mr.pipelineStatus,
   };
 }
 

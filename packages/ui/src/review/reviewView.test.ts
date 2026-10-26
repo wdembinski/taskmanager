@@ -23,6 +23,8 @@ import {
   splitRows,
   statusLetter,
   summaryTotals,
+  SPLIT_MIN_WIDTH_PX,
+  WORKSPACE_SPLIT_MIN_WIDTH_PX,
   type FileTreeDir,
   type FileTreeFile,
 } from './reviewView';
@@ -548,6 +550,17 @@ describe('parseDiffLayout', () => {
     expect(parseDiffLayout(undefined)).toBe('unified');
     expect(parseDiffLayout('junk')).toBe('unified');
   });
+
+  it('uses the fallback when nothing valid is stored', () => {
+    expect(parseDiffLayout(null, 'split')).toBe('split');
+    expect(parseDiffLayout(undefined, 'split')).toBe('split');
+    expect(parseDiffLayout('junk', 'split')).toBe('split');
+  });
+
+  it('lets a stored choice win over the fallback', () => {
+    expect(parseDiffLayout('unified', 'split')).toBe('unified');
+    expect(parseDiffLayout('split', 'unified')).toBe('split');
+  });
 });
 
 describe('effectiveDiffLayout', () => {
@@ -569,5 +582,25 @@ describe('effectiveDiffLayout', () => {
     expect(effectiveDiffLayout('unified', 1200, false)).toBe('unified');
     expect(effectiveDiffLayout('unified', null, false)).toBe('unified');
     expect(effectiveDiffLayout('unified', 900, true)).toBe('unified');
+  });
+
+  it('defaults its minimum to SPLIT_MIN_WIDTH_PX', () => {
+    expect(SPLIT_MIN_WIDTH_PX).toBe(900);
+    expect(effectiveDiffLayout('split', 860, false)).toBe('unified');
+    expect(effectiveDiffLayout('split', 860, false, SPLIT_MIN_WIDTH_PX)).toBe('unified');
+  });
+
+  it('honours a custom minimum width', () => {
+    expect(WORKSPACE_SPLIT_MIN_WIDTH_PX).toBe(720);
+    expect(effectiveDiffLayout('split', 860, false, WORKSPACE_SPLIT_MIN_WIDTH_PX)).toBe('split');
+    expect(effectiveDiffLayout('split', 720, false, WORKSPACE_SPLIT_MIN_WIDTH_PX)).toBe('split');
+    expect(effectiveDiffLayout('split', 719, false, WORKSPACE_SPLIT_MIN_WIDTH_PX)).toBe('unified');
+  });
+
+  it('still forces unified on touch and keeps unified with a custom minimum', () => {
+    expect(effectiveDiffLayout('split', 1200, true, WORKSPACE_SPLIT_MIN_WIDTH_PX)).toBe('unified');
+    expect(effectiveDiffLayout('unified', 1200, false, WORKSPACE_SPLIT_MIN_WIDTH_PX)).toBe(
+      'unified',
+    );
   });
 });

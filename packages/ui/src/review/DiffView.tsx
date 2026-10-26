@@ -34,6 +34,7 @@ import {
   Body1,
   Button,
   Caption1,
+  Checkbox,
   Spinner,
   makeStyles,
   mergeClasses,
@@ -41,7 +42,7 @@ import {
 } from '@fluentui/react-components';
 import { AddRegular } from '@fluentui/react-icons';
 import { parseOversizedAnswer } from '@tm/shared/ipcRelay';
-import { isCollapsedByDefault } from '@tm/shared/review';
+import { isCollapsedByDefault, type ViewedStatus } from '@tm/shared/review';
 import type {
   DiffFileEntry,
   DiffHunk,
@@ -55,6 +56,7 @@ import type {
   WordSegment,
 } from '@tm/shared/review';
 import { MONO, SYNTAX, fontPx } from '../theme';
+import { DIFF_VAR } from '../tokens';
 import { useTransport } from '../transport';
 import { CommentThread } from './CommentThread';
 import type { HunkHighlight } from './highlight';
@@ -111,6 +113,7 @@ const useStyles = makeStyles({
     fontFamily: MONO,
     fontSize: fontPx(12),
   },
+  viewedBox: { flexShrink: 0 },
   added: { color: tokens.colorPaletteGreenForeground1, flexShrink: 0 },
   deleted: { color: tokens.colorPaletteRedForeground1, flexShrink: 0 },
   notice: { padding: '10px', color: tokens.colorNeutralForeground3 },
@@ -132,8 +135,9 @@ const useStyles = makeStyles({
     '&:hover [data-add-comment]': { opacity: 1, pointerEvents: 'auto' },
   },
   lineNoWrap: { whiteSpace: 'pre' },
-  lineAdd: { backgroundColor: tokens.colorPaletteGreenBackground1 },
-  lineDel: { backgroundColor: tokens.colorPaletteRedBackground1 },
+  // The mockups' muted tints, not Fluent's palette solids — see `DiffTintTokens`.
+  lineAdd: { backgroundColor: DIFF_VAR.add },
+  lineDel: { backgroundColor: DIFF_VAR.del },
   // The open editor's range, applied LAST in `mergeClasses` so it wins over the add/del tint —
   // the human is looking at what they selected, not at what changed.
   lineSelected: { backgroundColor: tokens.colorNeutralBackground1Selected },
@@ -177,8 +181,8 @@ const useStyles = makeStyles({
     '&:disabled': { cursor: 'default', opacity: 0.5 },
   },
   text: { flex: 1, minWidth: 0, paddingRight: '8px' },
-  wordAdd: { backgroundColor: tokens.colorPaletteGreenBackground2 },
-  wordDel: { backgroundColor: tokens.colorPaletteRedBackground2 },
+  wordAdd: { backgroundColor: DIFF_VAR.addWord },
+  wordDel: { backgroundColor: DIFF_VAR.delWord },
   // Syntax highlighting (F15.11) — colour only, never a background: the add/del tint above
   // already owns that, and `DiffLineRow`'s merge rule relies on these never fighting it.
   synKeyword: { color: SYNTAX.keyword },
@@ -239,6 +243,10 @@ export interface DiffViewProps {
   monochrome?: boolean;
   /** Compact mode's tap-selected line/range, before a comment is started on it. */
   selection?: LineSelection | null;
+  /** Each file's viewed status. With `onToggleViewed`, draws a "Viewed" box in every file
+   * header — `FileTree`'s own both-or-neither contract; the Changes pane passes neither. */
+  viewed?: Readonly<Record<string, ViewedStatus>>;
+  onToggleViewed?: (path: string) => void;
   onToggleExpanded: (path: string) => void;
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
   /** A gutter button tap in touch mode — `tapLine`'s own stand-in for `onClickLine`. */
@@ -265,6 +273,8 @@ export function DiffView({
   wrap = true,
   monochrome = false,
   selection = null,
+  viewed,
+  onToggleViewed,
   onToggleExpanded,
   onClickLine,
   onTapLine,
@@ -276,6 +286,8 @@ export function DiffView({
 }: DiffViewProps): JSX.Element {
   const styles = useStyles();
   const rows = useRef<Record<string, HTMLDivElement | null>>({});
+  const viewedProps: ViewedProps | undefined =
+    viewed && onToggleViewed ? { viewed, onToggleViewed } : undefined;
 
   useEffect(() => {
     if (!selectedPath) return;
@@ -310,6 +322,7 @@ export function DiffView({
             layout={layout}
             wrap={wrap}
             monochrome={monochrome}
+            viewedProps={viewedProps}
             onToggleExpanded={onToggleExpanded}
             onClickLine={onClickLine}
             onTapLine={onTapLine}
@@ -384,6 +397,12 @@ function OrphanedComments({
   );
 }
 
+/** The header box's inputs, present only when the host passed BOTH props. */
+interface ViewedProps {
+  viewed: Readonly<Record<string, ViewedStatus>>;
+  onToggleViewed: (path: string) => void;
+}
+
 interface CommentHandlers {
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
   onTapLine?: (path: string, side: DiffSide, line: number) => void;
@@ -408,6 +427,7 @@ function FileSection({
   layout,
   wrap,
   monochrome,
+  viewedProps,
   onToggleExpanded,
   ...handlers
 }: {
@@ -424,11 +444,13 @@ function FileSection({
   layout: DiffLayout;
   wrap: boolean;
   monochrome: boolean;
+  viewedProps: ViewedProps | undefined;
   onToggleExpanded: (path: string) => void;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
   const renamed = entry.oldPath !== undefined && entry.oldPath !== entry.path;
   const collapsedByDefault = isCollapsedByDefault(entry);
+  const viewedStatus = viewedProps?.viewed[entry.path] ?? 'unviewed';
 
   // Only a LOADED text file has rendered rows to anchor against — everything else (not yet
   // fetched, binary, too large, stale) answers every one of this path's comments as
@@ -453,6 +475,19 @@ function FileSection({
         </Caption1>
         {entry.additions > 0 && <Caption1 className={styles.added}>+{entry.additions}</Caption1>}
         {entry.deletions > 0 && <Caption1 className={styles.deleted}>-{entry.deletions}</Caption1>}
+        {viewedProps && (
+          <Checkbox
+            className={styles.viewedBox}
+            label="Viewed"
+            aria-label={`Viewed ${entry.path}`}
+            title={viewedStatus === 'changed' ? 'Changed since viewed' : undefined}
+            checked={viewedStatus === 'viewed'}
+            data-diff-viewed={viewedStatus}
+            // Its own control: ticking it must never reach the header's collapse toggle.
+            onClick={(event) => event.stopPropagation()}
+            onChange={() => viewedProps.onToggleViewed(entry.path)}
+          />
+        )}
         <Button size="small" appearance="subtle" onClick={() => onToggleExpanded(entry.path)}>
           {expanded ? 'Collapse' : collapsedByDefault ? 'Load anyway' : 'Expand'}
         </Button>

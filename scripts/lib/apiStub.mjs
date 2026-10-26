@@ -16,8 +16,12 @@
  * Serializes `BOOT_CHANNELS` (see `uiShotsFixture.mjs`'s own doc) into the three buckets the
  * in-page script actually switches on: a fixed value per channel, a `{ byArgTable, fallback }`
  * pair for the per-task channels, or membership in the `'list'`/`'null'` fallback buckets.
+ *
+ * A per-arg spec may also name `argIndex`, the position of the argument it keys on — `0` (the
+ * first argument, a task id for every per-task channel) when omitted. `review:subjectFile`
+ * (`subjectId, diffId, path`) keys on `path`, so its rows pass `argIndex: 2`.
  */
-function partitionChannels(bootChannels) {
+export function partitionChannels(bootChannels) {
   const fixed = {};
   const byArg = {};
   const listChannels = [];
@@ -26,7 +30,11 @@ function partitionChannels(bootChannels) {
     if (spec === 'list') listChannels.push(channel);
     else if (spec === 'null') nullChannels.push(channel);
     else if (spec && typeof spec === 'object' && spec.byArgTable !== undefined) {
-      byArg[channel] = { table: spec.byArgTable, fallback: spec.fallback };
+      byArg[channel] = {
+        table: spec.byArgTable,
+        fallback: spec.fallback,
+        argIndex: spec.argIndex ?? 0,
+      };
     } else {
       fixed[channel] = spec;
     }
@@ -75,8 +83,8 @@ export function buildApiStub({ defaultSettings, fixture, settingsOverrides = {},
           return Promise.resolve(FIXED_CHANNELS[channel]);
         }
         if (Object.prototype.hasOwnProperty.call(BY_ARG_CHANNELS, channel)) {
-          const { table, fallback } = BY_ARG_CHANNELS[channel];
-          const key = args[0];
+          const { table, fallback, argIndex } = BY_ARG_CHANNELS[channel];
+          const key = args[argIndex];
           const value = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : fallback;
           return Promise.resolve(value);
         }

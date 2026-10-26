@@ -277,23 +277,46 @@ describe.each(SCHEMES)('shell token pairs (%s)', (scheme) => {
 });
 
 /**
+ * The diff's add/del tints (`SEMANTIC[scheme].diff`, `DiffView.tsx`'s `lineAdd`/`lineDel`/
+ * `wordAdd`/`wordDel`) are translucent, so each is composited over every opaque surface a
+ * diff can sit on — `DiffView`'s own file card (`colorNeutralBackground3`) and the pane's
+ * `colorNeutralBackground1` — the way it actually paints.
+ */
+function diffTintSurfaces(
+  scheme: ColorScheme,
+  tints: ReadonlyArray<[name: string, tint: string]>,
+): Array<[name: string, bg: Rgba]> {
+  const diffSurfaces: ReadonlyArray<[name: string, token: string]> = [
+    ['colorNeutralBackground1', tokens.colorNeutralBackground1],
+    ['colorNeutralBackground3', tokens.colorNeutralBackground3],
+  ];
+  return diffSurfaces.flatMap(([surfaceName, token]) => {
+    const surface = parseColor(resolveToken(token, scheme));
+    return tints.map(([tintName, tint]): [string, Rgba] => [
+      `${tintName} over ${surfaceName}`,
+      composite(parseColor(tint), surface),
+    ]);
+  });
+}
+
+/**
  * {@link SYNTAX_BY_SCHEME} against every surface a highlighted span can actually sit on: the
  * code block/inline surfaces (`CODE_BY_SCHEME`), the pane's own neutral backgrounds, and a
- * diff line's own add/del tint (`DiffView.tsx`'s `lineAdd`/`lineDel` — "a line's own tint at
- * its subtlest step"), which is exactly `tokens.colorPaletteGreenBackground1`/
- * `colorPaletteRedBackground1` resolved for this scheme.
+ * diff line's own add/del tint ({@link diffTintSurfaces}).
  */
 describe.each(SCHEMES)('syntax highlight colours (%s)', (scheme) => {
   const syntax = SYNTAX_BY_SCHEME[scheme];
   const code = CODE_BY_SCHEME[scheme];
   const s = SEMANTIC[scheme];
-  const surfaces: ReadonlyArray<[name: string, bg: string]> = [
+  const surfaces: ReadonlyArray<[name: string, bg: string | Rgba]> = [
     ['code.bg', code.bg],
     ['code.inlineBg', code.inlineBg],
     ['paneOpaque', s.paneOpaque],
     ['canvas', s.canvas],
-    ['diff line add tint', resolveToken(tokens.colorPaletteGreenBackground1, scheme)],
-    ['diff line del tint', resolveToken(tokens.colorPaletteRedBackground1, scheme)],
+    ...diffTintSurfaces(scheme, [
+      ['diff line add tint', s.diff.add],
+      ['diff line del tint', s.diff.del],
+    ]),
   ];
 
   for (const [scopeName, fg] of Object.entries(syntax)) {
@@ -302,6 +325,26 @@ describe.each(SCHEMES)('syntax highlight colours (%s)', (scheme) => {
         expect(contrastRatio(fg, bg)).toBeGreaterThanOrEqual(AA.text);
       });
     }
+  }
+});
+
+/**
+ * A changed word's stronger tint has to stay readable under the code's own ink — the v9-6b
+ * sign-off's complaint about the old palette solids. Checked with body text, the ink most of
+ * a diff is drawn in.
+ */
+describe.each(SCHEMES)('diff word tints (%s)', (scheme) => {
+  const s = SEMANTIC[scheme];
+  const ink = resolveToken(tokens.colorNeutralForeground1, scheme);
+  const surfaces = diffTintSurfaces(scheme, [
+    ['diff word add tint', s.diff.addWord],
+    ['diff word del tint', s.diff.delWord],
+  ]);
+
+  for (const [bgName, bg] of surfaces) {
+    it(`colorNeutralForeground1 on ${bgName} >= ${AA.text}`, () => {
+      expect(contrastRatio(ink, bg)).toBeGreaterThanOrEqual(AA.text);
+    });
   }
 });
 

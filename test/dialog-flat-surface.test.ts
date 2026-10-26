@@ -47,6 +47,7 @@ const DIALOG_FILES = [
   'packages/ui/src/projects/BoardReviewDialog.tsx',
   'packages/ui/src/projects/GraphLinkPicker.tsx',
   'packages/ui/src/projects/NewTicketDialog.tsx',
+  'packages/ui/src/review/ReviewKeysDialog.tsx',
 ];
 
 const REACHES_FOR_GLASS = /\b(?:GlassPane|useGlassStyles)\b/;

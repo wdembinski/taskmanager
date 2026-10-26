@@ -93,28 +93,40 @@ export const DIFF_LAYOUT_STORAGE_KEY = 'tm.review.diffLayout';
  * renderer falls back to unified regardless of the stored preference. */
 export const SPLIT_MIN_WIDTH_PX = 900;
 
+/** The review workspace's own floor: its diff column is ~860px at a 1440px window, and the
+ * v9-6 mockup draws Split there, so {@link SPLIT_MIN_WIDTH_PX} would never let it show. */
+export const WORKSPACE_SPLIT_MIN_WIDTH_PX = 720;
+
 /**
- * `'split'` only when stored exactly so; anything else — never written, or junk from an older
- * build — reads as `'unified'`, same rule `parseFold` uses for a boolean flag.
+ * A stored `'split'` or `'unified'` wins; anything else — never written, or junk from an older
+ * build — reads as `fallback`, same rule `parseFold` uses for a boolean flag. `fallback` is
+ * `'unified'` unless the caller's surface opens in Split (the review workspace).
  */
-export function parseDiffLayout(raw: string | null | undefined): DiffLayout {
-  return raw === 'split' ? 'split' : 'unified';
+export function parseDiffLayout(
+  raw: string | null | undefined,
+  fallback: DiffLayout = 'unified',
+): DiffLayout {
+  if (raw === 'split' || raw === 'unified') return raw;
+  return fallback;
 }
 
 /**
  * The layout `DiffView` actually draws: `preferred`, unless touch mode forces unified (the
- * gutter-as-button rendering has no split form) or the pane is narrower than
- * {@link SPLIT_MIN_WIDTH_PX}. A `null` width — not measured yet, SSR/headless — does NOT force
- * unified, so a first render before `ResizeObserver` reports in still honours the preference.
+ * gutter-as-button rendering has no split form) or the pane is narrower than `minWidth`
+ * ({@link SPLIT_MIN_WIDTH_PX} unless the caller passes its own, e.g.
+ * {@link WORKSPACE_SPLIT_MIN_WIDTH_PX}). A `null` width — not measured yet, SSR/headless — does
+ * NOT force unified, so a first render before `ResizeObserver` reports in still honours the
+ * preference.
  */
 export function effectiveDiffLayout(
   preferred: DiffLayout,
   widthPx: number | null,
   touch: boolean,
+  minWidth: number = SPLIT_MIN_WIDTH_PX,
 ): DiffLayout {
   if (preferred === 'unified') return 'unified';
   if (touch) return 'unified';
-  if (widthPx !== null && widthPx < SPLIT_MIN_WIDTH_PX) return 'unified';
+  if (widthPx !== null && widthPx < minWidth) return 'unified';
   return 'split';
 }
 
