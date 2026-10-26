@@ -3,15 +3,21 @@
  * `scripts/lib/shotModules.mjs` for how this file is merged with its siblings.
  */
 /** v9-4's own Inbox, one item per narrower chip, so the phone rows show real rows and the tab
- *  bar's orange count, and the filter row proves "Questions" drops the other two. */
+ *  bar's orange count, and the filter row proves "Questions" drops the other two.
+ *
+ *  Each item is parked on a real fixture task (`boardShotsFixture.mjs`), so its card prints that
+ *  task's own mono key (`FX-6`, …) from the `board:tasks` read `CompactInbox` makes — an
+ *  `AttentionItem` carries no key of its own. The plan item carries `plan`/`steps` (its card's
+ *  "4 steps" summary) and the failed item the engine's real option labels (`FAILURE_ACTION`,
+ *  `scheduler.ts`), so the cards show Approve/Read plan and Retry/Open. */
 const minutesAgo = (m) => Date.now() - m * 60_000;
 const PHONE_ATTENTION = [
   {
     id: 'phone-q',
     runId: 'run-phone-q',
-    taskId: 'task-phone-q',
-    projectId: 'proj-1',
-    taskTitle: 'In-app code review',
+    taskId: '6',
+    projectId: 'proj-fx',
+    taskTitle: 'Send review comments back to the agent',
     kind: 'agent-question',
     prompt: 'Which base branch should the review compare against?',
     options: [],
@@ -30,25 +36,39 @@ const PHONE_ATTENTION = [
   {
     id: 'phone-plan',
     runId: 'run-phone-plan',
-    taskId: 'task-phone-plan',
-    projectId: 'proj-1',
-    taskTitle: 'Billing export',
+    taskId: '10',
+    projectId: 'proj-fx',
+    taskTitle: 'Publish a local workspace to the cloud',
     kind: 'plan-approval',
     prompt: 'Approve the plan?',
     options: [],
     toolName: null,
     reason: null,
     createdAt: minutesAgo(14),
+    plan: [
+      'Publish a local workspace to the cloud.',
+      '',
+      '1. Add the publish command',
+      '2. Upload the workspace snapshot',
+      '3. Link the cloud copy back to the local one',
+      '4. Show the published state in Settings',
+    ].join('\n'),
+    steps: [
+      'Add the publish command',
+      'Upload the workspace snapshot',
+      'Link the cloud copy back to the local one',
+      'Show the published state in Settings',
+    ],
   },
   {
     id: 'phone-failed',
     runId: 'run-phone-failed',
-    taskId: 'task-phone-failed',
-    projectId: 'proj-1',
-    taskTitle: 'Flaky upload test',
+    taskId: '5',
+    projectId: 'proj-fx',
+    taskTitle: 'Fix flaky worktree cleanup',
     kind: 'task-failed',
-    prompt: 'The run failed.',
-    options: [],
+    prompt: 'The run failed: 2 tests still fail after 3 attempts.',
+    options: ['Retry', 'Retry fresh (discard branch)', 'AI fix & retry'],
     toolName: null,
     reason: null,
     createdAt: minutesAgo(60),
