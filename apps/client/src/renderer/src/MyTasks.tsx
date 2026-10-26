@@ -15,12 +15,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
-  Dropdown,
-  MenuItem,
   MessageBar,
   MessageBarActions,
   MessageBarBody,
-  Option,
   Overflow,
   OverflowItem,
   Switch,
@@ -82,10 +79,11 @@ import { doneSwitchLabel, doneSwitchTitle } from '@ui/board/doneSwitchLabel';
 import { ChainLegend, ChainOverlay } from '@ui/board/ChainOverlay';
 import { ChainLinkPopover } from '@ui/board/ChainLinkPopover';
 import { LinkModeSwitch } from '@ui/board/LinkModeSwitch';
+import { BoardTitlePicker, BoardViewTabs } from '@ui/board/BoardHeader';
+import { GlassPane } from '@ui/shell/GlassPane';
 import {
   TOOLBAR_OVERFLOW_PADDING,
   ToolbarOverflowMenu,
-  ToolbarOverflowMenuGroup,
   ToolbarOverflowMenuItem,
 } from '@ui/board/ToolbarOverflow';
 import { linkView, nextLinkMode, type LinkMode } from '@ui/board/linkMode';
@@ -104,12 +102,7 @@ import {
   taskIdUnder,
   type LinkDragState,
 } from '@ui/board/chainDrag';
-import {
-  archivedByNamesOf,
-  archiveIndexOf,
-  archiveRestoreTarget,
-  pickableProjects,
-} from '@shared/trackerArchive';
+import { archivedByNamesOf, archiveIndexOf, archiveRestoreTarget } from '@shared/trackerArchive';
 import { chainStates } from '@ui/board/chainStates';
 import { useCardAnchors } from '@ui/board/useCardAnchors';
 import { ensureShelvedCard, shelvedCardSet, toggleShelvedCard } from '@ui/board/shelvedCards';
@@ -173,6 +166,9 @@ export interface MyTasksProps {
    *  "Start/Stop selected card" (F9.4) acts on, since the selection otherwise lives only in
    *  this screen's own state and the palette can be opened from any tab. */
   onSelectedTaskIdChange?: (taskId: string | null) => void;
+  /** The header's List tab: leave the board for the same tickets as a list (the Tickets
+   *  tab). Absent, the tab is drawn but disabled. */
+  onOpenList?: () => void;
 }
 
 export function MyTasks({
@@ -181,6 +177,7 @@ export function MyTasks({
   openAddTask,
   onOpenAddTaskHandled,
   onSelectedTaskIdChange,
+  onOpenList,
 }: MyTasksProps = {}): JSX.Element {
   // The board's frame — including the commit graph's own pane — shared with the browser
   // client. See `boardLayout.ts`; this screen has no styles left of its own.
@@ -199,7 +196,7 @@ export function MyTasks({
   /** Milestones across every ticket project, for the same `archiveIndex` — see
    *  `milestone:list`'s own no-`projectId` scope. */
   const [milestones, setMilestones] = useState<Milestone[]>([]);
-  /** The boards the toolbar's scope Dropdown offers — Personal plus every other
+  /** The boards the header's title picker offers — Personal plus every other
    *  project. Fed by `board:scopes`. */
   const [scopes, setScopes] = useState<BoardScope[]>([]);
   /**
@@ -335,7 +332,7 @@ export function MyTasks({
   const gitlabEnabled = settings?.gitlab.enabled ?? false;
   const githubEnabled = settings?.github.enabled ?? false;
   const display = settings?.board ?? DEFAULT_BOARD_DISPLAY;
-  /** The scope Dropdown's closed-state label. */
+  /** The open board's name — the same words the header's title picker shows. */
   const scopeLabel = useMemo(
     () =>
       scope === 'all' ? 'All boards' : (scopes.find((s) => s.id === scope)?.name ?? 'All boards'),
@@ -1307,7 +1304,9 @@ export function MyTasks({
 
   return (
     <div className={layout.root}>
-      <div className={layout.board}>
+      {/* The board's own card (v9-7): `GlassPane` paints the surface, `layout.board` is its
+          body — the header row, then the columns grid running to the bottom padding. */}
+      <GlassPane className={layout.board}>
         {/* One row, never two or three (the 2026-10-18 screenshot review). `Overflow` clones
             its single child — the toolbar row — and hides whichever `OverflowItem`s no
             longer fit behind the "···" menu at the end.
@@ -1320,48 +1319,28 @@ export function MyTasks({
             already spent, and overflow the viewport instead of the menu. Only the spacer
             stays unregistered — its `flex: 1` width is not a fixed cost to budget for. */}
         <Overflow minimumVisible={1} padding={TOOLBAR_OVERFLOW_PADDING}>
-          <div className={layout.toolbar}>
+          <div className={layout.header} data-board-header="">
+            {/* Which board's cards are shown, as the card's own title (v9-7): every board
+              unioned (the default), or one board alone. Fed by `board:scopes`, seeded from
+              and saved to `settings.boardScopeId` so the board opens where it was left.
+              Pinned — it is the heading — and the one pinned item that may ellipsize, so the
+              row still fits at the narrowest widths (`layout.titleSlot`). */}
+            <OverflowItem id="scope" pinned>
+              <BoardTitlePicker
+                scope={scope}
+                scopes={scopes}
+                onScopeChange={(next) => void setBoardScope(next)}
+              />
+            </OverflowItem>
+            <OverflowItem id="view" pinned>
+              <BoardViewTabs onOpenList={onOpenList} />
+            </OverflowItem>
             {/* The count is the toggle's whole job while it is off: DONE is the one column a
               card can reach without anybody dragging it there, so a card that failed, or
               whose ticket moved to a Done status, used to leave the board with nothing said
               anywhere. The column stays shut until you open it — a board that opens its own
               columns cannot be reasoned about — but the numeral makes it impossible to
               mistake a hidden card for a lost one. */}
-            {/* Which board's cards are shown: every board unioned (the default), or one
-              board alone. Fed by `board:scopes`, seeded from and saved to
-              `settings.boardScopeId` so the board opens where it was left.
-
-              High `priority`, not `pinned` — at ~250px this is by far the widest control, and
-              pinning it left nothing to hide once the detail pane narrowed the board enough
-              that even the "···" button itself had nowhere left to go (see
-              `ToolbarOverflow.tsx`'s own comment). A high priority still keeps it visible in
-              every ordinary width; it only yields, last of everything, at the narrowest ones —
-              and `ToolbarOverflowMenuGroup` below gives it a fallback for exactly that case.
-
-              Wrapped in a plain `<div>`, not handed to `OverflowItem` directly — `Dropdown`
-              renders its own outer wrapper around the combobox button it forwards a ref to,
-              and `[data-overflowing]` only ever lands on that inner button; the wrapper keeps
-              its own border and survives as a stray line once the button inside it vanishes.
-              A `<div>` has no such wrapper of its own, so hiding IT hides everything. */}
-            <OverflowItem id="scope" priority={100}>
-              <div>
-                <Dropdown
-                  size="small"
-                  value={scopeLabel}
-                  selectedOptions={[scope]}
-                  onOptionSelect={(_e, d) => {
-                    if (d.optionValue) void setBoardScope(d.optionValue);
-                  }}
-                >
-                  <Option value="all">All boards</Option>
-                  {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
-                    <Option key={s.id} value={s.id}>
-                      {s.name}
-                    </Option>
-                  ))}
-                </Dropdown>
-              </div>
-            </OverflowItem>
             <OverflowItem id="done" pinned>
               <Switch
                 label={doneSwitchLabel(showDone, hiddenDone)}
@@ -1482,20 +1461,6 @@ export function MyTasks({
               </OverflowItem>
             )}
             <ToolbarOverflowMenu>
-              {/* The scope Dropdown's own options, one `MenuItem` apiece — the fallback for
-                  the one control narrow viewports can still force into the menu (`priority`
-                  above), so it stays reachable rather than silently dropped. */}
-              <ToolbarOverflowMenuGroup id="scope">
-                <MenuItem onClick={() => void setBoardScope('all')}>
-                  {scope === 'all' ? '✓ ' : ''}All boards
-                </MenuItem>
-                {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
-                  <MenuItem key={s.id} onClick={() => void setBoardScope(s.id)}>
-                    {scope === s.id ? '✓ ' : ''}
-                    {s.name}
-                  </MenuItem>
-                ))}
-              </ToolbarOverflowMenuGroup>
               {jiraEnabled && (
                 <ToolbarOverflowMenuItem
                   id="sprint"
@@ -1705,6 +1670,34 @@ export function MyTasks({
               }}
             />
           ))}
+          {/* The parked shelf, as the grid's own second row (`layout.shelf`): sticky to the
+              grid's bottom, over the panes rather than below them, so every column still runs
+              to the card's padding and this stays the board's one scroll container. */}
+          {settings?.features.shelf && (
+            <ShelfStrip
+              cards={shelvedCards}
+              folded={settings?.shelfFolded ?? false}
+              onToggleFolded={toggleShelfFolded}
+              epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
+              assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
+              agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
+              attentionTaskIds={attention.taskIds}
+              liveRunTaskIds={liveRuns}
+              runPurposes={runPurposes}
+              runStartedAt={runStartedAt}
+              mergingTaskIds={merging}
+              selectedTaskId={selectedTaskId}
+              draggingId={draggingId}
+              onStopTask={(taskId) => void stopTask(taskId)}
+              onResumeTask={(taskId) => void resumeTask(taskId)}
+              onSelectTask={selectTask}
+              onDragStartTask={setDraggingId}
+              onDragEndTask={() => setDraggingId(null)}
+              onToggleShelved={toggleShelved}
+              onDropOnShelf={dropOnShelf}
+              span={visibleColumns(hiddenColumns).length}
+            />
+          )}
           {/* Last, so the arrows paint over the cards — and inside the scroll container,
               so they travel with them. It takes no pointer events; only the strokes do.
               Absent entirely in Off: nothing to draw, and nothing for the popover below to
@@ -1749,31 +1742,7 @@ export function MyTasks({
             <ChainLegend />
           </div>
         )}
-        {settings?.features.shelf && (
-          <ShelfStrip
-            cards={shelvedCards}
-            folded={settings?.shelfFolded ?? false}
-            onToggleFolded={toggleShelfFolded}
-            epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
-            assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
-            agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
-            attentionTaskIds={attention.taskIds}
-            liveRunTaskIds={liveRuns}
-            runPurposes={runPurposes}
-            runStartedAt={runStartedAt}
-            mergingTaskIds={merging}
-            selectedTaskId={selectedTaskId}
-            draggingId={draggingId}
-            onStopTask={(taskId) => void stopTask(taskId)}
-            onResumeTask={(taskId) => void resumeTask(taskId)}
-            onSelectTask={selectTask}
-            onDragStartTask={setDraggingId}
-            onDragEndTask={() => setDraggingId(null)}
-            onToggleShelved={toggleShelved}
-            onDropOnShelf={dropOnShelf}
-          />
-        )}
-      </div>
+      </GlassPane>
 
       {/* Unmounted rather than hidden when folded away: remounting re-runs loadActivity,
           which is cheap, and re-marks the selected card read — which is what you want
@@ -1782,7 +1751,7 @@ export function MyTasks({
           the pane's full 40% width for nothing (the 2026-10-18 screenshot review) — with no
           card to show, the pane itself should not be there to ask for the room. */}
       {showDetail && selectedTask && (
-        <div className={layout.right}>
+        <GlassPane className={layout.right}>
           <TaskDetailHost
             taskId={selectedTaskId}
             task={selectedTask}
@@ -1843,14 +1812,14 @@ export function MyTasks({
             onSubtasksChanged={() => void refresh()}
             dictation={dictation}
           />
-        </div>
+        </GlassPane>
       )}
 
       {/* Last in the row, so folding it away never shifts the detail pane sideways — and
           unmounted rather than hidden, for the same reason the detail pane is: a graph
           nobody is looking at should not be re-reading a repository on every `task:changed`. */}
       {showGraph && (
-        <div className={layout.graph}>
+        <GlassPane className={layout.graph}>
           <GitGraphPane
             projects={agentProjects}
             selectedTask={selectedTask}
@@ -1859,7 +1828,7 @@ export function MyTasks({
             // The only thing on the drawing allowed a colour — see `GRAPH_INK`.
             runningTaskIds={liveRuns}
           />
-        </div>
+        </GlassPane>
       )}
 
       <AddTaskDialog

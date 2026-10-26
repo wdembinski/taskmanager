@@ -684,6 +684,7 @@ export function App(): JSX.Element {
             openAddTask={pendingAddTask}
             onOpenAddTaskHandled={() => setPendingAddTask(false)}
             onSelectedTaskIdChange={setSelectedTaskId}
+            onOpenList={() => setTab('tickets')}
           />
         ) : tab === 'projects' ? (
           <Projects />

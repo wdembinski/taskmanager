@@ -25,9 +25,6 @@
 import type { ReactNode } from 'react';
 import {
   Button,
-  Dropdown,
-  MenuItem,
-  Option,
   Overflow,
   OverflowItem,
   Spinner,
@@ -44,11 +41,11 @@ import {
 } from '@fluentui/react-icons';
 import { useBoardLayoutStyles } from '@tm/ui/board/boardLayout';
 import { LinkModeSwitch } from '@tm/ui/board/LinkModeSwitch';
+import { BoardTitlePicker, BoardViewTabs } from '@tm/ui/board/BoardHeader';
 import { nextLinkMode, type LinkMode } from '@tm/ui/board/linkMode';
 import {
   TOOLBAR_OVERFLOW_PADDING,
   ToolbarOverflowMenu,
-  ToolbarOverflowMenuGroup,
   ToolbarOverflowMenuItem,
 } from '@tm/ui/board/ToolbarOverflow';
 import { archivedCountLabel, archivedCountTitle } from '@tm/ui/board/ArchivedCardsDialog';
@@ -58,15 +55,17 @@ import {
   type HiddenDoneSummary,
 } from '@tm/ui/board/doneSwitchLabel';
 import type { BoardScope } from '@tm/shared/ipc';
-import { pickableProjects } from '@tm/shared/trackerArchive';
 
 export interface BoardToolbarProps {
+  /** The compact (phone) board: no Board/List tabs — a phone has no room for them, and its
+   *  own tab bar already reaches the list. */
+  compact?: boolean;
+  /** The List tab: leave the board for the Tickets screen. Absent, the tab is disabled. */
+  onOpenList?: () => void;
   /** Which board is open — `'all'` unions every board's cards, or one board's own project
    *  id. The desktop's own scope picker, mirrored from `settings.boardScopeId`. */
   scope: string;
-  /** The Dropdown's closed-state label. */
-  scopeLabel: string;
-  /** The boards the picker offers, beyond the built-in "All boards" option — `board:scopes`'
+  /** The boards the title picker offers, beyond the built-in "All boards" option — `board:scopes`'
    *  own list, derived here from the mirrored projects. */
   scopes: BoardScope[];
   onScopeChange: (scope: string) => void;
@@ -101,8 +100,9 @@ export interface BoardToolbarProps {
 }
 
 export function BoardToolbar({
+  compact = false,
+  onOpenList,
   scope,
-  scopeLabel,
   scopes,
   onScopeChange,
   showDone,
@@ -136,40 +136,16 @@ export function BoardToolbar({
     // unwrapped child is invisible to its budget math and the row overflows the viewport
     // instead of the menu. Only the spacer stays unregistered — see `ToolbarOverflow.tsx`.
     <Overflow minimumVisible={1} padding={TOOLBAR_OVERFLOW_PADDING}>
-      <div className={layout.toolbar}>
-        {/* Which board's cards are shown: every board unioned (the default), or one board
-          alone — the desktop's own scope picker (`MyTasks.tsx`), same options and same
-          persisted setting. Absent entirely with only Personal to choose from, so a
-          database with no other board renders a toolbar byte-identical to before this
-          existed rather than one extra control that does nothing. */}
-        {scopes.length > 1 && (
-          // High `priority`, not `pinned` — see `ToolbarOverflow.tsx`'s own comment: at ~250px
-          // this is the widest control, and pinning it left nothing to hide once the detail
-          // pane narrowed the board enough that even the "···" button had nowhere to go.
-          //
-          // Wrapped in a plain `<div>`, not handed to `OverflowItem` directly — `Dropdown`
-          // renders its own outer wrapper around the combobox button it forwards a ref to, and
-          // `[data-overflowing]` only ever lands on that inner button; the wrapper keeps its
-          // own border and survives as a stray line once the button inside it vanishes.
-          <OverflowItem id="scope" priority={100}>
-            <div>
-              <Dropdown
-                size="small"
-                value={scopeLabel}
-                selectedOptions={[scope]}
-                title="Which board this shows"
-                onOptionSelect={(_e, d) => {
-                  if (d.optionValue) onScopeChange(d.optionValue);
-                }}
-              >
-                <Option value="all">All boards</Option>
-                {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
-                  <Option key={s.id} value={s.id}>
-                    {s.name}
-                  </Option>
-                ))}
-              </Dropdown>
-            </div>
+      <div className={layout.header} data-board-header="">
+        {/* Which board's cards are shown, as the card's own title (v9-7) — the desktop's own
+          picker (`MyTasks.tsx`), same options and same persisted setting. Pinned: it is the
+          heading, and the one pinned item that may ellipsize (`layout.titleSlot`). */}
+        <OverflowItem id="scope" pinned>
+          <BoardTitlePicker scope={scope} scopes={scopes} onScopeChange={onScopeChange} />
+        </OverflowItem>
+        {!compact && (
+          <OverflowItem id="view" pinned>
+            <BoardViewTabs onOpenList={onOpenList} />
           </OverflowItem>
         )}
         <OverflowItem id="done" pinned>
@@ -217,20 +193,6 @@ export function BoardToolbar({
         <OverflowItem id="linkmode">
           <LinkModeSwitch mode={boardLinks} onChange={onBoardLinksChange} />
         </OverflowItem>
-        {/* Sync the tracker now. It is the DESKTOP that talks to JIRA — this relays the same
-          `jira:sync` its own button calls — so the cards it changes arrive here on the next
-          board poll rather than when this settles. */}
-        <OverflowItem id="sync">
-          <Button
-            size="small"
-            appearance="subtle"
-            icon={syncing ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
-            disabled={syncing}
-            title={syncing ? 'Syncing…' : 'Sync the tracker now, on your desktop app'}
-            aria-label="Sync now"
-            onClick={onSync}
-          />
-        </OverflowItem>
         {/* What actually happened in the repo, beside what the board believes about it — the
           desktop's own control, and its own reasoning: a view rather than a filter, and off
           by default because it costs a `git log`. Here that log runs on the desktop and the
@@ -274,23 +236,21 @@ export function BoardToolbar({
             </Button>
           </OverflowItem>
         )}
+        {/* Sync the tracker now. It is the DESKTOP that talks to JIRA — this relays the same
+          `jira:sync` its own button calls — so the cards it changes arrive here on the next
+          board poll rather than when this settles. */}
+        <OverflowItem id="sync">
+          <Button
+            size="small"
+            appearance="subtle"
+            icon={syncing ? <Spinner size="tiny" /> : <ArrowSyncRegular />}
+            disabled={syncing}
+            title={syncing ? 'Syncing…' : 'Sync the tracker now, on your desktop app'}
+            aria-label="Sync now"
+            onClick={onSync}
+          />
+        </OverflowItem>
         <ToolbarOverflowMenu>
-          {/* The scope Dropdown's own options, one `MenuItem` apiece — the fallback for the
-              one control narrow viewports can still force into the menu (`priority` above),
-              so it stays reachable rather than silently dropped. */}
-          {scopes.length > 1 && (
-            <ToolbarOverflowMenuGroup id="scope">
-              <MenuItem onClick={() => onScopeChange('all')}>
-                {scope === 'all' ? '✓ ' : ''}All boards
-              </MenuItem>
-              {pickableProjects(scopes, scope === 'all' ? null : scope).map((s) => (
-                <MenuItem key={s.id} onClick={() => onScopeChange(s.id)}>
-                  {scope === s.id ? '✓ ' : ''}
-                  {s.name}
-                </MenuItem>
-              ))}
-            </ToolbarOverflowMenuGroup>
-          )}
           <ToolbarOverflowMenuItem
             id="sprint"
             onClick={() => onCurrentSprintOnlyChange(!currentSprintOnly)}
@@ -306,9 +266,6 @@ export function BoardToolbar({
           >
             Chain links: {boardLinks === 'off' ? 'Off' : boardLinks === 'focus' ? 'Focus' : 'All'}
           </ToolbarOverflowMenuItem>
-          <ToolbarOverflowMenuItem id="sync" onClick={onSync}>
-            {syncing ? 'Syncing…' : 'Sync the tracker now'}
-          </ToolbarOverflowMenuItem>
           <ToolbarOverflowMenuItem id="graph" onClick={() => onShowGraphChange(!showGraph)}>
             {showGraph ? 'Hide' : 'Show'} the commit graph
           </ToolbarOverflowMenuItem>
@@ -320,6 +277,9 @@ export function BoardToolbar({
               {archivedCountLabel(archivedCount)}
             </ToolbarOverflowMenuItem>
           )}
+          <ToolbarOverflowMenuItem id="sync" onClick={onSync}>
+            {syncing ? 'Syncing…' : 'Sync the tracker now'}
+          </ToolbarOverflowMenuItem>
         </ToolbarOverflowMenu>
         {/* The row's LAST control, after the "···" menu — the v9 mockup's brand "+" at the far
             right edge, as `MyTasks` places it. `addTask` is a `ReactNode` from the host

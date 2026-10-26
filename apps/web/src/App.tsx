@@ -626,6 +626,7 @@ function SignedInBoardView({
                 }
                 hostUnreachable={hostUnreachable}
                 paletteRequest={paletteRequest ?? undefined}
+                onOpenList={() => setScreen('tickets')}
               />
             ) : (
               <SyncCurtain
