@@ -89,12 +89,13 @@ export default [
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
-    // The web renders the desktop's own `TaskDetail`, so the same Ticket band check holds.
+    // The web renders the desktop's own `TaskDetail` peek, so the same check holds: the
+    // label/value rows in full, clear of the Reply box.
     layoutCheck: {
-      visible: '[data-links-heading]',
-      clear: ['[role="log"][aria-label="Conversation"]'],
+      visible: '[data-peek-props]',
+      clear: ['textarea[aria-label="Reply"]'],
     },
-    mockup: 'v9-2-issue-detail-light.svg',
+    mockup: 'v9-1-issues-list-light.svg',
   },
   {
     // 390x844 matches the phone frame drawn inside v9-4-mobile-light.svg/v9-5-mobile-dark.svg,

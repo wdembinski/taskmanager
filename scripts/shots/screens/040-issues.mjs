@@ -5,6 +5,12 @@
  */
 import { BOOT_CHANNELS } from '../../fixtures/uiShotsFixture.mjs';
 
+/** `'13a'`'s ticket text — the peek reads it under the title, the full page in its main column. */
+const DESCRIPTION_13A =
+  'The retry queue drains in the background, but nobody can see it. Show its depth and ' +
+  'the last failure on the dashboard, refreshed every minute.\n\n' +
+  'Done means: the dashboard card shows the queue depth and the newest failure.';
+
 /**
  * The card `'issue-row:first'` opens (`'13a'`, see `30-attachments.mjs`'s own note on that
  * row order) carrying an open owner decision, a milestone and an epic — handed to `issue-peek` alone through its
@@ -21,6 +27,7 @@ const DECISION_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
         // header breadcrumb draws the full `Project › Milestone › Epic` after the key.
         milestoneId: 'ms-mixed',
         epicTaskId: 'sb-7',
+        externalDescription: DESCRIPTION_13A,
       }
     : // Landed, so the "Blocked by" row below reads Done + "merged" (an `after-merge` arrow
       // is satisfied by `landedAt`, not by the column).
@@ -55,10 +62,7 @@ const FULL_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
         workedAt: null,
         sessionId: null,
         agentBranch: 'fx-13a-retry-queue',
-        externalDescription:
-          'The retry queue drains in the background, but nobody can see it. Show its depth and ' +
-          'the last failure on the dashboard, refreshed every minute.\n\n' +
-          'Done means: the dashboard card shows the queue depth and the newest failure.',
+        externalDescription: DESCRIPTION_13A,
         milestoneId: 'ms-mixed',
         epicTaskId: 'sb-7',
         assigneeId: 'person-human',
@@ -156,33 +160,31 @@ export default [
     // first click of an issue row — addressed by position (`'issue-row:first'`), not by the
     // fixture's own title text; see `SCREENS`' own doc comment on that sentinel. The card it
     // opens carries an open decision (`DECISION_TASKS`), so the shot proves `DecisionBanner`
-    // draws at the top of the pane — the question, the answer box, Answer and Withdraw.
+    // still draws in the read-only peek (`IssuePeekBody`) — the question, the answer box,
+    // Answer and Withdraw — under the ticket's label/value rows.
     name: 'issue-peek',
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
-    // The pane as it opens, not scrolled: the decision banner sits fixed above `body`
-    // (`TaskDetail.tsx`), so the row once scrolled to the Links section drew the title row
-    // and the details band scrolled out of sight under it, which read as the banner painting
-    // over them. `layoutCheck` holds the title row in full and clear of the banner. The Links
-    // section past the fold is `issue-peek-1100x800`'s own `layoutCheck`.
+    // The pane as it opens, not scrolled. `layoutCheck` holds the Status/Assignee/Milestone/
+    // Due rows in full, clear of the decision banner below them and of the Reply box pinned
+    // to the pane's foot.
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
     expect: '[data-decision-banner]',
     layoutCheck: {
-      visible: '[data-title-row]',
-      clear: ['[data-decision-banner]'],
+      visible: '[data-peek-props]',
+      clear: ['[data-decision-banner]', 'textarea[aria-label="Reply"]'],
     },
-    mockup: 'v9-2-issue-detail-light.svg',
+    mockup: 'v9-1-issues-list-light.svg',
     channelOverrides: {
       'board:tasks': DECISION_TASKS,
       'chain:links': PEEK_CHAIN_LINKS,
     },
   },
   {
-    // Same pane as `issue-peek`, at the shorter 1100x800 viewport where band + the
-    // conversation's floor outgrow the pane — proves `TaskDetail.tsx`'s `body` scrolls
-    // rather than squeezing `headBand`/`cell`, so the Links heading lays out in full and
-    // clear of the conversation.
+    // Same peek as `issue-peek`, at the shorter 1100x800 viewport where the peek is ~300px
+    // wide — proves the label/value rows still lay out in full above the Reply box, which
+    // stays pinned to the pane's foot while the rest scrolls.
     name: 'issue-peek-1100x800',
     app: 'client',
     viewport: { width: 1100, height: 800 },
@@ -190,10 +192,10 @@ export default [
     setup: [{ click: 'Tickets' }, { click: 'issue-row:first' }],
     expect: 'button[aria-label="Open full screen"]',
     layoutCheck: {
-      visible: '[data-links-heading]',
-      clear: ['[role="log"][aria-label="Conversation"]'],
+      visible: '[data-peek-props]',
+      clear: ['textarea[aria-label="Reply"]'],
     },
-    mockup: 'v9-2-issue-detail-light.svg',
+    mockup: 'v9-1-issues-list-light.svg',
   },
   {
     // From peek, "Open full screen" (IssueViewPanes.tsx) drives the same reducer to 'full' —

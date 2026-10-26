@@ -1,0 +1,291 @@
+/**
+ * The Tickets screen's peek, read-only (`TaskDetail`'s `layout="peek"`), after
+ * `v9-1-issues-list-light.svg` / `v9-3-issues-list-dark.svg`: key · epic, the title, the
+ * description, four label/value rows (Status, Assignee, Milestone, Due — a row with nothing to
+ * say is left out), the open decision and the visual sign-off when they apply, the "Agent run"
+ * checklist with a timer on the running step, the conversation, and one Reply box.
+ *
+ * Nothing here edits the ticket. Every dropdown, the agent controls, the merge buttons and the
+ * composer's toolbar stay on the full-screen page (`layout="full"`), one click away through the
+ * peek header's "Open full screen" — the peek is for reading a ticket beside the list, and the
+ * board's own pane (`layout` unset) keeps the stacked editor. The only writes left are the two
+ * blocks that exist to be answered (`DecisionBanner`, `VisualSignOff`) and Reply, which posts
+ * through the composer's own default — the agent when it can be talked to, a note otherwise.
+ *
+ * Fed entirely by what `TaskDetail` already holds, so opening a peek loads nothing new.
+ */
+import type { KeyboardEvent } from 'react';
+import {
+  Caption1,
+  MessageBar,
+  MessageBarBody,
+  Spinner,
+  Text,
+  Textarea,
+  makeStyles,
+  tokens,
+} from '@fluentui/react-components';
+import { CheckmarkCircleFilled, CircleRegular } from '@fluentui/react-icons';
+import { formatElapsed } from '@tm/shared/elapsed';
+import type { Task, TaskActivityEntry } from '@tm/shared/model';
+import type { TaskAttachment } from '@tm/shared/attachments';
+import type { StatusKeyword } from '@tm/shared/statusKeywords';
+import { ChatTurns } from '../chat/ChatTurns';
+import { Markdown } from '../chat/MarkdownView';
+import type { Turn } from '../chat/turns';
+import { DecisionBanner } from '../DecisionBanner';
+import { STATUS_INDICATOR_VAR } from '../tokens';
+import { useElapsedClock } from '../useElapsedClock';
+import { VisualSignOff } from '../VisualSignOff';
+import type { PropertyRow } from './issuePropertyRows';
+
+const useStyles = makeStyles({
+  root: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
+  scroll: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '16px',
+    padding: '4px 20px 16px',
+    // Every block keeps its own height and the column scrolls instead — a shrunk decision
+    // banner drew under the sign-off below it.
+    '& > *': { flexShrink: 0 },
+  },
+  muted: { color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})` },
+  title: {
+    margin: 0,
+    fontSize: tokens.fontSizeBase500,
+    lineHeight: tokens.lineHeightBase500,
+    fontWeight: tokens.fontWeightSemibold,
+    overflowWrap: 'anywhere',
+  },
+  head: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  props: {
+    display: 'grid',
+    gridTemplateColumns: '92px minmax(0, 1fr)',
+    rowGap: '8px',
+    columnGap: '8px',
+    margin: 0,
+  },
+  propLabel: { color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})` },
+  propValue: { margin: 0, minWidth: 0, overflowWrap: 'anywhere' },
+  section: { display: 'flex', flexDirection: 'column', gap: '6px' },
+  sectionHead: { fontWeight: tokens.fontWeightSemibold },
+  steps: { listStyleType: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column' },
+  step: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', minWidth: 0 },
+  stepTitle: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' },
+  // Colour only for the step that MOVES — done and pending stay monochrome.
+  glyphDone: { color: tokens.colorNeutralForeground2, flexShrink: 0, fontSize: '16px' },
+  glyphPending: { color: tokens.colorNeutralForeground4, flexShrink: 0, fontSize: '16px' },
+  glyphRunning: {
+    flexShrink: 0,
+    width: '16px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dot: {
+    width: '8px',
+    height: '8px',
+    borderRadius: '50%',
+    backgroundColor: STATUS_INDICATOR_VAR.running,
+  },
+  timer: { color: STATUS_INDICATOR_VAR.running, fontVariantNumeric: 'tabular-nums', flexShrink: 0 },
+  reply: { flex: '0 0 auto', padding: '8px 20px 16px', display: 'flex', flexDirection: 'column' },
+  replyBox: { width: '100%' },
+});
+
+export interface IssuePeekBodyProps {
+  task: Task;
+  /** The ticket's key as it is printed (`TM-71`), or null for a card that has none. */
+  ticketKey: string | null;
+  /** The epic's title, when `task.epicTaskId` resolves. */
+  epicTitle?: string | null;
+  /** The label/value rows to print, in order — already narrowed to the four the peek shows. */
+  rows: readonly PropertyRow[];
+  /** The card's steps, in chain order. */
+  subtasks: readonly Task[];
+  /** Tasks with a live run right now — a step in it is the running one. */
+  liveRunTaskIds?: ReadonlySet<string>;
+  /** When each live run started, by task id — the running step's timer. */
+  runStartedAt?: ReadonlyMap<string, number>;
+  /** The conversation, already folded (`foldTurns`). */
+  turns: Turn[];
+  statusKeywords?: readonly StatusKeyword[];
+  onDeleteNote?: (commentId: number) => void;
+  /** The card's own attachments and timeline — the visual sign-off reads them. */
+  attachments: readonly TaskAttachment[];
+  activity: readonly TaskActivityEntry[];
+  /** Flagging visual changes starts a reply with this line. */
+  onNeedsChanges: (text: string) => void;
+  /** The host is unreachable — the decision banner reads but does not answer. */
+  readOnly?: boolean;
+  onTaskChanged?: (task: Task) => void;
+  /** An answer or a reply landed — re-read the conversation. */
+  onAnswered?: () => void;
+  /** The Reply box's text, its setter, and its one send. */
+  reply: string;
+  onReplyChange: (text: string) => void;
+  onSend: () => void;
+  /** Who a reply reaches — the placeholder says so. */
+  replyToAgent: boolean;
+  sending?: boolean;
+  error?: string | null;
+}
+
+/**
+ * Whether this step is the one working now. Its status or a live run, not `isAgentRunning`:
+ * a step runs on its card's agent, so it carries no `agentProjectId` of its own to test.
+ */
+function stepRunning(step: Task, live: ReadonlySet<string> | undefined): boolean {
+  return step.status === 'running' || live?.has(step.id) === true;
+}
+
+function StepGlyph({ step, running }: { step: Task; running: boolean }): JSX.Element {
+  const styles = useStyles();
+  if (running) {
+    return (
+      <span className={styles.glyphRunning} data-step-glyph="running">
+        <span className={styles.dot} />
+      </span>
+    );
+  }
+  if (step.status === 'done') {
+    return <CheckmarkCircleFilled className={styles.glyphDone} data-step-glyph="done" />;
+  }
+  return <CircleRegular className={styles.glyphPending} data-step-glyph="pending" />;
+}
+
+export function IssuePeekBody({
+  task,
+  ticketKey,
+  epicTitle,
+  rows,
+  subtasks,
+  liveRunTaskIds,
+  runStartedAt,
+  turns,
+  statusKeywords,
+  onDeleteNote,
+  attachments,
+  activity,
+  onNeedsChanges,
+  readOnly = false,
+  onTaskChanged,
+  onAnswered,
+  reply,
+  onReplyChange,
+  onSend,
+  replyToAgent,
+  sending = false,
+  error,
+}: IssuePeekBodyProps): JSX.Element {
+  const styles = useStyles();
+  const running = subtasks.find((s) => stepRunning(s, liveRunTaskIds));
+  const now = useElapsedClock(running !== undefined);
+  const startedAt = running ? runStartedAt?.get(running.id) : undefined;
+  const description = task.externalDescription ?? task.description ?? '';
+  const keyLine = [ticketKey, epicTitle].filter(Boolean).join(' · ');
+
+  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>): void {
+    // Enter sends, Shift+Enter is a newline — the composer's own contract.
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      if (!sending && reply.trim()) onSend();
+    }
+  }
+
+  return (
+    <div className={styles.root} data-issue-peek-body>
+      <div className={styles.scroll}>
+        <div className={styles.head}>
+          {keyLine && (
+            <Caption1 className={styles.muted} data-peek-key>
+              {keyLine}
+            </Caption1>
+          )}
+          <h2 className={styles.title}>{task.title}</h2>
+        </div>
+        {description.trim() && (
+          <div data-peek-description>
+            <Markdown source={description} />
+          </div>
+        )}
+        {rows.length > 0 && (
+          <dl className={styles.props} data-peek-props>
+            {rows.map((row) => (
+              <div key={row.key} style={{ display: 'contents' }}>
+                <dt className={styles.propLabel}>
+                  <Caption1>{row.label}</Caption1>
+                </dt>
+                <dd className={styles.propValue}>
+                  <Text size={200}>{row.value}</Text>
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {task.decisionQuestion != null && (
+          <DecisionBanner
+            task={task}
+            readOnly={readOnly}
+            onTaskChanged={onTaskChanged}
+            onAnswered={onAnswered}
+          />
+        )}
+        {!task.parentTaskId && (
+          <VisualSignOff
+            attachments={attachments}
+            activity={activity}
+            onNeedsChanges={onNeedsChanges}
+          />
+        )}
+        {subtasks.length > 0 && (
+          <section className={styles.section} aria-label="Agent run" data-peek-steps>
+            <Text className={styles.sectionHead}>Agent run</Text>
+            <ol className={styles.steps}>
+              {subtasks.map((step) => (
+                <li key={step.id} className={styles.step}>
+                  <StepGlyph step={step} running={step === running} />
+                  <Text size={200} className={styles.stepTitle}>
+                    {step.title}
+                  </Text>
+                  {step === running && startedAt !== undefined && (
+                    <Caption1 className={styles.timer} data-step-timer>
+                      {formatElapsed(now - startedAt)}
+                    </Caption1>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+        {turns.length > 0 && (
+          <div role="log" aria-label="Conversation">
+            <ChatTurns turns={turns} statusKeywords={statusKeywords} onDeleteNote={onDeleteNote} />
+          </div>
+        )}
+      </div>
+      <div className={styles.reply}>
+        {error && (
+          <MessageBar intent="error">
+            <MessageBarBody>{error}</MessageBarBody>
+          </MessageBar>
+        )}
+        <Textarea
+          className={styles.replyBox}
+          aria-label="Reply"
+          placeholder={replyToAgent ? 'Reply to the agent…' : 'Reply…'}
+          resize="vertical"
+          value={reply}
+          disabled={sending}
+          onChange={(_e, d) => onReplyChange(d.value)}
+          onKeyDown={onKeyDown}
+        />
+        {sending && <Spinner size="tiny" />}
+      </div>
+    </div>
+  );
+}

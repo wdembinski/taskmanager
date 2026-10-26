@@ -1,5 +1,6 @@
 /**
- * Proves the stacked pane's header — what the Tickets screen's peek shows — leaves the title
+ * Proves the stacked pane's header — the board's own detail pane (`layout` unset; the Tickets
+ * screen's peek is `IssuePeekBody` now, see `issues/IssuePeekBody.render.test.tsx`) — leaves the title
  * the row's width: Edit and Show on board are icon-only buttons named by `aria-label`, and
  * the tracker key sits on the meta line under the title rather than beside it. At 1100px the
  * peek is ~300px wide, and two text buttons plus the badge squeezed the title to one word

@@ -260,12 +260,15 @@ describe('assembleTaskDetailProps', () => {
     expect(result.chainMergeHeld).toBe(provided.chainMergeHeld);
   });
 
-  it("passes the full-screen layout through untouched, and leaves it unset when it isn't given", () => {
+  it("passes the full-screen and peek layouts through untouched, and leaves it unset when it isn't given", () => {
     const loaded: LoadedTaskDetailData = { tasks: [task({ id: 'card-1' })] };
 
     expect(
       assembleTaskDetailProps('card-1', { taskId: 'card-1', layout: 'full' }, loaded).layout,
     ).toBe('full');
+    expect(
+      assembleTaskDetailProps('card-1', { taskId: 'card-1', layout: 'peek' }, loaded).layout,
+    ).toBe('peek');
     expect(assembleTaskDetailProps('card-1', { taskId: 'card-1' }, loaded).layout).toBeUndefined();
   });
 

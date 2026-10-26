@@ -384,8 +384,8 @@ export function Projects({
       ticketFold={{ key: 'tm.projects.ticketOpen', defaultOpen: true }}
       readOnlyNotice={readOnlyNotice}
       hostUnreachable={hostUnreachable}
-      // Full screen is the two-column issue page; the peek keeps the stacked pane.
-      layout={viewState.layout === 'full' ? 'full' : undefined}
+      // Full screen is the two-column issue page; the peek is its read-only summary.
+      layout={viewState.layout === 'full' ? 'full' : 'peek'}
     />
   );
 
