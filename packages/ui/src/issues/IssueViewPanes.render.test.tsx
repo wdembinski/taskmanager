@@ -1,7 +1,7 @@
 /**
  * Proves the two panes draw what F13.13's design calls for: the full page's breadcrumb row
- * joins its segments in order, and the peek's header carries both icon buttons with their own
- * labels. `renderToStaticMarkup` rather than a DOM testing library — this package has none —
+ * joins its segments in order, and the peek's header carries just the key and the epic (v9-1),
+ * wrapping rather than ellipsized, beside both icon buttons with their own labels. `renderToStaticMarkup` rather than a DOM testing library — this package has none —
  * the same approach `TaskDetailHostView.render.test.tsx` uses.
  *
  * Also proves F13.24's acceptance for the one piece of it that lives here: the board card's
@@ -10,10 +10,29 @@
  * into this pane (as both hosts already do) loses nothing by being inside it.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
+import { makeStyles } from '@fluentui/react-components';
 import { describe, expect, it } from 'vitest';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import { MergeRequests } from '../MergeRequests';
 import { IssueFullPage, IssuePeek } from './IssueViewPanes';
+
+const useProbe = makeStyles({
+  ellipsis: { textOverflow: 'ellipsis' },
+  nowrap: { whiteSpace: 'nowrap' },
+});
+
+/** The one atomic class in a `makeStyles` slot's output (the rest is its `___` slot hash). */
+const atomic = (classes: string): string => {
+  const found = classes.split(' ').filter((c) => c && !c.startsWith('___'));
+  expect(found).toHaveLength(1);
+  return found[0];
+};
+
+/** The class list of the element carrying `attr` in `html`. */
+const classesOf = (html: string, attr: string): string[] => {
+  const tag = html.match(new RegExp(`<[^>]*${attr}[^>]*>`))?.[0] ?? '';
+  return (tag.match(/class="([^"]*)"/)?.[1] ?? '').split(' ');
+};
 
 const mr = (over: Partial<MergeRequest> = {}): MergeRequest => ({
   id: 'gl-9-1',
@@ -90,7 +109,7 @@ describe('IssueFullPage', () => {
 describe('IssuePeek', () => {
   it('renders both header buttons with their labels', () => {
     const html = renderToStaticMarkup(
-      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
         <div>detail</div>
       </IssuePeek>,
     );
@@ -101,11 +120,11 @@ describe('IssuePeek', () => {
     expect(html).toContain('title="Close (Esc)"');
   });
 
-  it('renders the key and every breadcrumb segment in the header, in order', () => {
+  it('prints the key and the epic, and not the project or milestone', () => {
     const html = renderToStaticMarkup(
       <IssuePeek
-        breadcrumb={['Task Manager', 'M4 Reach', 'F4 Linear integration']}
         ticketKey="TM-71"
+        epic="F4 Linear integration"
         onExpand={() => {}}
         onClose={() => {}}
       >
@@ -113,42 +132,72 @@ describe('IssuePeek', () => {
       </IssuePeek>,
     );
 
-    const crumb = html.indexOf('data-issue-breadcrumb');
+    const crumb = html.indexOf('data-issue-peek-crumb');
     const key = html.indexOf('TM-71');
-    const manager = html.indexOf('Task Manager');
-    const milestone = html.indexOf('M4 Reach');
     const epic = html.indexOf('F4 Linear integration');
 
     expect(crumb).toBeGreaterThanOrEqual(0);
     expect(key).toBeGreaterThan(crumb);
-    expect(manager).toBeGreaterThan(key);
-    expect(milestone).toBeGreaterThan(manager);
-    expect(epic).toBeGreaterThan(milestone);
-    expect(html).toContain('Task Manager › M4 Reach › F4 Linear integration');
-    // The crumb sits ahead of the two icons, not after them.
+    expect(epic).toBeGreaterThan(key);
+    // The header sits ahead of the two icons, not after them.
     expect(epic).toBeLessThan(html.indexOf('aria-label="Open full screen"'));
+    expect(html).not.toContain('Task Manager');
+    expect(html).not.toContain('M4 Reach');
+    expect(html).not.toContain('›');
+    expect(html).not.toContain('data-issue-breadcrumb');
   });
 
-  it('renders no separator for an empty breadcrumb', () => {
-    const withKey = renderToStaticMarkup(
-      <IssuePeek breadcrumb={[]} ticketKey="TM-71" onExpand={() => {}} onClose={() => {}}>
-        <div>detail</div>
-      </IssuePeek>,
-    );
-    const bare = renderToStaticMarkup(
-      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
+  it('prints just the key for a ticket with no epic', () => {
+    const html = renderToStaticMarkup(
+      <IssuePeek ticketKey="TM-71" onExpand={() => {}} onClose={() => {}}>
         <div>detail</div>
       </IssuePeek>,
     );
 
-    expect(withKey).toContain('TM-71');
-    expect(withKey).not.toContain('›');
-    expect(bare).not.toContain('›');
+    expect(html).toContain('TM-71');
+    expect(html).not.toContain('›');
+  });
+
+  it('wraps the header instead of ellipsizing it', () => {
+    // Griffel's atomic classes are a hash of property and value, so a probe declaring the
+    // same declarations yields the very classes `crumbText` carries.
+    let probe: { ellipsis: string; nowrap: string } | null = null;
+    const Probe = (): null => {
+      probe = useProbe();
+      return null;
+    };
+    renderToStaticMarkup(<Probe />);
+    const ellipsis = atomic(probe!.ellipsis);
+    const nowrap = atomic(probe!.nowrap);
+
+    const peek = renderToStaticMarkup(
+      <IssuePeek
+        ticketKey="TM-71"
+        epic="F4 Linear integration"
+        onExpand={() => {}}
+        onClose={() => {}}
+      >
+        <div>detail</div>
+      </IssuePeek>,
+    );
+    const full = renderToStaticMarkup(
+      <IssueFullPage breadcrumb={['Task Manager']} onBack={() => {}}>
+        <div>detail</div>
+      </IssueFullPage>,
+    );
+    const peekClasses = classesOf(peek, 'data-issue-peek-crumb');
+    const fullClasses = classesOf(full, 'data-issue-breadcrumb');
+
+    // The probe is sound: the full page's crumb, which does ellipsize, carries both.
+    expect(fullClasses).toContain(ellipsis);
+    expect(fullClasses).toContain(nowrap);
+    expect(peekClasses).not.toContain(ellipsis);
+    expect(peekClasses).not.toContain(nowrap);
   });
 
   it('renders the children', () => {
     const html = renderToStaticMarkup(
-      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
         <div>peek detail</div>
       </IssuePeek>,
     );
@@ -158,7 +207,7 @@ describe('IssuePeek', () => {
 
   it('shows pipeline stage dots and the verdict badge for a MergeRequests child (F13.24)', () => {
     const html = renderToStaticMarkup(
-      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
         <MergeRequests
           mergeRequests={[mr()]}
           onMarkRead={() => {}}
@@ -180,7 +229,7 @@ describe('IssuePeek', () => {
     const readyMr = mr({ approvalsRequired: 1, approvalsGiven: 1, pipelineStatus: 'success' });
 
     const withButtons = renderToStaticMarkup(
-      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
         <MergeRequests
           mergeRequests={[readyMr]}
           onMarkRead={() => {}}
@@ -194,7 +243,7 @@ describe('IssuePeek', () => {
       </IssuePeek>,
     );
     const withoutButton = renderToStaticMarkup(
-      <IssuePeek breadcrumb={[]} onExpand={() => {}} onClose={() => {}}>
+      <IssuePeek onExpand={() => {}} onClose={() => {}}>
         <MergeRequests
           mergeRequests={[readyMr]}
           onMarkRead={() => {}}
