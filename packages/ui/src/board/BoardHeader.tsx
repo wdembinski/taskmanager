@@ -8,9 +8,7 @@
  * and what the tabs look like, and a component built twice drifts the moment one host changes
  * a label. The styles are `boardLayout.ts`'s (`title`, `tabs`, `tab`, `tabSelected`).
  *
- * Both hosts wrap each of these in a pinned `OverflowItem`, which clones its child and attaches
- * a ref to measure it — so both are `forwardRef`'d to their root `<div>` (see
- * `ToolbarOverflow.tsx`'s own comment on the bug a dropped ref causes).
+ * Both are `forwardRef`'d to their root `<div>`, so a host can still measure or anchor to them.
  */
 import { forwardRef } from 'react';
 import {

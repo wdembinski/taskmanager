@@ -61,14 +61,12 @@ export const useBoardLayoutStyles = makeStyles({
     position: 'relative',
   },
   /**
-   * The card's one-row header (v9-7): the title picker, the Board/List tabs, the filters, a
-   * spacer, the view controls, "···" and the "+". `data-board-header` in both hosts.
+   * The card's one-row header (v9-7): the title picker, the Board/List tabs, a spacer, the
+   * `Links:` pill, "…" (`BoardMoreMenu`) and the "+". `data-board-header` in both hosts.
    *
-   * One row, never two or three: a header that wraps hides its own trailing buttons behind
-   * whatever the viewport clips rather than behind a menu it offers. `minWidth: 0` lets the
-   * row shrink below its children's natural width so `Overflow` (the Fluent primitive each
-   * host wraps this in) has something to measure against; `Overflow` itself only ever hides
-   * the items that do not fit (`[data-overflowing]`), it does not touch the row's own CSS.
+   * One row, never two: every other control lives behind "…" permanently, so the row holds
+   * five things at any width. When even those do not fit (a phone, or the detail pane open on
+   * a narrow window) the title is the one that gives — it ellipsizes; nothing else shrinks.
    */
   header: {
     display: 'flex',
@@ -79,23 +77,16 @@ export const useBoardLayoutStyles = makeStyles({
     minWidth: 0,
     minHeight: '32px',
     flexShrink: 0,
-    // Nothing in the row gives up width by shrinking or wrapping (a Switch's label would rather
-    // break onto a second line, and a title would rather ellipsize to nothing, than let the
-    // `Overflow` manager see the row is full and move a control into the menu).
     '& > *': { flexShrink: 0, whiteSpace: 'nowrap' },
-    // A Switch's own 8px margins either side of its track and its label, inside a row that
-    // already spaces its items: at 1100px with the detail pane open they are what pushes the
-    // pinned "+" past the card's edge.
-    '& .fui-Switch__indicator': { marginLeft: 0, marginRight: 0 },
-    '& .fui-Switch__label': { paddingLeft: '6px', paddingRight: 0 },
+    '& > [data-board-title]': { flexShrink: 1, minWidth: 0 },
   },
   grow: { flex: 1 },
   /**
    * The title picker (`BoardTitlePicker`): which board the card shows, set as the card's
    * title — Title3, 20px semibold, the mockup's "M4 · Reach" — with a chevron that says it
    * opens. A bare button rather than a `Dropdown`: a title with a field's border round it
-   * reads as a form, not a heading. A long board name ellipsizes at `maxWidth`; the title
-   * never shrinks below that, so the `Overflow` manager hides the other controls first.
+   * reads as a form, not a heading. A long board name ellipsizes at `maxWidth`, or sooner
+   * when the row itself runs out of width (`header`).
    */
   title: {
     display: 'inline-flex',

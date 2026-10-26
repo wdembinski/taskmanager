@@ -1,25 +1,34 @@
 /**
- * The Off · Focus · All switch for how chain links draw over the board (F13.20) — a link
- * glyph, the three segments as `ToggleButton`s (same segmented-control shape the ×1/×2/×3
- * attempt count already uses in `AssignAgentDialog`). Each segment's tooltip names the `L`
- * shortcut; there is no separate key hint beside them — the v9 strip draws none, and a
- * crushed toolbar clipped it to a stray letter.
+ * How chain links draw over the board — Off · Focus · All (F13.20) — as the v9-7 header's one
+ * pill (`Chains: on` in the mockup): a link glyph and `Links: <mode>`, opening a radio `Menu`
+ * of the three modes. It used to be three `ToggleButton` segments in the row; the header now
+ * spends one quiet pill on it, and everything else goes behind `BoardMoreMenu`'s "…".
  *
- * Shared by both hosts (`MyTasks.tsx`'s toolbar, the web's `BoardToolbar.tsx`), tokens only —
+ * `L` still cycles the mode (each host registers it), and the pill's tooltip says so — there
+ * is no key hint drawn beside it.
+ *
+ * Shared by both hosts (`MyTasks.tsx`'s header, the web's `BoardToolbar.tsx`), tokens only —
  * the desktop and the browser must agree pixel-for-pixel on what each mode looks like, same
  * bargain `BoardDisplayMenu` makes.
  *
- * Both hosts also wrap this whole group in an `OverflowItem` (`ToolbarOverflow.tsx`'s own
- * toolbar) — which clones its single child and attaches a ref to measure and hide it. A plain
- * function component cannot accept that ref (React silently drops it, and the item never
- * registers with the overflow manager), so this is `forwardRef`'d to the root `<div>`.
+ * `open`/`inline` exist for the render test: this package has no DOM testing library to click
+ * the pill, so the test renders the menu already open and in place (a portal renders nothing
+ * on the server) and calls {@link linkModeMenuChange} directly.
  */
-import { forwardRef } from 'react';
-import { ToggleButton, makeStyles, tokens } from '@fluentui/react-components';
-import { LinkMultipleRegular } from '@fluentui/react-icons';
+import {
+  Menu,
+  MenuItemRadio,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
+  makeStyles,
+  tokens,
+  type MenuProps,
+} from '@fluentui/react-components';
+import { ChevronDownRegular, LinkMultipleRegular } from '@fluentui/react-icons';
 import { LINK_MODES, type LinkMode } from './linkMode';
 
-const LABEL: Record<LinkMode, string> = { off: 'Off', focus: 'Focus', all: 'All' };
+export const LINK_MODE_LABEL: Record<LinkMode, string> = { off: 'Off', focus: 'Focus', all: 'All' };
 const TITLE: Record<LinkMode, string> = {
   off: 'Hide chain links — see needs/unblocks on the card instead',
   focus: 'Light the selected card’s own links, fade the rest',
@@ -27,36 +36,83 @@ const TITLE: Record<LinkMode, string> = {
 };
 
 const useStyles = makeStyles({
-  group: { display: 'flex', alignItems: 'center', gap: '2px' },
-  icon: { display: 'flex', color: tokens.colorNeutralForeground3 },
+  pill: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    height: '26px',
+    padding: '0 10px',
+    borderRadius: '13px',
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    background: 'none',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+    whiteSpace: 'nowrap',
+    ':hover': { backgroundColor: tokens.colorSubtleBackgroundHover },
+  },
+  icon: { display: 'flex', fontSize: '15px', color: tokens.colorNeutralForeground3 },
+  chevron: { display: 'flex', fontSize: '12px', color: tokens.colorNeutralForeground3 },
 });
+
+/**
+ * The radio menu's change handler: the one mode picked, or nothing for anything that is not a
+ * mode. Exported so the test can prove a pick reaches `onChange` without a DOM to click in.
+ */
+export function linkModeMenuChange(
+  onChange: (mode: LinkMode) => void,
+): NonNullable<MenuProps['onCheckedValueChange']> {
+  return (_e, d) => {
+    const next = d.checkedItems[0];
+    if ((LINK_MODES as readonly string[]).includes(next)) onChange(next as LinkMode);
+  };
+}
 
 export interface LinkModeSwitchProps {
   mode: LinkMode;
   onChange: (mode: LinkMode) => void;
+  /** Test only: render the menu open. */
+  open?: boolean;
+  /** Test only: render the popover in place rather than in a portal. */
+  inline?: boolean;
 }
 
-export const LinkModeSwitch = forwardRef<HTMLDivElement, LinkModeSwitchProps>(
-  function LinkModeSwitch({ mode, onChange }, ref) {
-    const styles = useStyles();
-    return (
-      <div ref={ref} className={styles.group} role="group" aria-label="Chain links">
-        <span className={styles.icon} aria-hidden="true">
-          <LinkMultipleRegular />
-        </span>
-        {LINK_MODES.map((m) => (
-          <ToggleButton
-            key={m}
-            size="small"
-            appearance="subtle"
-            checked={mode === m}
-            title={`${TITLE[m]} (L)`}
-            onClick={() => onChange(m)}
-          >
-            {LABEL[m]}
-          </ToggleButton>
-        ))}
-      </div>
-    );
-  },
-);
+export function LinkModeSwitch({ mode, onChange, open, inline }: LinkModeSwitchProps): JSX.Element {
+  const styles = useStyles();
+  return (
+    <Menu
+      open={open}
+      inline={inline}
+      checkedValues={{ links: [mode] }}
+      onCheckedValueChange={linkModeMenuChange(onChange)}
+    >
+      <MenuTrigger disableButtonEnhancement>
+        <button
+          type="button"
+          className={styles.pill}
+          title={`Chain links: ${TITLE[mode]} (L)`}
+          aria-label={`Chain links: ${LINK_MODE_LABEL[mode]}`}
+          data-link-mode={mode}
+        >
+          <span className={styles.icon} aria-hidden="true">
+            <LinkMultipleRegular />
+          </span>
+          Links: {LINK_MODE_LABEL[mode]}
+          <span className={styles.chevron} aria-hidden="true">
+            <ChevronDownRegular />
+          </span>
+        </button>
+      </MenuTrigger>
+      <MenuPopover>
+        <MenuList>
+          {LINK_MODES.map((m) => (
+            <MenuItemRadio key={m} name="links" value={m} title={TITLE[m]}>
+              {LINK_MODE_LABEL[m]}
+            </MenuItemRadio>
+          ))}
+        </MenuList>
+      </MenuPopover>
+    </Menu>
+  );
+}
