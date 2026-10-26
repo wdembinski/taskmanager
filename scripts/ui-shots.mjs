@@ -116,6 +116,9 @@
  *   show a Fluent `Spinner` forever, not just until some promise resolves (`waitForIdle`'s own
  *   doc comment explains the one screen that does, and why this flag exists rather than just
  *   lengthening the wait). Omit it (same as `false`) everywhere else.
+ * - `attention` — `'web'` rows only: the `AttentionItem[]` the fake relay answers
+ *   `attention:list` with for this row (default none), so a phone shot can show Inbox rows and
+ *   the tab bar's attention count. Reset for every row.
  * - `layoutCheck` — `{ visible: selector, clear: [selector, …] }`, measured after `expect`: the
  *   first `visible` match must sit fully inside every overflow-clipping ancestor and the
  *   viewport, and must not overlap the first match of any `clear` selector (sharing an edge is
@@ -936,6 +939,9 @@ async function main() {
           await freshLoad(cdp, clientOrigin, initScript, row.path ?? '');
         } else {
           relayHandle.state.settings.appearance = row.scheme;
+          // Reset per row, like `appearance`: one relay serves every web row, so a row that
+          // seeds the Inbox must not leak its items (and the tab bar's count) into the next.
+          relayHandle.state.attentionItems = structuredClone(row.attention ?? []);
           initScript = webInitScript(DESKTOP_CLIENT_ID);
           await freshLoad(cdp, relayOrigin, initScript);
         }
