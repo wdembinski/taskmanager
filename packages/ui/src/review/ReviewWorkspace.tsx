@@ -82,7 +82,7 @@ import {
   type ReviewState,
 } from './reviewState';
 import { defaultExpanded, fetchablePaths } from './reviewView';
-import { forgeUrlFor, QUEUE_ORDER } from './reviewWorkspaceModel';
+import { buildDirGroups, firstFilePath, forgeUrlFor, QUEUE_ORDER } from './reviewWorkspaceModel';
 import { ReviewWorkspaceView } from './ReviewWorkspaceView';
 import { useDiffLayout } from './useDiffLayout';
 
@@ -206,12 +206,21 @@ export function ReviewWorkspace({
       setState((s) => {
         const prevDiffId = s.diffId;
         const next = summaryArrived(s, subjectId, mySeq, result);
-        if (next === s || next.summary?.status !== 'ok' || next.diffId === prevDiffId) return next;
+        if (next === s || next.summary?.status !== 'ok') return next;
+        const files = next.summary.summary.files;
         // A fresh diffId: seed the lazy-load set with the files that open by default.
-        return defaultExpanded(next.summary.summary).reduce(
-          (acc, path) => toggleExpanded(acc, path),
-          next,
-        );
+        const seeded =
+          next.diffId === prevDiffId
+            ? next
+            : defaultExpanded(next.summary.summary).reduce(
+                (acc, path) => toggleExpanded(acc, path),
+                next,
+              );
+        // Nothing selected yet: the first file the tree draws, so a highlight is always on
+        // screen. After the seeding, or its toggle would collapse the file this just opened.
+        if (seeded.selectedPath !== null) return seeded;
+        const first = firstFilePath(buildDirGroups(files));
+        return first === null ? seeded : selectFile(seeded, first);
       });
     } catch (e: unknown) {
       setState((s) => summaryFailed(s, subjectId, mySeq));

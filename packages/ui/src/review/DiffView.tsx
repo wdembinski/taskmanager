@@ -34,6 +34,7 @@ import {
   Body1,
   Button,
   Caption1,
+  Checkbox,
   Spinner,
   makeStyles,
   mergeClasses,
@@ -41,7 +42,7 @@ import {
 } from '@fluentui/react-components';
 import { AddRegular } from '@fluentui/react-icons';
 import { parseOversizedAnswer } from '@tm/shared/ipcRelay';
-import { isCollapsedByDefault } from '@tm/shared/review';
+import { isCollapsedByDefault, type ViewedStatus } from '@tm/shared/review';
 import type {
   DiffFileEntry,
   DiffHunk,
@@ -112,6 +113,7 @@ const useStyles = makeStyles({
     fontFamily: MONO,
     fontSize: fontPx(12),
   },
+  viewedBox: { flexShrink: 0 },
   added: { color: tokens.colorPaletteGreenForeground1, flexShrink: 0 },
   deleted: { color: tokens.colorPaletteRedForeground1, flexShrink: 0 },
   notice: { padding: '10px', color: tokens.colorNeutralForeground3 },
@@ -241,6 +243,10 @@ export interface DiffViewProps {
   monochrome?: boolean;
   /** Compact mode's tap-selected line/range, before a comment is started on it. */
   selection?: LineSelection | null;
+  /** Each file's viewed status. With `onToggleViewed`, draws a "Viewed" box in every file
+   * header — `FileTree`'s own both-or-neither contract; the Changes pane passes neither. */
+  viewed?: Readonly<Record<string, ViewedStatus>>;
+  onToggleViewed?: (path: string) => void;
   onToggleExpanded: (path: string) => void;
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
   /** A gutter button tap in touch mode — `tapLine`'s own stand-in for `onClickLine`. */
@@ -267,6 +273,8 @@ export function DiffView({
   wrap = true,
   monochrome = false,
   selection = null,
+  viewed,
+  onToggleViewed,
   onToggleExpanded,
   onClickLine,
   onTapLine,
@@ -278,6 +286,8 @@ export function DiffView({
 }: DiffViewProps): JSX.Element {
   const styles = useStyles();
   const rows = useRef<Record<string, HTMLDivElement | null>>({});
+  const viewedProps: ViewedProps | undefined =
+    viewed && onToggleViewed ? { viewed, onToggleViewed } : undefined;
 
   useEffect(() => {
     if (!selectedPath) return;
@@ -312,6 +322,7 @@ export function DiffView({
             layout={layout}
             wrap={wrap}
             monochrome={monochrome}
+            viewedProps={viewedProps}
             onToggleExpanded={onToggleExpanded}
             onClickLine={onClickLine}
             onTapLine={onTapLine}
@@ -386,6 +397,12 @@ function OrphanedComments({
   );
 }
 
+/** The header box's inputs, present only when the host passed BOTH props. */
+interface ViewedProps {
+  viewed: Readonly<Record<string, ViewedStatus>>;
+  onToggleViewed: (path: string) => void;
+}
+
 interface CommentHandlers {
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
   onTapLine?: (path: string, side: DiffSide, line: number) => void;
@@ -410,6 +427,7 @@ function FileSection({
   layout,
   wrap,
   monochrome,
+  viewedProps,
   onToggleExpanded,
   ...handlers
 }: {
@@ -426,11 +444,13 @@ function FileSection({
   layout: DiffLayout;
   wrap: boolean;
   monochrome: boolean;
+  viewedProps: ViewedProps | undefined;
   onToggleExpanded: (path: string) => void;
 } & CommentHandlers): JSX.Element {
   const styles = useStyles();
   const renamed = entry.oldPath !== undefined && entry.oldPath !== entry.path;
   const collapsedByDefault = isCollapsedByDefault(entry);
+  const viewedStatus = viewedProps?.viewed[entry.path] ?? 'unviewed';
 
   // Only a LOADED text file has rendered rows to anchor against — everything else (not yet
   // fetched, binary, too large, stale) answers every one of this path's comments as
@@ -455,6 +475,19 @@ function FileSection({
         </Caption1>
         {entry.additions > 0 && <Caption1 className={styles.added}>+{entry.additions}</Caption1>}
         {entry.deletions > 0 && <Caption1 className={styles.deleted}>-{entry.deletions}</Caption1>}
+        {viewedProps && (
+          <Checkbox
+            className={styles.viewedBox}
+            label="Viewed"
+            aria-label={`Viewed ${entry.path}`}
+            title={viewedStatus === 'changed' ? 'Changed since viewed' : undefined}
+            checked={viewedStatus === 'viewed'}
+            data-diff-viewed={viewedStatus}
+            // Its own control: ticking it must never reach the header's collapse toggle.
+            onClick={(event) => event.stopPropagation()}
+            onChange={() => viewedProps.onToggleViewed(entry.path)}
+          />
+        )}
         <Button size="small" appearance="subtle" onClick={() => onToggleExpanded(entry.path)}>
           {expanded ? 'Collapse' : collapsedByDefault ? 'Load anyway' : 'Expand'}
         </Button>

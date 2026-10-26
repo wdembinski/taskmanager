@@ -33,7 +33,16 @@ import { statusLetter, type FileTreeDir, type FileTreeNode } from './reviewView'
 
 const useStyles = makeStyles({
   root: { flex: '1 1 220px', minWidth: '180px', maxWidth: '320px', overflowY: 'auto' },
-  selected: { backgroundColor: tokens.colorNeutralBackground1Selected },
+  // On the leaf's `TreeItemLayout`, not the `TreeItem`: the layout paints its own background
+  // over anything set on the item, so a selected style there never showed.
+  selected: {
+    backgroundColor: tokens.colorSubtleBackgroundSelected,
+    color: tokens.colorBrandForeground1,
+    ':hover': {
+      backgroundColor: tokens.colorSubtleBackgroundSelected,
+      color: tokens.colorBrandForeground1,
+    },
+  },
   aside: { display: 'flex', alignItems: 'center', gap: '6px' },
   added: { color: tokens.colorPaletteGreenForeground1 },
   deleted: { color: tokens.colorPaletteRedForeground1 },
@@ -144,15 +153,13 @@ function FileTreeRow({
   const name = entry.path.split('/').pop() ?? entry.path;
   const collapsed = isCollapsedByDefault(entry);
   const status = viewedProps?.viewed[entry.path] ?? 'unviewed';
+  const selected = selectedPath === entry.path;
 
   return (
-    <TreeItem
-      itemType="leaf"
-      value={entry.path}
-      className={selectedPath === entry.path ? styles.selected : undefined}
-      onClick={() => onSelectFile(entry.path)}
-    >
+    <TreeItem itemType="leaf" value={entry.path} onClick={() => onSelectFile(entry.path)}>
       <TreeItemLayout
+        className={selected ? styles.selected : undefined}
+        data-selected={selected ? '' : undefined}
         iconBefore={
           viewedProps && (
             <Checkbox

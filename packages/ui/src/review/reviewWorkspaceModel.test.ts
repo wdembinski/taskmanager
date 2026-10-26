@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import type { ReviewQueueItem, ReviewQueuesSnapshot, ReviewSubject } from '@tm/shared/review';
+import type {
+  DiffFileEntry,
+  ReviewQueueItem,
+  ReviewQueuesSnapshot,
+  ReviewSubject,
+} from '@tm/shared/review';
+import type { FileTreeNode } from './reviewView';
 import {
   QUEUE_LABELS,
   QUEUE_ORDER,
+  buildDirGroups,
+  firstFilePath,
   forgeUrlFor,
   groupQueue,
   sourceBadge,
@@ -122,6 +130,80 @@ describe('subjectLabel', () => {
 
   it("reads the row's ref for a task", () => {
     expect(subjectLabel(item({ subject: task, ref: 'orch/t1' }))).toBe('orch/t1');
+  });
+});
+
+function file(path: string): DiffFileEntry {
+  return {
+    path,
+    status: 'modified',
+    additions: 1,
+    deletions: 0,
+    binary: false,
+    image: false,
+    bytes: 10,
+  };
+}
+
+/** Each node as `dir: [paths]` or a bare path, so a whole grouping reads in one assertion. */
+function shape(nodes: readonly FileTreeNode[]): unknown[] {
+  return nodes.map((n) =>
+    n.kind === 'file'
+      ? n.entry.path
+      : { [n.name]: n.children.map((c) => (c.kind === 'file' ? c.entry.path : c.name)) },
+  );
+}
+
+describe('buildDirGroups', () => {
+  it("groups the fixture's seven files by their own directory, full path as the label", () => {
+    const groups = buildDirGroups(
+      [
+        'src/upload/retry.ts',
+        'src/upload/send.ts',
+        'src/upload/backoff.ts',
+        'src/upload/index.ts',
+        'src/net/link.ts',
+        'test/retry.test.ts',
+        'test/send.test.ts',
+      ].map(file),
+    );
+    expect(shape(groups)).toEqual([
+      { 'src/net': ['src/net/link.ts'] },
+      {
+        'src/upload': [
+          'src/upload/backoff.ts',
+          'src/upload/index.ts',
+          'src/upload/retry.ts',
+          'src/upload/send.ts',
+        ],
+      },
+      { test: ['test/retry.test.ts', 'test/send.test.ts'] },
+    ]);
+    for (const g of groups) if (g.kind === 'dir') expect(g.path).toBe(g.name);
+  });
+
+  it('puts root files first, sorted, and never nests a parent and child directory', () => {
+    const groups = buildDirGroups(
+      ['src/a.ts', 'package.json', 'src/deep/b.ts', 'README.md'].map(file),
+    );
+    expect(shape(groups)).toEqual([
+      'package.json',
+      'README.md',
+      { src: ['src/a.ts'] },
+      { 'src/deep': ['src/deep/b.ts'] },
+    ]);
+  });
+
+  it('answers an empty list for no files', () => {
+    expect(buildDirGroups([])).toEqual([]);
+  });
+});
+
+describe('firstFilePath', () => {
+  it('answers the first file in render order, depth first', () => {
+    expect(firstFilePath(buildDirGroups(['b/x.ts', 'a/y.ts'].map(file)))).toBe('a/y.ts');
+    expect(firstFilePath(buildDirGroups(['b/x.ts', 'z.md'].map(file)))).toBe('z.md');
+    expect(firstFilePath([])).toBeNull();
   });
 });
 
