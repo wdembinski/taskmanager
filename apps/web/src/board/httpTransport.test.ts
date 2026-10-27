@@ -978,6 +978,79 @@ describe("HttpTransport: the review pane's channels", () => {
   });
 });
 
+describe("HttpTransport: the review workspace's channels", () => {
+  /**
+   * F15.14b: the review workspace's eight subject-keyed channels — the queues, the diff reads,
+   * the context expansion and the viewed marks — relay to the desktop exactly as the review
+   * pane's do, so `/reviews` works over the relay at all. Same shape as the review pane's table
+   * above, and pinned down channel by channel for the same reason.
+   */
+  const WORKSPACE: Array<{
+    channel: keyof IpcApi;
+    args: readonly unknown[];
+    call: (x: HttpTransport) => Promise<unknown>;
+  }> = [
+    { channel: 'review:queues', args: [], call: (x) => x.invoke('review:queues') },
+    { channel: 'review:refreshQueues', args: [], call: (x) => x.invoke('review:refreshQueues') },
+    {
+      channel: 'review:subjectSummary',
+      args: ['pr:github:acme/uploader:412'],
+      call: (x) => x.invoke('review:subjectSummary', 'pr:github:acme/uploader:412'),
+    },
+    {
+      channel: 'review:subjectFile',
+      args: ['task:t1', 'd1', 'a.ts'],
+      call: (x) => x.invoke('review:subjectFile', 'task:t1', 'd1', 'a.ts'),
+    },
+    {
+      channel: 'review:subjectImage',
+      args: ['task:t1', 'd1', 'a.png'],
+      call: (x) => x.invoke('review:subjectImage', 'task:t1', 'd1', 'a.png'),
+    },
+    {
+      channel: 'review:context',
+      args: ['task:t1', 'd1', 'a.ts', 'new', 10, 30],
+      call: (x) => x.invoke('review:context', 'task:t1', 'd1', 'a.ts', 'new', 10, 30),
+    },
+    {
+      channel: 'review:viewed',
+      args: ['task:t1'],
+      call: (x) => x.invoke('review:viewed', 'task:t1'),
+    },
+    {
+      channel: 'review:setViewed',
+      args: ['task:t1', 'a.ts', 'abc123'],
+      call: (x) => x.invoke('review:setViewed', 'task:t1', 'a.ts', 'abc123'),
+    },
+  ];
+
+  for (const { channel, args, call } of WORKSPACE) {
+    it(`relays ${channel} over the wire`, async () => {
+      expect(isRelayable(channel)).toBe(true);
+
+      const server = makeServer();
+      const { transport } = makeTransport({
+        fetchImpl: server.fetchImpl as unknown as typeof fetch,
+        newCommandId: () => 'cmd-1',
+      });
+
+      let rejection: Error | undefined;
+      const pending = call(transport).catch((e: Error) => {
+        rejection = e;
+      });
+      server.answer('cmd-1', { ok: true, value: null });
+      await pending;
+
+      expect(rejection?.message).not.toBe(hostOnlyMessage(channel));
+      expect(server.queued).toHaveLength(1);
+      expect(server.queued[0]).toMatchObject({
+        kind: 'ipc-invoke',
+        payload: { channel, args },
+      });
+    });
+  }
+});
+
 describe('HttpTransport: the archive channels', () => {
   /**
    * F14.4: the three archive channels relay to the desktop the same as any other

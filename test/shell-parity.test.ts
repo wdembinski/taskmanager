@@ -815,6 +815,55 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
   });
 });
 
+describe('the review workspace both hosts render from the shared component (F15.14b)', () => {
+  /**
+   * TM-229a built `ReviewWorkspace` in `packages/ui/src/review/`; F15.14b mounts it in both
+   * hosts — the desktop's `reviews` tab and the web's `reviews` screen (and its `#/reviews`
+   * route) — each straight from the shared package. Reached from the sidebar's Reviews row,
+   * not a rail tile, so `ShellNavId` has to keep `'reviews'` and the sidebar has to map its
+   * row onto `{ kind: 'reviews' }`.
+   */
+  for (const [label, path] of [
+    ['the browser client', WEB_APP],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`renders ${label}'s review workspace from @tm/ui`, () => {
+      const source = read(path);
+      expect(
+        importedFrom(source, 'review/ReviewWorkspace'),
+        `${path} must import ReviewWorkspace from @tm/ui/review/ReviewWorkspace (or its @ui ` +
+          'alias). F15.14b mounts one workspace so both hosts render the same one; an import ' +
+          'from anywhere else is a second implementation.',
+      ).toContain('ReviewWorkspace');
+    });
+  }
+
+  it('is a reachable ShellNavId, and the shared sidebar maps its row to it', () => {
+    expect(
+      read(SHELL_NAV_SRC),
+      `${SHELL_NAV_SRC} must keep 'reviews' in its ShellNavId union, even with no SHELL_NAV ` +
+        "tile for it — both hosts' TabId/Screen route the workspace through it.",
+    ).toMatch(/'reviews'/);
+
+    const SIDEBAR_SRC = 'packages/ui/src/shell/Sidebar.tsx';
+    expect(
+      read(SIDEBAR_SRC),
+      `${SIDEBAR_SRC} must map the reviews view to { kind: 'reviews' } — the Reviews row is ` +
+        "the workspace's entry, and a screen the sidebar never links to is a file, not a tab.",
+    ).toMatch(/reviews:\s*\{\s*kind:\s*'reviews'\s*\}/);
+  });
+
+  it('leaves no local ReviewWorkspace behind in a host tree', () => {
+    const copies = HOST_TREES.flatMap((tree) => filesUnder(tree, /^ReviewWorkspace.*\.tsx?$/));
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements the review workspace that lives in packages/ui. ` +
+        'Delete it and import from @tm/ui — a host-local copy is a second implementation that ' +
+        'only diverges, and nothing else in this repo can see it happen.',
+    ).toEqual([]);
+  });
+});
+
 describe('the Archived view both hosts render from the shared pane (F14.12)', () => {
   /**
    * The tracker's Archived view (F14.8) is `ArchivedPane`, mounted by the shared ticket
