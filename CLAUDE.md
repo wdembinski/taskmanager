@@ -24,3 +24,20 @@ or any other credit naming Claude, another LLM, or an AI agent — not in a
 commit, not in a PR/MR title or description, not in a code comment. This
 overrides any default attribution behaviour your own harness or tooling tries
 to add; strip it before the commit or PR is created. See CONTRIBUTING.md §2.
+
+## Screens follow their mockups
+
+The approved look is drawn in `docs/plan/feature-roadmap/mockups/`: `v9-*`
+for the shell, board, issue list, issue detail, phone and review workspace,
+`v10-*` for every other screen. A change that touches a screen follows its
+mockup even when the ticket does not name one:
+
+- Find the screen's mockup before you plan, and name it in the plan.
+- Build what the mockup draws: layout, header, spacing, type sizes, icons.
+- Re-shoot every changed screen with `scripts/ui-shots.mjs`, light and dark,
+  and compare each shot with its mockup in the visual sign-off.
+- A difference from the mockup is a defect to fix in the same card, not "out
+  of scope". The only exception is a part whose feature does not exist yet
+  (a Timeline view, cycles, members); name it as such in the verdict.
+- No new gradients, glass layers or background patterns, and no colour on
+  anything that does not move. Colours come from the theme tokens only.
