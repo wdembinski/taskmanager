@@ -265,3 +265,35 @@ describe('wideSelectionRoute', () => {
     }
   });
 });
+
+describe('the reviews route (F15.14b)', () => {
+  it('reads a bare reviews route and one naming a subject', () => {
+    expect(parseCompactRoute('#/reviews')).toEqual({ kind: 'reviews' });
+    expect(parseCompactRoute('#/reviews/task%3At1')).toEqual({
+      kind: 'reviews',
+      subjectId: 'task:t1',
+    });
+  });
+
+  it('rejects a trailing segment and a bad percent-escape', () => {
+    expect(parseCompactRoute('#/reviews/a/b')).toBeNull();
+    expect(parseCompactRoute('#/reviews/%E0%A4%A')).toBeNull();
+  });
+
+  it('round-trips the bare route and a subject id with slashes and spaces', () => {
+    const routes: CompactRoute[] = [
+      { kind: 'reviews' },
+      { kind: 'reviews', subjectId: 'pr:github:acme/uploader:412' },
+      { kind: 'reviews', subjectId: 'task:a b' },
+    ];
+    for (const route of routes) {
+      expect(parseCompactRoute(formatCompactRoute(route))).toEqual(route);
+    }
+    expect(formatCompactRoute({ kind: 'reviews' })).toBe('#/reviews');
+  });
+
+  it('has no tab of its own — it folds onto inbox', () => {
+    expect(tabForRoute({ kind: 'reviews' })).toBe('inbox');
+    expect(tabForRoute({ kind: 'reviews', subjectId: 'task:t1' })).toBe('inbox');
+  });
+});

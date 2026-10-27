@@ -9,12 +9,15 @@ import type { FileTreeNode } from './reviewView';
 import {
   QUEUE_LABELS,
   QUEUE_ORDER,
+  QUEUES_FRESH_MS,
   branchLine,
   buildDirGroups,
   forgeUrlFor,
   groupQueue,
   knownPipeline,
   providerName,
+  queuesAsOfNotice,
+  requestedCount,
   sourceBadge,
   subjectLabel,
   viewedLabel,
@@ -244,5 +247,55 @@ describe('viewedLabel', () => {
   it('reads "N / M viewed"', () => {
     expect(viewedLabel(2, 7)).toBe('2 / 7 viewed');
     expect(viewedLabel(0, 0)).toBe('0 / 0 viewed');
+  });
+});
+
+describe('queuesAsOfNotice', () => {
+  // A local-time clock reading, so the expected HH:MM holds in every time zone.
+  const at1402 = new Date(2026, 9, 26, 14, 2, 30).getTime();
+  const synced = (
+    asOf: ReviewQueuesSnapshot['asOf'],
+    partial: ReviewQueuesSnapshot['partial'] = [],
+  ): ReviewQueuesSnapshot => ({ items: [], asOf, partial });
+
+  it('says nothing while every queue is fresh and whole', () => {
+    const fresh = synced({ requested: at1402, mine: at1402 + 1000, agent: null });
+    expect(queuesAsOfNotice(fresh, at1402 + QUEUES_FRESH_MS)).toBeNull();
+  });
+
+  it('names the oldest queue’s time once it misses a refresh', () => {
+    const stale = synced({ requested: at1402 + 60_000, mine: at1402, agent: null });
+    expect(queuesAsOfNotice(stale, at1402 + QUEUES_FRESH_MS + 1)).toBe('Queues as of 14:02');
+  });
+
+  it('names the time even while fresh when a queue came back incomplete', () => {
+    const partial = synced({ requested: at1402, mine: null, agent: at1402 }, ['mine']);
+    expect(queuesAsOfNotice(partial, at1402)).toBe(
+      'Queues as of 14:02 — some queues are incomplete',
+    );
+  });
+
+  it('says nothing when no queue has ever synced and none is incomplete', () => {
+    expect(
+      queuesAsOfNotice(synced({ requested: null, mine: null, agent: null }), at1402),
+    ).toBeNull();
+  });
+
+  it('still flags an incomplete refresh with no time to name', () => {
+    const none = synced({ requested: null, mine: null, agent: null }, ['agent']);
+    expect(queuesAsOfNotice(none, at1402)).toBe('Some queues are incomplete');
+  });
+});
+
+describe('requestedCount', () => {
+  it('counts only the Requested from me rows', () => {
+    const snap = snapshot([
+      item({ subjectId: 'a', queue: 'requested' }),
+      item({ subjectId: 'b', queue: 'mine' }),
+      item({ subjectId: 'c', queue: 'requested' }),
+      item({ subjectId: 'd', queue: 'agent', subject: task }),
+    ]);
+    expect(requestedCount(snap)).toBe(2);
+    expect(requestedCount(snapshot([]))).toBe(0);
   });
 });

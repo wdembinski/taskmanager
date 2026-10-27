@@ -149,3 +149,39 @@ export function buildDirGroups(files: readonly DiffFileEntry[]): FileTreeNode[] 
 export function viewedLabel(viewed: number, total: number): string {
   return `${viewed} / ${total} viewed`;
 }
+
+/**
+ * How old the queues may get before the column says so: one missed 5-minute background refresh
+ * (`ReviewQueueService`) and a minute of slack. Every `review:queues` answer comes from the
+ * cache, so a fresh one says nothing and a stale one names its time.
+ */
+export const QUEUES_FRESH_MS = 6 * 60_000;
+
+/** Local `HH:MM`. */
+function clockTime(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * The queue column's caption (F15.15): "Queues as of 14:02" when the oldest synced queue is
+ * older than {@link QUEUES_FRESH_MS}, or any queue's last refresh came back incomplete — then
+ * with "— some queues are incomplete" appended. `null` when the queues are fresh and whole, so
+ * nothing is drawn. A never-synced queue (`asOf: null`) has no time to name and is skipped; with
+ * no time at all, an incomplete refresh still says so on its own.
+ */
+export function queuesAsOfNotice(snapshot: ReviewQueuesSnapshot, now: number): string | null {
+  const times = QUEUE_ORDER.map((q) => snapshot.asOf[q]).filter((t): t is number => t !== null);
+  const oldest = times.length === 0 ? null : Math.min(...times);
+  const partial = snapshot.partial.length > 0;
+  const stale = oldest !== null && now - oldest > QUEUES_FRESH_MS;
+  if (!partial && !stale) return null;
+  if (oldest === null) return 'Some queues are incomplete';
+  const asOf = `Queues as of ${clockTime(oldest)}`;
+  return partial ? `${asOf} — some queues are incomplete` : asOf;
+}
+
+/** The sidebar Reviews row's count: the rows in *Requested from me*. */
+export function requestedCount(snapshot: ReviewQueuesSnapshot): number {
+  return snapshot.items.filter((item) => item.queue === 'requested').length;
+}

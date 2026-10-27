@@ -30,6 +30,10 @@
  *
  * **The file-fetch effect re-runs on every `state` change**, self-limiting through
  * `fetchablePaths` exactly as `ReviewPane`'s does.
+ *
+ * **A host can steer a mounted workspace** (F15.14b): a changed `initialSubjectId` selects that
+ * row — now when the queues hold it, else as soon as an answer does — and each new
+ * `actionRequest.seq` runs one key action exactly as its key would (the palette's commands).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX, KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -47,7 +51,7 @@ import {
   type ReviewViewedMark,
 } from '@tm/shared/review';
 import { useTransport } from '../transport';
-import { applyReviewKey, reviewKeyAction } from './reviewKeys';
+import { applyReviewKey, reviewKeyAction, type ReviewKeyAction } from './reviewKeys';
 import {
   clickLine,
   closeEditor,
@@ -82,7 +86,7 @@ import {
   type ReviewState,
 } from './reviewState';
 import { defaultExpanded, fetchablePaths } from './reviewView';
-import { forgeUrlFor, QUEUE_ORDER } from './reviewWorkspaceModel';
+import { forgeUrlFor, QUEUE_ORDER, queuesAsOfNotice } from './reviewWorkspaceModel';
 import { ReviewWorkspaceView } from './ReviewWorkspaceView';
 import { useDiffLayout } from './useDiffLayout';
 
@@ -92,16 +96,29 @@ const useStyles = makeStyles({
 });
 
 export interface ReviewWorkspaceProps {
-  /** The row to open first; the first row in `QUEUE_ORDER` when unset or not in the queues. */
+  /** The row to open first; the first row in `QUEUE_ORDER` when unset or not in the queues.
+   *  Changing it later selects the new row — see the module header. */
   initialSubjectId?: string;
   /** Set when the desktop host cannot be reached — `ReviewPane`'s own `unreachable`: file
-   *  fetches and queue-driven reloads stop, and clearing it reloads once. */
+   *  fetches and queue-driven reloads stop, the view draws its warning and reads only, and
+   *  clearing it reloads once. */
   unreachable?: string;
   /** Escape with no comment editor open. */
   onClose?: () => void;
   /** Overrides {@link forgeUrlFor} for *Open on forge* (F15.14b knows a GitLab host). */
   forgeUrl?: (item: ReviewQueueItem) => string | null;
+  /** Runs `action` as if its key were pressed, once per new `seq` (the palette's commands). */
+  actionRequest?: ReviewActionRequest;
 }
+
+/** See {@link ReviewWorkspaceProps.actionRequest}: bump `seq` to run the same action again. */
+export interface ReviewActionRequest {
+  action: ReviewKeyAction;
+  seq: number;
+}
+
+/** How often the "Queues as of …" caption re-reads the clock. */
+const AS_OF_TICK_MS = 30_000;
 
 /** The marks that belong to `subjectId` — see the module header. */
 function ownMarks(marks: readonly ReviewViewedMark[], subjectId: string): ReviewViewedMark[] {
@@ -127,6 +144,7 @@ export function ReviewWorkspace({
   unreachable,
   onClose,
   forgeUrl,
+  actionRequest,
 }: ReviewWorkspaceProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
@@ -159,15 +177,45 @@ export function ReviewWorkspace({
     };
   }, [transport]);
 
+  // The clock the "Queues as of …" caption compares against, re-read every half minute.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), AS_OF_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
   // ── Queues ────────────────────────────────────────────────────────────────────────────────
+
+  // A host-requested subject not yet in the queues, taken by the first answer that holds it.
+  const pendingSubject = useRef<string | null>(null);
 
   const acceptQueues = useCallback(
     (snapshot: ReviewQueuesSnapshot) => {
       setQueues(snapshot);
+      const pending = pendingSubject.current;
+      if (pending !== null && snapshot.items.some((i) => i.subjectId === pending)) {
+        pendingSubject.current = null;
+        setSelectedId(pending);
+        return;
+      }
       setSelectedId((current) => current ?? defaultSubject(snapshot, initialSubjectId));
     },
     [initialSubjectId],
   );
+
+  // Follow a changed `initialSubjectId` — the first value is `defaultSubject`'s to use.
+  const lastInitial = useRef(initialSubjectId);
+  useEffect(() => {
+    if (lastInitial.current === initialSubjectId) return;
+    lastInitial.current = initialSubjectId;
+    if (initialSubjectId === undefined) return;
+    if (queues?.items.some((i) => i.subjectId === initialSubjectId)) {
+      pendingSubject.current = null;
+      setSelectedId(initialSubjectId);
+    } else {
+      pendingSubject.current = initialSubjectId;
+    }
+  }, [initialSubjectId, queues]);
 
   const loadQueues = useCallback(
     async (refresh: boolean) => {
@@ -316,7 +364,7 @@ export function ReviewWorkspace({
   }, [subjectId, taskId, state.diffId]);
 
   function onClickLine(path: string, side: DiffSide, line: number, shift: boolean): void {
-    if (taskId === null) return;
+    if (taskId === null || unreachable !== undefined) return;
     setState((s) => clickLine(s, { path, side, line }, shift));
   }
 
@@ -371,7 +419,7 @@ export function ReviewWorkspace({
   }
 
   function onSend(): void {
-    if (subjectId === null || taskId === null) return;
+    if (subjectId === null || taskId === null || unreachable !== undefined) return;
     const key = subjectId;
     setState((s) => sendStarted(s));
     const note = state.note.trim() ? state.note : undefined;
@@ -473,23 +521,8 @@ export function ReviewWorkspace({
     rootRef.current?.focus({ preventScroll: true });
   }, []);
 
-  function onKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>): void {
-    if (keysOpen) return;
-    const action = reviewKeyAction(
-      {
-        key: evt.key,
-        ctrlKey: evt.ctrlKey,
-        metaKey: evt.metaKey,
-        shiftKey: evt.shiftKey,
-        altKey: evt.altKey,
-        isComposing: evt.nativeEvent.isComposing,
-        repeat: evt.repeat,
-        target: evt.target as HTMLElement,
-      },
-      { editorOpen: state.editor !== null },
-    );
-    if (action === null) return;
-    evt.preventDefault();
+  /** One key action — a key press or a host's {@link ReviewActionRequest}. */
+  function runAction(action: ReviewKeyAction): void {
     switch (action) {
       case 'toggleLayout':
         setLayout(layout === 'split' ? 'unified' : 'split');
@@ -521,6 +554,36 @@ export function ReviewWorkspace({
     setState((s) => applyReviewKey(s, action, Date.now()));
   }
 
+  // The latest `runAction`, so the request effect below keys on `seq` alone.
+  const runActionRef = useRef(runAction);
+  runActionRef.current = runAction;
+  const handledSeq = useRef<number | null>(null);
+  useEffect(() => {
+    if (actionRequest === undefined || handledSeq.current === actionRequest.seq) return;
+    handledSeq.current = actionRequest.seq;
+    runActionRef.current(actionRequest.action);
+  }, [actionRequest]);
+
+  function onKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (keysOpen) return;
+    const action = reviewKeyAction(
+      {
+        key: evt.key,
+        ctrlKey: evt.ctrlKey,
+        metaKey: evt.metaKey,
+        shiftKey: evt.shiftKey,
+        altKey: evt.altKey,
+        isComposing: evt.nativeEvent.isComposing,
+        repeat: evt.repeat,
+        target: evt.target as HTMLElement,
+      },
+      { editorOpen: state.editor !== null },
+    );
+    if (action === null) return;
+    evt.preventDefault();
+    runAction(action);
+  }
+
   return (
     <div ref={rootRef} className={styles.root} tabIndex={-1} onKeyDown={onKeyDown}>
       <ReviewWorkspaceView
@@ -534,6 +597,8 @@ export function ReviewWorkspace({
         copyEnabled={markdown !== ''}
         forgeUrl={forgeHref}
         keysOpen={keysOpen}
+        unreachable={unreachable}
+        asOfNotice={queues === null ? null : queuesAsOfNotice(queues, now)}
         onSelectSubject={(item) => setSelectedId(item.subjectId)}
         onToggleGroup={(queue) =>
           setCollapsedGroups((groups) =>

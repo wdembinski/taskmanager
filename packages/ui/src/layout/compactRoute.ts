@@ -16,6 +16,10 @@
  *   - `'#/card/<id>'` → `{kind:'card', id, section:'chat'}`; `'#/card/<id>/<section>'` → that
  *     section, when `<section>` is one of `CARD_SECTIONS`.
  *   - `'#/search'` → `{kind:'search'}`; `'#/settings'` → `{kind:'settings'}`.
+ *   - `'#/reviews'` → `{kind:'reviews'}` (F15.14b, the review workspace); `'#/reviews/<subjectId>'`
+ *     → that subject opened, the id percent-decoded exactly as a card's (a `subjectId` such as
+ *     `pr:…/…` carries slashes, so it is ALWAYS encoded on the way out). A second segment after
+ *     the id is malformed.
  *   - Every other shape is malformed. That includes: an unknown first segment (`'inbox'` is
  *     never itself a valid segment — the home route has NO segment, so `'#/inbox'` is just as
  *     invalid as `'#/nope'`); an unknown column or section; an empty id (`'#/card/'`); a bad
@@ -34,7 +38,8 @@
  *   `parseCompactRoute(formatCompactRoute(r))` round-trips `r` for every column, every
  *   section, and an id containing `/` or spaces.
  * - **Tab mapping.** `tabForRoute` folds `card` onto `board` (a card is drawn over the board,
- *   so its tab stays highlighted) and is the identity on the other three kinds.
+ *   so its tab stays highlighted), `reviews` onto `inbox` (it has no tab of its own — the home
+ *   tab is where a phone reader came from), and is the identity on the other three kinds.
  *   `routeForTab` is its rough inverse for the three tabs that are a single screen each
  *   (`inbox`/`search`/`settings`); `routeForTab('board')` is `{kind:'board', column:
  *   BOARD_COLUMNS[0]}` — tapping the Board tab always lands on the first column, never on
@@ -76,7 +81,9 @@ export type CompactRoute =
   | { kind: 'board'; column: BoardColumn }
   | { kind: 'card'; id: string; section: CardSection }
   | { kind: 'search' }
-  | { kind: 'settings' };
+  | { kind: 'settings' }
+  /** The review workspace; `subjectId` opens that row, absent the workspace's own default. */
+  | { kind: 'reviews'; subjectId?: string };
 
 /** What an empty, missing, or malformed hash resolves to. See the module header. */
 export const DEFAULT_COMPACT_ROUTE: CompactRoute = { kind: 'inbox' };
@@ -123,6 +130,15 @@ export function parseCompactRoute(hash: string): CompactRoute | null {
       return rest.length === 0 ? { kind: 'search' } : null;
     case 'settings':
       return rest.length === 0 ? { kind: 'settings' } : null;
+    case 'reviews': {
+      if (rest.length === 0) return { kind: 'reviews' };
+      if (rest.length > 1) return null;
+      try {
+        return { kind: 'reviews', subjectId: decodeURIComponent(rest[0]) };
+      } catch {
+        return null;
+      }
+    }
     default:
       return null;
   }
@@ -146,13 +162,19 @@ export function formatCompactRoute(route: CompactRoute): string {
       return '#/search';
     case 'settings':
       return '#/settings';
+    case 'reviews':
+      return route.subjectId === undefined
+        ? '#/reviews'
+        : `#/reviews/${encodeURIComponent(route.subjectId)}`;
   }
 }
 
 /** Which bottom tab should read as selected while `route` is showing — folds `card` onto
- *  `board`, identity otherwise. */
+ *  `board` and `reviews` onto `inbox`, identity otherwise. */
 export function tabForRoute(route: CompactRoute): CompactTab {
-  return route.kind === 'card' ? 'board' : route.kind;
+  if (route.kind === 'card') return 'board';
+  if (route.kind === 'reviews') return 'inbox';
+  return route.kind;
 }
 
 /** The route a tap on `tab` navigates to — `board` always resets to `BOARD_COLUMNS[0]`,

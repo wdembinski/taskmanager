@@ -33,7 +33,7 @@ describe('SHELL_NAV', () => {
     expect(foot).toEqual(['settings']);
   });
 
-  it('has no reviews entry yet — F15 adds it', () => {
+  it('has no reviews rail tile — the sidebar’s Reviews row is the entry', () => {
     const ids: readonly string[] = SHELL_NAV.map((entry) => entry.id);
     expect(ids.includes('reviews')).toBe(false);
   });

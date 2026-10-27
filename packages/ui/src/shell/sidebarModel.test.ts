@@ -90,6 +90,17 @@ describe('buildSidebar sections', () => {
     ]);
   });
 
+  it("carries reviewsCount onto the Reviews row, and draws none when it's omitted", () => {
+    const reviewsRow = (input: Parameters<typeof baseInput>[0]) => {
+      const views = buildSidebar(baseInput(input)).find((s) => s.kind === 'views');
+      return views?.kind === 'views' ? views.views.find((v) => v.id === 'reviews') : undefined;
+    };
+    expect(reviewsRow({ reviewsEnabled: true, reviewsCount: 3 })?.count).toBe(3);
+    expect(reviewsRow({ reviewsEnabled: true, reviewsCount: 0 })?.count).toBe(0);
+    expect(reviewsRow({ reviewsEnabled: true })).toEqual({ id: 'reviews', label: 'Reviews' });
+    expect(reviewsRow({ reviewsCount: 3 })).toBeUndefined();
+  });
+
   it('keeps archived → machine → newIssue as the last three sections', () => {
     const projects = [{ id: 'p1', name: 'Personal' }];
     for (const input of [

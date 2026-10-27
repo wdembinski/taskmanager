@@ -13,9 +13,12 @@
  *   Performance (its own tile for now — open question 2 folds it into Activity as a second tab,
  *   but that screen-level merge has no card of its own yet, so it keeps a bar slot) and
  *   Automations.
- * - `'foot'` — pinned to the rail's bottom, below the spacer: Settings today; **F15 adds a
- *   `reviews` entry** to `'bar'`, once the review workspace ships (F13's design doc lists
- *   Reviews among the bar's permanent destinations, ahead of its own card).
+ * - `'foot'` — pinned to the rail's bottom, below the spacer: Settings.
+ *
+ * **`reviews` (F15.14b) is a destination with no rail tile**: it joins `ShellNavId` so both
+ * hosts' `TabId`/`Screen` route to the review workspace, but not `SHELL_NAV` — the sidebar's
+ * Reviews row (with its *Requested from me* count) is the entry, the same way `attention` and
+ * `issues` work since F13.11.
  *
  * **F13.11 deleted the `'interim'` group** that used to sit between the two above (`attention`,
  * `projects`, `issues`, `fleet`, `scratch`) — every one of those five now reaches its screen
@@ -47,6 +50,7 @@ export type ShellNavId =
   | 'issues'
   | 'fleet'
   | 'scratch'
+  | 'reviews'
   | 'settings';
 
 export interface ShellNavEntry {
