@@ -79,6 +79,9 @@ const snapshot = (over: Partial<DesktopPaletteSnapshot> = {}): DesktopPaletteSna
   onAddTask: vi.fn(),
   runTask: vi.fn().mockResolvedValue(undefined),
   stopTask: vi.fn().mockResolvedValue(undefined),
+  reviewsOpen: false,
+  onOpenReviews: vi.fn(),
+  onReviewAction: vi.fn(),
   ...over,
 });
 
@@ -243,5 +246,57 @@ describe('buildDesktopCommands', () => {
     );
     await commands.find((c) => c.id === 'stop-selected')?.run();
     expect(stopTask).toHaveBeenCalledWith('c1');
+  });
+
+  describe('the review workspace rows (F15.14b)', () => {
+    it('always offers Reviews, which opens the workspace with no subject', () => {
+      const onOpenReviews = vi.fn();
+      const commands = buildDesktopCommands(snapshot({ onOpenReviews }));
+      const reviews = commands.find((c) => c.id === 'nav:reviews');
+      expect(reviews?.group).toBe('navigate');
+      void reviews?.run();
+      expect(onOpenReviews).toHaveBeenCalledWith();
+    });
+
+    it('opens the selected card in the workspace by its task subject, named by its key', () => {
+      const card = task({ id: 'c1', ticketKey: 'TM-7' });
+      const onOpenReviews = vi.fn();
+      const commands = buildDesktopCommands(
+        snapshot({ tasks: [card], selectedTaskId: 'c1', getTask: () => card, onOpenReviews }),
+      );
+      const open = commands.find((c) => c.id === 'review:openSelected');
+      expect(open?.title).toBe('Open TM-7 in review workspace');
+      void open?.run();
+      expect(onOpenReviews).toHaveBeenCalledWith('task:c1');
+    });
+
+    it('offers no "Open … in review workspace" with no card selected', () => {
+      const commands = buildDesktopCommands(snapshot());
+      expect(commands.find((c) => c.id === 'review:openSelected')).toBeUndefined();
+    });
+
+    it('a card removed before "Open … in review workspace" runs refuses with the unknown-task sentence', () => {
+      const card = task({ id: 'c1' });
+      const onOpenReviews = vi.fn();
+      const commands = buildDesktopCommands(
+        snapshot({ tasks: [card], selectedTaskId: 'c1', getTask: () => undefined, onOpenReviews }),
+      );
+      expect(() => commands.find((c) => c.id === 'review:openSelected')?.run()).toThrow(
+        RUN_REFUSAL_MESSAGE['unknown-task'],
+      );
+      expect(onOpenReviews).not.toHaveBeenCalled();
+    });
+
+    it('offers the key actions only while the workspace is open, each running its action', () => {
+      expect(buildDesktopCommands(snapshot()).some((c) => c.id.startsWith('review:key:'))).toBe(
+        false,
+      );
+      const onReviewAction = vi.fn();
+      const commands = buildDesktopCommands(snapshot({ reviewsOpen: true, onReviewAction }));
+      const next = commands.find((c) => c.id === 'review:key:nextFile');
+      expect(next?.title).toBe('Review: Next file');
+      void next?.run();
+      expect(onReviewAction).toHaveBeenCalledWith('nextFile');
+    });
   });
 });

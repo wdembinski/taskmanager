@@ -53,7 +53,7 @@
  *   `viewBox` (verified against the mockup files themselves); 390×844 matches the phone frame
  *   drawn inside `v9-4-mobile-light.svg`/`v9-5-mobile-dark.svg`, not the SVG's own (wider) canvas.
  * - `path` — `'client'` rows only: appended to the renderer's origin for the navigation (e.g.
- *   `'/?harness=review-workspace'`, `main.tsx`'s test route for a screen no host mounts yet).
+ *   `'/?harness=review-workspace'`, `main.tsx`'s workspace-only test route).
  *   Omit it to load the bare origin — the app itself. Storage is still cleared for the bare
  *   origin either way.
  * - `scheme` — `'light'` or `'dark'`, fed to the same `appearance` setting

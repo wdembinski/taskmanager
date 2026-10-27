@@ -55,9 +55,11 @@ for (const type of ['dragover', 'drop'] as const) {
 /**
  * **A test-only route: `?harness=review-workspace`.** Mounts the review workspace
  * (`@ui/review/ReviewWorkspace`) on its own in place of `<App />`, so `ui-shots.mjs`'s
- * `review-workspace-*` rows can shoot a screen no host mounts yet — the Reviews entry and the
- * `/reviews` route are F15.14b's. Nothing in the app ever navigates to a query string, so a
- * real window never reaches it. Loaded lazily, so the app's own bundle does not grow by it.
+ * `review-workspace-*` rows can shoot the workspace without the shell around it. Since F15.14b
+ * `App.tsx` mounts it for real on its `reviews` tab (the sidebar's Reviews row, a card's
+ * *Open in review workspace*, the palette); this route only keeps those shot rows framed on
+ * the workspace alone. Nothing in the app ever navigates to a query string, so a real window
+ * never reaches it. Loaded lazily, so the app's own bundle does not grow by it.
  */
 const HARNESS = new URLSearchParams(window.location.search).get('harness');
 

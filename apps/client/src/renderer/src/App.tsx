@@ -19,7 +19,7 @@
  * `window.api.invoke(...)` and consume pushed updates via `window.api.on(...)`.
  * Those two are the whole UI↔engine vocabulary.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Caption1,
   CounterBadge,
@@ -46,6 +46,9 @@ import { CommandPalette } from '@ui/palette/CommandPalette';
 import { useGlobalShortcut } from '@ui/palette/shortcut';
 import { shortcutLabel } from '@ui/palette/shortcutLabel';
 import { NewTicketDialog } from '@ui/projects/NewTicketDialog';
+import { ReviewWorkspace, type ReviewActionRequest } from '@ui/review/ReviewWorkspace';
+import { ReviewWorkspaceOpenerProvider } from '@ui/review/reviewWorkspaceOpener';
+import { useRequestedReviewCount } from '@ui/review/useRequestedReviewCount';
 import { AuthBanner } from './AuthBanner';
 import { LimitBanner } from './LimitBanner';
 import { MyTasks } from './MyTasks';
@@ -187,6 +190,29 @@ export function App(): JSX.Element {
   // palette's "Start/Stop selected card" acts on, wherever the palette happens to be opened.
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   /**
+   * The review workspace's own steering (F15.14b): the subject to select when the `reviews` tab
+   * opens — a card's *Open in review workspace*, the palette's "Open … in review workspace" —
+   * and the palette's key-action requests, each a new `seq` so the same action runs twice.
+   * `null` subject opens on whatever the workspace picks itself.
+   *
+   * Every way onto the tab goes through `openReviews`, which resets both: the workspace mounts
+   * afresh each time the tab opens, so a subject or a request left over from the last visit
+   * would otherwise be replayed into the new one.
+   */
+  const [pendingReviewSubject, setPendingReviewSubject] = useState<string | null>(null);
+  const [reviewActionRequest, setReviewActionRequest] = useState<ReviewActionRequest | undefined>(
+    undefined,
+  );
+  const openReviews = useCallback((subjectId?: string) => {
+    setPendingReviewSubject(subjectId ?? null);
+    setReviewActionRequest(undefined);
+    setTab('reviews');
+  }, []);
+  const reviewOpener = useMemo(
+    () => ({ open: (subjectId: string) => openReviews(subjectId) }),
+    [openReviews],
+  );
+  /**
    * `paletteTasks`, read fresh at the moment a palette command actually RUNS rather than at
    * the moment the palette opened. `CommandPalette` snapshots its commands once per open, so
    * a card deleted while the palette is still sitting there open would otherwise be resolved
@@ -226,6 +252,10 @@ export function App(): JSX.Element {
     stopTask: async (taskId) => {
       await window.api.invoke('task:stopAgent', taskId);
     },
+    reviewsOpen: tab === 'reviews',
+    onOpenReviews: openReviews,
+    onReviewAction: (action) =>
+      setReviewActionRequest((prev) => ({ action, seq: (prev?.seq ?? 0) + 1 })),
   };
   // How many tasks are waiting on a human, shown as a badge on the Attention tab.
   const [attentionCount, setAttentionCount] = useState(0);
@@ -241,7 +271,14 @@ export function App(): JSX.Element {
   const [openCounts, setOpenCounts] = useState<ReadonlyMap<string, number>>(new Map());
   const tracker = useTrackerProject(trackerProjects, openCounts);
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
-  const sidebarData = useSidebarData(tracker.projectId, { attentionCount, folds: sidebarFolds });
+  // Reviews is always on (F15.14b); its count is the *Requested from me* queue's rows.
+  const reviewsCount = useRequestedReviewCount();
+  const sidebarData = useSidebarData(tracker.projectId, {
+    attentionCount,
+    folds: sidebarFolds,
+    reviewsEnabled: true,
+    reviewsCount,
+  });
   // The Tickets workspace's own Backlog/Timeline/Graph/Archived view (F14.8) — lifted here so
   // the sidebar's "Archived" row can land on it directly, the same `tab`-lifting reason
   // `tracker.projectId` is lifted rather than left to `TicketWorkspace`'s own default.
@@ -461,7 +498,8 @@ export function App(): JSX.Element {
         setTab('mytasks');
         return;
       case 'reviews':
-        return; // F15 — reviewsEnabled is off, so this never fires yet.
+        openReviews();
+        return;
       case 'issues':
         setTab('issues');
         return;
@@ -490,11 +528,13 @@ export function App(): JSX.Element {
           : { kind: 'myIssues' }
         : tab === 'issues'
           ? { kind: 'issues' }
-          : tab === 'projects'
-            ? { kind: 'projects' }
-            : tab === 'tickets' && ticketsView === 'archived'
-              ? { kind: 'archived' }
-              : null;
+          : tab === 'reviews'
+            ? { kind: 'reviews' }
+            : tab === 'projects'
+              ? { kind: 'projects' }
+              : tab === 'tickets' && ticketsView === 'archived'
+                ? { kind: 'archived' }
+                : null;
 
   return (
     <>
@@ -510,212 +550,223 @@ export function App(): JSX.Element {
         tickets={sidebarData.tickets}
         onClose={() => setNewIssueDialogOpen(false)}
       />
-      <AppShell
-        dimmed={paletteOpen}
-        titleBar={<TitleBar />}
-        nav={
-          <NavRail
-            items={SHELL_NAV}
-            // The only label the rail still shows on a tile of its own: Activity's unread
-            // rows, hidden while that tab is the one already open — see
-            // `unreadActivityCount`'s own docstring on why a human move is excluded from it.
-            // Attention's own count moved onto the sidebar's Inbox row (F13.11) along with
-            // its rail tile.
-            badges={{
-              activity: unreadCount > 0 && tab !== 'activity' && (
-                <CounterBadge
-                  count={unreadCount}
-                  color="informative"
-                  size="small"
-                  appearance="filled"
-                />
-              ),
-            }}
-            selected={tab}
-            onSelect={(id) => setTab(id as TabId)}
-            paletteHint={{
-              label: shortcutLabel('mod+k', window),
-              onClick: () => setPaletteOpen(true),
-            }}
-          />
-        }
-        // Settings is a full-content-card page (v10 mockup): no sidebar tree beside it.
-        sidebar={
-          tab === 'settings' ? undefined : (
-            <Sidebar
-              sections={sidebarData.sections}
-              selectedView={sidebarSelectedView}
-              onNavigate={handleSidebarNavigate}
-              onOpenTicket={openTaskOnBoard}
-              onNewIssue={() => {
-                if (tracker.projectId) setNewIssueDialogOpen(true);
+      {/* Every card's Changes pane under here offers *Open in review workspace* (F15.14b). */}
+      <ReviewWorkspaceOpenerProvider value={reviewOpener}>
+        <AppShell
+          dimmed={paletteOpen}
+          titleBar={<TitleBar />}
+          nav={
+            <NavRail
+              items={SHELL_NAV}
+              // The only label the rail still shows on a tile of its own: Activity's unread
+              // rows, hidden while that tab is the one already open — see
+              // `unreadActivityCount`'s own docstring on why a human move is excluded from it.
+              // Attention's own count moved onto the sidebar's Inbox row (F13.11) along with
+              // its rail tile.
+              badges={{
+                activity: unreadCount > 0 && tab !== 'activity' && (
+                  <CounterBadge
+                    count={unreadCount}
+                    color="informative"
+                    size="small"
+                    appearance="filled"
+                  />
+                ),
               }}
-              onToggleFold={toggleSidebarFold}
-              projectOptions={tracker.projectOptions}
-              selectedProjectId={tracker.projectId}
-              onSelectProject={tracker.selectProject}
-              loading={!sidebarData.loaded}
-              onSearch={() => setPaletteOpen(true)}
+              selected={tab}
+              onSelect={(id) => setTab(id as TabId)}
+              paletteHint={{
+                label: shortcutLabel('mod+k', window),
+                onClick: () => setPaletteOpen(true),
+              }}
             />
-          )
-        }
-        banners={
-          <>
-            {/* The engine is unreachable — every tab below will be empty, so say why once,
+          }
+          // Settings is a full-content-card page (v10 mockup): no sidebar tree beside it. The
+          // review workspace draws its own queue column where the sidebar would sit (v9-6).
+          sidebar={
+            tab === 'settings' || tab === 'reviews' ? undefined : (
+              <Sidebar
+                sections={sidebarData.sections}
+                selectedView={sidebarSelectedView}
+                onNavigate={handleSidebarNavigate}
+                onOpenTicket={openTaskOnBoard}
+                onNewIssue={() => {
+                  if (tracker.projectId) setNewIssueDialogOpen(true);
+                }}
+                onToggleFold={toggleSidebarFold}
+                projectOptions={tracker.projectOptions}
+                selectedProjectId={tracker.projectId}
+                onSelectProject={tracker.selectProject}
+                loading={!sidebarData.loaded}
+                onSearch={() => setPaletteOpen(true)}
+              />
+            )
+          }
+          banners={
+            <>
+              {/* The engine is unreachable — every tab below will be empty, so say why once,
               at the top, rather than leaving the user to guess from seven spinners. */}
-            {bootError && (
-              <MessageBar intent="error">
-                <MessageBarBody>
-                  Can&apos;t reach the app&apos;s backend, so nothing will load: {bootError}
-                </MessageBarBody>
-              </MessageBar>
-            )}
+              {bootError && (
+                <MessageBar intent="error">
+                  <MessageBarBody>
+                    Can&apos;t reach the app&apos;s backend, so nothing will load: {bootError}
+                  </MessageBarBody>
+                </MessageBar>
+              )}
 
-            {/* Surface a Claude problem prominently; when all is well the footer suffices.
+              {/* Surface a Claude problem prominently; when all is well the footer suffices.
               Suppressed while the sign-in gate is up: `AuthBanner` above is saying the
               same thing with the button that fixes it, and two red bars reporting one
               outage reads as two outages. */}
-            {claude && !claudeOk && !signedOut && (
-              <MessageBar intent="warning">
-                <MessageBarBody>{claude.message}</MessageBarBody>
-              </MessageBar>
-            )}
+              {claude && !claudeOk && !signedOut && (
+                <MessageBar intent="warning">
+                  <MessageBarBody>{claude.message}</MessageBarBody>
+                </MessageBar>
+              )}
 
-            {/* Account-wide sign-in gate: all work is held until a human signs in. Above
+              {/* Account-wide sign-in gate: all work is held until a human signs in. Above
               the limit banner because it is the one with an action on it. */}
-            <AuthBanner />
+              <AuthBanner />
 
-            {/* Global usage-limit gate (Phase 5): a countdown while work is parked. */}
-            <LimitBanner />
-          </>
-        }
-        // Every screen but My Tasks is a document and wants a margin. My Tasks is a
-        // two-panel workspace whose right pane runs to the window's edges, and Tickets and
-        // Settings stand on cards (`GlassPane`) that lay out their own 10px canvas inset —
-        // the shell's padding on top would double it.
-        padded={tab !== 'mytasks' && tab !== 'tickets' && tab !== 'settings'}
-        /* Status bar: Claude readiness + app info, the full width of the window. */
-        status={
-          <StatusBar attention={attentionCount > 0}>
-            {claude ? (
-              <>
-                <StatusDot ok={Boolean(claudeOk)} />
-                <Caption1>
-                  {/* `signedOut` first: a run has PROVEN the credential is dead, so saying
+              {/* Global usage-limit gate (Phase 5): a countdown while work is parked. */}
+              <LimitBanner />
+            </>
+          }
+          // Every screen but My Tasks is a document and wants a margin. My Tasks is a
+          // two-panel workspace whose right pane runs to the window's edges, and Tickets and
+          // Settings stand on cards (`GlassPane`) that lay out their own 10px canvas inset —
+          // the shell's padding on top would double it. The review workspace's three columns run
+          // to the edges the same way My Tasks' panes do.
+          padded={tab !== 'mytasks' && tab !== 'tickets' && tab !== 'settings' && tab !== 'reviews'}
+          /* Status bar: Claude readiness + app info, the full width of the window. */
+          status={
+            <StatusBar attention={attentionCount > 0}>
+              {claude ? (
+                <>
+                  <StatusDot ok={Boolean(claudeOk)} />
+                  <Caption1>
+                    {/* `signedOut` first: a run has PROVEN the credential is dead, so saying
                     "logged in" because the file is still on disk would be the bar's most
                     confidently wrong moment — which is exactly what it did during the
                     outage this reports. */}
-                  {signedOut
-                    ? `Claude ${claude.version ?? '?'} · signed out — work is held`
-                    : claude.installed
-                      ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
-                      : 'Claude CLI not found'}
-                  {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
-                </Caption1>
-              </>
-            ) : bootError ? (
-              <>
-                <StatusDot ok={false} />
-                <Caption1>Backend unavailable</Caption1>
-              </>
-            ) : (
-              <Spinner
-                className={styles.statusSpinner}
-                label="Checking Claude…"
-                labelPosition="after"
-                size="tiny"
-              />
-            )}
-            {attentionCount > 0 && <Caption1>{attentionCount} waiting on you</Caption1>}
-            {/* No colour of its own: the bar turns orange under attention, and a fixed
+                    {signedOut
+                      ? `Claude ${claude.version ?? '?'} · signed out — work is held`
+                      : claude.installed
+                        ? `Claude ${claude.version ?? '?'}${claude.authenticated ? ' · logged in' : ' · not logged in'}`
+                        : 'Claude CLI not found'}
+                    {claude.apiKeyDetected && ' · ANTHROPIC_API_KEY set'}
+                  </Caption1>
+                </>
+              ) : bootError ? (
+                <>
+                  <StatusDot ok={false} />
+                  <Caption1>Backend unavailable</Caption1>
+                </>
+              ) : (
+                <Spinner
+                  className={styles.statusSpinner}
+                  label="Checking Claude…"
+                  labelPosition="after"
+                  size="tiny"
+                />
+              )}
+              {attentionCount > 0 && <Caption1>{attentionCount} waiting on you</Caption1>}
+              {/* No colour of its own: the bar turns orange under attention, and a fixed
               white would go unreadable exactly then. */}
-            {sprint && <Caption1>{sprint}</Caption1>}
-            {segments.agentsRunning !== null && <StatusAgents count={segments.agentsRunning} />}
-            {segments.branch !== null && <StatusBranch name={segments.branch} />}
-            <StatusSpacer />
-            {/* A downloaded update installs itself on the next quit either way; this is
+              {sprint && <Caption1>{sprint}</Caption1>}
+              {segments.agentsRunning !== null && <StatusAgents count={segments.agentsRunning} />}
+              {segments.branch !== null && <StatusBranch name={segments.branch} />}
+              <StatusSpacer />
+              {/* A downloaded update installs itself on the next quit either way; this is
               simply the offer to have it now, and the only notice the user ever gets. */}
-            {update?.status === 'downloaded' && (
-              <Caption1>
-                <button
-                  type="button"
-                  className={styles.update}
-                  title="Restart now to finish installing. Otherwise it applies the next time you quit."
-                  onClick={() => void window.api.invoke('update:install')}
-                >
-                  Update {update.version ?? ''} ready — restart
-                </button>
-              </Caption1>
-            )}
-            {/* A failure used to be shown nowhere at all, which is how three releases' worth of
+              {update?.status === 'downloaded' && (
+                <Caption1>
+                  <button
+                    type="button"
+                    className={styles.update}
+                    title="Restart now to finish installing. Otherwise it applies the next time you quit."
+                    onClick={() => void window.api.invoke('update:install')}
+                  >
+                    Update {update.version ?? ''} ready — restart
+                  </button>
+                </Caption1>
+              )}
+              {/* A failure used to be shown nowhere at all, which is how three releases' worth of
               refused installs went unnoticed. Still not a dialog — one line that points at the
               place where the actual reason is written down. */}
-            {update?.status === 'error' && (
-              <Caption1>
-                <button
-                  type="button"
-                  className={styles.update}
-                  title={describeUpdate(update)}
-                  onClick={() => setTab('settings')}
-                >
-                  Update failed — see Settings
-                </button>
-              </Caption1>
-            )}
-            {/* How much of the two metered windows is gone. Same right-hand group as the sync
+              {update?.status === 'error' && (
+                <Caption1>
+                  <button
+                    type="button"
+                    className={styles.update}
+                    title={describeUpdate(update)}
+                    onClick={() => setTab('settings')}
+                  >
+                    Update failed — see Settings
+                  </button>
+                </Caption1>
+              )}
+              {/* How much of the two metered windows is gone. Same right-hand group as the sync
               rings, and for the same reason: ambient state you glance at, never a decision.
               The full numbers and the reset countdown are in each one's tooltip, and the
               Performance tab draws the same pair at full size. */}
-            <UsageQuotaStatus quotas={segments.quotas} />
-            {/* How stale the mirror is, and how long until the next refresh. On the right,
+              <UsageQuotaStatus quotas={segments.quotas} />
+              {/* How stale the mirror is, and how long until the next refresh. On the right,
               beside the version: it is ambient state, not something that wants a decision. */}
-            <SyncRing state={syncState} />
-            {info && (
-              <Caption1>
-                v{info.version} · electron {info.electron} · node {info.node}
-              </Caption1>
-            )}
-          </StatusBar>
-        }
-      >
-        {tab === 'mytasks' ? (
-          <MyTasks
-            openTaskId={pendingOpenTaskId}
-            onOpenTaskIdHandled={() => setPendingOpenTaskId(null)}
-            openAddTask={pendingAddTask}
-            onOpenAddTaskHandled={() => setPendingAddTask(false)}
-            onSelectedTaskIdChange={setSelectedTaskId}
-            onOpenList={() => setTab('tickets')}
-          />
-        ) : tab === 'projects' ? (
-          <Projects />
-        ) : tab === 'tickets' ? (
-          <TicketWorkspace
-            onShowOnBoard={openTaskOnBoard}
-            selectedProjectId={tracker.projectId}
-            onSelectProject={tracker.selectProject}
-            view={ticketsView}
-            onViewChange={setTicketsView}
-          />
-        ) : tab === 'issues' ? (
-          <IssuesScreen onOpenTask={openTaskOnBoard} />
-        ) : tab === 'automations' ? (
-          <AutomationsView onOpenTask={openTaskOnBoard} />
-        ) : tab === 'performance' ? (
-          <Performance />
-        ) : tab === 'activity' ? (
-          <ActivityScreen lastSeen={lastSeen} onSeen={onSeen} onOpenTask={openTaskOnBoard} />
-        ) : tab === 'attention' ? (
-          <Attention onOpenTask={openTaskOnBoard} />
-        ) : tab === 'settings' ? (
-          <Settings
-            initialSection={pendingSettingsSection}
-            onInitialSectionHandled={() => setPendingSettingsSection(null)}
-          />
-        ) : (
-          <SessionRunner />
-        )}
-      </AppShell>
+              <SyncRing state={syncState} />
+              {info && (
+                <Caption1>
+                  v{info.version} · electron {info.electron} · node {info.node}
+                </Caption1>
+              )}
+            </StatusBar>
+          }
+        >
+          {tab === 'mytasks' ? (
+            <MyTasks
+              openTaskId={pendingOpenTaskId}
+              onOpenTaskIdHandled={() => setPendingOpenTaskId(null)}
+              openAddTask={pendingAddTask}
+              onOpenAddTaskHandled={() => setPendingAddTask(false)}
+              onSelectedTaskIdChange={setSelectedTaskId}
+              onOpenList={() => setTab('tickets')}
+            />
+          ) : tab === 'projects' ? (
+            <Projects />
+          ) : tab === 'tickets' ? (
+            <TicketWorkspace
+              onShowOnBoard={openTaskOnBoard}
+              selectedProjectId={tracker.projectId}
+              onSelectProject={tracker.selectProject}
+              view={ticketsView}
+              onViewChange={setTicketsView}
+            />
+          ) : tab === 'issues' ? (
+            <IssuesScreen onOpenTask={openTaskOnBoard} />
+          ) : tab === 'automations' ? (
+            <AutomationsView onOpenTask={openTaskOnBoard} />
+          ) : tab === 'performance' ? (
+            <Performance />
+          ) : tab === 'activity' ? (
+            <ActivityScreen lastSeen={lastSeen} onSeen={onSeen} onOpenTask={openTaskOnBoard} />
+          ) : tab === 'attention' ? (
+            <Attention onOpenTask={openTaskOnBoard} />
+          ) : tab === 'settings' ? (
+            <Settings
+              initialSection={pendingSettingsSection}
+              onInitialSectionHandled={() => setPendingSettingsSection(null)}
+            />
+          ) : tab === 'reviews' ? (
+            <ReviewWorkspace
+              initialSubjectId={pendingReviewSubject ?? undefined}
+              actionRequest={reviewActionRequest}
+              onClose={() => setTab('mytasks')}
+            />
+          ) : (
+            <SessionRunner />
+          )}
+        </AppShell>
+      </ReviewWorkspaceOpenerProvider>
     </>
   );
 }
