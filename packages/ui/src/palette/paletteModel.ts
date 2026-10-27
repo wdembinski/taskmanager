@@ -17,9 +17,11 @@
  * query to the active row's own title — a no-op with no rows — for `Tab`'s own "keep digging
  * into this result" gesture. `failed` reports a run that threw, surfacing `error` without
  * closing the palette. `groupRows`, `paletteKeyEvent` and `runSelected` are pure helpers so the
- * component itself holds no logic.
+ * component itself holds no logic. `reviewWorkspaceCommands` is the review workspace's own rows
+ * (F15.14b), built here once so the desktop and web sources mix in the same list.
  */
-import type { FluentIcon } from '@fluentui/react-icons';
+import { BranchRegular, WindowNewRegular, type FluentIcon } from '@fluentui/react-icons';
+import { REVIEW_KEYS, type ReviewKeyAction } from '../review/reviewKeys';
 
 /** Fixed section order the palette always renders in, independent of source order. */
 export const PALETTE_GROUP_ORDER = ['actions', 'cards', 'navigate', 'projects'] as const;
@@ -384,4 +386,75 @@ export function runSelected(state: PaletteState): (() => void | Promise<void>) |
   if (state.selected === null) return null;
   if (state.secondary) return state.selected.secondary?.run ?? null;
   return state.selected.run;
+}
+
+/** Every id {@link reviewWorkspaceCommands} can hand its `onAction` — see there. */
+export type ReviewWorkspaceCommandId =
+  'nav:reviews' | 'review:openSelected' | `review:key:${ReviewKeyAction}`;
+
+export interface ReviewWorkspaceCommandsInput {
+  /** Whether the review workspace is the screen on show — its key actions are offered only
+   *  then, since they act on whatever the workspace has selected. */
+  open: boolean;
+  /** The card selected on the board, or `null` with none; `label` is its tracker key, `null`
+   *  when it has none (the same fact `PaletteContext.subjectLabel` carries). */
+  selection: { label: string | null } | null;
+  /** Runs a row — the host maps the id onto its own navigation / `actionRequest`. */
+  onAction: (id: ReviewWorkspaceCommandId) => void;
+}
+
+/**
+ * The review workspace's palette rows (F15.14b), shared by both hosts' sources: always a
+ * `nav:reviews` row to go there; an "Open … in review workspace" row only while a card is
+ * selected; and one `actions` row per {@link REVIEW_KEYS} entry only while the workspace is
+ * open, each showing its own key as the row's shortcut. Pure — every row's `run` just calls
+ * `onAction` with its own id, so the host decides what "go" and "next file" mean.
+ */
+export function reviewWorkspaceCommands({
+  open,
+  selection,
+  onAction,
+}: ReviewWorkspaceCommandsInput): PaletteCommand[] {
+  const row = (
+    id: ReviewWorkspaceCommandId,
+    rest: Omit<PaletteCommand, 'id' | 'run'>,
+  ): PaletteCommand => ({ id, ...rest, run: () => onAction(id) });
+
+  const commands: PaletteCommand[] = [
+    row('nav:reviews', {
+      group: 'navigate',
+      title: 'Reviews',
+      keywords: ['review workspace', 'diff'],
+      icon: BranchRegular,
+    }),
+  ];
+  if (selection !== null) {
+    commands.push(
+      row('review:openSelected', {
+        group: 'actions',
+        title: `Open ${selection.label ?? 'this card'} in review workspace`,
+        keywords: ['review', 'changes', 'diff'],
+        icon: WindowNewRegular,
+      }),
+    );
+  }
+  if (open) {
+    for (const key of REVIEW_KEYS) {
+      commands.push(
+        row(`review:key:${key.id as ReviewKeyAction}`, {
+          group: 'actions',
+          title: `Review: ${key.label}`,
+          keywords: ['review'],
+          shortcut: key.spec,
+        }),
+      );
+    }
+  }
+  return commands;
+}
+
+/** The workspace key action a {@link ReviewWorkspaceCommandId} runs, or `null` for the two
+ *  rows that are not key actions — the host's switch for `actionRequest`. */
+export function reviewCommandKeyAction(id: ReviewWorkspaceCommandId): ReviewKeyAction | null {
+  return id.startsWith('review:key:') ? (id.slice('review:key:'.length) as ReviewKeyAction) : null;
 }

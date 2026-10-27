@@ -28,12 +28,13 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
-import type {
-  DiffSide,
-  DiffStale,
-  ReviewComment,
-  ReviewCommentInput,
-  ReviewCommentSent,
+import {
+  taskSubjectId,
+  type DiffSide,
+  type DiffStale,
+  type ReviewComment,
+  type ReviewCommentInput,
+  type ReviewCommentSent,
 } from '@tm/shared/review';
 import { useTransport } from '../transport';
 import {
@@ -66,6 +67,7 @@ import {
 } from './reviewState';
 import { defaultExpanded, fetchablePaths } from './reviewView';
 import { ReviewPaneView } from './ReviewPaneView';
+import { useReviewWorkspaceOpener } from './reviewWorkspaceOpener';
 
 export interface ReviewPaneProps {
   taskId: string;
@@ -84,6 +86,9 @@ export interface ReviewPaneProps {
 
 export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JSX.Element {
   const transport = useTransport();
+  // The host's way into the review workspace (F15.14b) — `null` with no provider, which is
+  // what keeps the button off a host that never mounts the workspace.
+  const opener = useReviewWorkspaceOpener();
   const [state, setState] = useState<ReviewState>(EMPTY_REVIEW);
   const [error, setError] = useState<string | null>(null);
   const seq = useRef(0);
@@ -304,6 +309,7 @@ export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JS
       layout={layout}
       monochrome={monochrome}
       onReload={() => void loadSummary()}
+      onOpenInWorkspace={opener ? () => opener.open(taskSubjectId(taskId)) : undefined}
       onSelectFile={(path) => setState((s) => selectFile(s, path))}
       onToggleExpanded={(path) => setState((s) => toggleExpanded(s, path))}
       onClickLine={onClickLine}
