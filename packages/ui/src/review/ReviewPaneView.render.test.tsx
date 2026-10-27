@@ -67,8 +67,9 @@ function render(over: Partial<ReviewPaneViewProps> = {}): string {
 describe('ReviewPaneView: Open in review workspace', () => {
   it('draws the button in the toolbar when the host provides an opener', () => {
     const html = render({ onOpenInWorkspace: () => {} });
-    expect(html).toContain('data-open-review-workspace');
-    expect(html).toContain('aria-label="Open in review workspace"');
+    // The label is the button's visible text, not just an icon with a tooltip.
+    const button = /<button[^>]*data-open-review-workspace[^>]*>(.*?)<\/button>/.exec(html);
+    expect(button?.[1]).toContain('Open in review workspace');
   });
 
   it('draws no button without an opener', () => {

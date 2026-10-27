@@ -553,11 +553,11 @@ export function ReviewPaneView({
               size="small"
               appearance="subtle"
               icon={<WindowNewRegular />}
-              title="Open in review workspace"
-              aria-label="Open in review workspace"
               data-open-review-workspace=""
               onClick={onOpenInWorkspace}
-            />
+            >
+              Open in review workspace
+            </Button>
           )}
         </div>
         <div className={styles.body}>

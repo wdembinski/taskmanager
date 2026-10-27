@@ -41,6 +41,7 @@ import {
   MessageBarActions,
   MessageBarBody,
   Spinner,
+  Subtitle1,
   Subtitle2,
   ToggleButton,
   Tooltip,
@@ -263,7 +264,8 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
         <div className={mergeClasses(styles.column, styles.queues)} data-column="queues">
           <div className={styles.columnHeader}>
             <div className={styles.queuesTitle}>
-              <Subtitle2>Queues</Subtitle2>
+              {/* The page's title, at v9-6's 20px semibold; the caption below is about the queues. */}
+              <Subtitle1 data-review-title>Reviews</Subtitle1>
               {asOfNotice && (
                 <Caption1 className={styles.faint} data-queues-as-of>
                   {asOfNotice}

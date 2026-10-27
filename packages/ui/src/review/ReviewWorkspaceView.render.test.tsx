@@ -214,6 +214,13 @@ describe('ReviewWorkspaceView', () => {
       expect(taskHtml).toContain('data-state="loaded"');
     });
 
+    it('titles the queue column Reviews, never Queues', () => {
+      for (const html of [render(), prHtml]) {
+        expect(html).toMatch(/<span[^>]*data-review-title[^>]*>Reviews<\/span>/);
+        expect(html).not.toContain('>Queues<');
+      }
+    });
+
     it('draws the three queue groups with their counts', () => {
       expect(prHtml).toContain('Requested from me');
       expect(prHtml).toContain('My PRs / MRs');
