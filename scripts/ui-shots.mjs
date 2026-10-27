@@ -119,6 +119,12 @@
  * - `attention` — `'web'` rows only: the `AttentionItem[]` the fake relay answers
  *   `attention:list` with for this row (default none), so a phone shot can show Inbox rows and
  *   the tab bar's attention count. Reset for every row.
+ * - `channelOverrides` — `{ [channel]: spec }` layered over the shared fixture's own
+ *   `BOOT_CHANNELS` for this row only: a fixed value, `'list'`/`'null'`, or
+ *   `{ byArgTable, fallback, argIndex? }` keyed on the argument at `argIndex` (default `0`).
+ *   `'client'` rows feed it to `apiStub.mjs`'s `window.api`; `'web'` rows to the fake relay
+ *   (`fakeRelay.mjs`'s `state.channelOverrides`), where it wins over the relay's own explicit
+ *   channel cases too. Reset for every row on both targets.
  * - `layoutCheck` — `{ visible: selector, clear: [selector, …] }`, measured after `expect`: the
  *   first `visible` match must sit fully inside every overflow-clipping ancestor and the
  *   viewport, and must not overlap the first match of any `clear` selector (sharing an edge is
@@ -942,6 +948,7 @@ async function main() {
           // Reset per row, like `appearance`: one relay serves every web row, so a row that
           // seeds the Inbox must not leak its items (and the tab bar's count) into the next.
           relayHandle.state.attentionItems = structuredClone(row.attention ?? []);
+          relayHandle.state.channelOverrides = row.channelOverrides ?? {};
           initScript = webInitScript(DESKTOP_CLIENT_ID);
           await freshLoad(cdp, relayOrigin, initScript);
         }
