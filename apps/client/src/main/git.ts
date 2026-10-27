@@ -11,7 +11,7 @@
  * non-zero git exit is surfaced as `GitResult.code` rather than throwing, so the
  * caller decides what a failure means (e.g. a non-zero `rebase` = conflicts).
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { GitPreflight } from '@shared/model';
 import type { DiffFileStatus } from '@shared/review';
@@ -925,6 +925,63 @@ export async function blobSize(
   if (res.code !== 0) return -1;
   const n = Number.parseInt(res.stdout.trim(), 10);
   return Number.isFinite(n) ? n : -1;
+}
+
+/** How many paths one `git hash-object` call names — well inside Windows' command-line limit. */
+const HASH_OBJECT_BATCH = 100;
+
+/**
+ * The git blob SHA of each of `paths` at `ref`, or in the work tree when `ref` is null — the
+ * `newBlobSha` a viewed mark (F15.4) is keyed on. A path with no blob on that side (deleted,
+ * a directory, a submodule) is simply absent from the map.
+ *
+ * At a ref, one `ls-tree -r -z` over the whole tree, filtered — the same shape `fileSizes`
+ * reads, so a summary of a thousand files is still one call. In the work tree, `hash-object`
+ * on the files that exist, in batches: it runs the path's clean filters (`core.autocrlf`,
+ * `.gitattributes`) just as `git add` would, so the SHA is the blob the file BECOMES once
+ * committed — a file viewed before the agent commits it is still viewed after. A batch git
+ * refuses is left out rather than failing the whole summary.
+ */
+export async function blobShas(
+  dir: string,
+  ref: string | null,
+  paths: readonly string[],
+  host: ExecHost = localHost(),
+): Promise<Map<string, string>> {
+  const shas = new Map<string, string>();
+  if (paths.length === 0) return shas;
+  if (ref !== null) {
+    const res = await git(dir, ['ls-tree', '-r', '-z', ref], host);
+    if (res.code !== 0) return shas;
+    const wanted = new Set(paths);
+    for (const record of res.stdout.split('\0')) {
+      const tab = record.indexOf('\t');
+      if (tab === -1) continue;
+      const [, type, sha] = record.slice(0, tab).trim().split(/\s+/);
+      const path = record.slice(tab + 1);
+      if (type === 'blob' && sha && wanted.has(path)) shas.set(path, sha);
+    }
+    return shas;
+  }
+  const present = paths.filter((p) => {
+    try {
+      return statSync(join(host.toApp(dir), p)).isFile();
+    } catch {
+      return false;
+    }
+  });
+  for (let i = 0; i < present.length; i += HASH_OBJECT_BATCH) {
+    const batch = present.slice(i, i + HASH_OBJECT_BATCH);
+    const res = await git(dir, ['hash-object', '--', ...batch], host);
+    if (res.code !== 0) continue;
+    const lines = res.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length !== batch.length) continue;
+    batch.forEach((p, idx) => shas.set(p, lines[idx]));
+  }
+  return shas;
 }
 
 /**

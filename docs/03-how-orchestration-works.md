@@ -98,7 +98,7 @@ the cap approaches, and reading one as a block once parked everything for a full
 window.
 
 **2. A run that merely FAILED, with the reason only in its text.** This is the common
-one: the turn ends as an `api_error` and the sentence *"Claude AI usage limit reached"*
+one: the turn ends as an `api_error` and the sentence _"Claude AI usage limit reached"_
 is the only thing naming the cause. Taken literally that is dangerous in both
 directions — believing an agent's prose parks the whole board over one card's answer,
 and disbelieving the CLI blames a card for something the account did — so the text is
@@ -112,17 +112,17 @@ weighed on a ladder of evidence:
   the account's real `/usage` reading. That probe is a local meta-command: free, no
   tokens, no turn. It is asked with the **queue held**, so nothing new is launched into a
   wall while the answer comes back. A reading at or above 95% of the window's cap
-  confirms the sentence and the gate goes up. A reading clearly *under* it contradicts
+  confirms the sentence and the gate goes up. A reading clearly _under_ it contradicts
   the sentence, and the run settles as the card's own failure so a human is asked. No
   reading at all (offline, CLI busy) parks — the cost of being wrong is a wait, not a
   wrong answer — but only twice in a row for one card, after which the same unconfirmed
   sentence gets asked about rather than parked on again.
 - **A limit-specific label** on the result (`rate_limit`, `429`). `api_error` is
-  deliberately *not* one: the CLI files a usage limit under it, but it files every
+  deliberately _not_ one: the CLI files a usage limit under it, but it files every
   transient blip under it too, and matching it is how one bad minute of network would
   park the board for five hours.
 
-A limit is called **weekly** only when the wording says so *and* an epoch parsed — never
+A limit is called **weekly** only when the wording says so _and_ an epoch parsed — never
 from free text, or an agent saying "next week" would hold every project for seven days.
 Rolling is the safer wrong answer: it resumes early, hits the wall again if it is still
 there, and re-parks.
@@ -135,18 +135,18 @@ resumed run would otherwise inherit ("the previous attempt failed (api_error)" i
 about its own work).
 
 `scripts/verify-limit-park.mjs` drives both of these headlessly, against a stub `claude`
-on `PATH`: an agent's paragraph *about* usage limits parks as an ordinary failure with
+on `PATH`: an agent's paragraph _about_ usage limits parks as an ordinary failure with
 the gate left down, and the CLI's own sentence parks the account with no `task-failed`
 row written at all.
 
 **Everything the limit stopped is parked, not just what was running.** The gate is
 what remembers work across the reset, so anything that would have started while it
 is up is parked behind it too — above all the **next step of a card's plan**, whose
-predecessor finished mid-limit. A step held this way says *Paused — usage limit* on
+predecessor finished mid-limit. A step held this way says _Paused — usage limit_ on
 its card and starts by itself at the reset. Three things follow from the same rule:
 
 - a task the limit caught **before its session id existed** (the wall was hit while
-  its worktree was still being prepared) is *started* at the reset rather than
+  its worktree was still being prepared) is _started_ at the reset rather than
   resumed — there is no conversation to lose, and skipping it was what left cards
   parked behind a gate that had already cleared;
 - a **card** with steps outstanding hands back to its chain at the reset instead of
@@ -155,10 +155,10 @@ its card and starts by itself at the reset. Three things follow from the same ru
 - on startup, anything still `blocked-by-limit` is adopted by the restored gate — or,
   if no gate survived, resumed at once. Nothing else would ever raise it again.
 
-**Stop** still wins: stopping a card drops it *and* any step the gate is holding, so
+**Stop** still wins: stopping a card drops it _and_ any step the gate is holding, so
 nothing comes back to life at the reset after you said stop.
 
-> **Honest expectations:** orchestration makes Claude *resume* after a reset. It
+> **Honest expectations:** orchestration makes Claude _resume_ after a reset. It
 > cannot give you more capacity. If you exhaust the **weekly** cap, work waits
 > until the weekly window rolls over — that's a subscription limit, not a bug.
 
@@ -185,13 +185,15 @@ prerequisite is `done`:
 
 ```markdown
 ## Setup
+
 - [ ] Set up the database
 - [ ] Set up config
 
 ## Build
+
 - [ ] Build the API @needs: Set up the database
-- [ ] Build the UI  @needs: Set up the database
-- [ ] Deploy        @needs: Build the API, Build the UI
+- [ ] Build the UI @needs: Set up the database
+- [ ] Deploy @needs: Build the API, Build the UI
 ```
 
 Here the two setup tasks run in parallel; API and UI both wait for the database,
@@ -209,15 +211,15 @@ to an existing plan for you to review.
 A plan project's tasks are a **queue**: rows the app owns, which nothing outside it can
 take away. The **My Tasks** board is the other thing — it is whatever your JQL returns,
 redrawn every sync (default: every two minutes). That is what makes it useful, and it is
-also the whole difficulty. *A ticket missing from an answer* and *a ticket that has left
-the query* look identical from here, and the app used to treat the first as the second and
+also the whole difficulty. _A ticket missing from an answer_ and _a ticket that has left
+the query_ look identical from here, and the app used to treat the first as the second and
 delete the card.
 
 It no longer does. The rule the sync now enforces:
 
 > **No card leaves the board unless JIRA was asked about it by key and answered.**
 
-A short page, a failed batch, a question nobody put — every one of them means *keep*.
+A short page, a failed batch, a question nobody put — every one of them means _keep_.
 When JIRA does answer, and answers no, the card is **removed from the board, not
 deleted**: the row keeps its timeline, its attachments, its chain arrows and any agent
 transcript, it appears under **Removed cards** in the My Tasks toolbar with the reason it
@@ -232,7 +234,7 @@ Everything below is a known consequence of that design, not an open bug.
   and treated it as the whole query, so on a board matching more than that, every issue
   past the hundredth was invisible — and cards for them were deleted for not coming back.
   Now the query is paged to the end, so they all return at once and the board can grow by
-  hundreds in one poll. The direction is the reassuring part: that first sync *adds*. It
+  hundreds in one poll. The direction is the reassuring part: that first sync _adds_. It
   settles from the second sync on, and **Removed cards** is there to make it inspectable.
 
 - **A permanently wrong JQL costs you a confirmation every sync.** Save a query that
@@ -275,7 +277,7 @@ ticket or an in-app task), hand it to Claude, and it works that one thing.
 
 ### Agent projects
 
-A card on My Tasks belongs to the built-in *Personal* board, which has no folder,
+A card on My Tasks belongs to the built-in _Personal_ board, which has no folder,
 so there is nowhere to run. You give it one by creating an **agent project** in
 **Settings → Agents**: a name, a **repo folder**, optional **JIRA epic keys**, a
 permission mode, and its two models — a **steps execution model** and an optional
@@ -310,7 +312,7 @@ re-run and show up in the timeline.
 The model dropdown offers **Project default** as well as the three models, and that
 is what most cards want: it leaves the card following its project's pair, so a
 planning turn and a step of the same card can cost different things. Naming a model
-here pins *every* run of this card to it, planning included — see
+here pins _every_ run of this card to it, planning included — see
 [Two models](#two-models-one-to-plan-with-one-to-execute).
 
 The card keeps its place on the Personal board — only the **run** happens in the
@@ -337,7 +339,7 @@ the branch pointer, so it never has to refuse in order to protect your files.
 #### Staying current with base
 
 A task does not start on whatever the base branch happened to be sitting on
-*locally* — preparation pulls first, automatically, with no setting to turn it off:
+_locally_ — preparation pulls first, automatically, with no setting to turn it off:
 
 - **The base branch advances to its upstream**, if it has one (`git push`'s own
   `remote`/`branch` tracking — never a hardcoded `origin`). Checked out and clean, it
@@ -354,7 +356,7 @@ A task does not start on whatever the base branch happened to be sitting on
 - **A dirty worktree, a chat reply, and a card `stacked` on another one's branch all
   skip the rebase.** An agent's own half-done work from a prior run is not this step's
   to touch; a chat reply must not insert a rebase ahead of what you are about to say
-  mid-conversation; and a stacked card's branch is behind its *predecessor's* branch,
+  mid-conversation; and a stacked card's branch is behind its _predecessor's_ branch,
   never base, so "behind base" was never the question for it.
 - **A conflict the mechanical ladder can't clear leaves the rebase paused**, exactly
   as a merge conflict does, except the agent is told to finish it ITSELF — resolve,
@@ -390,7 +392,7 @@ retroactively on a turn already in flight.
 
 > **Skills never override the orchestrator's own rules.** Where one conflicts with the
 > instructions already governing the run — ending the turn, merging, writing to the
-> tracker — the rules above it in the prompt win. A skill shapes *how* the agent works
+> tracker — the rules above it in the prompt win. A skill shapes _how_ the agent works
 > within those rules, not whether they apply.
 
 **A release run never sees them.** The `RELEASE.md` follow-up that runs after a merge
@@ -418,7 +420,7 @@ picker's own trigger reads plain **Skills** until at least one is attached, then
 A step of an approved plan runs with its card's skills **and** its own: the two lists
 are a union, the card's refs first. A step can add its own skills on top, but it cannot
 remove one its card carries — in the picker, a skill inherited from the card shows
-checked, disabled, and captioned *"from card"*, and only the step's own entries can be
+checked, disabled, and captioned _"from card"_, and only the step's own entries can be
 toggled off. A card's own panel repeats the same union as a read-only **Skills · _name_
 · _name_** caption beneath the picker, so the names are visible without opening it.
 
@@ -439,7 +441,7 @@ no longer resolves to anything — a library skill that was deleted, or a repo s
 folder that moved or was removed from the worktree. It never fails the run: the ref is
 simply dropped and named on the timeline, so a human reading the card's history sees
 exactly what the agent saw, not just that a skills section exists. The note also says
-plainly that a change to a card's skills takes effect on its *next* run, not the one
+plainly that a change to a card's skills takes effect on its _next_ run, not the one
 already underway.
 
 #### Prompt templates
@@ -459,7 +461,7 @@ Prompt templates**, global across every project.
 
 Listing skills — library or repo — for a card or a step's picker works on the web the
 same as on desktop: it's a direct read, not routed through a desktop Client.
-**Attaching** one, creating, editing, or deleting a *library* skill, and reading a repo
+**Attaching** one, creating, editing, or deleting a _library_ skill, and reading a repo
 skill's full body to **Copy to library**, all relay to a desktop Client and need one
 online to answer.
 **Import** and **Export** are host-only — native file/folder dialogs the web has no way
@@ -471,9 +473,9 @@ listing, inserting, and editing them works the same everywhere.
 Whether a finished branch merges itself is asked of the **card**, and answered by the
 first of these that has an opinion:
 
-1. **the card**, on the board — the *Merge when finished* switch in its Details Panel;
-2. **the project**, in its dialog — *Merge finished branches automatically*;
-3. **the app**, in Settings → General — *Merging a finished branch*, off out of the box.
+1. **the card**, on the board — the _Merge when finished_ switch in its Details Panel;
+2. **the project**, in its dialog — _Merge finished branches automatically_;
+3. **the app**, in Settings → General — _Merging a finished branch_, off out of the box.
 
 A level you never touch keeps following the one above it, which is the point: turn the
 app's switch over and every project that never disagreed with it moves too, and set a
@@ -481,7 +483,7 @@ project's and every one of its cards moves with it. Setting a switch back to wha
 was inheriting hands it back to inheriting — agreeing with a default is not disagreeing
 with it, and its label says which default it is following.
 
-Merging automatically merges at the moment the work has been reviewed *least*, which is
+Merging automatically merges at the moment the work has been reviewed _least_, which is
 why the app-wide default is off: a finished branch then waits, its worktree is kept, and
 the card offers a **Merge branch** button. Nothing is discarded on either path. Steps of
 an approved plan are never asked — they share the card's branch and the whole plan merges
@@ -492,7 +494,7 @@ actually **run** on the card, in a repo that uses worktrees. "Has run" is a stor
 about the card (`Task.workedAt`), deliberately not "does it hold a Claude session" — a
 card whose plan finishes has its session cleared on purpose, and reading that as "this
 card never ran" is what once made all three controls vanish at the exact moment the
-card's own timeline said *review it, then choose Merge on the card*.
+card's own timeline said _review it, then choose Merge on the card_.
 
 The switch is read when the run **finishes**, not when it starts, so you can change your
 mind while the agent is still working.
@@ -500,10 +502,10 @@ mind while the agent is still working.
 ### Opening a pull request
 
 The other way a finished branch leaves its worktree: **Create PR** on the card, or the
-card's own *Open a PR when finished* switch, push the branch and open it against GitHub or
+card's own _Open a PR when finished_ switch, push the branch and open it against GitHub or
 GitLab instead of merging it locally. Pressing it again once the pull request is open is not
 an error — it pushes whatever has been written since (another step, a re-run, a chat reply)
-into the *same* pull request rather than opening a second one.
+into the _same_ pull request rather than opening a second one.
 
 **The branch is rebased onto base as the remote has it, before anything is pushed.** A
 card's worktree can sit for a while between being built and a human pressing the button, and
@@ -518,7 +520,7 @@ it before a human ever would. The local base ref is advanced to match, too.
 
 A conflict neither rung can resolve refuses the whole thing, naming the files it hit —
 pull the latest base, resolve it there, and press the button again. Unlike a merge conflict,
-nothing is left paused in the worktree for an agent or a *Resolved* button to pick up: this
+nothing is left paused in the worktree for an agent or a _Resolved_ button to pick up: this
 check is undone (`git rebase --abort`) rather than parked the moment it can't finish cleanly,
 because there is no ladder here to hand a paused rebase up to.
 
@@ -545,20 +547,20 @@ project's **UI verification command** and the `.vipper/attach/` outbox it fills 
 
 **Who merges on green** decides who that is:
 
-| Choice | What happens |
-| --- | --- |
-| **Forge (auto-merge)** — the default | The PR is armed with the forge's own auto-merge (GitHub auto-merge, GitLab *merge when pipeline succeeds*), and the forge merges it later, whether or not the app is open. |
-| **Task Manager** | The forge is never asked. The app merges the PR itself, with a plain merge call, once it is green. |
+| Choice                               | What happens                                                                                                                                                               |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Forge (auto-merge)** — the default | The PR is armed with the forge's own auto-merge (GitHub auto-merge, GitLab _merge when pipeline succeeds_), and the forge merges it later, whether or not the app is open. |
+| **Task Manager**                     | The forge is never asked. The app merges the PR itself, with a plain merge call, once it is green.                                                                         |
 
 The second exists because the first is not always available. A private repository on
 GitHub Free refuses auto-merge (and every ruleset) with a 403, yet still accepts a plain
 merge — without this, such a PR could only wait for a human.
 
 **The fallback is automatic, and recorded on the card.** With the forge chosen, a refusal
-that means *this forge cannot auto-merge here* — a 403, or a message about the plan, the
+that means _this forge cannot auto-merge here_ — a 403, or a message about the plan, the
 repository's visibility or auto-merge not being allowed — does not just leave a failure
-note. It leaves one note starting *Auto-merge is not available on #n — …; Task Manager
-will merge it itself once it is green*, and from then on that card is merged by the app.
+note. It leaves one note starting _Auto-merge is not available on #n — …; Task Manager
+will merge it itself once it is green_, and from then on that card is merged by the app.
 The project setting is not rewritten: the note on the timeline is the record, which
 survives a restart and changes nobody's settings behind their back
 (`effectiveAutoMergeBy` in `packages/shared/src/appMerge.ts`). A 401 or a network error is
@@ -571,7 +573,7 @@ check still running, none failed, every required check present and green, and th
 sign-off approved on a UI card. The merge carries the head sha those checks were read for,
 so a push that lands in between makes the forge refuse rather than merge a commit nobody
 checked. A refusal names its reason on the card's timeline; the merge itself is noted as
-*Merged by Task Manager*. Each head is tried once per session, so a refused PR is not
+_Merged by Task Manager_. Each head is tried once per session, so a refused PR is not
 re-asked on every sync — a new push, or pressing **Approve**, is what tries again.
 
 > **Only while the app runs.** The forge's auto-merge works with the app closed; Task
@@ -585,16 +587,16 @@ app can carry straight on and do that too — but it never guesses what releasin
 
 **The repo says how, in a `RELEASE.md` at its root.** That file is the whole recipe:
 gates, version bump, tag, publish, whatever this project actually does. The
-orchestrator only decides *when* to ask, which is why there is no release procedure
+orchestrator only decides _when_ to ask, which is why there is no release procedure
 anywhere in its own code. A repo without a `RELEASE.md` is simply left alone — and the
 card's timeline says so, rather than the switch silently doing nothing.
 
 Two switches decide it, and the second one wins:
 
-| Where | What it is |
-| --- | --- |
-| **Settings → Agents → the project → *Release after merge by default*** | The project's preference. Every card assigned to it starts here. |
-| **The card's detail pane → *Release after merge*** | This card's answer. Overrides the project in either direction. |
+| Where                                                                  | What it is                                                       |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **Settings → Agents → the project → _Release after merge by default_** | The project's preference. Every card assigned to it starts here. |
+| **The card's detail pane → _Release after merge_**                     | This card's answer. Overrides the project in either direction.   |
 
 A card that has never been switched **follows the project**, so turning the preference
 on later turns it on for every card nobody has ruled on. Setting a card back to what the
@@ -603,7 +605,7 @@ project already prefers puts it back to following, rather than pinning today's a
 When the branch merges, the card's own session is given one more turn: read
 `RELEASE.md`, follow it, report what shipped. It runs in the project directory rather
 than a worktree — the branch has just been merged and deleted, and what is being
-released is the integration branch. If the merge only moved the base *ref* (your
+released is the integration branch. If the merge only moved the base _ref_ (your
 checkout is on something else), the agent is told that before anything else: a release
 cut from the wrong branch is the one mistake that cannot be taken back.
 
@@ -630,8 +632,10 @@ actions. Two, because a review comment and a red pipeline are separate reasons f
 card to be shouting and are tracked separately — acknowledging the pipeline must not
 silence a comment that lands a second later.
 
-Only MRs you **created** are fetched. Ones where you are merely a reviewer are someone
-else's to land, and folding them in would double the board's noise.
+Only MRs you **created** are fetched onto the board. Ones where you are merely a reviewer
+are someone else's to land, and folding them in would double the board's noise. They are
+not lost, though: they appear under **Reviews** → _Requested from me_, in the
+[review workspace](#review-workspace).
 
 > **Approvals may read "unknown".** GitLab's `/approvals` endpoint is tier-gated and
 > refuses on some instances; the pane says so rather than showing a confident `0/0`.
@@ -655,16 +659,16 @@ work a click could stop, which is wider than "this card says `running`":
 
 - the card's own run, including the moment between the session spawning and the board
   hearing about it;
-- a card executing an approved plan, whose *step* holds the run while the card sits
-  *In Progress* — one Stop covers the card and every step of its chain;
+- a card executing an approved plan, whose _step_ holds the run while the card sits
+  _In Progress_ — one Stop covers the card and every step of its chain;
 - a chain caught between steps, whose next step would start by itself;
 - a card parked behind the usage limit, which Stop unparks so it does not come back to
   life at the reset.
 
 Stopping keeps the branch and the worktree, so the work can be picked up again — by
 **Resume**, below, or by simply saying something to the agent. It changes no column:
-stopping is a run's end, not a card's, and only you move a card (see *Where the card sits
-while it works* below).
+stopping is a run's end, not a card's, and only you move a card (see _Where the card sits
+while it works_ below).
 
 **Resume** is Stop's inverse and sits in Stop's slot — the same square beside the agent
 glyph on the card, the same place in the **Agent** panel. The two are mutually exclusive
@@ -672,21 +676,21 @@ by construction (`canStopWork` / `canResumeWork` in `packages/shared/src/board.t
 the row holds one of them or neither and never both. What it offers:
 
 - **The same conversation, not a fresh briefing.** The run resumes by session id and the
-  agent is greeted with one sentence — *"You were stopped. Continue the task where you
-  left off."* — rather than the card's whole brief again. It already knows what it had
+  agent is greeted with one sentence — _"You were stopped. Continue the task where you
+  left off."_ — rather than the card's whole brief again. It already knows what it had
   done, and it comes back to the worktree it left. (A run with no session to rejoin yet —
   a step stopped before it ever started — does get the full brief; there is nothing to
   carry on from.)
 - **A chain's cancelled steps are re-queued.** Stop marks every step queued behind the
   running one `stopped`, which leaves a chain with nothing runnable in it. Resume puts
-  them back to `pending`, in order, and that re-queueing *is* the resume: it is what makes
+  them back to `pending`, in order, and that re-queueing _is_ the resume: it is what makes
   the start land on the step that was interrupted instead of opening a session on the card
   beside its own chain.
 - **It parks rather than drops.** Resume goes through the ordinary start path, so a usage
   limit or an expired sign-in parks the card behind the same gate any other start would.
 
 What remembers the stop is `Task.stoppedAt`, not a status: on a board card `status` is
-borrowed and handed straight back to your column (see *Where the card sits while it works*
+borrowed and handed straight back to your column (see _Where the card sits while it works_
 below), so a stopped ticket resting in TO DO would otherwise be indistinguishable from one
 nobody had ever started. It is cleared by work starting again — by Resume, a plain Start, a
 chat reply, or the limit gate's own resume — so a card that has run again stops offering
@@ -713,7 +717,7 @@ card running an approved plan's steps. The card moves, the linked JIRA issue tra
 it would for any other move, and the run carries on untouched. Moving a card says where the
 work belongs, not that it should stop; stopping is what **Stop** is for.
 
-Under the hood a run *borrows* the card's status field rather than owning it, and the state
+Under the hood a run _borrows_ the card's status field rather than owning it, and the state
 you pick is parked in `preRunStatus` and handed back to the card when the run settles — so
 your move is neither lost nor able to evict the run (`src/main/cardStatusGuard.ts`).
 
@@ -737,9 +741,9 @@ with the plan markdown and the list of steps approving it would create.
 
 Nothing has been written to the repo at this point. Your two answers:
 
-- **Approve plan** — the steps are created, the held `ExitPlanMode` is *denied* with a
+- **Approve plan** — the steps are created, the held `ExitPlanMode` is _denied_ with a
   hand-over message so the planning session stops instead of implementing, the card
-  goes *In Progress*, and step 1 starts.
+  goes _In Progress_, and step 1 starts.
 - **Re-plan** — your note goes back to the **same** planning session, which keeps its
   research context and revises rather than starting over.
 
@@ -749,7 +753,7 @@ Nothing has been written to the repo at this point. Your two answers:
 shallowest heading level that yields at least two real sections wins (so `# Title` /
 `## Phase 1` / `## Phase 2` splits at the phases, and deeper headings stay inside a
 step's brief); failing that, a top-level list; failing that, the whole plan becomes
-one step. Framing headings (*Context*, *Risks*, *Out of scope*, …) are skipped, and
+one step. Framing headings (_Context_, _Risks_, _Out of scope_, …) are skipped, and
 the count is capped at 20. It never produces zero steps — an approved plan always
 leaves something to run.
 
@@ -772,11 +776,11 @@ the plan, so the steps are full-auto.
   base and removes the worktree.
 - **Steps added after that merge start a fresh one.** The branch and the worktree are
   gone, so the next step gets a new worktree cut from base on the same branch name —
-  and if the old directory is *still on disk* because its cleanup was stopped by a
+  and if the old directory is _still on disk_ because its cleanup was stopped by a
   Windows lock (almost always something under `node_modules`), the new one is built
   beside it as `<parentId>-2` rather than the run being parked on "delete that
   directory and retry". The leftover is inert, is named on the card's timeline, and is
-  swept up by *Clean up & abandon* whenever the lock is gone.
+  swept up by _Clean up & abandon_ whenever the lock is gone.
 - **A rebase abandoned in the worktree is undone, not reported.** A rebase that stops
   part-way leaves `HEAD` detached, which is a worktree with no branch — and that blocks
   every button on the card, not just the step that caused it. Preparation therefore runs
@@ -786,17 +790,17 @@ the plan, so the steps are full-auto.
   a merge conflict — resolving that is the whole job of the run it hands the worktree to,
   so it is left exactly as it is. A HEAD detached any other way (a bare
   `git checkout <commit>`) is still refused, because there is no one obvious undo.
-- **The parent is never auto-completed.** After the final merge the card stays *In
-  Progress* with a "ready for review" comment — moving it to Done is yours.
+- **The parent is never auto-completed.** After the final merge the card stays _In
+  Progress_ with a "ready for review" comment — moving it to Done is yours.
 - A **failed** step parks and the chain simply stops; fixing it and marking it done
   resumes the chain. **Stop** on the parent stops the running step and marks the rest
   `stopped`; **Resume** puts those steps back to `pending` and rejoins the stopped step's
   own session, so the chain carries on from the step it was interrupted in rather than
-  from the top (see *Stopping and resuming it* above). Usage limits park and resume a step
+  from the top (see _Stopping and resuming it_ above). Usage limits park and resume a step
   like any other task — including the
   step that had not started yet when the limit arrived, which is parked behind the
-  same gate so the reset can start it (see *Usage limits* above).
-- Each step's prompt is deliberately narrow: *step N of M*, its own brief, the sibling
+  same gate so the reset can start it (see _Usage limits_ above).
+- Each step's prompt is deliberately narrow: _step N of M_, its own brief, the sibling
   titles as one-liners, your notes on the card, and the shared-branch rule (commit;
   never reset/rebase/merge/switch). The JIRA comment thread is **not** included — it is
   the context a step should not pay for. As always, nothing is written back to JIRA.
@@ -804,14 +808,14 @@ the plan, so the steps are full-auto.
 ### Two models: one to plan with, one to execute
 
 Planning is the one run whose whole output is judgement — it reads a repo it has
-never seen and decides what the work *is* — while a step is handed a brief that
+never seen and decides what the work _is_ — while a step is handed a brief that
 already says what to do. They do not have to cost the same. A project therefore
 names **two** models, in **Settings → Agents** (and in the Projects tab's dialog):
 
 - **Steps execution model** — what work runs on. The field that has always been
   there (`defaultModel` in the schema); only its label changed.
-- **Planning model** — what a planning turn runs on. Leave it at *Same as
-  execution* — the default, and what every project that predates the split carries
+- **Planning model** — what a planning turn runs on. Leave it at _Same as
+  execution_ — the default, and what every project that predates the split carries
   — and nothing about that project changes: both halves use the execution model.
 
 A card or a step may still overrule both, from the assign dialog, the composer
@@ -827,17 +831,17 @@ task.agentModel ?? project.defaultModel
 ```
 
 **What counts as planning is the turn, not the mode.** A run is billed as planning
-only when it was *asked* for a plan and is held to it: the first `plan`-mode run of
-a card, and a **re-plan**. A card assigned Plan mode also *chats* in Plan mode, and
+only when it was _asked_ for a plan and is held to it: the first `plan`-mode run of
+a card, and a **re-plan**. A card assigned Plan mode also _chats_ in Plan mode, and
 is briefed on its finished chain in Plan mode, and neither of those is planning —
 they are conversations that merely may not write, and they use the execution model.
 (`run.expectsPlan && run.permissionMode === 'plan'` is the pair that decides, the
 same pair the mode itself is read from.)
 
 **Steps carry no model of their own.** Approving a plan creates steps that inherit
-where they run and the forced `bypassPermissions`, but *not* the model their parent
+where they run and the forced `bypassPermissions`, but _not_ the model their parent
 was planned on — inheriting it would silently bill the whole chain at the planning
-rate. A step's model is empty, meaning *Project default*, and a step that genuinely
+rate. A step's model is empty, meaning _Project default_, and a step that genuinely
 needs a better one is set one step at a time.
 
 **The ladder is read once, when the run starts,** and the answer is captured on the
@@ -878,9 +882,9 @@ rows under a `Phase N` header per round; on the board a card instead shows one f
 own rows (`splitEarlierSteps`).
 
 **Three independent folds keep a re-planned card readable.** The whole Steps section
-can be folded to its heading and `2/9` counter; the phases *before* the current one
+can be folded to its heading and `2/9` counter; the phases _before_ the current one
 fold themselves away the moment you re-plan, behind their own `earlier steps` row,
-which reopens (and stays open) once you click it; and the phases *after* it fold the
+which reopens (and stays open) once you click it; and the phases _after_ it fold the
 same way, behind `upcoming steps`. All three are saved per card
 (`foldedStepCards`, `shownEarlierStepCards`, `shownLaterStepCards` in `AppSettings`),
 pruned of any card that leaves the board so the settings blob never only grows. A
@@ -891,12 +895,12 @@ count and tint through a fold regardless.
 
 **You can plan ahead while a chain is still running.** Asking a card for another round
 of steps no longer waits for its live step to finish first — the planner is its own
-turn in the card's own conversation, so it runs *beside* the chain rather than behind
+turn in the card's own conversation, so it runs _beside_ the chain rather than behind
 it. Only a second ask while one is already in flight — queued behind a run, running
 right now, or sitting approved-and-unread in the inbox — is refused.
 
 **Re-planning a phase that has not started yet swaps it in place**, rather than
-appending a new one after it. Click **Re-plan…** on a *later* phase's own header (the
+appending a new one after it. Click **Re-plan…** on a _later_ phase's own header (the
 current phase and anything already behind it cannot be targeted this way), and the
 approved replacement keeps that phase's own round number instead of becoming a new
 round after it. The ask is refused by name, `phase-started`, the moment any one of
@@ -929,14 +933,14 @@ card to another, plus the **gate** that says what "after" means for that pair.
 The two features share the word and almost nothing else. Steps are one card's work,
 split up; a chain is several cards, ordered.
 
-| | **Steps** (of one card) | **A chain** (between cards) | **A workflow** (a recipe) |
-|---|---|---|---|
-| What it is | phases of one approved plan, `parentTaskId` → the card | links (`task_links`) between two ordinary cards | a saved, reusable `WorkflowDoc` you *apply* to a card |
-| Where the work happens | **one** branch in **one** worktree, shared by every step | each card keeps **its own** branch and worktree | nowhere of its own — applying one produces ordinary steps, which then share one branch/worktree like any other round |
-| Integration | **once**, when the last step finishes | **each card merges itself**, in its own time | not its own either — the steps it produced integrate exactly as a hand-written round would |
-| Order | implicit and total — `order`, one at a time | whatever arrows you drew: a line, a fan, a diamond | fixed at apply time — the recipe's own step order becomes that round's `order` |
-| Who made it | the planner (or you, by hand, in the Steps box) | you, by dragging | you, in **Settings → Workflows**, or imported from a `.workflow.json` file |
-| Failure | the rest of the steps stop | the successor is simply never released | the same as a hand-written step chain — plus a **gate** step, which can send an earlier step back for another attempt on its own |
+|                        | **Steps** (of one card)                                  | **A chain** (between cards)                        | **A workflow** (a recipe)                                                                                                        |
+| ---------------------- | -------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| What it is             | phases of one approved plan, `parentTaskId` → the card   | links (`task_links`) between two ordinary cards    | a saved, reusable `WorkflowDoc` you _apply_ to a card                                                                            |
+| Where the work happens | **one** branch in **one** worktree, shared by every step | each card keeps **its own** branch and worktree    | nowhere of its own — applying one produces ordinary steps, which then share one branch/worktree like any other round             |
+| Integration            | **once**, when the last step finishes                    | **each card merges itself**, in its own time       | not its own either — the steps it produced integrate exactly as a hand-written round would                                       |
+| Order                  | implicit and total — `order`, one at a time              | whatever arrows you drew: a line, a fan, a diamond | fixed at apply time — the recipe's own step order becomes that round's `order`                                                   |
+| Who made it            | the planner (or you, by hand, in the Steps box)          | you, by dragging                                   | you, in **Settings → Workflows**, or imported from a `.workflow.json` file                                                       |
+| Failure                | the rest of the steps stop                               | the successor is simply never released             | the same as a hand-written step chain — plus a **gate** step, which can send an earlier step back for another attempt on its own |
 
 A workflow is not a third runtime sitting beside the other two: applying one is a fast
 way to produce the **Steps** column — a fresh `planRound`, one branch, one merge after
@@ -944,7 +948,7 @@ the last step — the same shape **Plan first, then execute in steps** already p
 just compiled from a recipe instead of from a research turn. See
 [Workflows](#workflows) below.
 
-Which is why a **step may not be chained at either end**: its order *is* a chain
+Which is why a **step may not be chained at either end**: its order _is_ a chain
 already, and a second one over the top of it could only ever disagree. Chain the
 parent cards — the steps come along with them. A loop is refused for a blunter
 reason: every card in it would be waiting for a card that is waiting for it, so it
@@ -958,7 +962,7 @@ A link carries one, and it is the whole of what the link means.
   its branch is in the base branch. The successor starts from settled code. This is the
   safe one, and the one to use when the successor would otherwise build on something
   still under review and still liable to change.
-- **Stacked on this branch** (`stacked`) — the predecessor has stopped *writing*, and
+- **Stacked on this branch** (`stacked`) — the predecessor has stopped _writing_, and
   there is a branch to build on. The successor's worktree is **cut from the predecessor's
   branch** instead of from base, so it starts with those commits already in its tree.
   Sooner, at a price: the branch underneath may still be rebased or rewritten in review,
@@ -986,8 +990,8 @@ completes. Click an arrow to select it: a small panel on its middle switches the
 
 Two more routes to the same fact, neither needing a mouse or a visible board:
 
-- **Add task** has a *Runs after…* picker, so a card can be chained as it is created.
-- The card's detail pane has a **Chain** section — *Waiting on* above, *Releases* below,
+- **Add task** has a _Runs after…_ picker, so a card can be chained as it is created.
+- The card's detail pane has a **Chain** section — _Waiting on_ above, _Releases_ below,
   each row naming the gate, opening that card, and carrying an unlink button.
 
 An arrow is the **only** place a dependency lives, in every project. A ticket link of type
@@ -1019,20 +1023,20 @@ by something moving.
 - The card itself carries a monochrome **`waiting on KEY`** chip, and **`ready`** once
   every predecessor is satisfied but nothing has started. When the card it names has already
   finished writing and is only waiting to be merged, the chip says **`waiting on KEY to
-  merge`** — same neutral chip, same link icon, one extra word, because "waiting on VIP-3"
+merge`** — same neutral chip, same link icon, one extra word, because "waiting on VIP-3"
   otherwise reads the same whether VIP-3 has not been started or has been sitting in review
   for two days, and only the second is something you can fix. The card's pane goes further:
-  it offers **Merge VIP-3** beside *Open VIP-3*, so the one thing holding the chain up is a
+  it offers **Merge VIP-3** beside _Open VIP-3_, so the one thing holding the chain up is a
   click from where you already are.
 - When every predecessor is satisfied and the engine would **still** refuse the card, the chip
   says which of the two things you can fix it is: **`needs an agent`** when nobody has said who
-  does the work — the state a card made through *Runs after…* is born in, since that picker
+  does the work — the state a card made through _Runs after…_ is born in, since that picker
   draws the arrow and never asks — and **`its turn — held`** when the card is parked in Blocked,
   which the chain will not take it out of. Both are the engine's own verdict
   (`chainDecline` in `@tm/shared/taskChain`, asked by the board and by `ChainRunner` alike), so
   the chip cannot claim a card is ready that the runner would decline, or go silent on one it
-  refused. It used to do exactly that: a declined card showed no chip at all — no *waiting on*,
-  because its arrows were met, and no *ready*, because it was not — so a solid arrow arrived at
+  refused. It used to do exactly that: a declined card showed no chip at all — no _waiting on_,
+  because its arrows were met, and no _ready_, because it was not — so a solid arrow arrived at
   a card that looked like every other idle one, with the reason filed only on its timeline.
 - **Chain focus** in the toolbar reduces the board to the selected card's chain —
   everything upstream, everything downstream, and the siblings entangled with it. The cards
@@ -1080,15 +1084,15 @@ sends you hunting through three other cards' logs.
   every parked run has re-reserved its slot, so no card is started twice.
 - **A merge nobody has pressed is the commonest reason a chain looks stalled**, so both ends
   say so. The predecessor's timeline note — the one you already read to learn its branch was
-  *not* merged — ends by naming the cards parked until it is (`ChainRunner.heldByMerge`);
+  _not_ merged — ends by naming the cards parked until it is (`ChainRunner.heldByMerge`);
   "merge it when you get to it" and "three cards are waiting on you" are different decisions.
   From the other end, `awaitingMerge` picks out the predecessors waiting on nothing but a
   human, which is what the successor's chip and its **Merge** button are drawn from. It asks
-  one question — *would a `stacked` gate already be satisfied where this `after-merge` one is
-  not?* — so there is a single definition of "the work is written" rather than a second copy
+  one question — _would a `stacked` gate already be satisfied where this `after-merge` one is
+  not?_ — so there is a single definition of "the work is written" rather than a second copy
   that could drift from the gate the engine applies.
 - **Release now**, in a blocked card's pane, starts it anyway. Some chains only ever recorded
-  the order things ought to be *looked at*, and there the gate is an obstacle rather than a
+  the order things ought to be _looked at_, and there the gate is an obstacle rather than a
   safeguard. The link stays; the timeline says it went ahead of it.
 
 ---
@@ -1100,7 +1104,7 @@ A **workflow** is a reusable recipe for a card's own steps — write it once, in
 or typing each step by hand. See [Steps vs chain arrows vs
 workflows](#a-chain-is-not-a-cards-steps) above for how the three relate; the short
 version is that a workflow is not a new runtime and not an arrow between cards — it
-*compiles into* a card's existing step machinery, as a fresh `planRound` on one shared
+_compiles into_ a card's existing step machinery, as a fresh `planRound` on one shared
 branch, merging once after its last step exactly as any other round does. **Applying**
 one is therefore an alternative to **Plan first** (see
 [above](#plan-first-then-execute-in-steps)), not a different feature sitting next to it.
@@ -1121,7 +1125,7 @@ A workflow holds two kinds of step, defined in `@shared/workflow`:
   never reaches a card.
 
 > A **gate step** is a different thing from the **gate** on a chain link
-> (*after-merge*/*stacked*, [above](#the-two-gates)): one is a workflow step that runs
+> (_after-merge_/_stacked_, [above](#the-two-gates)): one is a workflow step that runs
 > a command inside a card, the other is what "after" means between two cards. They
 > share a name and nothing else.
 
@@ -1167,14 +1171,14 @@ is never part of the settings this app syncs or relays to another desktop, and n
 but the dedicated trust channel may add to it — an answer arriving any other way (a
 relayed web click, a stale UI) is refused and re-parked.
 
-An untrusted gate parks an inbox item — *"Trust and run "\<command\>" on this desktop?"*
+An untrusted gate parks an inbox item — _"Trust and run "\<command\>" on this desktop?"_
 — with two buttons: **Trust and run** adds the hash and re-queues the gate, which
 re-checks the command it finds **now**, so editing the step while the prompt sits
 unanswered asks again rather than quietly inheriting trust for a command nobody saw;
 **Decline** leaves the step failed and the chain stopped, with a note naming the
 command that was refused. The web has no desktop of its own to run the command on, so
 it drops the Trust button entirely and shows **"Waiting for `<desktop>` to trust this
-command"** (or *"the desktop app"* when it can't name one) in its place — Decline still
+command"** (or _"the desktop app"_ when it can't name one) in its place — Decline still
 works from there.
 
 ### Building and applying
@@ -1203,7 +1207,7 @@ handler actually returns can never say different things.
 
 **Editing a workflow never changes a card it was already applied to.** Applying takes
 a deep snapshot of the document's steps into each new step's own `stepSpec` — the card
-runs what the recipe said *at apply time*, forever, even if the saved workflow is later
+runs what the recipe said _at apply time_, forever, even if the saved workflow is later
 edited, renamed, or deleted. Re-applying (once the round is finished or cancelled) is
 how a card picks up a workflow's latest version.
 
@@ -1216,9 +1220,9 @@ implementation to drift out of step with the desktop's.
 Every fresh install seeds two workflows once, keyed by id so a reseed is a no-op and an
 edit you make to one afterwards is never overwritten by a later launch:
 
-- **Implement + test gate** — one agent step (*Implement the change*) into one gate
-  (*Run the tests*, `npm test`), retrying the implementation up to 3 times on a red run.
-- **Implement → review → test gate** — the same shape with a *Review the change* agent
+- **Implement + test gate** — one agent step (_Implement the change_) into one gate
+  (_Run the tests_, `npm test`), retrying the implementation up to 3 times on a red run.
+- **Implement → review → test gate** — the same shape with a _Review the change_ agent
   step between implementing and the test gate, still retrying from the
   **implementation** on a red run rather than the review — a reviewer that already saw
   a passing run has nothing left to add once the tests go red again.
@@ -1233,19 +1237,19 @@ it](#trust) exactly as a hand-written gate would.
 ## Talking to the agent on a card
 
 Answering a question the agent asked is one half of a conversation. The other half is
-opening one yourself: *"actually, skip the cache"* while it works, or *"why did you drop
-the index?"* after it stopped. The card's detail pane is that conversation.
+opening one yourself: _"actually, skip the cache"_ while it works, or _"why did you drop
+the index?"_ after it stopped. The card's detail pane is that conversation.
 
 ### One pane, two halves
 
-The pane is not tabbed. What a card *is* is context you read *while* talking to the agent
+The pane is not tabbed. What a card _is_ is context you read _while_ talking to the agent
 working it, not an alternative to it — so both are on screen at once:
 
 - **A fixed band at the top** — the card's identity (type glyph, title, ticket key as a
   link to JIRA, type · priority · phase), then the agent controls, the **Details** cell
   (status, dependencies, a foldable description) and the **Steps**. One shaded slab, no
   boxes inside it, capped at half the pane's height with its own scroll so a long step
-  step chain can never crowd out the conversation. On a *step*, the brief replaces the details
+  step chain can never crowd out the conversation. On a _step_, the brief replaces the details
   and the steps — for a step the brief is the whole spec.
 - **The conversation below**, which is the only thing that scrolls. The live-run rows and
   the composer stay pinned beneath it.
@@ -1259,21 +1263,21 @@ issue's. The pane says so where you type.
 Who wrote something decides where it sits in the conversation. One bubble shape throughout; the side, the
 fill and a small tag carry all the meaning:
 
-| Entry | Side | Look |
-|---|---|---|
-| Your message to the agent | right | brand fill |
-| Your note | right | the same fill, a shade back — nobody else ever reads a note |
-| Your JIRA comment | right | brand fill with a `JIRA` tag: it left the app |
-| Someone else's JIRA comment | left | grey, with their name above it |
-| The agent | left | **full width, no bubble**, under the agent glyph |
+| Entry                       | Side  | Look                                                        |
+| --------------------------- | ----- | ----------------------------------------------------------- |
+| Your message to the agent   | right | brand fill                                                  |
+| Your note                   | right | the same fill, a shade back — nobody else ever reads a note |
+| Your JIRA comment           | right | brand fill with a `JIRA` tag: it left the app               |
+| Someone else's JIRA comment | left  | grey, with their name above it                              |
+| The agent                   | left  | **full width, no bubble**, under the agent glyph            |
 
 The agent's turn stays full width because tables and fenced code need the room; its
 markdown is rendered, and every code block gets a language label and a **Copy** button.
-A stretch of tool work folds into one muted line — *Worked with 12 tools* — that expands
+A stretch of tool work folds into one muted line — _Worked with 12 tools_ — that expands
 to name any sub-agents it spawned. Failures are never folded away.
 
-Knowing which ticket comment is *yours* needs to know who you are on JIRA, so the app
-caches `GET /myself` (the call *Test connection* makes) per site. If it has never
+Knowing which ticket comment is _yours_ needs to know who you are on JIRA, so the app
+caches `GET /myself` (the call _Test connection_ makes) per site. If it has never
 connected, every comment renders as someone else's — better than putting words in your
 mouth on the wrong side of the pane.
 
@@ -1282,12 +1286,12 @@ mouth on the wrong side of the pane.
 One composer at the bottom of the pane, with the text area and its actions inside a single
 surface. **Enter** sends to the agent, **Shift+Enter** starts a new line, and all three
 destinations for the same text stay visible: **Chat with agent**, **Add note** (only you
-ever read it) and **Add JIRA comment** on a linked card. The live *Agent running* rows sit
+ever read it) and **Add JIRA comment** on a linked card. The live _Agent running_ rows sit
 **above** the composer, not in the scroll, so the state of the run never scrolls out of
 sight.
 
-Under the box, a muted strip names who runs this card — *"Run by Claude in Demo Agent
-Repo"* — with the **model** and **permission mode** editable right there. They are what
+Under the box, a muted strip names who runs this card — _"Run by Claude in Demo Agent
+Repo"_ — with the **model** and **permission mode** editable right there. They are what
 you most want to change just before you say something. The model list includes **Project
 default**, which hands the card back to its project's planning/execution pair rather than
 pinning it to one model; picking a named model pins every run of this card, planning
@@ -1299,23 +1303,23 @@ applies to the **next** run. (Reassigning the card is still what you want if you
 Where the message goes:
 
 - **A live run** hears it immediately — it is written into the session's open input
-  stream. If the agent had asked a question, your message *is* the answer, and the
+  stream. If the agent had asked a question, your message _is_ the answer, and the
   inbox item clears.
 - **An idle card that has run before** is resumed: `claude --resume <sessionId>` with
   your text as the prompt instead of the usual continue-nudge. That is a **real run** —
   it reserves a slot, prepares the card's worktree and settles (and integrates) like any
   other — so it is not instant, and it appears in the timeline as a run.
-- **A delegated card with no session to resume** gets a *fresh* conversation, opened with
+- **A delegated card with no session to resume** gets a _fresh_ conversation, opened with
   your message and the card's full brief. Two cards look like this: one assigned without
   being started, and one whose approved plan has just finished — a finished chain clears
   the card's session on purpose, because the planner's context predates every line its
   steps wrote and resuming it is the most expensive thing in the chain.
-- **A card no agent owns** is not chattable at all. *Assign to an agent* comes first.
+- **A card no agent owns** is not chattable at all. _Assign to an agent_ comes first.
 
 Anything that cannot work says so above the box before you press anything: a run held on
 an **approve/deny** (free text cannot approve a tool call — answer the request first), a
 **usage limit** holding all work, or a card whose **plan is still running**. That last
-one matters: a card executing an approved plan holds only its *planner's* session, so
+one matters: a card executing an approved plan holds only its _planner's_ session, so
 the conversation lives on the step — chatting with such a card talks to the working
 step, and the composer says which one ("Talking to step 2 of 4 — …").
 
@@ -1324,9 +1328,121 @@ step, and the composer says which one ("Talking to step 2 of 4 — …").
 A step that fails, or one parked on a question, now shows on **its card**: the orange
 "wants you" frame, and a step count that reads `2/4 · stopped` rather than a bare `2/4`.
 Its resolutions — retry, retry fresh, AI fix & retry, clean up, mark done — are offered
-in the card's own pane, labelled with the step they belong to, and *Mark done* starts the
+in the card's own pane, labelled with the step they belong to, and _Mark done_ starts the
 next step. If the app was closed mid-step, the step comes back parked (its session is
 kept) with a **Run this step again** button, because nothing re-enters a chain on its own.
+
+---
+
+## Review workspace
+
+A card's Changes section shows one card's diff. The review workspace is the same reader
+with a queue beside it: every pull request or merge request waiting on you, and every
+agent card waiting for you to look at its work, in one place.
+
+### Reaching it
+
+- **The sidebar's Reviews row.** Its count is the number of rows in _Requested from me_,
+  so it tells you how much other people are waiting on.
+- **A card's Changes section**, with **Open in review workspace**. The workspace opens on
+  that card.
+- **The palette's Reviews.** With a card selected, the palette also offers _Open … in
+  review workspace_ for it.
+- **In the web**, the address `#/reviews`, or `#/reviews/<subjectId>` for one subject. It is
+  the one screen the address names, so a link or a reload lands on the same subject.
+
+### The three queues
+
+The left column groups everything into three queues, always in this order:
+
+- **Requested from me** — pull requests where GitHub has you as a requested reviewer
+  (`review-requested:@me`), and merge requests where GitLab lists you as a reviewer
+  (`reviewer_username`).
+- **My PRs / MRs** — the merge requests the board already tracks, the same rows that show
+  on cards (see [Merge requests on the card](#merge-requests-on-the-card)).
+- **Agent cards** — top-level cards that are In Review, have actually run, and have not
+  landed yet. A step of a plan is not reviewed on its own; its card is.
+
+A pull request that is both yours and requested from you shows once, under _My PRs / MRs_.
+
+The queues refresh when you open the workspace, every 5 minutes after that, and when you
+press the refresh button. The rows are cached, so the sidebar count survives a restart
+without asking the forge. A forge that fails, or that gives back a short answer, never
+deletes rows: the last ones you saw stay, and the column says how old they are — _Queues as
+of 14:02_, with _some queues are incomplete_ when a refresh came back short. Each queue
+shows at most 200 rows.
+
+### Where a diff comes from
+
+An agent card's diff is read from its own worktree. A pull request's diff has two possible
+sources, and the header's badge names which one you are reading.
+
+**Local clone.** If a project in the app has a remote — any of its remotes — pointing at
+the pull request's repository, the app fetches the pull request's head
+(`refs/pull/N/head` on GitHub, `refs/merge-requests/N/head` on GitLab) and its base into
+that clone under `refs/tm/review/…`. Nothing else in the clone moves: the working tree, the
+index, `HEAD` and your branches are untouched. If the fetched head does not match what the
+forge says the head is, the app fetches once more before giving up. A pull request's refs
+are deleted again once it has left every queue.
+
+**Forge API · read only.** The fallback, when there is no such clone or the fetch fails.
+The diff is read through the forge's API instead. Hover over the badge to see why the
+local clone was not used — for example, _no project with a local clone of this repository
+is open_.
+
+What each source can do:
+
+| Source                 | Badge                   | Expand context | Send to agent | AI review | Publish to the forge |
+| ---------------------- | ----------------------- | -------------- | ------------- | --------- | -------------------- |
+| A card's worktree      | `local clone`           | yes            | yes           | not yet   | no                   |
+| A fetched pull request | `local clone`           | yes            | no            | not yet   | not yet              |
+| The forge's API        | `forge API · read only` | yes            | no            | no        | not yet              |
+
+### Reading a diff
+
+The header switches between **Unified** and **Split**. Split falls back to unified when the
+diff column is narrower than 900 px, whatever you picked. Code is coloured by language;
+**Monochrome code** in Settings turns that off and shows plain text.
+
+Press `e` to read more of the file around the current hunk: the 20 lines just above it.
+On a card, the lines come from the worktree; on a
+pull request, from the local clone or the forge.
+
+Every file has a **Viewed** box, and the file column counts _N / M viewed_. A tick records
+the version of the file you saw, not just its name. If the author pushes a new version of
+that file, the tick no longer counts: the file shows unticked again, with the tooltip
+_Changed since viewed_. A file you ticked and nobody touched since stays ticked.
+
+The keys, which `?` also lists in the workspace:
+
+| Key       | Does                                   |
+| --------- | -------------------------------------- |
+| `n` / `p` | Next file / previous file              |
+| `j` / `k` | Next hunk / previous hunk              |
+| `v`       | Mark viewed, and move to the next file |
+| `s`       | Toggle layout                          |
+| `e`       | Expand context                         |
+| `c`       | Comment                                |
+| `?`       | Show keyboard shortcuts                |
+| `Esc`     | Close the comment editor               |
+
+None of them fire while you are typing in a field.
+
+### Comments
+
+Comments are drafts until you do something with them, and what you can do depends on the
+subject. On an agent card, **Send to agent** sends every draft to the card's agent as one
+review, the same way the card's Changes section does. On a pull request, the drafts are
+kept on this machine: **Copy review as Markdown** puts them on the clipboard, and **Open on
+forge** opens the pull request so you can paste them there. The app cannot publish a
+review to the forge yet.
+
+### Limits
+
+These are the same limits the card's Changes section has. A diff lists at most 1,000
+files, and a file whose patch is larger than 256 kB is listed but not shown. One context
+read returns at most 2,000 lines. A pull request too big for any of these reads as
+`truncated` rather than pretending to be complete.
 
 ---
 

@@ -103,6 +103,7 @@ function fakeDiffGit(s: DiffGitState): DiffGit & { revParseCalls: string[] } {
     workingTree: async () => [],
     filePatch: async () => null,
     fileSizes: async () => new Map(),
+    blobShas: async () => new Map(),
     fileSize: async () => -1,
     readFile: async () => null,
   };

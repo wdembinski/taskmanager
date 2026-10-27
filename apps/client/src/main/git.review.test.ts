@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parsePatch } from '@shared/review';
 import {
+  blobShas,
   blobSize,
   currentBranch,
   diffFilePatch,
@@ -129,6 +130,38 @@ describe('diffWorkingTree — uncommitted edits', () => {
 
     const patch = await diffFilePatch(repo, { from: mb, to: null, path: 'a.txt' });
     expect(patch).toContain('+line9');
+  });
+});
+
+describe('blobShas — the new-side blob a viewed mark keys on', () => {
+  it('reads each path at a ref, and leaves out a path with no blob there', async () => {
+    writeFileSync(join(repo, 'b.txt'), 'brand new\n');
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'add b']);
+    const shas = await blobShas(repo, 'HEAD', ['a.txt', 'b.txt', 'missing.txt']);
+    const expected = async (p: string) =>
+      (await git(repo, ['rev-parse', `HEAD:${p}`])).stdout.trim();
+    expect([...shas.keys()].sort()).toEqual(['a.txt', 'b.txt']);
+    expect(shas.get('a.txt')).toBe(await expected('a.txt'));
+    expect(shas.get('b.txt')).toBe(await expected('b.txt'));
+  });
+
+  it('hashes the work tree to the blob each file becomes once committed', async () => {
+    writeFileSync(join(repo, 'a.txt'), 'edited, not committed\n');
+    writeFileSync(join(repo, 'c.txt'), 'untracked\n');
+    const shas = await blobShas(repo, null, ['a.txt', 'c.txt', 'missing.txt']);
+    expect([...shas.keys()].sort()).toEqual(['a.txt', 'c.txt']);
+    const atHead = await blobShas(repo, 'HEAD', ['a.txt']);
+    expect(shas.get('a.txt')).not.toBe(atHead.get('a.txt'));
+
+    await git(repo, ['add', '-A']);
+    await git(repo, ['commit', '--no-verify', '-m', 'commit the edit']);
+    expect(await blobShas(repo, 'HEAD', ['a.txt', 'c.txt'])).toEqual(shas);
+  });
+
+  it('answers an empty map for no paths or an unknown ref', async () => {
+    expect((await blobShas(repo, null, [])).size).toBe(0);
+    expect((await blobShas(repo, 'no-such-ref', ['a.txt'])).size).toBe(0);
   });
 });
 
