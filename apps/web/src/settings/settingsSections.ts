@@ -18,17 +18,14 @@
  * predicate is the seam that keeps the two sets honest, and is unit-tested directly so the rule
  * cannot quietly drift back to "the whole screen waits".
  *
- * It also holds the web's grouped nav (v10 mockup, {@link WEB_SETTINGS_GROUPS}): JIRA and
- * Linear are one Integrations nav item now, with a provider tab each inside the pane, but they
- * keep their own ids so {@link resolveWebSettingsNav} can still open either one by name.
+ * It also holds the web's grouped nav (v10 mockup, {@link WEB_SETTINGS_GROUPS}): JIRA sits
+ * under the Integrations nav item, as a provider tab inside the pane, but keeps its own id so
+ * {@link resolveWebSettingsNav} can still open it by name.
  */
 import { SETTINGS_NAV_ICONS, type SettingsNavGroup } from '@tm/ui/settings/SettingsPage';
 
 /** The providers drawn as the horizontal tabs inside Integrations, in tab order. */
-export const WEB_SETTINGS_PROVIDERS = [
-  { id: 'jira', title: 'JIRA' },
-  { id: 'linear', title: 'Linear' },
-] as const;
+export const WEB_SETTINGS_PROVIDERS = [{ id: 'jira', title: 'JIRA' }] as const;
 
 export type WebSettingsProvider = (typeof WEB_SETTINGS_PROVIDERS)[number]['id'];
 
@@ -107,8 +104,8 @@ export function resolveWebSettingsNav(section: SettingsSection): ResolvedWebSett
 
 /**
  * The sections whose form reads `AppSettings`. Everything NOT here draws without it — see the
- * file header for why that distinction is the whole point. Integrations holds the JIRA and
- * Linear forms; Appearance holds Monochrome code beside the per-browser theme.
+ * file header for why that distinction is the whole point. Integrations holds the JIRA
+ * form; Appearance holds Monochrome code beside the per-browser theme.
  */
 const SECTIONS_NEEDING_SETTINGS: ReadonlySet<SettingsSection> = new Set<SettingsSection>([
   'general',
@@ -116,7 +113,6 @@ const SECTIONS_NEEDING_SETTINGS: ReadonlySet<SettingsSection> = new Set<Settings
   'features',
   'integrations',
   'jira',
-  'linear',
   'appearance',
   'promptTemplates',
 ]);
