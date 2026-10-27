@@ -72,8 +72,29 @@
  *
  * ## Prove it can fail
  *
- * Filled in by the mutation step of F15.16: each mutation, the checks it turns red, and the
- * restore back to green.
+ * Make each one-line mutation below by itself, re-run the script and it exits 1 with the named
+ * checks red. Restore the file (`git diff` empty) and it is green again: 53 passed, 0 failed.
+ *
+ *  1. `apps/client/src/main/review/queueService.ts`, in `applyRefresh`: make a `'failure'`
+ *     segment reconcile like a complete empty answer, i.e. replace
+ *     `if (result === 'failure') continue;` with
+ *     `if (result === 'failure') { this.deps.store.applyReviewQueue(segment, [], syncedAt, { complete: true }); continue; }`.
+ *     **3 red** in check 7: both rows survive the outage, their `syncedAt` is unchanged, the
+ *     review refs are still there during the outage.
+ *  2. `apps/client/src/main/review/subjectService.ts`, in `summaryForPr`: never take the local
+ *     answer — `if (local.status === 'ok') {` becomes `if (false && local.status === 'ok') {`.
+ *     **8 red**: check 2's `source is local-ref`, its file list and blob sha, and
+ *     "no /pulls/7/files request"; check 3's hunks (now the decoy's); then the run throws.
+ *  3. `packages/shared/src/review.ts`, in `viewedState`: drop ` && mark.blobSha ===
+ *     entry.newBlobSha`. **1 red**: check 5's `src/app.ts is now 'changed'` reads `viewed`.
+ *  4. `apps/client/src/main/review/forgeDiffSource.ts`, in `cachePut`: delete
+ *     `this.cache.set(diffId, entry);`. **1 red**: check 6's "a second read adds no
+ *     /pulls/12/files request (the LRU)" — 1 request becomes 4.
+ *
+ * Two checks were dead until these runs, and were fixed here rather than in the source.
+ * Check 7's `syncedAt` walked the rows left AFTER the outage, so mutation 1's empty table
+ * passed it vacuously. And the fake forge had no `/pulls/7/files`, so mutation 2 surfaced only
+ * as a 404 throw; it now serves a decoy, so the wrongful fallback answers and fails by name.
  *
  * Pass `--keep` to leave the scratch directory behind. Prints `N passed, M failed` and exits
  * non-zero on any failure.
@@ -440,6 +461,21 @@ function startForge() {
         head: { sha: forgeState.widgetsHead, ref: 'widen' },
         base: { sha: mainSha, ref: 'main' },
       });
+    }
+    // A decoy: the local-ref path must never ask for this. Without it a wrongful fallback to
+    // `forge-api` would only throw on the 404, instead of turning check 2's `source` and
+    // "no /pulls/7/files request" red by name.
+    if (api === '/repos/acme/widgets/pulls/7/files') {
+      return json(res, 200, [
+        {
+          sha: 'f'.repeat(40),
+          filename: 'src/app.ts',
+          status: 'modified',
+          additions: 1,
+          deletions: 1,
+          patch: '@@ -5,1 +5,1 @@\n-decoy\n+decoy',
+        },
+      ]);
     }
     if (api === '/repos/acme/gadgets/pulls/12') {
       return json(res, 200, {
@@ -830,11 +866,14 @@ try {
       duringOutage.some((r) => r.item.subjectId === GADGETS),
     JSON.stringify(duringOutage.map((r) => r.item.subjectId)),
   );
+  // Walks the rows cached BEFORE the outage, not the ones after it: `every` over an emptied
+  // table is vacuously true, so a reconcile that deleted them all would pass.
   check(
     'their syncedAt is unchanged',
-    duringOutage
-      .filter((r) => r.item.queue === 'requested')
-      .every((r) => r.syncedAt === syncedBefore.get(r.item.subjectId)),
+    [WIDGETS, GADGETS].every((id) => {
+      const row = duringOutage.find((r) => r.item.subjectId === id);
+      return row !== undefined && row.syncedAt === syncedBefore.get(id);
+    }),
   );
   check(
     "snapshot().partial contains 'requested'",
