@@ -1299,6 +1299,18 @@ export function wordDiff(oldText: string, newText: string): WordDiff {
     return wholeLineDiff(oldText, newText);
   }
 
+  // Only an indent, spaces or punctuation in common is not "meaningful": two unrelated
+  // lines paired by position would otherwise take the word tint on nearly every token,
+  // stacking it over the line tint until the whole row reads saturated.
+  const shared = [
+    ...oldTokens.slice(0, prefixLen),
+    ...oldTokens.slice(oldTokens.length - suffixLen),
+    ...oldOps.filter((op) => op.kind === 'same').map((op) => op.text),
+  ];
+  if (!shared.some((token) => /\w/.test(token))) {
+    return wholeLineDiff(oldText, newText);
+  }
+
   const prefixText = oldTokens.slice(0, prefixLen).join('');
   const suffixText = suffixLen ? oldTokens.slice(oldTokens.length - suffixLen).join('') : '';
 

@@ -94,6 +94,16 @@ neutral background and foreground tokens are overridden from `SEMANTIC[scheme]` 
 `colorNeutralBackground1` is `paneOpaque`). A Fluent `Button` and a bare `makeStyles` div never
 disagree about what "text" means.
 
+The `--tm-diff-*` tints are alphas, so the colour you see depends on the surface under them.
+Judge them on rendered pixels against the mockup, not on token equality. The dark values are
+v9-6b's own, and over the pane (`--tm-pane-opaque`) they render within ±3 per channel of the
+mockup. Two things made them read saturated:
+
+- `DiffView`'s file card (`colorNeutralBackground3`, darker than the pane). The review
+  workspace now passes `flat` to drop it.
+- A word tint on nearly every token of two unrelated paired lines. `wordDiff` now needs a
+  shared _word_; a shared indent or `;` is not enough.
+
 Two colour tables that look alike mean different things:
 
 - **`FLUO_BY_SCHEME`** (`SEMANTIC[scheme].fluo`, `--tm-fluo-*`) is for **state indicators**:

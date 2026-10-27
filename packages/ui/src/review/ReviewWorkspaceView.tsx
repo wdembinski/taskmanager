@@ -606,6 +606,7 @@ function DiffColumn({
           canComment={selected.taskId !== null && canComment(state, unreachable !== undefined)}
           layout={drawn}
           monochrome={monochrome}
+          flat
           viewed={byPath}
           onToggleViewed={onToggleViewed}
           onToggleExpanded={onToggleExpanded}

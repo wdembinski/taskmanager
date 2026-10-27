@@ -92,6 +92,9 @@ const useStyles = makeStyles({
     borderRadius: tokens.borderRadiusMedium,
     overflow: 'hidden',
   },
+  // `flat`: no card of its own — the add/del tints are alphas, so the surface under them
+  // decides the colour you see, and v9-6/v9-6b draw the diff straight on the pane.
+  fileFlat: { backgroundColor: 'transparent' },
   fileHeader: {
     display: 'flex',
     alignItems: 'center',
@@ -241,6 +244,9 @@ export interface DiffViewProps {
   /** Whether the diff shows syntax colour at all (F15.11, `AppSettings.monochromeCode`
    * inverted) — `false`/unset highlights, same as before this setting existed. */
   monochrome?: boolean;
+  /** Draw each file straight on the host's own pane instead of its darker
+   * `colorNeutralBackground3` card — the review workspace, whose mockups draw no card. */
+  flat?: boolean;
   /** Compact mode's tap-selected line/range, before a comment is started on it. */
   selection?: LineSelection | null;
   /** Each file's viewed status. With `onToggleViewed`, draws a "Viewed" box in every file
@@ -272,6 +278,7 @@ export function DiffView({
   layout = 'unified',
   wrap = true,
   monochrome = false,
+  flat = false,
   selection = null,
   viewed,
   onToggleViewed,
@@ -322,6 +329,7 @@ export function DiffView({
             layout={layout}
             wrap={wrap}
             monochrome={monochrome}
+            flat={flat}
             viewedProps={viewedProps}
             onToggleExpanded={onToggleExpanded}
             onClickLine={onClickLine}
@@ -427,6 +435,7 @@ function FileSection({
   layout,
   wrap,
   monochrome,
+  flat,
   viewedProps,
   onToggleExpanded,
   ...handlers
@@ -444,6 +453,7 @@ function FileSection({
   layout: DiffLayout;
   wrap: boolean;
   monochrome: boolean;
+  flat: boolean;
   viewedProps: ViewedProps | undefined;
   onToggleExpanded: (path: string) => void;
 } & CommentHandlers): JSX.Element {
@@ -467,7 +477,7 @@ function FileSection({
   const unanchoredEditor = editor !== null && !editorAnchored ? editor : null;
 
   return (
-    <div className={styles.file}>
+    <div className={mergeClasses(styles.file, flat && styles.fileFlat)}>
       <div className={styles.fileHeader}>
         <Caption1 className={styles.letter}>{statusLetter(entry.status)}</Caption1>
         <Caption1 className={styles.path} title={entry.path}>
