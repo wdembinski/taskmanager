@@ -363,6 +363,7 @@ describe('review:context over the DIFF_FILE_MAX_BYTES cap, end to end', () => {
       ],
       filePatch: async () => null,
       fileSizes: async () => new Map(),
+      blobShas: async () => new Map(),
       fileSize: async () => DIFF_FILE_MAX_BYTES + 1,
       readFile: async (_dir, ref, path) => {
         calls.push(`readFile ${ref ?? 'WORK'}:${path}`);

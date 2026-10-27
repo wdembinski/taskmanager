@@ -56,6 +56,7 @@ import {
 import { diffStatOf, type VariantDiffStat } from '@shared/variants';
 import type { ExecHost } from '../exec';
 import {
+  blobShas,
   blobSize,
   branchExists,
   conflictedFiles,
@@ -101,6 +102,8 @@ export interface DiffGit {
   ): Promise<string | null>;
   /** Byte size of each path at `ref`, or in the work tree when `ref` is null; absent = unknown. */
   fileSizes(dir: string, ref: string | null, paths: string[]): Promise<Map<string, number>>;
+  /** The blob SHA of each path at `ref`, or in the work tree when `ref` is null; absent = none. */
+  blobShas(dir: string, ref: string | null, paths: string[]): Promise<Map<string, string>>;
   /** Byte size of `path` at `ref` (`null` = work tree), `-1` when unknown. */
   fileSize(dir: string, ref: string | null, path: string): Promise<number>;
   /** Raw bytes of `path` at `ref` (`null` = work tree), or null. */
@@ -240,17 +243,24 @@ export class DiffService {
     const entries = await this.entries(resolved);
     const truncated = entries.length > DIFF_SUMMARY_MAX_FILES;
     const listed = entries.slice(0, DIFF_SUMMARY_MAX_FILES);
-    const sizes = await this.sizesOf(resolved, listed);
-    const files = listed.map((e): DiffFileEntry => ({
-      path: e.path,
-      ...(e.oldPath ? { oldPath: e.oldPath } : {}),
-      status: e.status,
-      additions: e.additions,
-      deletions: e.deletions,
-      binary: e.binary,
-      image: imageMimeOf(e.path) !== null,
-      bytes: sizes.get(e.path) ?? 0,
-    }));
+    const [sizes, shas] = await Promise.all([
+      this.sizesOf(resolved, listed),
+      this.newBlobShasOf(resolved, listed),
+    ]);
+    const files = listed.map((e): DiffFileEntry => {
+      const newBlobSha = shas.get(e.path);
+      return {
+        path: e.path,
+        ...(e.oldPath ? { oldPath: e.oldPath } : {}),
+        status: e.status,
+        additions: e.additions,
+        deletions: e.deletions,
+        binary: e.binary,
+        image: imageMimeOf(e.path) !== null,
+        bytes: sizes.get(e.path) ?? 0,
+        ...(newBlobSha ? { newBlobSha } : {}),
+      };
+    });
     return {
       diffId: resolved.diffId,
       baseRef: resolved.baseRef,
@@ -488,6 +498,21 @@ export class DiffService {
       deleted.length ? resolved.git.fileSizes(resolved.dir, resolved.baseSha, deleted) : new Map(),
     ]);
     return new Map([...oldSizes, ...newSizes]);
+  }
+
+  /**
+   * Each file's new-side blob SHA — what a viewed mark is keyed on (`viewedState`), so a mark
+   * turns `changed` when the author pushes again. Read at `resolved.to`, or hashed from the
+   * work tree when it is included. A deletion has no new side, so it gets none.
+   */
+  private newBlobShasOf(
+    resolved: ResolvedDiff,
+    entries: NameStatusEntry[],
+  ): Promise<Map<string, string>> {
+    const present = entries.filter((e) => e.status !== 'deleted').map((e) => e.path);
+    return present.length
+      ? resolved.git.blobShas(resolved.dir, resolved.to, present)
+      : Promise.resolve(new Map());
   }
 
   /** task → project → worktree or branch → base → revision. */
@@ -820,6 +845,7 @@ export function createDiffGit(host: ExecHost): DiffGit {
       const wanted = new Set(paths);
       return new Map([...all].filter(([p]) => wanted.has(p)));
     },
+    blobShas: (dir, ref, paths) => blobShas(dir, ref, paths, host),
     async fileSize(dir, ref, path) {
       return ref === null ? workSize(dir, path) : blobSize(dir, ref, path, host);
     },

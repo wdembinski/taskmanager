@@ -54,6 +54,8 @@ interface FakeState {
   patch: string | null;
   sizes: Record<string, number>;
   blobs: Record<string, Buffer>;
+  /** Blob SHAs by `<ref|WORK>:<path>` — what `blobShas` answers. */
+  shas: Record<string, string>;
 }
 
 function fakeState(over: Partial<FakeState> = {}): FakeState {
@@ -70,6 +72,7 @@ function fakeState(over: Partial<FakeState> = {}): FakeState {
     patch: PATCH,
     sizes: { 'src/a.ts': 42 },
     blobs: {},
+    shas: {},
     ...over,
   };
 }
@@ -101,6 +104,15 @@ function fakeGit(s: FakeState): DiffGit & { calls: string[] } {
     },
     fileSizes: async (_dir, ref, paths) =>
       new Map(paths.map((p) => [p, s.sizes[key(ref, p)] ?? s.sizes[p] ?? 0])),
+    blobShas: async (_dir, ref, paths) => {
+      calls.push(`blobShas ${ref ?? 'WORK'} ${paths.join(',')}`);
+      return new Map(
+        paths.flatMap((p) => {
+          const sha = s.shas[key(ref, p)];
+          return sha ? [[p, sha] as const] : [];
+        }),
+      );
+    },
     fileSize: async (_dir, ref, path) => s.blobs[key(ref, path)]?.length ?? -1,
     readFile: async (_dir, ref, path) => {
       calls.push(`readFile ${key(ref, path)}`);
@@ -206,6 +218,33 @@ describe('task:diffSummary', () => {
       ['new.ts', 'old.ts', 9, false],
       ['logo.png', undefined, 100, true],
     ]);
+  });
+
+  it('keys each file by its new-side blob SHA, read from the work tree when it is included', async () => {
+    const s = fakeState({
+      entries: [
+        { path: 'src/a.ts', status: 'modified', additions: 1, deletions: 1, binary: false },
+        { path: 'gone.ts', status: 'deleted', additions: 0, deletions: 3, binary: false },
+      ],
+      shas: { 'WORK:src/a.ts': 'w'.repeat(40), [`${HEAD_SHA}:src/a.ts`]: 'x'.repeat(40) },
+    });
+    const { svc, g } = service(s);
+    const summary = await okSummary(svc);
+    expect(summary.files.map((f) => [f.path, f.newBlobSha])).toEqual([
+      ['src/a.ts', 'w'.repeat(40)],
+      ['gone.ts', undefined],
+    ]);
+    // A deletion has no new side to hash.
+    expect(g.calls).toContain('blobShas WORK src/a.ts');
+  });
+
+  it('reads the new-side blob SHA at the branch tip when the worktree is gone', async () => {
+    const s = fakeState({
+      live: false,
+      shas: { 'WORK:src/a.ts': 'w'.repeat(40), [`${HEAD_SHA}:src/a.ts`]: 'x'.repeat(40) },
+    });
+    const summary = await okSummary(service(s).svc);
+    expect(summary.files[0].newBlobSha).toBe('x'.repeat(40));
   });
 
   it(`lists at most ${DIFF_SUMMARY_MAX_FILES} files and says it truncated`, async () => {
