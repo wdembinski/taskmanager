@@ -179,15 +179,18 @@ function cardPrefix(task: Task): string | undefined {
 
 /** The `navigate` group: one row per rail screen, Scratch run (F13.11 — the one destination
  *  the sidebar does not carry a row for, see this module's header), plus one per Settings
- *  section. */
+ *  section. The rail's Reviews tile is skipped: `reviewCommands` already offers the one
+ *  `nav:reviews` row, with the workspace's own keywords. */
 function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
-  const screens = DESKTOP_SCREENS.map((tab): PaletteCommand => ({
-    id: `nav:${tab.id}`,
-    group: 'navigate',
-    title: tab.title,
-    icon: tab.icon,
-    run: () => snapshot.onNavigate(tab.id),
-  }));
+  const screens = DESKTOP_SCREENS.filter((tab) => tab.id !== 'reviews').map(
+    (tab): PaletteCommand => ({
+      id: `nav:${tab.id}`,
+      group: 'navigate',
+      title: tab.title,
+      icon: tab.icon,
+      run: () => snapshot.onNavigate(tab.id),
+    }),
+  );
   const scratchRun: PaletteCommand = {
     id: 'nav:scratch',
     group: 'navigate',

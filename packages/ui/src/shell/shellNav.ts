@@ -10,15 +10,14 @@
  * `group` answers "where does this tile sit in the rail", not "what screen does it open":
  * - `'bar'` — the activity bar's permanent destinations, per F13's design doc open question 2:
  *   Issues (`tickets`, the Tickets screen reborn as the list), Board (`mytasks`), Activity,
- *   Performance (its own tile for now — open question 2 folds it into Activity as a second tab,
- *   but that screen-level merge has no card of its own yet, so it keeps a bar slot) and
- *   Automations.
+ *   Reviews (F15.14b), Performance (its own tile for now — open question 2 folds it into
+ *   Activity as a second tab, but that screen-level merge has no card of its own yet, so it
+ *   keeps a bar slot) and Automations.
  * - `'foot'` — pinned to the rail's bottom, below the spacer: Settings.
  *
- * **`reviews` (F15.14b) is a destination with no rail tile**: it joins `ShellNavId` so both
- * hosts' `TabId`/`Screen` route to the review workspace, but not `SHELL_NAV` — the sidebar's
- * Reviews row (with its *Requested from me* count) is the entry, the same way `attention` and
- * `issues` work since F13.11.
+ * **`reviews` (F15.14b) has two entries**: its own `bar` tile, third after Activity as the v9-6
+ * mockup draws it (so the rail highlights it while the workspace is open), and the sidebar's
+ * Reviews row. The *Requested from me* count lives on the row only — the tile carries no badge.
  *
  * **F13.11 deleted the `'interim'` group** that used to sit between the two above (`attention`,
  * `projects`, `issues`, `fleet`, `scratch`) — every one of those five now reaches its screen
@@ -32,6 +31,7 @@
 import type { FluentIcon } from '@fluentui/react-icons';
 import {
   BoardRegular,
+  BranchRegular,
   DataTrendingRegular,
   FlashRegular,
   MailInboxRegular,
@@ -69,6 +69,7 @@ export const SHELL_NAV: readonly ShellNavEntry[] = [
   { id: 'tickets', label: 'Tickets', icon: TaskListSquareLtrRegular, group: 'bar' },
   { id: 'mytasks', label: 'My Tasks', icon: BoardRegular, group: 'bar' },
   { id: 'activity', label: 'Activity', icon: MailInboxRegular, group: 'bar' },
+  { id: 'reviews', label: 'Reviews', icon: BranchRegular, group: 'bar' },
   { id: 'performance', label: 'Performance', icon: DataTrendingRegular, group: 'bar' },
   { id: 'automations', label: 'Automations', icon: FlashRegular, group: 'bar' },
   { id: 'settings', label: 'Settings', icon: SettingsRegular, group: 'foot' },

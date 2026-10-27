@@ -249,6 +249,14 @@ describe('buildDesktopCommands', () => {
   });
 
   describe('the review workspace rows (F15.14b)', () => {
+    it('offers exactly one Reviews navigate row, now SHELL_NAV carries a Reviews tile too', () => {
+      expect(SHELL_NAV.some((entry) => entry.id === 'reviews')).toBe(true);
+      const commands = buildDesktopCommands(snapshot());
+      const reviews = commands.filter((c) => c.group === 'navigate' && c.title === 'Reviews');
+      expect(reviews.map((c) => c.id)).toEqual(['nav:reviews']);
+      expect(new Set(commands.map((c) => c.id)).size).toBe(commands.length);
+    });
+
     it('always offers Reviews, which opens the workspace with no subject', () => {
       const onOpenReviews = vi.fn();
       const commands = buildDesktopCommands(snapshot({ onOpenReviews }));

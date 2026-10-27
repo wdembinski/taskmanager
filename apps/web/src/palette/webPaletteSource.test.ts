@@ -120,6 +120,15 @@ describe('buildWebCommands', () => {
 });
 
 describe('the review workspace rows (F15.14b)', () => {
+  it('offers exactly one Reviews navigate row, now SHELL_NAV carries a Reviews tile too', () => {
+    expect(SHELL_NAV.some((entry) => entry.id === 'reviews')).toBe(true);
+    const commands = buildWebCommands({ tasks: {}, projects: {} }, actions());
+    const reviews = commands.filter((c) => c.group === 'navigate' && c.title === 'Reviews');
+    expect(reviews.map((c) => c.id)).toEqual(['nav:reviews']);
+    expect(reviews[0]?.channels).toEqual(['review:queues']);
+    expect(new Set(commands.map((c) => c.id)).size).toBe(commands.length);
+  });
+
   it('always offers Reviews, naming review:queues, which opens the workspace with no subject', () => {
     const openReviews = vi.fn();
     const commands = buildWebCommands({ tasks: {}, projects: {} }, { ...actions(), openReviews });

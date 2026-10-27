@@ -819,9 +819,10 @@ describe('the review workspace both hosts render from the shared component (F15.
   /**
    * TM-229a built `ReviewWorkspace` in `packages/ui/src/review/`; F15.14b mounts it in both
    * hosts — the desktop's `reviews` tab and the web's `reviews` screen (and its `#/reviews`
-   * route) — each straight from the shared package. Reached from the sidebar's Reviews row,
-   * not a rail tile, so `ShellNavId` has to keep `'reviews'` and the sidebar has to map its
-   * row onto `{ kind: 'reviews' }`.
+   * route) — each straight from the shared package. Reached from the sidebar's Reviews row
+   * and the rail's Reviews tile, so `ShellNavId` has to keep `'reviews'`, `SHELL_NAV` has to
+   * list it, both hosts' rails have to be fed `SHELL_NAV` itself, and the sidebar has to map
+   * its row onto `{ kind: 'reviews' }`.
    */
   for (const [label, path] of [
     ['the browser client', WEB_APP],
@@ -838,12 +839,31 @@ describe('the review workspace both hosts render from the shared component (F15.
     });
   }
 
-  it('is a reachable ShellNavId, and the shared sidebar maps its row to it', () => {
+  for (const [label, path] of [
+    ['the browser client', WEB_APP],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`gives ${label}'s rail the Reviews tile by passing it SHELL_NAV itself`, () => {
+      expect(
+        read(path),
+        `${path} must pass items={SHELL_NAV} to its NavRail — the Reviews tile lives in ` +
+          'SHELL_NAV, so a host that filters or re-lists the rail drops the tile the owner ' +
+          'asked for (v9-6) on that host alone.',
+      ).toMatch(/items=\{SHELL_NAV\}/);
+    });
+  }
+
+  it('is a reachable ShellNavId with a rail tile, and the shared sidebar maps its row to it', () => {
     expect(
       read(SHELL_NAV_SRC),
-      `${SHELL_NAV_SRC} must keep 'reviews' in its ShellNavId union, even with no SHELL_NAV ` +
-        "tile for it — both hosts' TabId/Screen route the workspace through it.",
+      `${SHELL_NAV_SRC} must keep 'reviews' in its ShellNavId union — both hosts' ` +
+        'TabId/Screen route the workspace through it.',
     ).toMatch(/'reviews'/);
+    expect(
+      read(SHELL_NAV_SRC),
+      `${SHELL_NAV_SRC} must list { id: 'reviews', … } in SHELL_NAV — the rail's Reviews ` +
+        'tile (v9-6), highlighted while the workspace is open.',
+    ).toMatch(/\{\s*id:\s*'reviews',[^}]*group:\s*'bar'\s*\}/);
 
     const SIDEBAR_SRC = 'packages/ui/src/shell/Sidebar.tsx';
     expect(

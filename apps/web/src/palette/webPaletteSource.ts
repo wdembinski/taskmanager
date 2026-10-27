@@ -71,10 +71,12 @@ export interface WebPaletteActions {
 
 /** Every rail destination `goTo` can reach — `SHELL_NAV` (F13.8), which since F13.11 no
  *  longer carries Scratch run at all (desktop-only, a palette command there with no rail
- *  tile — see `shellNav.ts`'s own header), so no filter is needed here any more. */
-const NAV_SCREENS: readonly { id: Screen; title: string; icon: FluentIcon }[] = SHELL_NAV.map(
-  (entry) => ({ id: entry.id as Screen, title: entry.label, icon: entry.icon }),
-);
+ *  tile — see `shellNav.ts`'s own header). The Reviews tile (F15.14b) is skipped: the shared
+ *  `reviewCommands` row is the one `nav:reviews`, and it names `review:queues`, so it drops
+ *  with the workspace when that channel is not relayed. */
+const NAV_SCREENS: readonly { id: Screen; title: string; icon: FluentIcon }[] = SHELL_NAV.filter(
+  (entry) => entry.id !== 'reviews',
+).map((entry) => ({ id: entry.id as Screen, title: entry.label, icon: entry.icon }));
 
 /** `keywords` a card command is searchable by, beyond its title — its tracker key under
  *  whichever name it carries, and its id for the uuid-paste case `paletteModel.ts` already
