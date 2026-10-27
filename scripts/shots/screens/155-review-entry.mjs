@@ -2,6 +2,7 @@
  * The review workspace's entries (F15.14b) — see `ui-shots.mjs`'s header doc for the row shape
  * and `scripts/lib/shotModules.mjs` for how this file is merged with its siblings.
  */
+import { now } from '../../fixtures/shotsFixtureHelpers.mjs';
 import {
   PR_FILES,
   PR_SUBJECT_ID,
@@ -36,6 +37,7 @@ export default [
     app: 'web',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
+    clock: now,
     setup: [{ click: 'Reviews' }],
     expect: '[data-review-workspace][data-state="loaded"] [data-source-badge]',
     mockup: 'v9-6-review-workspace-light.svg',
@@ -48,6 +50,7 @@ export default [
     app: 'client',
     viewport: { width: 1440, height: 900 },
     scheme: 'light',
+    clock: now,
     setup: [
       { click: `board-card:${CARD_ID}` },
       { scrollToSelector: '[data-open-review-workspace]' },

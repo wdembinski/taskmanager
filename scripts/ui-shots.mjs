@@ -53,7 +53,7 @@
  *   `viewBox` (verified against the mockup files themselves); 390×844 matches the phone frame
  *   drawn inside `v9-4-mobile-light.svg`/`v9-5-mobile-dark.svg`, not the SVG's own (wider) canvas.
  * - `path` — `'client'` rows only: appended to the renderer's origin for the navigation (e.g.
- *   `'/?harness=review-workspace'`, `main.tsx`'s workspace-only test route).
+ *   `'/?q=1'`). No row sets it today: every screen is reached through the real shell.
  *   Omit it to load the bare origin — the app itself. Storage is still cleared for the bare
  *   origin either way.
  * - `scheme` — `'light'` or `'dark'`, fed to the same `appearance` setting
@@ -125,6 +125,11 @@
  *   `'client'` rows feed it to `apiStub.mjs`'s `window.api`; `'web'` rows to the fake relay
  *   (`fakeRelay.mjs`'s `state.channelOverrides`), where it wins over the relay's own explicit
  *   channel cases too. Reset for every row on both targets.
+ * - `clock` — an epoch in ms the page's clock starts at (default none: the real clock). Set,
+ *   it prepends `scripts/lib/clockShim.mjs`'s `Date` replacement to the row's init script on
+ *   both targets, so `Date.now()` and a no-arg `new Date()` read `clock` plus however long the
+ *   page has been up — for a screen that compares a fixture timestamp against "now" (the
+ *   review workspace's "Queues as of …" caption). Explicit dates are untouched.
  * - `layoutCheck` — `{ visible: selector, clear: [selector, …] }`, measured after `expect`: the
  *   first `visible` match must sit fully inside every overflow-clipping ancestor and the
  *   viewport, and must not overlap the first match of any `clear` selector (sharing an edge is
@@ -153,6 +158,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApiStub } from './lib/apiStub.mjs';
+import { clockShimSource } from './lib/clockShim.mjs';
 import {
   collectExceptions,
   connectCdp,
@@ -282,7 +288,7 @@ function clientInitScript(defaultSettings, row, attachmentUrls) {
     },
     attachmentUrls,
   });
-  return `${PAGE_HELPERS_SRC}\n${stub}`;
+  return `${clockShimSource(row.clock)}\n${PAGE_HELPERS_SRC}\n${stub}`;
 }
 
 /**
@@ -292,10 +298,12 @@ function clientInitScript(defaultSettings, row, attachmentUrls) {
  * `appearance` is NOT threaded through here: `GET /v1/settings` answers from `relayState
  * .settings`, which the caller mutates per row (see `main`) since one relay process serves
  * every `'web'` row — `emulateScheme` is this target's only lever on light vs dark, so it is
- * not skippable here the way it is for `'client'`.
+ * not skippable here the way it is for `'client'`. `clock` is the row's own (see the row
+ * shape), which is why this is rebuilt per row rather than once per run.
  */
-function webInitScript(desktopClientId) {
-  return `(function(){
+function webInitScript(desktopClientId, clock) {
+  return `${clockShimSource(clock)}
+  (function(){
     if (location.protocol === 'about:') return;
     ${PAGE_HELPERS_SRC}
     localStorage.setItem('tm.cloud.refreshToken', 'ui-shots-refresh-token');
@@ -949,7 +957,7 @@ async function main() {
           // seeds the Inbox must not leak its items (and the tab bar's count) into the next.
           relayHandle.state.attentionItems = structuredClone(row.attention ?? []);
           relayHandle.state.channelOverrides = row.channelOverrides ?? {};
-          initScript = webInitScript(DESKTOP_CLIENT_ID);
+          initScript = webInitScript(DESKTOP_CLIENT_ID, row.clock);
           await freshLoad(cdp, relayOrigin, initScript);
         }
 

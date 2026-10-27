@@ -12,9 +12,9 @@
  * highlight.js has something to colour. The `+N −M` counts are the mockup's; the hunks are an
  * excerpt of each file's patch, not a line-for-line match to them.
  *
- * Nothing here joins the shared `CHANNELS`: the screen is reached only through `main.tsx`'s
- * `?harness=review-workspace` route, by those two rows and their own `channelOverrides` —
- * the same arrangement as `95-board-review.mjs`.
+ * Nothing here joins the shared `CHANNELS`: only the review rows
+ * (`150-review-workspace.mjs`, `155-review-entry.mjs`) answer with it, through their own
+ * `channelOverrides` — the same arrangement as `95-board-review.mjs`.
  */
 import { now } from '../shotsFixtureHelpers.mjs';
 

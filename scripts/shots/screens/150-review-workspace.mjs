@@ -2,6 +2,7 @@
  * The review workspace (F15.14) — see `ui-shots.mjs`'s header doc for the row shape and
  * `scripts/lib/shotModules.mjs` for how this file is merged with its siblings.
  */
+import { now } from '../../fixtures/shotsFixtureHelpers.mjs';
 import {
   PR_FILES,
   PR_SUBJECT_ID,
@@ -11,8 +12,9 @@ import {
 } from '../../fixtures/shots/96-review-workspace.mjs';
 
 /**
- * No host mounts the workspace yet (F15.14b adds the Reviews entry), so these rows load
- * `main.tsx`'s test route instead of the app. The workspace opens the first requested row —
+ * The desktop app's `reviews` tab, reached the way a human does: the sidebar's Reviews row, so
+ * the rail (its Reviews tile highlighted) frames the workspace as v9-6/v9-6b draw it. The
+ * workspace opens the first requested row —
  * GitLab `!412` (`96-review-workspace.mjs`) — read from a local clone, with two of its seven
  * files viewed and `src/upload/retry.ts` the first patch on screen.
  *
@@ -26,8 +28,8 @@ const workspaceRow = (scheme, mockup) => ({
   app: 'client',
   viewport: { width: 1440, height: 900 },
   scheme,
-  path: '/?harness=review-workspace',
-  setup: null,
+  clock: now,
+  setup: [{ click: 'Reviews' }],
   expect: '[data-review-workspace][data-state="loaded"] [data-source-badge]',
   mockup,
   channelOverrides: {
