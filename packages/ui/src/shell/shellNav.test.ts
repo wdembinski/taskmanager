@@ -16,7 +16,14 @@ describe('SHELL_NAV', () => {
 
   it('puts exactly the bar destinations in the bar group', () => {
     const bar = SHELL_NAV.filter((entry) => entry.group === 'bar').map((entry) => entry.id);
-    expect(bar).toEqual(['tickets', 'mytasks', 'activity', 'performance', 'automations']);
+    expect(bar).toEqual([
+      'tickets',
+      'mytasks',
+      'activity',
+      'reviews',
+      'performance',
+      'automations',
+    ]);
   });
 
   it('F13.11 carries no interim-group tile — those five destinations reach their screen through the sidebar now', () => {
@@ -33,9 +40,17 @@ describe('SHELL_NAV', () => {
     expect(foot).toEqual(['settings']);
   });
 
-  it('has no reviews entry yet — F15 adds it', () => {
-    const ids: readonly string[] = SHELL_NAV.map((entry) => entry.id);
-    expect(ids.includes('reviews')).toBe(false);
+  it('F15.14b puts the Reviews tile third, after Activity — tickets, mytasks, activity, reviews, performance, automations | settings', () => {
+    const rail = SHELL_NAV.map((entry) => `${entry.group}:${entry.id}`);
+    expect(rail).toEqual([
+      'bar:tickets',
+      'bar:mytasks',
+      'bar:activity',
+      'bar:reviews',
+      'bar:performance',
+      'bar:automations',
+      'foot:settings',
+    ]);
   });
 
   it('gives every entry a non-empty label', () => {

@@ -13,7 +13,7 @@
  * TanStack Query): this app's "server" is the local engine, reached through
  * `window.api` over IPC, not HTTP.
  */
-import React, { Suspense, lazy, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
 import type { NativeMaterial } from '@shared/canvas';
@@ -51,19 +51,6 @@ for (const type of ['dragover', 'drop'] as const) {
     if (isFileDrag(event.dataTransfer?.types)) event.preventDefault();
   });
 }
-
-/**
- * **A test-only route: `?harness=review-workspace`.** Mounts the review workspace
- * (`@ui/review/ReviewWorkspace`) on its own in place of `<App />`, so `ui-shots.mjs`'s
- * `review-workspace-*` rows can shoot a screen no host mounts yet — the Reviews entry and the
- * `/reviews` route are F15.14b's. Nothing in the app ever navigates to a query string, so a
- * real window never reaches it. Loaded lazily, so the app's own bundle does not grow by it.
- */
-const HARNESS = new URLSearchParams(window.location.search).get('harness');
-
-const ReviewWorkspaceHarness = lazy(() =>
-  import('@ui/review/ReviewWorkspace').then((m) => ({ default: m.ReviewWorkspace })),
-);
 
 /**
  * The provider, sized to the user's font-size setting and themed to their resolved
@@ -145,13 +132,7 @@ function ThemedApp(): JSX.Element {
             an HTTP client. `window.api` already has the invoke/on/pathForFile shape
             `Transport` wants — see packages/ui/src/transport.tsx. */}
         <TransportProvider transport={window.api}>
-          {HARNESS === 'review-workspace' ? (
-            <Suspense fallback={null}>
-              <ReviewWorkspaceHarness />
-            </Suspense>
-          ) : (
-            <App />
-          )}
+          <App />
         </TransportProvider>
       </RootErrorBoundary>
       {/* One surface for the whole app, so any screen can dispatch into it. Absent

@@ -7,9 +7,10 @@
  * its channels stops being relayable on whatever policy it is handed — a cloned, mutated copy
  * for a test, the real singleton by default. Since the v10 mockup (TM-458), also covers that a
  * card row's `prefix` is its tracker key (with no `subtitle` duplicating it) and that nav/action
- * rows carry an `icon`.
+ * rows carry an `icon`. Since F15.14b, also the review workspace's rows: each names
+ * `review:queues`, and a policy that stops relaying it drops every one of them.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RELAY_POLICY } from '@tm/shared/ipcRelay';
 import type { Project, Task } from '@tm/shared/model';
 import { AddRegular, SignOutRegular } from '@fluentui/react-icons';
@@ -56,6 +57,8 @@ function actions(): WebPaletteActions {
     openCard: () => {},
     addTask: () => {},
     signOut: () => {},
+    openReviews: () => {},
+    reviewAction: () => {},
   };
 }
 
@@ -113,6 +116,71 @@ describe('buildWebCommands', () => {
   it('builds a Sign out command with a SignOutRegular icon', () => {
     const commands = buildWebCommands({ tasks: {}, projects: {} }, actions());
     expect(commands.find((c) => c.id === 'action:sign-out')?.icon).toBe(SignOutRegular);
+  });
+});
+
+describe('the review workspace rows (F15.14b)', () => {
+  it('offers exactly one Reviews navigate row, now SHELL_NAV carries a Reviews tile too', () => {
+    expect(SHELL_NAV.some((entry) => entry.id === 'reviews')).toBe(true);
+    const commands = buildWebCommands({ tasks: {}, projects: {} }, actions());
+    const reviews = commands.filter((c) => c.group === 'navigate' && c.title === 'Reviews');
+    expect(reviews.map((c) => c.id)).toEqual(['nav:reviews']);
+    expect(reviews[0]?.channels).toEqual(['review:queues']);
+    expect(new Set(commands.map((c) => c.id)).size).toBe(commands.length);
+  });
+
+  it('always offers Reviews, naming review:queues, which opens the workspace with no subject', () => {
+    const openReviews = vi.fn();
+    const commands = buildWebCommands({ tasks: {}, projects: {} }, { ...actions(), openReviews });
+    const reviews = commands.find((c) => c.id === 'nav:reviews');
+    expect(reviews?.group).toBe('navigate');
+    expect(reviews?.channels).toEqual(['review:queues']);
+    void reviews?.run();
+    expect(openReviews).toHaveBeenCalledWith();
+  });
+
+  it('opens the selected card in the workspace by its task subject, named by its key', () => {
+    const openReviews = vi.fn();
+    const commands = buildWebCommands(
+      { tasks: { t1: task({ ticketKey: 'TM-7' }) }, projects: {}, selectedTaskId: 't1' },
+      { ...actions(), openReviews },
+    );
+    const open = commands.find((c) => c.id === 'review:openSelected');
+    expect(open?.title).toBe('Open TM-7 in review workspace');
+    void open?.run();
+    expect(openReviews).toHaveBeenCalledWith('task:t1');
+  });
+
+  it('offers no "Open … in review workspace" with no card open, or one this tab has no row for', () => {
+    const none = buildWebCommands({ tasks: { t1: task() }, projects: {} }, actions());
+    expect(none.some((c) => c.id === 'review:openSelected')).toBe(false);
+    const gone = buildWebCommands({ tasks: {}, projects: {}, selectedTaskId: 't1' }, actions());
+    expect(gone.some((c) => c.id === 'review:openSelected')).toBe(false);
+  });
+
+  it('offers the key actions only while the workspace is open, each running its action', () => {
+    const closed = buildWebCommands({ tasks: {}, projects: {} }, actions());
+    expect(closed.some((c) => c.id.startsWith('review:key:'))).toBe(false);
+    const reviewAction = vi.fn();
+    const commands = buildWebCommands(
+      { tasks: {}, projects: {}, reviewsOpen: true },
+      { ...actions(), reviewAction },
+    );
+    const next = commands.find((c) => c.id === 'review:key:nextFile');
+    expect(next?.title).toBe('Review: Next file');
+    void next?.run();
+    expect(reviewAction).toHaveBeenCalledWith('nextFile');
+  });
+
+  it('drops every review row, and nothing else, once review:queues is host-only', () => {
+    const commands = buildWebCommands(
+      { tasks: { t1: task() }, projects: {}, reviewsOpen: true, selectedTaskId: 't1' },
+      actions(),
+    );
+    const mutatedPolicy = { ...RELAY_POLICY, 'review:queues': 'host-only' as const };
+    const relayed = relayableCommands(commands, mutatedPolicy);
+    expect(relayed.some((c) => c.id === 'nav:reviews' || c.id.startsWith('review:'))).toBe(false);
+    expect(relayed.some((c) => c.id === 'card:t1')).toBe(true);
   });
 });
 

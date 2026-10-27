@@ -228,7 +228,7 @@ export async function screenshot(cdp, filePath, clip) {
  * first (synchronous, data-less) render has painted; callers needing to wait for async data on
  * top of that run their own follow-up wait.
  *
- * `path` (e.g. `'/?harness=review-workspace'`) is appended to `originUrl` for the navigation
+ * `path` (e.g. `'/?q=1'`) is appended to `originUrl` for the navigation
  * only — `Storage.clearDataForOrigin` takes a bare origin, never a path or a query.
  */
 export async function freshLoad(cdp, originUrl, initScript = '', path = '') {

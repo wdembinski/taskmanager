@@ -10,7 +10,9 @@
  * hit) over "Catalog" (mid-word); and a numeric query ranks a title containing it above a row
  * whose id merely contains it. Also covers the pure helpers the component holds no logic of its
  * own for: `groupRows`, `paletteKeyEvent` (including its `Tab` → `refine` mapping, and why
- * Shift/Ctrl/⌘+Tab map to `null` instead) and `runSelected`.
+ * Shift/Ctrl/⌘+Tab map to `null` instead) and `runSelected`. Last, `reviewWorkspaceCommands`'
+ * rows: `nav:reviews` always, the selected-card row only with a selection, the key actions only
+ * while the workspace is open, and every row's `run` reporting its own id.
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -23,6 +25,8 @@ import {
   PALETTE_GROUP_LABELS,
   PALETTE_GROUP_ORDER,
   rankCommands,
+  reviewCommandKeyAction,
+  reviewWorkspaceCommands,
   runSelected,
   type PaletteCommand,
   type PaletteContext,
@@ -490,5 +494,64 @@ describe('runSelected', () => {
     };
 
     expect(runSelected(state)).toBeNull();
+  });
+});
+
+describe('reviewWorkspaceCommands', () => {
+  const ids = (commands: PaletteCommand[]): string[] => commands.map((c) => c.id);
+
+  it('always offers nav:reviews, and nothing else with no selection and the workspace shut', () => {
+    const commands = reviewWorkspaceCommands({ open: false, selection: null, onAction: () => {} });
+    expect(ids(commands)).toEqual(['nav:reviews']);
+    expect(commands[0].group).toBe('navigate');
+  });
+
+  it('offers the selected-card row only with a selection, named by its key', () => {
+    const withKey = reviewWorkspaceCommands({
+      open: false,
+      selection: { label: 'TM-229' },
+      onAction: () => {},
+    });
+    expect(ids(withKey)).toEqual(['nav:reviews', 'review:openSelected']);
+    expect(withKey[1].title).toBe('Open TM-229 in review workspace');
+
+    const keyless = reviewWorkspaceCommands({
+      open: false,
+      selection: { label: null },
+      onAction: () => {},
+    });
+    expect(keyless[1].title).toBe('Open this card in review workspace');
+  });
+
+  it('offers the key commands only while the workspace is open, each with its key', () => {
+    const shut = reviewWorkspaceCommands({ open: false, selection: null, onAction: () => {} });
+    expect(ids(shut).some((id) => id.startsWith('review:key:'))).toBe(false);
+
+    const open = reviewWorkspaceCommands({ open: true, selection: null, onAction: () => {} });
+    const keys = open.filter((c) => c.id.startsWith('review:key:'));
+    expect(keys.map((c) => c.id)).toContain('review:key:nextFile');
+    expect(keys.find((c) => c.id === 'review:key:nextFile')).toMatchObject({
+      group: 'actions',
+      title: 'Review: Next file',
+      shortcut: 'n',
+    });
+    expect(keys).toHaveLength(9);
+  });
+
+  it("runs each row by calling onAction with that row's id", () => {
+    const onAction = vi.fn();
+    const commands = reviewWorkspaceCommands({
+      open: true,
+      selection: { label: 'TM-229' },
+      onAction,
+    });
+    for (const command of commands) void command.run();
+    expect(onAction.mock.calls.map(([id]) => id)).toEqual(ids(commands));
+  });
+
+  it('maps a key row back to its workspace action, and the other rows to null', () => {
+    expect(reviewCommandKeyAction('review:key:toggleViewed')).toBe('toggleViewed');
+    expect(reviewCommandKeyAction('nav:reviews')).toBeNull();
+    expect(reviewCommandKeyAction('review:openSelected')).toBeNull();
   });
 });

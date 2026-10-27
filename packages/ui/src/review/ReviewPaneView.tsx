@@ -50,7 +50,12 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import { ArrowClockwiseRegular, NoteEditRegular, SendRegular } from '@fluentui/react-icons';
+import {
+  ArrowClockwiseRegular,
+  NoteEditRegular,
+  SendRegular,
+  WindowNewRegular,
+} from '@fluentui/react-icons';
 import type { DiffLine, DiffSide, ReviewComment, ReviewSendRefusal } from '@tm/shared/review';
 import { MONO } from '../theme';
 import { CommentEditorCard } from './CommentThread';
@@ -150,6 +155,12 @@ export interface ReviewPaneViewProps {
    * `AppSettings.monochromeCode` (F15.11), carried straight through to {@link DiffView}. */
   monochrome?: boolean;
   onReload: () => void;
+  /**
+   * Opens this card's diff in the review workspace — `ReviewPane`'s own wiring of the host's
+   * `ReviewWorkspaceOpener` (F15.14b). `undefined` (no opener mounted) draws no button; the
+   * compact pane never draws it either, since the phone keeps its own Changes tab.
+   */
+  onOpenInWorkspace?: () => void;
   onSelectFile: (path: string) => void;
   onToggleExpanded: (path: string) => void;
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
@@ -234,6 +245,7 @@ export function ReviewPaneView({
   layout,
   monochrome,
   onReload,
+  onOpenInWorkspace,
   onSelectFile,
   onToggleExpanded,
   onClickLine,
@@ -535,6 +547,17 @@ export function ReviewPaneView({
               aria-label="Refresh the diff"
               onClick={onReload}
             />
+          )}
+          {onOpenInWorkspace && (
+            <Button
+              size="small"
+              appearance="subtle"
+              icon={<WindowNewRegular />}
+              data-open-review-workspace=""
+              onClick={onOpenInWorkspace}
+            >
+              Open in review workspace
+            </Button>
           )}
         </div>
         <div className={styles.body}>

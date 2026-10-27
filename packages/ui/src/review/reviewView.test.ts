@@ -256,6 +256,22 @@ describe('fetchablePaths', () => {
     };
     expect(fetchablePaths(loading)).toEqual([]);
   });
+
+  // F15.15: the web reads one file at a time over the relay — pinned, not rewritten.
+  it('never asks for more than one file, and nothing while one is in flight', () => {
+    const paths = Array.from({ length: 40 }, (_, i) => `f${i}.ts`);
+    const state = summaryLoaded(
+      paths.map((p) => entry(p)),
+      paths,
+    );
+    expect(fetchablePaths(state).length).toBeLessThanOrEqual(1);
+    const last = paths[paths.length - 1];
+    const oneInFlight = {
+      ...state,
+      files: { ...state.files, [last]: { status: 'loading' as const, seq: 2 } },
+    };
+    expect(fetchablePaths(oneInFlight)).toEqual([]);
+  });
 });
 
 describe('fileLoadNotice', () => {

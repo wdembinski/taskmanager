@@ -384,7 +384,12 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     labelChip: LABEL_CHIP,
     fluo: FLUO_BY_SCHEME.dark,
     code: CODE_BY_SCHEME.dark,
-    // v9-6b's own add/del rects.
+    // v9-6b's own add/del rects, checked against the mockup's RENDERED pixels, not just its
+    // SVG: an alpha's visible colour is set by the surface under it. Over the pane
+    // (`paneOpaque`) these land within ±3 per channel of the mockup. The old darker
+    // `colorNeutralBackground3` file card, plus a word tint on nearly every token of
+    // unrelated paired lines, made the same values read saturated. `DiffView`'s `flat`
+    // fixes the first and `wordDiff`'s shared-word rule the second, so the values stay.
     diff: {
       add: 'rgba(63, 185, 80, 0.14)',
       del: 'rgba(248, 81, 73, 0.14)',

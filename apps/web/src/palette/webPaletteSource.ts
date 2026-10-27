@@ -18,11 +18,23 @@
  * Since the v10 mockup (TM-458), every command also carries an `icon` — a nav row's own
  * `SHELL_NAV` entry, `SignOutRegular` for Sign out — and a card row carries a `prefix` (its
  * tracker key) in place of the old key `subtitle`, so the key is not shown twice.
+ *
+ * The review workspace's rows (F15.14b) come from the shared `reviewWorkspaceCommands`, the same
+ * list the desktop mixes in, each naming `review:queues` — the read the workspace cannot open
+ * without — so a policy that ever stops relaying it takes every one of them off the palette.
  */
 import type { IpcApi } from '@tm/shared/ipc';
 import { RELAY_POLICY, type RelayPolicy } from '@tm/shared/ipcRelay';
 import type { Project, Task } from '@tm/shared/model';
-import type { PaletteCommand, PaletteSource } from '@tm/ui/palette/paletteModel';
+import { taskSubjectId } from '@tm/shared/review';
+import {
+  reviewCommandKeyAction,
+  reviewWorkspaceCommands,
+  type PaletteCommand,
+  type PaletteSource,
+  type ReviewWorkspaceCommandId,
+} from '@tm/ui/palette/paletteModel';
+import type { ReviewKeyAction } from '@tm/ui/review/reviewKeys';
 import { SHELL_NAV } from '@tm/ui/shell/shellNav';
 import { AddRegular, SignOutRegular, type FluentIcon } from '@fluentui/react-icons';
 import type { Screen } from '../App';
@@ -35,6 +47,12 @@ export type WebCommand = PaletteCommand & { channels: readonly (keyof IpcApi)[] 
 export interface WebPaletteSnapshot {
   tasks: Record<string, Task>;
   projects: Record<string, Project>;
+  /** Whether the review workspace is the screen on show — its key-action rows are offered
+   *  only then (F15.14b). Absent reads as `false`. */
+  reviewsOpen?: boolean;
+  /** The card open on the board, which "Open … in review workspace" acts on. Absent or `null`
+   *  offers no such row. */
+  selectedTaskId?: string | null;
 }
 
 /** The host calls these rather than `webPaletteSource` touching navigation, the transport or
@@ -44,14 +62,21 @@ export interface WebPaletteActions {
   openCard: (taskId: string) => void;
   addTask: () => void;
   signOut: () => void;
+  /** Switch to the review workspace, with `subjectId` selected when one is given. */
+  openReviews: (subjectId?: string) => void;
+  /** Run one workspace key action as if its key were pressed (the workspace's
+   *  `actionRequest`). */
+  reviewAction: (action: ReviewKeyAction) => void;
 }
 
 /** Every rail destination `goTo` can reach — `SHELL_NAV` (F13.8), which since F13.11 no
  *  longer carries Scratch run at all (desktop-only, a palette command there with no rail
- *  tile — see `shellNav.ts`'s own header), so no filter is needed here any more. */
-const NAV_SCREENS: readonly { id: Screen; title: string; icon: FluentIcon }[] = SHELL_NAV.map(
-  (entry) => ({ id: entry.id as Screen, title: entry.label, icon: entry.icon }),
-);
+ *  tile — see `shellNav.ts`'s own header). The Reviews tile (F15.14b) is skipped: the shared
+ *  `reviewCommands` row is the one `nav:reviews`, and it names `review:queues`, so it drops
+ *  with the workspace when that channel is not relayed. */
+const NAV_SCREENS: readonly { id: Screen; title: string; icon: FluentIcon }[] = SHELL_NAV.filter(
+  (entry) => entry.id !== 'reviews',
+).map((entry) => ({ id: entry.id as Screen, title: entry.label, icon: entry.icon }));
 
 /** `keywords` a card command is searchable by, beyond its title — its tracker key under
  *  whichever name it carries, and its id for the uuid-paste case `paletteModel.ts` already
@@ -127,7 +152,38 @@ export function buildWebCommands(
     },
   ];
 
-  return [...navigate, ...cards, ...projects, ...actionCommands];
+  return [
+    ...navigate,
+    ...cards,
+    ...projects,
+    ...actionCommands,
+    ...reviewCommands(snapshot, actions),
+  ];
+}
+
+/** Every channel a review workspace row needs relayed — see the module header. */
+const REVIEW_CHANNELS: readonly (keyof IpcApi)[] = ['review:queues'];
+
+/** The shared review workspace rows (F15.14b), mapped onto this host's actions. */
+function reviewCommands(snapshot: WebPaletteSnapshot, actions: WebPaletteActions): WebCommand[] {
+  const selected =
+    snapshot.selectedTaskId != null ? snapshot.tasks[snapshot.selectedTaskId] : undefined;
+  return reviewWorkspaceCommands({
+    open: snapshot.reviewsOpen ?? false,
+    selection: selected ? { label: cardPrefix(selected) ?? null } : null,
+    onAction: (id: ReviewWorkspaceCommandId) => {
+      if (id === 'nav:reviews') {
+        actions.openReviews();
+        return;
+      }
+      if (id === 'review:openSelected') {
+        if (selected) actions.openReviews(taskSubjectId(selected.id));
+        return;
+      }
+      const action = reviewCommandKeyAction(id);
+      if (action) actions.reviewAction(action);
+    },
+  }).map((command) => ({ ...command, channels: REVIEW_CHANNELS }));
 }
 
 /**

@@ -21,7 +21,14 @@
 import { canStartWork, canStopWork, isBoardCard } from '@shared/board';
 import { RUN_REFUSAL_MESSAGE } from '@shared/scheduler';
 import type { Project, Task } from '@shared/model';
-import type { PaletteCommand } from '@ui/palette/paletteModel';
+import { taskSubjectId } from '@shared/review';
+import {
+  reviewCommandKeyAction,
+  reviewWorkspaceCommands,
+  type PaletteCommand,
+  type ReviewWorkspaceCommandId,
+} from '@ui/palette/paletteModel';
+import type { ReviewKeyAction } from '@ui/review/reviewKeys';
 import { SHELL_NAV, type ShellNavId } from '@ui/shell/shellNav';
 import {
   AddRegular,
@@ -137,6 +144,14 @@ export interface DesktopPaletteSnapshot {
   onAddTask: () => void;
   runTask: (taskId: string) => Promise<void>;
   stopTask: (taskId: string) => Promise<void>;
+  /** Whether the review workspace is the tab on show — its key-action rows are offered only
+   *  then (F15.14b). */
+  reviewsOpen: boolean;
+  /** Switch to the review workspace, with `subjectId` selected when one is given. */
+  onOpenReviews: (subjectId?: string) => void;
+  /** Run one workspace key action as if its key were pressed (the workspace's
+   *  `actionRequest`). */
+  onReviewAction: (action: ReviewKeyAction) => void;
 }
 
 /** `taskId` re-resolved through `getTask` at run time, or a throw carrying the same sentence
@@ -164,15 +179,18 @@ function cardPrefix(task: Task): string | undefined {
 
 /** The `navigate` group: one row per rail screen, Scratch run (F13.11 — the one destination
  *  the sidebar does not carry a row for, see this module's header), plus one per Settings
- *  section. */
+ *  section. The rail's Reviews tile is skipped: `reviewCommands` already offers the one
+ *  `nav:reviews` row, with the workspace's own keywords. */
 function navigateCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
-  const screens = DESKTOP_SCREENS.map((tab): PaletteCommand => ({
-    id: `nav:${tab.id}`,
-    group: 'navigate',
-    title: tab.title,
-    icon: tab.icon,
-    run: () => snapshot.onNavigate(tab.id),
-  }));
+  const screens = DESKTOP_SCREENS.filter((tab) => tab.id !== 'reviews').map(
+    (tab): PaletteCommand => ({
+      id: `nav:${tab.id}`,
+      group: 'navigate',
+      title: tab.title,
+      icon: tab.icon,
+      run: () => snapshot.onNavigate(tab.id),
+    }),
+  );
   const scratchRun: PaletteCommand = {
     id: 'nav:scratch',
     group: 'navigate',
@@ -274,6 +292,34 @@ function actionCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
   return commands;
 }
 
+/**
+ * The review workspace's rows (F15.14b), built by the shared `reviewWorkspaceCommands` so the
+ * web offers the same list. "Open … in review workspace" acts on the board's selected card,
+ * re-resolved at run time like Start/Stop, so a card gone since the palette opened refuses
+ * rather than opening a subject that no longer exists.
+ */
+function reviewCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
+  const selected = snapshot.tasks.find((t) => t.id === snapshot.selectedTaskId);
+  return reviewWorkspaceCommands({
+    open: snapshot.reviewsOpen,
+    selection: selected ? { label: cardPrefix(selected) ?? null } : null,
+    onAction: (id: ReviewWorkspaceCommandId) => {
+      if (id === 'nav:reviews') {
+        snapshot.onOpenReviews();
+        return;
+      }
+      if (id === 'review:openSelected') {
+        if (!selected) return;
+        const task = resolveTask(selected.id, snapshot.getTask);
+        snapshot.onOpenReviews(taskSubjectId(task.id));
+        return;
+      }
+      const action = reviewCommandKeyAction(id);
+      if (action) snapshot.onReviewAction(action);
+    },
+  });
+}
+
 /** Every desktop command for the given snapshot, in no particular order — `CommandPalette`
  *  groups and ranks them itself. */
 export function buildDesktopCommands(snapshot: DesktopPaletteSnapshot): PaletteCommand[] {
@@ -282,5 +328,6 @@ export function buildDesktopCommands(snapshot: DesktopPaletteSnapshot): PaletteC
     ...cardCommands(snapshot),
     ...projectCommands(snapshot),
     ...actionCommands(snapshot),
+    ...reviewCommands(snapshot),
   ];
 }

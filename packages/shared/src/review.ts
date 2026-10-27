@@ -30,7 +30,9 @@ export const DIFF_IMAGE_MAX_BYTES = 512_000; // one image side, base64
 export const DIFF_SUMMARY_MAX_FILES = 1000; // summary lists at most this many
 export const DIFF_COLLAPSE_LINES = 2000; // generated/lock files above this collapse
 export const DIFF_CONTEXT_MAX_LINES = 2000; // one context read returns at most this many lines
-export const REVIEW_QUEUE_MAX_ROWS = 300; // one `review:queues` answer lists at most this many rows per queue
+// One `review:queues` answer lists at most this many rows per queue. 200, not 300: three
+// queues of maximum-size rows (~1.5 KB each) must fit one relayed result (F15.14b, caps.test.ts).
+export const REVIEW_QUEUE_MAX_ROWS = 200;
 
 export type DiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
 
@@ -1294,6 +1296,18 @@ export function wordDiff(oldText: string, newText: string): WordDiff {
   // Nothing shared at the edges or in the middle — a token-level diff would
   // just be a single del/add pair anyway, so skip straight to that shape.
   if (prefixLen === 0 && suffixLen === 0 && lcsLength === 0) {
+    return wholeLineDiff(oldText, newText);
+  }
+
+  // Only an indent, spaces or punctuation in common is not "meaningful": two unrelated
+  // lines paired by position would otherwise take the word tint on nearly every token,
+  // stacking it over the line tint until the whole row reads saturated.
+  const shared = [
+    ...oldTokens.slice(0, prefixLen),
+    ...oldTokens.slice(oldTokens.length - suffixLen),
+    ...oldOps.filter((op) => op.kind === 'same').map((op) => op.text),
+  ];
+  if (!shared.some((token) => /\w/.test(token))) {
     return wholeLineDiff(oldText, newText);
   }
 

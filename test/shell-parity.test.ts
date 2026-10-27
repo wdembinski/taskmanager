@@ -815,6 +815,75 @@ describe('the issues tab both hosts render from the shared screen (F5.10)', () =
   });
 });
 
+describe('the review workspace both hosts render from the shared component (F15.14b)', () => {
+  /**
+   * TM-229a built `ReviewWorkspace` in `packages/ui/src/review/`; F15.14b mounts it in both
+   * hosts — the desktop's `reviews` tab and the web's `reviews` screen (and its `#/reviews`
+   * route) — each straight from the shared package. Reached from the sidebar's Reviews row
+   * and the rail's Reviews tile, so `ShellNavId` has to keep `'reviews'`, `SHELL_NAV` has to
+   * list it, both hosts' rails have to be fed `SHELL_NAV` itself, and the sidebar has to map
+   * its row onto `{ kind: 'reviews' }`.
+   */
+  for (const [label, path] of [
+    ['the browser client', WEB_APP],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`renders ${label}'s review workspace from @tm/ui`, () => {
+      const source = read(path);
+      expect(
+        importedFrom(source, 'review/ReviewWorkspace'),
+        `${path} must import ReviewWorkspace from @tm/ui/review/ReviewWorkspace (or its @ui ` +
+          'alias). F15.14b mounts one workspace so both hosts render the same one; an import ' +
+          'from anywhere else is a second implementation.',
+      ).toContain('ReviewWorkspace');
+    });
+  }
+
+  for (const [label, path] of [
+    ['the browser client', WEB_APP],
+    ['the desktop renderer', DESKTOP_APP],
+  ] as const) {
+    it(`gives ${label}'s rail the Reviews tile by passing it SHELL_NAV itself`, () => {
+      expect(
+        read(path),
+        `${path} must pass items={SHELL_NAV} to its NavRail — the Reviews tile lives in ` +
+          'SHELL_NAV, so a host that filters or re-lists the rail drops the tile the owner ' +
+          'asked for (v9-6) on that host alone.',
+      ).toMatch(/items=\{SHELL_NAV\}/);
+    });
+  }
+
+  it('is a reachable ShellNavId with a rail tile, and the shared sidebar maps its row to it', () => {
+    expect(
+      read(SHELL_NAV_SRC),
+      `${SHELL_NAV_SRC} must keep 'reviews' in its ShellNavId union — both hosts' ` +
+        'TabId/Screen route the workspace through it.',
+    ).toMatch(/'reviews'/);
+    expect(
+      read(SHELL_NAV_SRC),
+      `${SHELL_NAV_SRC} must list { id: 'reviews', … } in SHELL_NAV — the rail's Reviews ` +
+        'tile (v9-6), highlighted while the workspace is open.',
+    ).toMatch(/\{\s*id:\s*'reviews',[^}]*group:\s*'bar'\s*\}/);
+
+    const SIDEBAR_SRC = 'packages/ui/src/shell/Sidebar.tsx';
+    expect(
+      read(SIDEBAR_SRC),
+      `${SIDEBAR_SRC} must map the reviews view to { kind: 'reviews' } — the Reviews row is ` +
+        "the workspace's entry, and a screen the sidebar never links to is a file, not a tab.",
+    ).toMatch(/reviews:\s*\{\s*kind:\s*'reviews'\s*\}/);
+  });
+
+  it('leaves no local ReviewWorkspace behind in a host tree', () => {
+    const copies = HOST_TREES.flatMap((tree) => filesUnder(tree, /^ReviewWorkspace.*\.tsx?$/));
+    expect(
+      copies,
+      `${copies.join(', ')} re-implements the review workspace that lives in packages/ui. ` +
+        'Delete it and import from @tm/ui — a host-local copy is a second implementation that ' +
+        'only diverges, and nothing else in this repo can see it happen.',
+    ).toEqual([]);
+  });
+});
+
 describe('the Archived view both hosts render from the shared pane (F14.12)', () => {
   /**
    * The tracker's Archived view (F14.8) is `ArchivedPane`, mounted by the shared ticket

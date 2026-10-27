@@ -37,6 +37,9 @@
  *     board.state.tasks), query)` (`CloudBoardState.tasks` is keyed by id, not an array);
  *     tapping a row navigates to `#/card/<id>/chat` (the `chat` section is the default
  *     `parseCompactRoute` already gives a bare card id).
+ *   - `reviews` → the shared `ReviewWorkspace` (F15.14b), on the route's own `subjectId`, behind
+ *     the same `hostUnreachable` read as the board's Changes pane; Escape goes home to Inbox,
+ *     the tab `tabForRoute` already highlights for it.
  *   - `settings` → a **Sign out** button above the unchanged `SettingsScreen` — the wide
  *     rail's Account dropdown (where sign-out lives today) has no compact equivalent, so this
  *     is its only other home. No gate of any kind in front of it: a signed-in tab can always
@@ -63,6 +66,7 @@ import { CompactShell } from '@tm/ui/shell/CompactShell';
 import { CompactInbox } from '@tm/ui/CompactInbox';
 import { SyncCurtain } from '@tm/ui/SyncCurtain';
 import { routeForTab, tabForRoute, type CompactTab } from '@tm/ui/layout/compactRoute';
+import { ReviewWorkspace } from '@tm/ui/review/ReviewWorkspace';
 import { activityGate } from '../activity/activityGate';
 import { BoardScreen } from '../board/BoardScreen';
 import { worstConnectionState } from '../board/connectionState';
@@ -245,6 +249,14 @@ export function CompactApp({
             ))}
           </div>
         </div>
+      )}
+
+      {route.kind === 'reviews' && (
+        <ReviewWorkspace
+          initialSubjectId={route.subjectId}
+          unreachable={hostUnreachable}
+          onClose={() => navigate({ kind: 'inbox' })}
+        />
       )}
 
       {route.kind === 'settings' && (

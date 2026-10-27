@@ -214,6 +214,13 @@ describe('ReviewWorkspaceView', () => {
       expect(taskHtml).toContain('data-state="loaded"');
     });
 
+    it('titles the queue column Reviews, never Queues', () => {
+      for (const html of [render(), prHtml]) {
+        expect(html).toMatch(/<span[^>]*data-review-title[^>]*>Reviews<\/span>/);
+        expect(html).not.toContain('>Queues<');
+      }
+    });
+
     it('draws the three queue groups with their counts', () => {
       expect(prHtml).toContain('Requested from me');
       expect(prHtml).toContain('My PRs / MRs');
@@ -307,6 +314,39 @@ describe('ReviewWorkspaceView', () => {
       for (const html of [prHtml, taskHtml]) {
         expect(html.toLowerCase()).not.toContain('backdrop-filter');
       }
+    });
+  });
+
+  describe('for its hosts (F15.14b)', () => {
+    const state = loaded(task.subjectId, 'worktree');
+
+    it('draws no unreachable bar or as-of caption by default', () => {
+      const html = render({ selected: task, state });
+      expect(html).not.toContain('data-unreachable');
+      expect(html).not.toContain('data-queues-as-of');
+    });
+
+    it('draws the unreachable bar above the panel and pauses Send to agent', () => {
+      const html = render({ selected: task, state, unreachable: 'offline' });
+      expect(html).toContain('data-unreachable');
+      expect(html).toContain('The desktop app is unreachable — showing what was last loaded.');
+      expect(html.indexOf('data-unreachable')).toBeLessThan(html.indexOf('data-panel="review"'));
+      expect(html).toMatch(/<button[^>]*disabled[^>]*>(?:(?!<\/button>).)*Send to agent/);
+    });
+
+    it('draws the as-of caption in the queue column header', () => {
+      const html = render({ asOfNotice: 'Queues as of 14:02 — some queues are incomplete' });
+      const column = region(html, 'data-column="queues"', 'data-queue=');
+      expect(column).toMatch(
+        /data-queues-as-of[^>]*>Queues as of 14:02 — some queues are incomplete</,
+      );
+      expect(render({ asOfNotice: null })).not.toContain('data-queues-as-of');
+    });
+
+    it('draws a 390 px wide workspace unified, though Split is preferred', () => {
+      expect(render({ selected: task, state })).toContain('data-diff-layout="split"');
+      const phone = render({ selected: task, state, initialWidthPx: 390 });
+      expect(phone).toContain('data-diff-layout="unified"');
     });
   });
 });

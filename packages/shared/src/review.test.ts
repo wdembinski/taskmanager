@@ -577,4 +577,17 @@ describe('wordDiff', () => {
     expect(diff.new).toEqual([{ kind: 'add', text: newText }]);
     expectJoinInvariant(diff, oldText, newText);
   });
+
+  it('falls back to whole-line when only indentation and punctuation are shared', () => {
+    // Two unrelated lines paired by position: the indent, the spaces and the `;` match, but
+    // no word does — word-highlighting them would tint nearly every token of both lines.
+    const oldText = '  return send(f);';
+    const newText = '  let last: unknown;';
+    const diff = wordDiff(oldText, newText);
+
+    expect(diff.wholeLine).toBe(true);
+    expect(diff.old).toEqual([{ kind: 'del', text: oldText }]);
+    expect(diff.new).toEqual([{ kind: 'add', text: newText }]);
+    expectJoinInvariant(diff, oldText, newText);
+  });
 });

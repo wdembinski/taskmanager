@@ -100,6 +100,8 @@ export interface SidebarInput {
   folds: readonly string[];
   /** F15; default `false` omits the Reviews row entirely. */
   reviewsEnabled?: boolean;
+  /** The Reviews row's count — the *Requested from me* rows (F15.14b); omitted draws none. */
+  reviewsCount?: number;
   /** F14's predicate; default hides nothing. */
   isMilestoneArchived?: (milestone: Milestone) => boolean;
 }
@@ -372,7 +374,13 @@ export function buildSidebar(input: SidebarInput): SidebarSection[] {
     { id: 'inbox', label: 'Inbox', count: input.attentionCount },
     { id: 'myIssues', label: 'My issues' },
   ];
-  if (input.reviewsEnabled) views.push({ id: 'reviews', label: 'Reviews' });
+  if (input.reviewsEnabled) {
+    views.push(
+      input.reviewsCount === undefined
+        ? { id: 'reviews', label: 'Reviews' }
+        : { id: 'reviews', label: 'Reviews', count: input.reviewsCount },
+    );
+  }
 
   return [
     {

@@ -23,6 +23,10 @@
  * Commenting needs a `taskId` (comments are still task-keyed), so a PR row without one is read
  * only. `data-slot="ai-review"` is the empty slot F16's *Ask AI to review* fills.
  *
+ * `unreachable` (the web, with its desktop gone) draws a warning bar above the panel and makes
+ * the screen read only — no commenting, no *Send to agent* — exactly as `ReviewPaneView` does.
+ * `asOfNotice` is the queue column's muted "Queues as of 14:02" caption (`queuesAsOfNotice`).
+ *
  * Colour budget (memory *board-colour-budget*): the source badge, counts and refs are static
  * facts, so the chrome stays on neutral tokens; the only colour is the diff's own +/− and the
  * pipeline dot, because a pipeline moves.
@@ -37,6 +41,7 @@ import {
   MessageBarActions,
   MessageBarBody,
   Spinner,
+  Subtitle1,
   Subtitle2,
   ToggleButton,
   Tooltip,
@@ -87,8 +92,17 @@ const HAIRLINE = `1px solid ${tokens.colorNeutralStroke2}`;
 
 const useStyles = makeStyles({
   // The margin the window keeps around the one panel.
-  frame: { height: '100%', minHeight: 0, padding: '10px', boxSizing: 'border-box' },
+  frame: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    height: '100%',
+    minHeight: 0,
+    padding: '10px',
+    boxSizing: 'border-box',
+  },
   panel: {
+    flex: 1,
     display: 'grid',
     gridTemplateColumns: '280px 248px 1fr',
     gridTemplateRows: 'auto 1fr',
@@ -154,6 +168,7 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1,
   },
   notice: { color: tokens.colorNeutralForeground3 },
+  queuesTitle: { display: 'flex', flexDirection: 'column', minWidth: 0 },
 });
 
 /** What `data-state` reads; see the module header. */
@@ -177,6 +192,13 @@ export interface ReviewWorkspaceViewProps {
   forgeUrl: string | null;
   /** The `?` key list. */
   keysOpen: boolean;
+  /** Set when the desktop host cannot be reached: a warning bar, and the screen reads only. */
+  unreachable?: string;
+  /** The queue column's "Queues as of …" caption; nothing drawn when absent or `null`. */
+  asOfNotice?: string | null;
+  /** The diff column's width until it is first measured — a host that already knows it is on a
+   *  phone opens unified with no split frame first. The measured width wins once known. */
+  initialWidthPx?: number;
   onSelectSubject: (item: ReviewQueueItem) => void;
   onToggleGroup: (queue: ReviewQueue) => void;
   /** Re-reads the queues from the forge. */
@@ -217,6 +239,8 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
     error,
     collapsedGroups,
     keysOpen,
+    unreachable,
+    asOfNotice,
     onSelectSubject,
     onToggleGroup,
     onRefresh,
@@ -228,10 +252,26 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
 
   return (
     <div className={styles.frame} data-review-workspace data-state={status}>
+      {unreachable !== undefined && (
+        <MessageBar intent="warning" data-unreachable>
+          <MessageBarBody>
+            The desktop app is unreachable — showing what was last loaded. Comments and Send to
+            agent are paused.
+          </MessageBarBody>
+        </MessageBar>
+      )}
       <GlassPane className={styles.panel} data-panel="review">
         <div className={mergeClasses(styles.column, styles.queues)} data-column="queues">
           <div className={styles.columnHeader}>
-            <Subtitle2>Queues</Subtitle2>
+            <div className={styles.queuesTitle}>
+              {/* The page's title, at v9-6's 20px semibold; the caption below is about the queues. */}
+              <Subtitle1 data-review-title>Reviews</Subtitle1>
+              {asOfNotice && (
+                <Caption1 className={styles.faint} data-queues-as-of>
+                  {asOfNotice}
+                </Caption1>
+              )}
+            </div>
             <span className={styles.spacer} />
             <Button
               size="small"
@@ -356,6 +396,7 @@ function SubjectHeader(
 
 function HeaderActions({
   state,
+  unreachable,
   layout,
   copyEnabled,
   forgeUrl,
@@ -395,7 +436,7 @@ function HeaderActions({
           size="small"
           appearance="primary"
           icon={state.sending ? <Spinner size="tiny" /> : <SendRegular />}
-          disabled={!canSend(state)}
+          disabled={!canSend(state, unreachable !== undefined)}
           onClick={onSend}
         >
           {state.sending ? 'Sending…' : 'Send to agent'}
@@ -477,6 +518,8 @@ function DiffColumn({
   state,
   layout,
   monochrome,
+  unreachable,
+  initialWidthPx,
   onReload,
   onToggleExpanded,
   onToggleViewed,
@@ -489,8 +532,14 @@ function DiffColumn({
   status,
 }: ReviewWorkspaceViewProps & { status: ReviewWorkspaceState }): JSX.Element {
   const styles = useStyles();
-  const { containerRef, widthPx } = useWidePaneWidth();
+  const { containerRef, widthPx: measuredPx } = useWidePaneWidth();
   const result = state.summary;
+  const drawn = effectiveDiffLayout(
+    layout,
+    measuredPx ?? initialWidthPx ?? null,
+    false,
+    WORKSPACE_SPLIT_MIN_WIDTH_PX,
+  );
 
   let body: JSX.Element | null;
   if (selected === null) {
@@ -554,9 +603,10 @@ function DiffColumn({
           selectedPath={state.selectedPath}
           comments={selected.taskId !== null ? state.comments : []}
           editor={state.editor}
-          canComment={selected.taskId !== null && canComment(state)}
-          layout={effectiveDiffLayout(layout, widthPx, false, WORKSPACE_SPLIT_MIN_WIDTH_PX)}
+          canComment={selected.taskId !== null && canComment(state, unreachable !== undefined)}
+          layout={drawn}
           monochrome={monochrome}
+          flat
           viewed={byPath}
           onToggleViewed={onToggleViewed}
           onToggleExpanded={onToggleExpanded}
@@ -572,7 +622,7 @@ function DiffColumn({
   }
 
   return (
-    <div ref={containerRef} className={styles.diff} data-column="diff">
+    <div ref={containerRef} className={styles.diff} data-column="diff" data-diff-layout={drawn}>
       {body}
     </div>
   );

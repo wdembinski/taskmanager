@@ -44,6 +44,8 @@ export interface UseSidebarDataOptions {
   folds: readonly string[];
   /** F15; omitted hides the Reviews row, same default as `buildSidebar` itself. */
   reviewsEnabled?: boolean;
+  /** The Reviews row's count (`useRequestedReviewCount`); omitted draws the row without one. */
+  reviewsCount?: number;
   /** The cloud team's name while signed in — the workspace header reads it over "Cloud";
    *  omitted, the header is "Personal" over "Local". NOT the hook's own `teamName`, which is
    *  the selected ticket project and already heads the tree below. */
@@ -128,6 +130,7 @@ export function useSidebarData(
       archivedCount,
       folds: options.folds,
       reviewsEnabled: options.reviewsEnabled,
+      reviewsCount: options.reviewsCount,
       isMilestoneArchived,
     };
     return buildSidebar(input);
@@ -140,6 +143,7 @@ export function useSidebarData(
     archivedCount,
     options.folds,
     options.reviewsEnabled,
+    options.reviewsCount,
     options.cloudTeamName,
   ]);
 

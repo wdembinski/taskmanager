@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Caption1, makeStyles } from '@fluentui/react-components';
 import { BOARD_COLUMNS } from '@tm/shared/model';
 import { useLayoutMode } from '@tm/ui/layout/viewport';
-import { openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
+import { DEFAULT_COMPACT_ROUTE, openCardId, wideSelectionRoute } from '@tm/ui/layout/compactRoute';
 import { CommandPalette } from '@tm/ui/palette/CommandPalette';
 import { useGlobalShortcut } from '@tm/ui/palette/shortcut';
 import { shortcutLabel } from '@tm/ui/palette/shortcutLabel';
@@ -27,6 +27,9 @@ import { GateTrustHostProvider } from '@tm/ui/gateTrustHost';
 import { Performance } from '@tm/ui/Performance';
 import { NewTicketDialog } from '@tm/ui/projects/NewTicketDialog';
 import { ProjectAdmin } from '@tm/ui/projects/ProjectAdmin';
+import { ReviewWorkspace, type ReviewActionRequest } from '@tm/ui/review/ReviewWorkspace';
+import { ReviewWorkspaceOpenerProvider } from '@tm/ui/review/reviewWorkspaceOpener';
+import { useRequestedReviewCount } from '@tm/ui/review/useRequestedReviewCount';
 import { Projects, type ProjectView } from '@tm/ui/projects/Projects';
 import { NavRail } from '@tm/ui/shell/NavRail';
 import { Sidebar, type SidebarNavTarget, type SidebarSelection } from '@tm/ui/shell/Sidebar';
@@ -146,7 +149,10 @@ const useStyles = makeStyles({
  * by a per-desktop localStorage cursor (`useWebLastSeen`) rather than the desktop's own
  * `app_state` key. Issues (F5.10) renders the shared `IssuesScreen` behind `WebIssuesScreen`,
  * which reuses `activityGate` for the same reason: there is a live desktop behind it or there
- * is nothing to show.
+ * is nothing to show. Reviews (F15.14b) renders the shared `ReviewWorkspace` the desktop does,
+ * reached from the sidebar's Reviews row, a card's *Open in review workspace* and the palette —
+ * it has no rail tile, and it is the one screen the hash also names (`#/reviews[/<subjectId>]`),
+ * so a link, a reload or a rotation down to compact lands on the same subject.
  */
 export type Screen = Exclude<ShellNavId, 'scratch'>;
 
@@ -259,7 +265,6 @@ function SignedInBoardView({
   // the desktop's `app_state` key — see `useWebLastSeen`'s own docstring for why it re-reads
   // whenever `board.targetClientId` changes.
   const { lastSeen, onSeen } = useWebLastSeen(board.targetClientId);
-  const [screen, setScreen] = useState<Screen>('mytasks');
   // How many tasks are waiting on a human — the same badge and status-bar highlight the
   // desktop shell shows (`apps/client/src/renderer/src/App.tsx`), read the same way over
   // `board.transport`'s `attention:list`/`attention:new`/`attention:resolved`
@@ -325,6 +330,50 @@ function SignedInBoardView({
   const [route, navigate] = useHashRoute();
   const layoutMode = useLayoutMode();
 
+  /**
+   * The review workspace's hash sync (F15.14b). `#/reviews[/<subjectId>]` is the one route the
+   * wide layout shares with the compact one beyond the open card, so the hash — not `screen` —
+   * holds which subject is open: a deep link or a reload opens the workspace on it (the initial
+   * `screen` below), the back/forward buttons land on or leave it (the effect), and every way
+   * off the screen (`setScreen`) clears the hash so a reload or a rotation to compact does not
+   * land back on a workspace you already left.
+   */
+  const [screen, setScreenState] = useState<Screen>(() =>
+    route.kind === 'reviews' ? 'reviews' : 'mytasks',
+  );
+  useEffect(() => {
+    setScreenState((current) =>
+      route.kind === 'reviews' ? 'reviews' : current === 'reviews' ? 'mytasks' : current,
+    );
+  }, [route]);
+  const setScreen = useCallback(
+    (next: Screen) => {
+      setScreenState(next);
+      if (next !== 'reviews' && route.kind === 'reviews') {
+        navigate(DEFAULT_COMPACT_ROUTE, { replace: true });
+      }
+    },
+    [route, navigate],
+  );
+  // The palette's key-action requests for the mounted workspace, each a new `seq` so the same
+  // action runs twice. Reset on every open: the workspace mounts afresh each time the screen
+  // does, and a request left over from the last visit would otherwise be replayed into it.
+  const [reviewActionRequest, setReviewActionRequest] = useState<ReviewActionRequest | undefined>(
+    undefined,
+  );
+  const openReviews = useCallback(
+    (subjectId?: string) => {
+      setReviewActionRequest(undefined);
+      setScreenState('reviews');
+      navigate({ kind: 'reviews', subjectId });
+    },
+    [navigate],
+  );
+  const reviewOpener = useMemo(
+    () => ({ open: (subjectId: string) => openReviews(subjectId) }),
+    [openReviews],
+  );
+
   // The status bar's agents / branch / quota segments, decided by the same `statusSegments`
   // the desktop reads. Only what this tab can know: the running count and the quotas need a
   // live desktop behind the mirror, the open card's branch is a stored fact and does not.
@@ -349,7 +398,15 @@ function SignedInBoardView({
     useMemo(() => openTicketCounts(Object.values(board.state.tasks)), [board.state.tasks]),
   );
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
-  const sidebarData = useSidebarData(tracker.projectId, { attentionCount, folds: sidebarFolds });
+  // Reviews is always on (F15.14b); its count is the *Requested from me* queue's rows, and a
+  // read that fails with the desktop offline draws the row without one.
+  const reviewsCount = useRequestedReviewCount();
+  const sidebarData = useSidebarData(tracker.projectId, {
+    attentionCount,
+    folds: sidebarFolds,
+    reviewsEnabled: true,
+    reviewsCount,
+  });
   // The Tickets workspace's own Backlog/Timeline/Graph/Archived view (F14.8) — lifted here,
   // the same `tracker.projectId`-lifting reason, so the sidebar's "Archived" row can land on
   // it directly rather than only on whichever view `Projects` happened to default to.
@@ -371,7 +428,8 @@ function SignedInBoardView({
         setScreen('mytasks');
         return;
       case 'reviews':
-        return; // F15 — reviewsEnabled is off, so this never fires yet.
+        openReviews();
+        return;
       case 'issues':
         setScreen('issues');
         return;
@@ -404,11 +462,13 @@ function SignedInBoardView({
           ? { kind: 'issues' }
           : screen === 'fleet'
             ? { kind: 'fleet' }
-            : screen === 'projects'
-              ? { kind: 'projects' }
-              : screen === 'tickets' && ticketsView === 'archived'
-                ? { kind: 'archived' }
-                : null;
+            : screen === 'reviews'
+              ? { kind: 'reviews' }
+              : screen === 'projects'
+                ? { kind: 'projects' }
+                : screen === 'tickets' && ticketsView === 'archived'
+                  ? { kind: 'archived' }
+                  : null;
 
   // The command palette (F9.5) — wide layout only for now, since Ctrl+K has no equivalent on
   // a phone keyboard and "/" would fight the on-screen keyboard's own search affordances.
@@ -438,17 +498,25 @@ function SignedInBoardView({
         setPaletteRequest({ kind: 'add', nonce: Date.now() });
       },
       signOut: onSignOut,
+      openReviews,
+      reviewAction: (action) =>
+        setReviewActionRequest((prev) => ({ action, seq: (prev?.seq ?? 0) + 1 })),
     }),
-    [navigate, route, onSignOut],
+    [setScreen, navigate, route, onSignOut, openReviews],
   );
 
   const webSource = useMemo(
     () =>
       webPaletteSource(
-        () => ({ tasks: board.state.tasks, projects: board.state.projects }),
+        () => ({
+          tasks: board.state.tasks,
+          projects: board.state.projects,
+          reviewsOpen: screen === 'reviews',
+          selectedTaskId: screen === 'mytasks' ? openCardId(route) : null,
+        }),
         paletteActions,
       ),
-    [board.state, paletteActions],
+    [board.state, paletteActions, screen, route],
   );
 
   if (layoutMode === 'compact') {
@@ -489,95 +557,104 @@ function SignedInBoardView({
           name: board.targetClient ? describeClient(board.targetClient) : null,
         }}
       >
-        <AppShell
-          dimmed={paletteOpen}
-          nav={
-            // Sign out lives in the rail's own Account dropdown rather than the status bar —
-            // this is the only host with an account to sign back out of, so it is also the
-            // only one passing it. Scratch run (desktop-only) and Attention's own badge both
-            // moved off the rail with F13.11 — see the sidebar below.
-            <NavRail
-              items={SHELL_NAV}
-              selected={screen}
-              onSelect={(id) => setScreen(id as Screen)}
-              accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
-              paletteHint={{ label: shortcutLabel('mod+k', window), onClick: openPalette }}
-            />
-          }
-          // Settings is a full-content-card page (v10 mockup): no sidebar tree beside it.
-          sidebar={
-            screen === 'settings' ? undefined : (
-              <Sidebar
-                sections={sidebarData.sections}
-                selectedView={sidebarSelectedView}
-                onNavigate={handleSidebarNavigate}
-                onOpenTicket={(taskId) => {
-                  setScreen('mytasks');
-                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-                }}
-                onNewIssue={() => {
-                  if (tracker.projectId) setNewIssueDialogOpen(true);
-                }}
-                onToggleFold={toggleSidebarFold}
-                showFleet
-                projectOptions={tracker.projectOptions}
-                selectedProjectId={tracker.projectId}
-                onSelectProject={tracker.selectProject}
-                loading={!sidebarData.loaded}
-                onSearch={openPalette}
+        {/* Every card's Changes pane under here offers *Open in review workspace* (F15.14b). */}
+        <ReviewWorkspaceOpenerProvider value={reviewOpener}>
+          <AppShell
+            dimmed={paletteOpen}
+            nav={
+              // Sign out lives in the rail's own Account dropdown rather than the status bar —
+              // this is the only host with an account to sign back out of, so it is also the
+              // only one passing it. Scratch run (desktop-only) and Attention's own badge both
+              // moved off the rail with F13.11 — see the sidebar below.
+              <NavRail
+                items={SHELL_NAV}
+                selected={screen}
+                onSelect={(id) => setScreen(id as Screen)}
+                accountItems={[{ id: 'signout', label: 'Sign out', onClick: onSignOut }]}
+                paletteHint={{ label: shortcutLabel('mod+k', window), onClick: openPalette }}
               />
-            )
-          }
-          // Every screen but My Tasks is a document and wants a margin — the same rule the
-          // desktop shell applies (`apps/client/src/renderer/src/App.tsx`'s own `padded`).
-          // Left unset here, every one of them (Projects' tabs, the Archived title, Settings,
-          // …) sat flush against the rail and the top edge instead of getting the inset the
-          // desktop and the mockups both draw. Tickets and Settings are the exceptions here
-          // as there: their cards lay out their own 10px canvas inset.
-          padded={screen !== 'mytasks' && screen !== 'tickets' && screen !== 'settings'}
-          banners={
-            // The shell's own banner strip, which is where the desktop's outage bars go too —
-            // above the screen rather than inside it, so the board below is the board and
-            // nothing shifts the columns down but a thing that had to be said. The ordering
-            // rule itself — unreachable outranks stale outranks skew — now lives in
-            // `connectionState.ts`'s `worstConnectionState`, computed above, so the compact
-            // strip can apply the exact same rule rather than a second copy of it.
-            connectionBanner(connection)
-          }
-          status={
-            <StatusBar attention={attentionCount > 0}>
-              {presence === 'unknown' ? (
-                // Still finding out whether a desktop exists — the dot and its caption both
-                // presuppose an answer this tab doesn't have yet, so a busy indicator replaces
-                // both rather than guessing "offline" from one empty response.
-                <StatusBusy label="Checking for a desktop app…" />
-              ) : (
-                <>
-                  {/* The dot's question is the only one that decides whether an edit made here
+            }
+            // Settings is a full-content-card page (v10 mockup): no sidebar tree beside it. The
+            // review workspace draws its own queue column where the sidebar would sit (v9-6).
+            sidebar={
+              screen === 'settings' || screen === 'reviews' ? undefined : (
+                <Sidebar
+                  sections={sidebarData.sections}
+                  selectedView={sidebarSelectedView}
+                  onNavigate={handleSidebarNavigate}
+                  onOpenTicket={(taskId) => {
+                    setScreen('mytasks');
+                    navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+                  }}
+                  onNewIssue={() => {
+                    if (tracker.projectId) setNewIssueDialogOpen(true);
+                  }}
+                  onToggleFold={toggleSidebarFold}
+                  showFleet
+                  projectOptions={tracker.projectOptions}
+                  selectedProjectId={tracker.projectId}
+                  onSelectProject={tracker.selectProject}
+                  loading={!sidebarData.loaded}
+                  onSearch={openPalette}
+                />
+              )
+            }
+            // Every screen but My Tasks is a document and wants a margin — the same rule the
+            // desktop shell applies (`apps/client/src/renderer/src/App.tsx`'s own `padded`).
+            // Left unset here, every one of them (Projects' tabs, the Archived title, Settings,
+            // …) sat flush against the rail and the top edge instead of getting the inset the
+            // desktop and the mockups both draw. Tickets and Settings are the exceptions here
+            // as there: their cards lay out their own 10px canvas inset. The review workspace's
+            // three columns run to the edges, as My Tasks' panes do.
+            padded={
+              screen !== 'mytasks' &&
+              screen !== 'tickets' &&
+              screen !== 'settings' &&
+              screen !== 'reviews'
+            }
+            banners={
+              // The shell's own banner strip, which is where the desktop's outage bars go too —
+              // above the screen rather than inside it, so the board below is the board and
+              // nothing shifts the columns down but a thing that had to be said. The ordering
+              // rule itself — unreachable outranks stale outranks skew — now lives in
+              // `connectionState.ts`'s `worstConnectionState`, computed above, so the compact
+              // strip can apply the exact same rule rather than a second copy of it.
+              connectionBanner(connection)
+            }
+            status={
+              <StatusBar attention={attentionCount > 0}>
+                {presence === 'unknown' ? (
+                  // Still finding out whether a desktop exists — the dot and its caption both
+                  // presuppose an answer this tab doesn't have yet, so a busy indicator replaces
+                  // both rather than guessing "offline" from one empty response.
+                  <StatusBusy label="Checking for a desktop app…" />
+                ) : (
+                  <>
+                    {/* The dot's question is the only one that decides whether an edit made here
                     goes anywhere: a command is delivered to a desktop Client, so with none
                     polling there is nothing to apply it. */}
-                  <StatusDot ok={presence === 'online'} />
-                  {/* Named, not counted. "2 clients" told you the size of a set you could
+                    <StatusDot ok={presence === 'online'} />
+                    {/* Named, not counted. "2 clients" told you the size of a set you could
                     neither see nor choose from, while every edit made here goes to exactly
                     ONE of them — so the bar says which, and offers the others when there are
                     any. */}
-                  <Caption1>
-                    {presence === 'online' && board.targetClient ? (
-                      <ClientPicker
-                        clients={board.state.clients}
-                        selected={board.targetClient}
-                        onSelect={board.selectTargetClient}
-                        className={styles.linkButton}
-                      />
-                    ) : board.targetClientId !== null ? (
-                      'Desktop app offline — edits are queued'
-                    ) : (
-                      'No desktop app has ever synced this account'
-                    )}
-                  </Caption1>
-                </>
-              )}
-              {/* A poll that comes back proves this tab's own connection, whether or not it
+                    <Caption1>
+                      {presence === 'online' && board.targetClient ? (
+                        <ClientPicker
+                          clients={board.state.clients}
+                          selected={board.targetClient}
+                          onSelect={board.selectTargetClient}
+                          className={styles.linkButton}
+                        />
+                      ) : board.targetClientId !== null ? (
+                        'Desktop app offline — edits are queued'
+                      ) : (
+                        'No desktop app has ever synced this account'
+                      )}
+                    </Caption1>
+                  </>
+                )}
+                {/* A poll that comes back proves this tab's own connection, whether or not it
                 carried any deltas — which is a different claim from the dot's. Once the
                 board has latched ready, a later paged catch-up shows here as "syncing…"
                 rather than pulling the board back behind the curtain.
@@ -586,118 +663,127 @@ function SignedInBoardView({
                 (and only cleared on a read that actually comes back) by every poll failure,
                 even one well after the board has latched ready, where `syncStatusLabel` would
                 otherwise still say a stale "synced Ns ago" from the last read that worked. */}
-              <Caption1>
-                {board.pollError
-                  ? 'not syncing'
-                  : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
-              </Caption1>
-              {/* Data this tab has asked for but does not have yet — a relayed call still in
+                <Caption1>
+                  {board.pollError
+                    ? 'not syncing'
+                    : syncStatusLabel(board.syncProgress, board.lastPolledAt, now)}
+                </Caption1>
+                {/* Data this tab has asked for but does not have yet — a relayed call still in
                 flight, or a paged catch-up still draining — distinct from the age caption
                 above, which is only about the last read that already landed. */}
-              {busy && (
-                <StatusBusy
-                  label={syncBusyLabel(board.syncProgress, board.pendingRelays) ?? undefined}
-                />
-              )}
-              {attentionCount > 0 && <Caption1>{attentionCount} waiting on you</Caption1>}
-              {segments.agentsRunning !== null && <StatusAgents count={segments.agentsRunning} />}
-              {segments.branch !== null && <StatusBranch name={segments.branch} />}
-              <StatusSpacer />
-              <UsageQuotaStatus quotas={segments.quotas} />
-              <Caption1>v{__APP_VERSION__}</Caption1>
-            </StatusBar>
-          }
-        >
-          {/* Each screen is unmounted rather than hidden when you leave it — every one of
+                {busy && (
+                  <StatusBusy
+                    label={syncBusyLabel(board.syncProgress, board.pendingRelays) ?? undefined}
+                  />
+                )}
+                {attentionCount > 0 && <Caption1>{attentionCount} waiting on you</Caption1>}
+                {segments.agentsRunning !== null && <StatusAgents count={segments.agentsRunning} />}
+                {segments.branch !== null && <StatusBranch name={segments.branch} />}
+                <StatusSpacer />
+                <UsageQuotaStatus quotas={segments.quotas} />
+                <Caption1>v{__APP_VERSION__}</Caption1>
+              </StatusBar>
+            }
+          >
+            {/* Each screen is unmounted rather than hidden when you leave it — every one of
             them polls, and a Performance pane nobody is looking at should not be relaying a
             `usage:summary` every second. The desktop's own `App` folds them the same way. */}
-          {screen === 'mytasks' &&
-            (boardIsReady(board.syncProgress) ? (
-              <BoardScreen
-                state={board.state}
-                onMoveTask={(taskId, column) => board.moveTask(taskId, column)}
-                onStatusNoted={board.noteStatus}
-                // The open-card rotation round trip (F3.7): seeded once from whatever card
-                // the hash route named when this wide layout mounted, and written back on
-                // every change so a rotation down to compact and back lands on the same
-                // card and section rather than resetting to nothing selected.
-                initialSelectedTaskId={openCardId(route)}
-                onSelectedTaskChange={(taskId) =>
-                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]), { replace: true })
-                }
+            {screen === 'mytasks' &&
+              (boardIsReady(board.syncProgress) ? (
+                <BoardScreen
+                  state={board.state}
+                  onMoveTask={(taskId, column) => board.moveTask(taskId, column)}
+                  onStatusNoted={board.noteStatus}
+                  // The open-card rotation round trip (F3.7): seeded once from whatever card
+                  // the hash route named when this wide layout mounted, and written back on
+                  // every change so a rotation down to compact and back lands on the same
+                  // card and section rather than resetting to nothing selected.
+                  initialSelectedTaskId={openCardId(route)}
+                  onSelectedTaskChange={(taskId) =>
+                    navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]), { replace: true })
+                  }
+                  hostUnreachable={hostUnreachable}
+                  paletteRequest={paletteRequest ?? undefined}
+                  onOpenList={() => setScreen('tickets')}
+                />
+              ) : (
+                <SyncCurtain
+                  {...syncCurtainText(board.syncProgress)}
+                  error={board.syncProgress.lastError}
+                />
+              ))}
+            {screen === 'projects' && <ProjectAdmin />}
+            {screen === 'tickets' && (
+              <Projects
+                selectedProjectId={tracker.projectId}
+                onSelectProject={tracker.selectProject}
+                view={ticketsView}
+                onViewChange={setTicketsView}
                 hostUnreachable={hostUnreachable}
-                paletteRequest={paletteRequest ?? undefined}
-                onOpenList={() => setScreen('tickets')}
+                readOnlyNotice={hostUnreachable ? TICKETS_READ_ONLY_NOTICE : undefined}
+                onShowOnBoard={(taskId) => {
+                  setScreen('mytasks');
+                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+                }}
               />
-            ) : (
-              <SyncCurtain
-                {...syncCurtainText(board.syncProgress)}
-                error={board.syncProgress.lastError}
+            )}
+            {screen === 'issues' && (
+              <WebIssuesScreen
+                pollError={board.pollError}
+                presence={presence}
+                targetClientId={board.targetClientId}
+                onOpenTask={(taskId) => {
+                  setScreen('mytasks');
+                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+                }}
               />
-            ))}
-          {screen === 'projects' && <ProjectAdmin />}
-          {screen === 'tickets' && (
-            <Projects
-              selectedProjectId={tracker.projectId}
-              onSelectProject={tracker.selectProject}
-              view={ticketsView}
-              onViewChange={setTicketsView}
-              hostUnreachable={hostUnreachable}
-              readOnlyNotice={hostUnreachable ? TICKETS_READ_ONLY_NOTICE : undefined}
-              onShowOnBoard={(taskId) => {
-                setScreen('mytasks');
-                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-              }}
-            />
-          )}
-          {screen === 'issues' && (
-            <WebIssuesScreen
-              pollError={board.pollError}
-              presence={presence}
-              targetClientId={board.targetClientId}
-              onOpenTask={(taskId) => {
-                setScreen('mytasks');
-                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-              }}
-            />
-          )}
-          {screen === 'automations' && (
-            <AutomationsScreen clients={board.state.clients} now={now} />
-          )}
-          {screen === 'fleet' && <Fleet state={board.state} apiDeps={apiDeps} />}
-          {screen === 'performance' && <Performance />}
-          {screen === 'activity' && (
-            <WebActivityScreen
-              pollError={board.pollError}
-              presence={presence}
-              targetClientId={board.targetClientId}
-              lastSeen={lastSeen}
-              onSeen={onSeen}
-              onOpenTask={(taskId) => {
-                setScreen('mytasks');
-                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-              }}
-            />
-          )}
-          {screen === 'attention' && (
-            <Attention
-              onOpenTask={(taskId) => {
-                setScreen('mytasks');
-                navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
-              }}
-            />
-          )}
-          {/* The mirrored `projects` rows, which this hook already holds for the board — so the
+            )}
+            {screen === 'automations' && (
+              <AutomationsScreen clients={board.state.clients} now={now} />
+            )}
+            {screen === 'fleet' && <Fleet state={board.state} apiDeps={apiDeps} />}
+            {screen === 'performance' && <Performance />}
+            {screen === 'activity' && (
+              <WebActivityScreen
+                pollError={board.pollError}
+                presence={presence}
+                targetClientId={board.targetClientId}
+                lastSeen={lastSeen}
+                onSeen={onSeen}
+                onOpenTask={(taskId) => {
+                  setScreen('mytasks');
+                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+                }}
+              />
+            )}
+            {screen === 'attention' && (
+              <Attention
+                onOpenTask={(taskId) => {
+                  setScreen('mytasks');
+                  navigate(wideSelectionRoute(route, taskId, BOARD_COLUMNS[0]));
+                }}
+              />
+            )}
+            {/* The mirrored `projects` rows, which this hook already holds for the board — so the
             Settings screen's Projects tab still lists what is configured when no desktop is
             awake to answer its own `agentProject:list`. */}
-          {screen === 'settings' && (
-            <SettingsScreen
-              projects={board.state.projects}
-              apiBase={config.cloudApiBase}
-              getAccessToken={() => auth.getAccessToken()}
-            />
-          )}
-        </AppShell>
+            {screen === 'settings' && (
+              <SettingsScreen
+                projects={board.state.projects}
+                apiBase={config.cloudApiBase}
+                getAccessToken={() => auth.getAccessToken()}
+              />
+            )}
+            {screen === 'reviews' && (
+              <ReviewWorkspace
+                initialSubjectId={route.kind === 'reviews' ? route.subjectId : undefined}
+                unreachable={hostUnreachable}
+                actionRequest={reviewActionRequest}
+                onClose={() => setScreen('mytasks')}
+              />
+            )}
+          </AppShell>
+        </ReviewWorkspaceOpenerProvider>
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}

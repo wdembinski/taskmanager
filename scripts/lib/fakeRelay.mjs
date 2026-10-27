@@ -35,15 +35,19 @@ function readBody(req) {
  * it for `window.api` — a fixed value, a `{ byArgTable, fallback }` lookup, or the
  * `'list'`/`'null'` fallback. Channels with real mutation behaviour (`attention:answer`,
  * `task:chat`, the review pipeline) are handled explicitly in `handleIpcInvoke` below, before
- * this is ever consulted.
+ * this is ever consulted — unless a row's `channelOverrides` names the channel (see there).
+ *
+ * A per-arg spec may name `argIndex`, the position of the argument it keys on (`0` when
+ * omitted) — the same spec shape `apiStub.mjs`'s `partitionChannels` reads, so one row's
+ * overrides mean the same thing on either target.
  */
-function answerFromBootChannels(bootChannels, channel, args) {
+export function answerFromBootChannels(bootChannels, channel, args) {
   const spec = bootChannels[channel];
   if (spec === undefined) return undefined;
   if (spec === 'list') return [];
   if (spec === 'null') return null;
   if (spec && typeof spec === 'object' && spec.byArgTable !== undefined) {
-    const key = args[0];
+    const key = args[spec.argIndex ?? 0];
     return Object.prototype.hasOwnProperty.call(spec.byArgTable, key)
       ? spec.byArgTable[key]
       : spec.fallback;
@@ -73,6 +77,8 @@ function buildState(fixture) {
     reviewComments: new Map(),
     diffSummaries: new Map(),
     diffFiles: new Map(),
+    // A `'web'` row's own `channelOverrides` (`ui-shots.mjs`), reset per row by the caller.
+    channelOverrides: {},
     desktopUnreachable: false,
     refreshTokenValid: true,
     commandResults: [],
@@ -84,7 +90,13 @@ function buildState(fixture) {
   };
 }
 
-function handleIpcInvoke(state, fixture, channel, args) {
+/**
+ * A row's `state.channelOverrides` win over everything, the explicit cases below included — a
+ * row that seeds `task:diffSummary` means its own answer, not the empty mutation map's.
+ */
+export function handleIpcInvoke(state, fixture, channel, args) {
+  const overridden = answerFromBootChannels(state.channelOverrides ?? {}, channel, args);
+  if (overridden !== undefined) return { ok: true, value: overridden };
   switch (channel) {
     case 'attention:list':
       return { ok: true, value: state.attentionItems };
