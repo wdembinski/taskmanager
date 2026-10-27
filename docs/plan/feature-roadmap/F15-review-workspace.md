@@ -287,7 +287,8 @@ plus a "monochrome code" setting. Chrome around the diff gets no new colour (mem
 - The same `ReviewWorkspace` renders under a `/reviews` route in `apps/web`. Every read and
   write goes through the relay (memory *web-mirrors-the-desktop*).
 - Bounds:
-  - a queue answer is capped at 300 rows;
+  - a queue answer is capped at 200 rows per queue (300 did not fit one relayed result at
+    maximum-size rows — F15.14b);
   - each file and each context read is one answer under the F6 caps;
   - highlighting runs in the browser.
 - The web draws the F6 states (unreachable, `stale`, oversized answer). It adds "queues as of

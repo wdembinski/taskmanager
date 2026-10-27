@@ -30,7 +30,9 @@ export const DIFF_IMAGE_MAX_BYTES = 512_000; // one image side, base64
 export const DIFF_SUMMARY_MAX_FILES = 1000; // summary lists at most this many
 export const DIFF_COLLAPSE_LINES = 2000; // generated/lock files above this collapse
 export const DIFF_CONTEXT_MAX_LINES = 2000; // one context read returns at most this many lines
-export const REVIEW_QUEUE_MAX_ROWS = 300; // one `review:queues` answer lists at most this many rows per queue
+// One `review:queues` answer lists at most this many rows per queue. 200, not 300: three
+// queues of maximum-size rows (~1.5 KB each) must fit one relayed result (F15.14b, caps.test.ts).
+export const REVIEW_QUEUE_MAX_ROWS = 200;
 
 export type DiffFileStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
 
