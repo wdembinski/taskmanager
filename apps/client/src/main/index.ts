@@ -32,6 +32,7 @@ import { registerContextMenu } from './contextMenu';
 import { registerMediaPermissionGuard } from './mediaPermission';
 import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
+import { formatLongTask, perfLogEnabled } from './perfLog';
 import { runShutdownSteps, type ShutdownStep } from './shutdown';
 import { readSavedWindowSettings } from './store';
 import { themeSourceFor } from './themeSource';
@@ -382,6 +383,16 @@ void app.whenReady().then(() => {
       currentBackdrop.material,
     );
   });
+
+  // The renderer's long tasks (F29.1), sent fire-and-forget by the preload's `logPerf` once
+  // `VIPPER_PERF_LOG=1` told it to observe them. Not registered at all when off, so a stray
+  // send has nowhere to land.
+  if (perfLogEnabled()) {
+    ipcMain.on('perf:longtask', (_event, entry: unknown) => {
+      const line = formatLongTask(entry);
+      if (line) logMain(line);
+    });
+  }
 
   const appearance = windowAppearance();
   const window = createWindow(appearance);

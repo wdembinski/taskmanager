@@ -20,6 +20,7 @@ import type { NativeMaterial } from '@shared/canvas';
 import type { AppSettings } from '@shared/settings';
 import { App } from './App';
 import { isFileDrag } from '@ui/AttachmentStrip';
+import { installLongTaskObserver } from './perfObserver';
 import { RootErrorBoundary } from './RootErrorBoundary';
 import { BASE_FONT_PX, TOASTER_ID, scaleTheme, themeFor, useGlobalStyles } from '@ui/theme';
 import { tokenCssVars } from '@ui/tokens';
@@ -146,6 +147,14 @@ function ThemedApp(): JSX.Element {
     </FluentProvider>
   );
 }
+
+// Long-task logging (F29.1), on only when main was started with `VIPPER_PERF_LOG=1`. Before the
+// first render so boot's own long tasks are caught too (`buffered` picks up any that ran
+// before this line). Never disposed: it lives as long as the window.
+installLongTaskObserver({
+  enabled: window.api.boot?.perfLog === true,
+  sink: window.api.logPerf,
+});
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>

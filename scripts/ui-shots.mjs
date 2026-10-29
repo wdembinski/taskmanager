@@ -9,7 +9,7 @@
  * `loadScreens`), so a new UI card adds a file there instead of editing a shared list every
  * other UI card also touches.
  *
- *     node scripts/ui-shots.mjs [--out dir] [--only name,…] [--attach]
+ *     node scripts/ui-shots.mjs [--out dir] [--only name,…] [--attach] [--fixture scale]
  *
  * `--out` defaults to `.vipper/shots` (see `.gitignore`'s own comment on `.vipper/`) and holds,
  * per row: `<name>.png` (the real screenshot), `<name>-mockup.png` (the mockup rasterized at the
@@ -19,6 +19,10 @@
  * separated subset of `SCREENS`' own `name`s — and skips building whichever `app` no selected
  * row needs. `--attach` additionally copies the whole `--out` directory into
  * `<cwd>/.vipper/attach/` — the outbox the plan's step 5 ingests once a run settles.
+ * `--fixture scale` boots every `'client'` row against `scripts/fixtures/scaleFixture.mjs`'s
+ * seeded 5,000-card board (F29.1) instead of `uiShotsFixture.mjs` — to see the board at the
+ * owner's scale, not to compare with a mockup; a row whose `setup` names a small-fixture card
+ * will miss. `'web'` rows keep the small fixture.
  *
  * Exits 1 if any row threw (a failed build, a setup step that never found its target, a timed-
  * out wait) or logged an uncaught page exception — never silently drops a row and calls the run
@@ -184,15 +188,22 @@ import {
 } from './lib/cdp.mjs';
 import { startFakeRelay } from './lib/fakeRelay.mjs';
 import * as uiShotsFixture from './fixtures/uiShotsFixture.mjs';
+import { buildScaleFixture } from './fixtures/scaleFixture.mjs';
 import { layoutProblems, shotProblems } from './lib/shotChecks.mjs';
 import { loadScreens } from './lib/shotModules.mjs';
+import {
+  PAGE_HELPERS_SRC,
+  boardCardClickExprs,
+  buildClientRenderer,
+  treeItemClickExprs,
+} from './lib/uiDriver.mjs';
 
 export const SCREENS = await loadScreens();
 
 // ── CLI ───────────────────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const opts = { out: null, only: null, attach: false };
+  const opts = { out: null, only: null, attach: false, fixture: 'default' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--out') opts.out = argv[++i];
@@ -202,7 +213,12 @@ function parseArgs(argv) {
         .map((s) => s.trim())
         .filter(Boolean);
     } else if (arg === '--attach') opts.attach = true;
-    else throw new Error(`unknown argument: ${arg}`);
+    else if (arg === '--fixture') {
+      opts.fixture = argv[++i];
+      if (opts.fixture !== 'default' && opts.fixture !== 'scale') {
+        throw new Error(`--fixture must be 'default' or 'scale', got: ${opts.fixture}`);
+      }
+    } else throw new Error(`unknown argument: ${arg}`);
   }
   return opts;
 }
@@ -211,56 +227,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mockupsDir = join(root, 'docs', 'plan', 'feature-roadmap', 'mockups');
 
 // ── Page helpers injected into every row's init script ──────────────────────────────────────
-
-/**
- * `window.__tm.clickText`/`findByText`, copied from `verify-mobile.mjs`'s own `PAGE_HELPERS_SRC`
- * rather than imported — that file keeps its copy private (it is a `*.mjs` script, not a
- * module either side imports), and the two have drifted apart before (`verify-mobile.mjs` also
- * tracks touch-target size, which this driver has no use for).
- */
-const PAGE_HELPERS_SRC = `
-window.__tm = {
-  visible(el) {
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0 && !!el.offsetParent;
-  },
-  candidates() {
-    // 'label' added for a Fluent Switch (projects-merge-on-green): it renders an
-    // <input type="checkbox" role="switch"> with its visible text in a sibling <label
-    // htmlFor>, not in a button — clicking the label is how a real click toggles it too,
-    // via the browser's own label-forwarding, so no Switch-specific click expression is
-    // needed the way issue-row/board-card have their own.
-    return Array.from(document.querySelectorAll('button, [role="menuitem"], [role="tab"], label'));
-  },
-  textOf(el) {
-    const clone = el.cloneNode(true);
-    clone.querySelectorAll('.fui-Tab__content--reserved-space').forEach((n) => n.remove());
-    return (clone.textContent || '').trim();
-  },
-  namesOf(el) {
-    return [this.textOf(el), el.getAttribute('aria-label') || '', el.getAttribute('title') || ''];
-  },
-  findByText(text, exact) {
-    const matches = (el) =>
-      this.visible(el) && this.namesOf(el).some((t) => (exact ? t === text : t.includes(text)));
-    // An open Dropdown's <Option>s (role="option", project-form-merge-by) are tried only after
-    // every other candidate missed — IssueRow rows are options too, and searched first they
-    // would steal a click meant for a button whose text a row title happens to contain.
-    return (
-      this.candidates().find(matches) ||
-      Array.from(document.querySelectorAll('[role="option"]')).find(matches)
-    );
-  },
-  clickText(text, exact) {
-    const el = this.findByText(text, exact);
-    if (!el) return false;
-    el.scrollIntoView({ block: 'center' });
-    el.click();
-    return true;
-  },
-};
-`;
+// (`PAGE_HELPERS_SRC` itself lives in `lib/uiDriver.mjs`, shared with `perf-board.mjs`.)
 
 /**
  * The `'client'` target's `window.api` stub, built from `uiShotsFixture.mjs`'s `BOOT_CHANNELS`
@@ -276,14 +243,17 @@ window.__tm = {
  * `attachmentUrls` is `buildFixtureAttachmentUrls`'s own table (`main`, below) — real, fetchable
  * URLs for the handful of fixture attachment ids a row actually draws as `<img>`, threaded
  * straight through to `buildApiStub`.
+ *
+ * `baseFixture` is `uiShotsFixture.mjs` unless `--fixture scale` swapped in
+ * `buildScaleFixture()`'s board.
  */
-function clientInitScript(defaultSettings, row, attachmentUrls) {
+function clientInitScript(defaultSettings, row, attachmentUrls, baseFixture = uiShotsFixture) {
   const fixture = row.channelOverrides
     ? {
-        ...uiShotsFixture,
-        BOOT_CHANNELS: { ...uiShotsFixture.BOOT_CHANNELS, ...row.channelOverrides },
+        ...baseFixture,
+        BOOT_CHANNELS: { ...baseFixture.BOOT_CHANNELS, ...row.channelOverrides },
       }
-    : uiShotsFixture;
+    : baseFixture;
   const stub = buildApiStub({
     defaultSettings,
     fixture,
@@ -363,40 +333,6 @@ function issueRowHasClickExprs(text) {
     ready: `!!${find}`,
     click: `(() => {
       const el = ${find};
-      if (!el) return false;
-      el.scrollIntoView({ block: 'center' });
-      el.click();
-      return true;
-    })()`,
-  };
-}
-
-/** `{ click: 'treeitem:N' }` — the Nth visible `[role="treeitem"]` in the sidebar tree (0-based,
- *  document order, folded children excluded because they are never rendered). A tree ticket's
- *  title also appears on the board and in the issue list, so plain text matching lands there
- *  first; see `SCREENS`' own doc comment. */
-function treeItemClickExprs(index) {
-  const find = `Array.from(document.querySelectorAll('[role="treeitem"]')).filter((el) => window.__tm.visible(el))[${index}]`;
-  return {
-    ready: `!!${find}`,
-    click: `(() => {
-      const el = ${find};
-      if (!el) return false;
-      el.scrollIntoView({ block: 'center' });
-      el.click();
-      return true;
-    })()`,
-  };
-}
-
-/** `{ click: 'board-card:ID' }` — see `SCREENS`' own doc comment on why a board card is
- *  addressed by `TaskCard.tsx`'s own `[data-task-id]`, not by its title text. */
-function boardCardClickExprs(taskId) {
-  const selector = JSON.stringify(`[data-task-id=${JSON.stringify(taskId)}]`);
-  return {
-    ready: `!!document.querySelector(${selector})`,
-    click: `(() => {
-      const el = document.querySelector(${selector});
       if (!el) return false;
       el.scrollIntoView({ block: 'center' });
       el.click();
@@ -684,20 +620,6 @@ async function waitForIdle(cdp, { allowSpinner = false } = {}) {
 
 // ── Building each target fresh, against this step's own sources ────────────────────────────
 
-/** `shots-board.mjs`'s own `buildClientRenderer`, generalized to a caller-supplied `outDir`. */
-function buildClientRenderer(requireFromClient, outDir) {
-  const electronViteBin = join(
-    dirname(requireFromClient.resolve('electron-vite/package.json')),
-    'bin',
-    'electron-vite.js',
-  );
-  const res = spawnSync(process.execPath, [electronViteBin, 'build', '--outDir', outDir], {
-    cwd: join(root, 'apps', 'client'),
-    stdio: 'inherit',
-  });
-  if (res.status !== 0) throw new Error('electron-vite build failed for @tm/client');
-}
-
 /**
  * Real, decodable PNGs for the handful of `VISUAL_SIGNOFF_*` fixture attachment ids the
  * `visual-signoff-dark`/`inbox-item-attachments`/`files-section-grouped` rows draw as `<img>` —
@@ -892,6 +814,7 @@ async function main() {
   }
 
   const needsClient = rows.some((r) => r.app === 'client');
+  const clientFixture = opts.fixture === 'scale' ? buildScaleFixture() : uiShotsFixture;
   const needsWeb = rows.some((r) => r.app === 'web');
 
   const scratch = mkdtempSync(join(tmpdir(), 'tm-ui-shots-'));
@@ -994,7 +917,7 @@ async function main() {
 
         let initScript;
         if (row.app === 'client') {
-          initScript = clientInitScript(clientDefaultSettings, row, attachmentUrls);
+          initScript = clientInitScript(clientDefaultSettings, row, attachmentUrls, clientFixture);
           await freshLoad(cdp, clientOrigin, initScript, row.path ?? '');
         } else {
           relayHandle.state.settings.appearance = row.scheme;

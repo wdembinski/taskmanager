@@ -23,6 +23,11 @@ export interface BootAppearance {
   transparency: TransparencySetting;
   fontSizePx: number;
   nativeMaterial: NativeMaterial | null;
+  /**
+   * Whether main was started with `VIPPER_PERF_LOG=1` (F29.1) — the renderer then installs
+   * its long-task observer before the first render. Absent means off.
+   */
+  perfLog?: boolean;
 }
 
 export const WINDOW_CANVAS: Record<WindowScheme, string> = {

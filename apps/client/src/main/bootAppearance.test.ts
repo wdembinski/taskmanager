@@ -5,11 +5,12 @@ const settings = { appearance: 'light', transparency: 'full', fontSizePx: 16 } a
 
 describe('bootAppearanceFor', () => {
   it('hands the saved settings through unchanged', () => {
-    expect(bootAppearanceFor(settings, 'mica')).toEqual({
+    expect(bootAppearanceFor(settings, 'mica', {})).toEqual({
       appearance: 'light',
       transparency: 'full',
       fontSizePx: 16,
       nativeMaterial: 'mica',
+      perfLog: false,
     });
   });
 
@@ -19,5 +20,10 @@ describe('bootAppearanceFor', () => {
 
   it('reads no material as null', () => {
     expect(bootAppearanceFor(settings, 'none').nativeMaterial).toBeNull();
+  });
+
+  it('reports VIPPER_PERF_LOG as perfLog', () => {
+    expect(bootAppearanceFor(settings, 'mica', { VIPPER_PERF_LOG: '1' }).perfLog).toBe(true);
+    expect(bootAppearanceFor(settings, 'mica', {}).perfLog).toBe(false);
   });
 });

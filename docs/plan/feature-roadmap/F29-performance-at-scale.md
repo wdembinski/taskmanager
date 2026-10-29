@@ -73,6 +73,44 @@ drag, scroll, opening a card and expanding a group.
 - Search, filters, saved views and keyboard navigation stay in **F25**; run F25.6 (palette
   search), F25.7 and F25.8a (filter bar) after F29.
 
+## Baseline (F29.1, 2026-10-29)
+
+These numbers come before any F29 fix. Every later F29 card quotes its before and after
+numbers against this table, from the same command on the same fixture.
+
+| Interaction   | longest task (ms) | longest frame gap (ms) | long tasks (count) | IPC in (KB) | events (KB) | budget (ms) | verdict |
+| ------------- | ----------------: | ---------------------: | -----------------: | ----------: | ----------: | ----------: | ------- |
+| open-card     |             716.8 |                  716.8 |                  4 |         7.9 |         0.0 |          16 | over    |
+| approve       |             516.6 |                  516.6 |                  2 |     27734.0 |     27731.1 |          16 | over    |
+| drag-card     |             616.7 |                  616.7 |                  3 |         2.4 |         0.9 |          16 | over    |
+| scroll-column |             733.5 |                  733.5 |                 49 |         0.6 |         0.0 |          16 | over    |
+| scroll-issues |              33.4 |                   33.4 |                  0 |         0.0 |         0.0 |          16 | over    |
+| expand-group  |             116.7 |                  116.7 |                  2 |         0.0 |         0.0 |          16 | over    |
+
+Each value is the median of 3 runs. "Longest task" is the larger of the longest `longtask`
+entry (Chrome reports 50 ms and up) and the longest gap between animation frames, which
+catches the 16–50 ms range. The verdict is `over` when a long task was seen or a frame gap
+passed 20 ms (one frame plus vsync jitter). Approve moves 27 MB twice: the
+`project:tasksChanged` event with the whole board, then the `board:tasks` re-read.
+
+- **Command:** `node scripts/perf-board.mjs --runs 3`.
+  It builds the renderer, boots it in headless Chrome at 1440×900 and exits 0 even over
+  budget; `--enforce` makes over budget exit 1.
+- **Machine:** Windows 11 Pro, Intel Core i7-9700K @ 3.60 GHz, 32 GB RAM, Node 22.22.0,
+  headless Chrome 156.0.8078.49.
+- **Fixture:** `scripts/fixtures/scaleFixture.mjs`, 5,000 seeded cards, a task list of
+  27.08 MB JSON (≈5.4 KB per card, matching the live database's average).
+- **Main-process numbers** are not in this table: the script models main with a stub and
+  never launches the app. For real numbers, start the app with `VIPPER_PERF_LOG=1` and grep
+  `perf ` in `main.log` (in the app's logs folder). Each IPC call logs
+  `perf ipc <channel> <ms>ms in=<bytes>B out=<bytes>B`, each event
+  `perf event <channel> <bytes>B`, and each renderer long task
+  `perf longtask <screen> <ms>ms`.
+- **IPC bytes are modelled.** `scripts/lib/perfStub.mjs` answers from the fixture and, for
+  the channels that change state, emits what main's handlers send today: Approve and the
+  other `project:tasksChanged` senders send the whole board, a drag sends `task:changed`
+  with the moved card. When F29.2 changes what main sends, the stub must change with it.
+
 ## Out of scope
 
 - Server-side pagination for cloud workspaces (F19 owns the cloud read path).

@@ -7,21 +7,25 @@
  */
 import type { BootAppearance } from '@shared/canvas';
 import type { AppSettings } from '@shared/settings';
+import { perfLogEnabled } from './perfLog';
 import type { WindowMaterial } from './windowMaterial';
 
 /**
  * Maps the saved appearance settings plus the material the current window was created with
  * onto {@link BootAppearance}. `'none'` — no native material granted — becomes `null`, the
- * value `useResolvedAppearance` already reads as "no native glass".
+ * value `useResolvedAppearance` already reads as "no native glass". `perfLog` comes from
+ * `VIPPER_PERF_LOG` (`env` is injectable for tests).
  */
 export function bootAppearanceFor(
   settings: Pick<AppSettings, 'appearance' | 'transparency' | 'fontSizePx'>,
   material: WindowMaterial,
+  env: NodeJS.ProcessEnv = process.env,
 ): BootAppearance {
   return {
     appearance: settings.appearance,
     transparency: settings.transparency,
     fontSizePx: settings.fontSizePx,
     nativeMaterial: material === 'none' ? null : material,
+    perfLog: perfLogEnabled(env),
   };
 }

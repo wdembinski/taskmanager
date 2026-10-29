@@ -18,6 +18,8 @@
  *     leaves no other door (see its comment below).
  *   - `window.api.boot` — the saved appearance the renderer's first frame paints with
  *     (see `readBoot` below).
+ *   - `window.api.logPerf(entry)` — a renderer long task for `main.log`, only used when
+ *     `VIPPER_PERF_LOG=1` (F29.1).
  *
  * The types come from the shared IPC contract, so the UI gets full
  * autocomplete and type-checking on every call.
@@ -102,6 +104,15 @@ const api = {
    */
   pathForFile(file: File): string {
     return webUtils.getPathForFile(file);
+  },
+
+  /**
+   * One renderer long task for `main.log` (F29.1) — fire-and-forget, outside `IpcApi` and the
+   * relay like `window:boot`. Main only listens when started with `VIPPER_PERF_LOG=1`, and the
+   * renderer only calls this when `boot.perfLog` said so.
+   */
+  logPerf(entry: { screen: string; ms: number; at: number }): void {
+    ipcRenderer.send('perf:longtask', entry);
   },
 
   /** The first frame's appearance — see {@link readBoot}. */

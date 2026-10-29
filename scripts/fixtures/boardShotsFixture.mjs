@@ -19,7 +19,7 @@ export const PROJECT_ID = 'proj-fx';
 
 /** The one project every fixture task files under — both a ticket project (prefix `FX`) and,
  *  since it carries a `path`, a usable agent/repo project (`hasRepo`, `agentProjectsOf`). */
-const project = (over = {}) => ({
+export const project = (over = {}) => ({
   id: PROJECT_ID,
   name: 'Fixture',
   path: 'C:/repos/fixture',
@@ -57,7 +57,7 @@ const project = (over = {}) => ({
 
 /** The minimal `Task` shape `board.test.ts`'s own `task()` helper uses, plus a native
  *  ticket's `ticketKey` — every fixture row is a native ticket unless it overrides `source`. */
-const task = (over) => ({
+export const task = (over) => ({
   id: over.id,
   projectId: PROJECT_ID,
   phase: '',

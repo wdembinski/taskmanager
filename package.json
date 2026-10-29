@@ -11,6 +11,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run build --filter=./packages/* && vitest run",
     "test:watch": "turbo run build --filter=./packages/* && vitest",
+    "perf:board": "node scripts/perf-board.mjs",
     "format": "prettier --write \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\" \"*.{json,md}\"",
     "format:check": "prettier --check \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\" \"*.{json,md}\"",
     "db:up": "docker compose up -d",
