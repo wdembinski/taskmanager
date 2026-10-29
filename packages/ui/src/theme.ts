@@ -28,6 +28,7 @@ import {
   SEMANTIC,
   SYNTAX_BY_SCHEME,
   type ColorScheme,
+  type HazeShape,
   type SyntaxTokens,
   type WashTokens,
 } from './tokens';
@@ -249,17 +250,102 @@ export function pageBackground(scheme: ColorScheme): string {
 }
 
 /**
- * The static two-haze backdrop behind every pane — top-left and bottom-right, same shape in
- * both schemes, never animated. A CSS approximation of the mockups' blurred circles
- * (`filter="url(#soft)"`, a 90px Gaussian blur): a wide, soft-edged radial fade reads the same
- * as a blurred circle at the sizes either ever appears at, without asking every document that
- * mounts this hook to carry an SVG filter.
+ * The error function, Abramowitz & Stegun 7.1.26 (|error| < 1.5e-7) — far finer than the
+ * 1/255 an 8-bit alpha can show, and `Math` has none.
  */
-function washGradient(wash: WashTokens): string {
+export function erf(x: number): number {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const poly =
+    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+  const y = 1 - poly * Math.exp(-x * x);
+  return x < 0 ? -y : y;
+}
+
+/** One sampled stop of a haze: `at` vw from its centre, at this alpha. */
+export interface HazeStop {
+  at: number;
+  alpha: number;
+}
+
+/** How many stops each haze is drawn with. */
+export const HAZE_STOPS = 16;
+
+const round = (n: number, places: number): number => +n.toFixed(places);
+
+/**
+ * The radial profile of the mockups' haze: a disc of radius `r` blurred by a Gaussian of σ
+ * `blur` (both in vw), `α(d) = A · ½ · erfc((d − r) / (σ√2))`, sampled from the centre out to
+ * `r + 3σ`. The first stop is the centre, the other fifteen are spread over `r ± 3σ`, where
+ * the whole fall happens; the plateau inside needs no more than its two ends. The profile is
+ * rescaled so the centre is exactly `peak` and the last stop exactly 0 (the raw tail is
+ * 0.13 % there, which would otherwise end on a hard edge).
+ */
+export function hazeStops(shape: HazeShape, peak: number, blur: number): HazeStop[] {
+  const profile = (d: number): number => 0.5 * (1 - erf((d - shape.r) / (blur * Math.SQRT2)));
+  const end = shape.r + 3 * blur;
+  const start = Math.max(0, shape.r - 3 * blur);
+  const spread = (from: number, n: number): number[] =>
+    Array.from({ length: n }, (_, i) => from + ((end - from) * i) / (n - 1));
+  const at = start > 0 ? [0, ...spread(start, HAZE_STOPS - 1)] : spread(0, HAZE_STOPS);
+  const top = profile(0);
+  const floor = profile(end);
+  return at.map((d) => ({
+    at: round(d, 3),
+    alpha: round(Math.max(0, (peak * (profile(d) - floor)) / (top - floor)), 4),
+  }));
+}
+
+/**
+ * One haze as a `radial-gradient` layer: a circle `r + 3σ` vw in radius at `x% y%` of the box,
+ * whose stops are {@link hazeStops} in the token's own colour. `colour` is the token's
+ * `rgba(r, g, b, a)`; its alpha is the haze's peak.
+ */
+export function hazeGradient(colour: string, shape: HazeShape, blur: number): string {
+  const m = /^rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)$/.exec(colour);
+  if (!m) throw new Error(`hazeGradient: expected rgba(r, g, b, a), got ${colour}`);
+  const [, r, g, b, a] = m;
+  const stops = hazeStops(shape, Number(a), blur);
+  const radius = stops[stops.length - 1]!.at;
   return (
-    `radial-gradient(60% 60% at 8% 10%, ${wash.a}, transparent 70%), ` +
-    `radial-gradient(60% 60% at 95% 92%, ${wash.b}, transparent 70%)`
+    `radial-gradient(circle ${radius}vw at ${shape.x}% ${shape.y}%, ` +
+    stops.map((s) => `rgba(${r}, ${g}, ${b}, ${s.alpha}) ${s.at}vw`).join(', ') +
+    ')'
   );
+}
+
+/**
+ * A grey noise tile at 1.2 % opacity — about ±1/255 — laid over the hazes. A haze falls by
+ * only ~30 levels across ~600px, so even a perfect gradient is quantised into 1/255 rings a
+ * few dozen pixels wide, and Chrome's own dither does not break them up: they show as
+ * concentric bands once a crop is contrast-stretched ×8. The noise moves each ring's edge by
+ * a pixel here and there, which hides the edge, and stays below what reads as grain at 100 %.
+ * The tile is seamless (`stitchTiles`), and is part of `--tm-page-wash` so forced colours
+ * drop it with the hazes.
+ */
+export const WASH_DITHER = `url("data:image/svg+xml,${encodeURIComponent(
+  "<svg xmlns='http://www.w3.org/2000/svg' width='128' height='128'>" +
+    "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' " +
+    "stitchTiles='stitch'/><feColorMatrix values='1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 0 0 0 0 1'/>" +
+    "<feComponentTransfer><feFuncR type='linear' slope='4' intercept='-1.5'/>" +
+    "<feFuncG type='linear' slope='4' intercept='-1.5'/>" +
+    "<feFuncB type='linear' slope='4' intercept='-1.5'/></feComponentTransfer>" +
+    "</filter><rect width='128' height='128' filter='url(#n)' opacity='0.008'/></svg>",
+)}")`;
+
+/**
+ * The static two-haze backdrop behind every pane — top-left and bottom-right, never
+ * animated. Draws the mockups' blurred circles (`<g id="wash">`, `feGaussianBlur
+ * stdDeviation="90"` on 1440) as {@link hazeGradient} layers, each sampling the blurred
+ * disc's own falloff, so no document that mounts this hook has to carry an SVG filter. The
+ * centre, radius and blur come from `SEMANTIC[scheme].wash`, because the two schemes place
+ * their hazes differently. {@link WASH_DITHER} sits on top of both.
+ */
+export function washGradient(wash: WashTokens): string {
+  return [
+    WASH_DITHER,
+    hazeGradient(wash.a, wash.shape.a, wash.blur),
+    hazeGradient(wash.b, wash.shape.b, wash.blur),
+  ].join(', ');
 }
 
 /** The custom properties `useGlobalStyles` stamps on `:root` for one scheme. */

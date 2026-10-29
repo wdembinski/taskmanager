@@ -35,10 +35,12 @@ function leafPaths(value: unknown, path = ''): string[] {
     );
 }
 
-/** The number of string leaves `tokenCssVars` should emit — arrays are not CSS values. */
+/** The number of string leaves `tokenCssVars` should emit — arrays and numbers (the wash's
+ *  geometry) are not CSS values. */
 function countCssLeaves(value: unknown): number {
   if (Array.isArray(value)) return 0;
-  if (value === null || typeof value !== 'object') return 1;
+  if (typeof value === 'string') return 1;
+  if (value === null || typeof value !== 'object') return 0;
   return Object.values(value).reduce((sum: number, v) => sum + countCssLeaves(v), 0);
 }
 

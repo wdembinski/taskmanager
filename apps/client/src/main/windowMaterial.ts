@@ -6,8 +6,11 @@
  * Windows build 22621 and is dropped over a Remote Desktop session, and DWM does not withhold
  * Mica/Acrylic on its own when the OS "Transparency effects" switch is off — the app must
  * refuse the material itself in both cases, using signals readable before any window exists.
+ * With the switch off Windows paints a flat fallback instead — light, whatever the app's Theme
+ * — so a dark renderer over it read white text on a light sidebar (v1.86.x). No setting may
+ * override that refusal; `'full'` only keeps the CSS glass on (`resolveAppearance`).
  */
-import type { NativeMaterial } from '@shared/canvas';
+import { WINDOW_CANVAS, windowSchemeFor, type NativeMaterial } from '@shared/canvas';
 
 export type WindowMaterial = NativeMaterial | 'none';
 
@@ -24,41 +27,107 @@ export function windowsBuildOf(release: string): number {
 
 /** The subset of settings this decision depends on — tolerant of junk, like `resolveAppearance`. */
 export interface WindowMaterialSettings {
+  appearance: unknown;
   transparency: unknown;
 }
 
-/** The two signals only available from Electron's main process, read before a window exists. */
+/** The signals only available from Electron's main process (`nativeTheme`, `process.env`). */
 export interface WindowMaterialEnv {
   remoteSession: boolean;
+  /** `nativeTheme.prefersReducedTransparency` — the OS "Transparency effects" switch is off. */
   reducedTransparency: boolean;
+  /** `nativeTheme.shouldUseHighContrastColors` — Electron skips DWM dark mode under it. */
+  highContrast: boolean;
+  /** `nativeTheme.shouldUseDarkColors`, read after `themeSource` is set. */
+  prefersDark: boolean;
+}
+
+/** What a `BrowserWindow` is created (or re-applied) with. */
+export interface WindowBackdrop {
+  material: WindowMaterial;
+  backgroundColor: string;
 }
 
 /**
- * Decide what material a new `BrowserWindow` should be given.
+ * Decide what material a `BrowserWindow` should be given.
  *
- * `'reduced'` always refuses, regardless of the OS; `'system'` additionally refuses when the
- * OS itself reports reduced transparency; `'full'` is the explicit opt-in that overrides the
- * OS signal — same tolerance and precedence as `resolveAppearance` (`@tm/ui/appearance`)
- * applies to the same setting, and any value other than `'reduced'`/`'full'` (an old blob, a
- * hand-edited one) is treated as `'system'`.
+ * Granted only when every one of these holds: win32 at build 22621 or later; not a Remote
+ * Desktop session; the setting is not `'reduced'`; the OS "Transparency effects" switch is on;
+ * and no high contrast / forced colours. `'full'` no longer overrides the OS switch — Windows
+ * cannot draw the material with it off, whatever the app asks for. Any value other than
+ * `'reduced'` (an old blob, a hand-edited one, `'system'`, `'full'`) passes the setting check,
+ * the same tolerance `resolveAppearance` (`@tm/ui/appearance`) applies to the same setting.
+ * The scheme is not an input: Electron keeps DWM dark mode in step with `themeSource`.
  */
 export function windowMaterialFor(
   platform: NodeJS.Platform,
   osBuild: number,
-  settings: WindowMaterialSettings,
-  env: WindowMaterialEnv,
+  settings: Pick<WindowMaterialSettings, 'transparency'>,
+  env: Omit<WindowMaterialEnv, 'prefersDark'>,
 ): WindowMaterial {
   if (platform !== 'win32' || osBuild < 22621) return 'none';
   if (env.remoteSession) return 'none';
-
-  const transparency =
-    settings.transparency === 'reduced' || settings.transparency === 'full'
-      ? settings.transparency
-      : 'system';
-  if (transparency === 'reduced') return 'none';
-  if (transparency === 'system' && env.reducedTransparency) return 'none';
+  if (settings.transparency === 'reduced') return 'none';
+  if (env.reducedTransparency) return 'none';
+  if (env.highContrast) return 'none';
 
   return 'mica';
+}
+
+/**
+ * The material and the matching window `backgroundColor`: fully transparent (`'#00000000'`)
+ * with a material, because an opaque colour behind it would defeat the material entirely
+ * (F13.6's spike finding); otherwise the resolved scheme's canvas, so the first frame is never
+ * a flash of the wrong scheme.
+ */
+export function windowBackdropFor(
+  platform: NodeJS.Platform,
+  osBuild: number,
+  settings: WindowMaterialSettings,
+  env: WindowMaterialEnv,
+): WindowBackdrop {
+  const material = windowMaterialFor(platform, osBuild, settings, env);
+  const backgroundColor =
+    material === 'none'
+      ? WINDOW_CANVAS[windowSchemeFor(settings.appearance, env.prefersDark)]
+      : '#00000000';
+  return { material, backgroundColor };
+}
+
+/**
+ * What re-applying a backdrop to a live window has to do — each `null` is a call to skip.
+ * `nativeMaterial` is what `window:nativeMaterialChanged` carries; it is only sent when
+ * `notify` is set, because `null` is itself a meaningful payload ("no native glass").
+ */
+export interface BackdropChange {
+  /** Pass to `setBackgroundMaterial`, or `null` when the material is unchanged. */
+  material: WindowMaterial | null;
+  /** Pass to `setBackgroundColor` (after the material), or `null` when it is unchanged. */
+  backgroundColor: string | null;
+  notify: boolean;
+  nativeMaterial: NativeMaterial | null;
+}
+
+/**
+ * The difference between the backdrop a window has now and the one {@link windowBackdropFor}
+ * just resolved — called when the OS transparency/contrast or the Theme/Transparency setting
+ * changes under an open window. The material comes first and the colour after it: a material
+ * switched on needs the transparent colour behind it, and one switched off needs the scheme
+ * canvas. A colour alone still changes when the scheme does with no material, so a later
+ * restore from the tray repaints in the current scheme. The renderer is told only when the
+ * material changed — that is what moves `data-glass` between `native` and `css`.
+ */
+export function backdropChangeFor(current: WindowBackdrop, next: WindowBackdrop): BackdropChange {
+  const materialChanged = current.material !== next.material;
+  return {
+    material: materialChanged ? next.material : null,
+    backgroundColor:
+      materialChanged || current.backgroundColor !== next.backgroundColor
+        ? next.backgroundColor
+        : null,
+    notify: materialChanged,
+    nativeMaterial: next.material === 'none' ? null : next.material,
+  };
 }
 
 /**

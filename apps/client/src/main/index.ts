@@ -23,9 +23,8 @@ import {
   shell,
 } from 'electron';
 import { ATTACHMENT_SCHEME } from '@shared/attachments';
-import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
 import { PRODUCT_NAME } from '@shared/product';
-import { DEFAULT_SETTINGS } from '@shared/settings';
+import { DEFAULT_SETTINGS, type AppSettings } from '@shared/settings';
 import { AppTray } from './appTray';
 import { bootAppearanceFor } from './bootAppearance';
 import { closeAction, shouldQuitOnClose, trayLikelyAvailable } from './backgroundMode';
@@ -37,9 +36,11 @@ import { runShutdownSteps, type ShutdownStep } from './shutdown';
 import { readSavedWindowSettings } from './store';
 import { themeSourceFor } from './themeSource';
 import {
+  backdropChangeFor,
   isRemoteSession,
-  windowMaterialFor,
+  windowBackdropFor,
   windowsBuildOf,
+  type WindowBackdrop,
   type WindowMaterial,
 } from './windowMaterial';
 
@@ -232,41 +233,69 @@ function createWindow({
  * helper so the two creation sites can never resolve a scheme (or a material) two different
  * ways.
  *
- * When `windowMaterialFor` grants a native material, `backgroundColor` is fully transparent
- * (`'#00000000'`) instead of the resolved scheme colour — the material paints the chrome
- * itself, and leaving an opaque colour behind it would defeat the material entirely (F13.6's
- * spike finding).
+ * `windowBackdropFor` picks both: a fully transparent `backgroundColor` (`'#00000000'`) when
+ * it grants a native material, the resolved scheme colour when it refuses one.
  */
-function windowAppearance(): { backgroundColor: string; material: WindowMaterial } {
-  const { appearance, transparency } = readSavedWindowSettings(app.getPath('userData'));
+function windowAppearance(): WindowBackdrop {
+  const settings = readSavedWindowSettings(app.getPath('userData'));
   // Before any window exists, so Windows paints the material in the app's Theme rather than
   // the OS's — and so the `shouldUseDarkColors` read below already agrees with it.
-  nativeTheme.themeSource = themeSourceFor(appearance);
-  const material = windowMaterialFor(
+  nativeTheme.themeSource = themeSourceFor(settings.appearance);
+  currentBackdrop = backdropNow(settings);
+  return currentBackdrop;
+}
+
+/**
+ * {@link windowBackdropFor} over the live `nativeTheme` signals. Callers set `themeSource`
+ * first, so `shouldUseDarkColors` already follows the Theme setting.
+ */
+function backdropNow(settings: Pick<AppSettings, 'appearance' | 'transparency'>): WindowBackdrop {
+  return windowBackdropFor(
     process.platform,
     windowsBuildOf(osRelease()),
-    { transparency },
+    { appearance: settings.appearance, transparency: settings.transparency },
     {
       remoteSession: isRemoteSession(process.env),
       reducedTransparency: nativeTheme.prefersReducedTransparency,
+      highContrast: nativeTheme.shouldUseHighContrastColors,
+      prefersDark: nativeTheme.shouldUseDarkColors,
     },
   );
-  const backgroundColor =
-    material === 'none'
-      ? WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)]
-      : '#00000000';
-  currentMaterial = material;
-  return { backgroundColor, material };
+}
+
+/**
+ * Re-resolve the backdrop for an open window and apply only what changed
+ * ({@link backdropChangeFor}): the material, then the colour that has to sit behind it, then
+ * `window:nativeMaterialChanged` so the renderer moves `data-glass` between `native` and
+ * `css`. Called when the OS transparency or contrast changes (`nativeTheme` `updated`) and on
+ * `settings:changed`, after `themeSource` is set — so turning "Transparency effects" off under
+ * an open Mica window drops to the opaque scheme canvas instead of Windows' light fallback.
+ */
+function reapplyBackdrop(
+  window: BrowserWindow,
+  settings: Pick<AppSettings, 'appearance' | 'transparency'>,
+): void {
+  const next = backdropNow(settings);
+  const change = backdropChangeFor(currentBackdrop, next);
+  currentBackdrop = next;
+  if (window.isDestroyed()) return;
+  if (change.material !== null) window.setBackgroundMaterial(change.material);
+  if (change.backgroundColor !== null) window.setBackgroundColor(change.backgroundColor);
+  if (change.notify) {
+    window.webContents.send('window:nativeMaterialChanged', change.nativeMaterial);
+  }
 }
 
 // Holds the engine so we can shut its sessions and database down cleanly on quit.
 let engine: Engine | undefined;
 
 /**
- * The material the current window was created with — set by {@link windowAppearance}, which
- * both creation sites call, and handed to the renderer's first frame by `window:boot`.
+ * The backdrop the current window has now — set by {@link windowAppearance}, which both
+ * creation sites call, and kept live by {@link reapplyBackdrop}. `window:boot`,
+ * `window:nativeMaterial` and the `settings:changed` resync all read it from here, so a
+ * Ctrl+R after a live change boots with the material the window really has.
  */
-let currentMaterial: WindowMaterial = 'none';
+let currentBackdrop: WindowBackdrop = { material: 'none', backgroundColor: '#00000000' };
 
 /** Guard so a cascade of rejections can't stack a dozen modal dialogs. */
 let reportedFatal = false;
@@ -350,7 +379,7 @@ void app.whenReady().then(() => {
   ipcMain.on('window:boot', (event) => {
     event.returnValue = bootAppearanceFor(
       engine ? engine.store.getSettings() : readSavedWindowSettings(app.getPath('userData')),
-      currentMaterial,
+      currentBackdrop.material,
     );
   });
 
@@ -361,11 +390,23 @@ void app.whenReady().then(() => {
     // Everything here — opening the database, migrations, the scheduler — happens
     // BEFORE the first ipcMain.handle(), so a throw leaves the UI with no backend
     // at all. Catch it and say so instead of failing silently.
-    engine = registerIpcHandlers(window, appearance.material);
+    engine = registerIpcHandlers(window, {
+      material: () => currentBackdrop.material,
+      reapply: (settings) => reapplyBackdrop(window, settings),
+    });
   } catch (err) {
     reportFatal('failed to start', err, true);
     return;
   }
+
+  // The OS "Transparency effects" switch or high contrast changed under the open window —
+  // Windows cannot draw Mica with either, so the material has to follow it live.
+  nativeTheme.on('updated', () => {
+    reapplyBackdrop(
+      window,
+      engine ? engine.store.getSettings() : readSavedWindowSettings(app.getPath('userData')),
+    );
+  });
 
   // macOS convention: re-create a window when the dock icon is clicked and no
   // windows are open. Harmless on Windows/Linux.
