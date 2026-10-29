@@ -114,7 +114,10 @@
  *   draws this exact state (an approximate stand-in mockup is noted per row below instead).
  * - `clip` — `'sidebar'` crops the capture to `nav[aria-label="Sidebar"]`'s own bounding rect
  *   instead of the whole viewport, so the row shoots the tree on its own rather than whatever
- *   else happens to share the window. Omit it to capture the full viewport, same as before.
+ *   else happens to share the window. `{ x, y, width, height }` (CSS px, inside `viewport`)
+ *   crops both the shot **and** the rasterized mockup to that one rect, so a zoomed detail (the
+ *   canvas haze, `016-haze.mjs`) is compared like for like. Omit it to capture the full
+ *   viewport, same as before.
  * - `allowPersistentSpinner` — `true` for a row whose `setup` lands on a screen that means to
  *   show a Fluent `Spinner` forever, not just until some promise resolves (`waitForIdle`'s own
  *   doc comment explains the one screen that does, and why this flag exists rather than just
@@ -159,7 +162,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildApiStub } from './lib/apiStub.mjs';
 import { clockShimSource } from './lib/clockShim.mjs';
 import {
@@ -565,6 +568,44 @@ async function sidebarClipRect(cdp) {
   );
   if (!rect) throw new Error('could not find nav[aria-label="Sidebar"] to clip the shot to');
   return rect;
+}
+
+/** A row's `clip` as a fixed `{ x, y, width, height }` rect, or `null` for `'sidebar'`/none. */
+function rectClipOf(row) {
+  const c = row.clip;
+  if (!c || typeof c !== 'object') return null;
+  for (const k of ['x', 'y', 'width', 'height']) {
+    if (typeof c[k] !== 'number') throw new Error(`${row.name}: clip.${k} must be a number`);
+  }
+  return c;
+}
+
+/**
+ * Rasterizes `row.mockup` to `mockupPath` — at the full `viewport`, or, for a rect `clip`, just
+ * that rect: a one-off HTML page the size of the crop shows the SVG at its `viewport` size,
+ * shifted by `-x, -y`, so the mockup's crop lines up pixel for pixel with the shot's.
+ */
+function rasterizeMockup(browserPath, row, mockupPath) {
+  const svgPath = join(mockupsDir, row.mockup);
+  const rect = rectClipOf(row);
+  if (!rect) {
+    renderSvgToPng(browserPath, svgPath, mockupPath, row.viewport.width, row.viewport.height);
+    return;
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'tm-mockup-crop-'));
+  try {
+    const htmlPath = join(dir, 'crop.html');
+    writeFileSync(
+      htmlPath,
+      `<!doctype html><html><body style="margin:0;overflow:hidden">` +
+        `<img src="${pathToFileURL(svgPath).href}" style="position:absolute;` +
+        `left:${-rect.x}px;top:${-rect.y}px;width:${row.viewport.width}px;` +
+        `height:${row.viewport.height}px"></body></html>`,
+    );
+    renderSvgToPng(browserPath, htmlPath, mockupPath, rect.width, rect.height);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -992,19 +1033,14 @@ async function main() {
         }
 
         const shotPath = join(outDir, `${row.name}.png`);
-        const clip = row.clip === 'sidebar' ? await sidebarClipRect(cdp) : undefined;
+        const clip =
+          row.clip === 'sidebar' ? await sidebarClipRect(cdp) : (rectClipOf(row) ?? undefined);
         await screenshot(cdp, shotPath, clip);
         result.shotPath = shotPath;
 
         if (row.mockup) {
           const mockupPath = join(outDir, `${row.name}-mockup.png`);
-          renderSvgToPng(
-            browserPath,
-            join(mockupsDir, row.mockup),
-            mockupPath,
-            row.viewport.width,
-            row.viewport.height,
-          );
+          rasterizeMockup(browserPath, row, mockupPath);
           result.mockupPath = mockupPath;
           result.sideBySidePath = writeSideBySideHtml(outDir, row, basename(mockupPath));
         }
