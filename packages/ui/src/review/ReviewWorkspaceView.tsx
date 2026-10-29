@@ -12,6 +12,7 @@
  * fully opaque, because translucent text backgrounds hurt reading.
  *
  * The header's first line is the ref, the title, then Unified|Split, the AI slot, the drafts
+ * (human and kept AI drafts only, then "show dismissed (N)" on a card with dismissed AI drafts)
  * and the actions; its second is `head → base · N files · +a −d · ● pipeline · GitLab`, then the
  * source badge.
  *
@@ -66,12 +67,21 @@ import { PIPELINE_WORD } from '../issues/IssueBuilt';
 import { GlassPane } from '../shell/GlassPane';
 import { MONO } from '../theme';
 import { PIPELINE_VAR } from '../tokens';
+import { DismissedToggle } from './CommentThread';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
 import { ReviewKeysDialog } from './ReviewKeysDialog';
 import { ReviewQueueList } from './ReviewQueueList';
 import { useWidePaneWidth } from './ReviewPaneView';
-import { canComment, canSend, unsentCount, viewedStatuses, type ReviewState } from './reviewState';
+import {
+  canComment,
+  canSend,
+  dismissedCount,
+  unsentCount,
+  viewedStatuses,
+  visibleComments,
+  type ReviewState,
+} from './reviewState';
 import {
   effectiveDiffLayout,
   summaryTotals,
@@ -218,6 +228,12 @@ export interface ReviewWorkspaceViewProps {
   onCancel: () => void;
   onEdit: (comment: ReviewComment) => void;
   onDelete: (id: string) => void;
+  /** Keep · Dismiss · Restore on an AI draft (Edit is `onEdit`). */
+  onAccept?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onRestore?: (id: string) => void;
+  /** Flips "show dismissed (N)" beside the draft count. */
+  onToggleShowDismissed?: () => void;
 }
 
 /** See the module header for what each state means. */
@@ -403,6 +419,7 @@ function HeaderActions({
   onLayoutChange,
   onSend,
   onCopyMarkdown,
+  onToggleShowDismissed,
   drafts,
   isTask,
 }: ReviewWorkspaceViewProps & { drafts: number; isTask: boolean }): JSX.Element {
@@ -431,6 +448,13 @@ function HeaderActions({
       <Caption1 className={styles.faint} data-drafts={drafts}>
         {drafts} draft{drafts === 1 ? '' : 's'}
       </Caption1>
+      {isTask && onToggleShowDismissed && (
+        <DismissedToggle
+          count={dismissedCount(state)}
+          shown={state.showDismissed}
+          onToggle={onToggleShowDismissed}
+        />
+      )}
       {isTask ? (
         <Button
           size="small"
@@ -529,6 +553,9 @@ function DiffColumn({
   onCancel,
   onEdit,
   onDelete,
+  onAccept,
+  onDismiss,
+  onRestore,
   status,
 }: ReviewWorkspaceViewProps & { status: ReviewWorkspaceState }): JSX.Element {
   const styles = useStyles();
@@ -601,7 +628,7 @@ function DiffColumn({
           files={state.files}
           expanded={state.expanded}
           selectedPath={state.selectedPath}
-          comments={selected.taskId !== null ? state.comments : []}
+          comments={selected.taskId !== null ? visibleComments(state) : []}
           editor={state.editor}
           canComment={selected.taskId !== null && canComment(state, unreachable !== undefined)}
           layout={drawn}
@@ -616,6 +643,9 @@ function DiffColumn({
           onCancel={onCancel}
           onEdit={onEdit}
           onDelete={onDelete}
+          onAccept={onAccept}
+          onDismiss={onDismiss}
+          onRestore={onRestore}
         />
       </>
     );

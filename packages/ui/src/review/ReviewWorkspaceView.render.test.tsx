@@ -9,13 +9,17 @@ import { describe, expect, it } from 'vitest';
 import type {
   DiffFileEntry,
   DiffSummary,
+  ReviewComment,
   ReviewQueueItem,
   ReviewQueuesSnapshot,
   ReviewSource,
 } from '@tm/shared/review';
 import {
+  commentsArrived,
+  commentsLoadStarted,
   EMPTY_REVIEW,
   setViewed,
+  toggleShowDismissed,
   summaryArrived,
   summaryLoadStarted,
   viewedArrived,
@@ -116,6 +120,24 @@ function loaded(subjectId: string, source: ReviewSource): ReviewState {
   s = viewedLoadStarted(s, subjectId, 1);
   s = viewedArrived(s, subjectId, 1, []);
   return setViewed(s, 'src/upload/retry.ts', true, 10);
+}
+
+/** An unsent draft on the task subject's first file. */
+function draft(id: string, over: Partial<ReviewComment> = {}): ReviewComment {
+  return {
+    id,
+    taskId: 't1',
+    diffId: 'd1',
+    path: 'src/upload/retry.ts',
+    side: 'new',
+    line: 3,
+    body: `Draft ${id}`,
+    excerpt: '',
+    createdAt: 1,
+    updatedAt: 1,
+    sentAt: null,
+    ...over,
+  };
 }
 
 function render(over: Partial<ReviewWorkspaceViewProps> = {}): string {
@@ -341,6 +363,42 @@ describe('ReviewWorkspaceView', () => {
         /data-queues-as-of[^>]*>Queues as of 14:02 — some queues are incomplete</,
       );
       expect(render({ asOfNotice: null })).not.toContain('data-queues-as-of');
+    });
+
+    it('counts human and kept drafts only, and offers "show dismissed (N)" (F16.12)', () => {
+      let s = commentsLoadStarted(state, task.subjectId, 2);
+      s = commentsArrived(s, task.subjectId, 2, [
+        draft('h1'),
+        draft('ai-pending', { origin: 'ai', severity: 'major' }),
+        draft('ai-kept', { origin: 'ai', severity: 'minor', acceptedAt: 3 }),
+        draft('ai-dismissed', { origin: 'ai', severity: 'nit', dismissedAt: 3 }),
+      ]);
+      const html = render({ selected: task, state: s, onToggleShowDismissed: () => {} });
+      const header = region(html, 'data-region="header"', 'data-column="files"');
+      expect(header).toMatch(/data-drafts="2"[^>]*>2 drafts</);
+      expect(header).toMatch(/data-dismissed-toggle="hidden"[^>]*>.*show dismissed \(1\)/);
+      // The AI slot stays F16.13's, and the toggle sits after the draft count.
+      expect(header).toMatch(/<span[^>]*data-slot="ai-review"[^>]*><\/span>/);
+      expect(header.indexOf('data-drafts')).toBeLessThan(header.indexOf('data-dismissed-toggle'));
+      expect(html).toContain('data-severity="major"');
+      expect(html).not.toContain('data-severity="nit"');
+
+      const shown = render({
+        selected: task,
+        state: toggleShowDismissed(s),
+        onToggleShowDismissed: () => {},
+      });
+      expect(shown).toMatch(/data-dismissed-toggle="shown"[^>]*>.*hide dismissed/);
+
+      const none = commentsArrived(
+        commentsLoadStarted(state, task.subjectId, 3),
+        task.subjectId,
+        3,
+        [draft('h1')],
+      );
+      expect(
+        render({ selected: task, state: none, onToggleShowDismissed: () => {} }),
+      ).not.toContain('data-dismissed-toggle');
     });
 
     it('draws a 390 px wide workspace unified, though Split is preferred', () => {

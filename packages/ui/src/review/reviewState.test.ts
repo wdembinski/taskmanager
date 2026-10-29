@@ -29,6 +29,8 @@ import {
   contextFailed,
   contextLoadStarted,
   contextRequest,
+  dismissedCount,
+  draftDecided,
   editDraft,
   editNote,
   fileArrived,
@@ -36,6 +38,8 @@ import {
   fileLoadStarted,
   filesToLoad,
   gapBounds,
+  isAiDraft,
+  isAwaitingDecision,
   isCollapsedByDefault,
   navigationOrder,
   nextFile,
@@ -50,17 +54,20 @@ import {
   saveStarted,
   selectFile,
   sendStarted,
+  sendableDrafts,
   setViewed,
   summaryArrived,
   summaryFailed,
   summaryLoadStarted,
   tapLine,
   toggleExpanded,
+  toggleShowDismissed,
   toggleViewedAndAdvance,
   unsentCount,
   viewedArrived,
   viewedLoadStarted,
   viewedStatuses,
+  visibleComments,
   type ReviewState,
 } from './reviewState';
 
@@ -1360,5 +1367,172 @@ describe('contextLoadStarted / contextArrived / contextFailed', () => {
 
     const unchanged = contextFailed(state, 'a', 'd0', 'a.ts', 4, 5, 'network error');
     expect(unchanged).toBe(state);
+  });
+});
+
+/** An unsent, undecided AI draft — what the AI reviewer files. */
+const aiDraft = (overrides: Partial<ReviewComment> = {}): ReviewComment =>
+  comment({
+    origin: 'ai',
+    aiReviewId: 'r1',
+    severity: 'major',
+    suggestion: null,
+    acceptedAt: null,
+    dismissedAt: null,
+    ...overrides,
+  });
+
+/** Card `a`, loaded, holding exactly `comments`. */
+function withComments(...comments: ReviewComment[]): ReviewState {
+  return commentsArrived(summaryLoaded('d1', ['a.ts']), 'a', 1, comments);
+}
+
+describe('isAiDraft / isAwaitingDecision', () => {
+  it('tells an undecided AI draft from a decided, sent or human one', () => {
+    expect(isAiDraft(aiDraft())).toBe(true);
+    expect(isAiDraft(comment())).toBe(false);
+    expect(isAwaitingDecision(aiDraft())).toBe(true);
+    expect(isAwaitingDecision(aiDraft({ acceptedAt: 5 }))).toBe(false);
+    expect(isAwaitingDecision(aiDraft({ dismissedAt: 5 }))).toBe(false);
+    expect(isAwaitingDecision(aiDraft({ sentAt: 5 }))).toBe(false);
+    expect(isAwaitingDecision(comment())).toBe(false);
+  });
+});
+
+describe('draftDecided — accept', () => {
+  it('stamps acceptedAt and clears dismissedAt, making the draft sendable', () => {
+    const draft = aiDraft({ dismissedAt: 3 });
+    const next = draftDecided(withComments(draft), 'a', draft.id, 'accept', 10);
+
+    expect(next.comments).toEqual([{ ...draft, acceptedAt: 10, dismissedAt: null }]);
+    expect(sendableDrafts(next).map((c) => c.id)).toEqual([draft.id]);
+    expect(unsentCount(next)).toBe(1);
+    expect(canSend(next)).toBe(true);
+  });
+});
+
+describe('draftDecided — dismiss', () => {
+  it('stamps dismissedAt and clears an earlier acceptance', () => {
+    const draft = aiDraft({ acceptedAt: 4 });
+    const next = draftDecided(withComments(draft), 'a', draft.id, 'dismiss', 10);
+
+    expect(next.comments).toEqual([{ ...draft, acceptedAt: null, dismissedAt: 10 }]);
+    expect(dismissedCount(next)).toBe(1);
+    expect(unsentCount(next)).toBe(0);
+    expect(canSend(next)).toBe(false);
+  });
+});
+
+describe('draftDecided — restore', () => {
+  it('clears dismissedAt, leaving the draft awaiting a decision again', () => {
+    const draft = aiDraft({ dismissedAt: 4 });
+    const next = draftDecided(withComments(draft), 'a', draft.id, 'restore', 10);
+
+    expect(next.comments).toEqual([{ ...draft, dismissedAt: null }]);
+    expect(isAwaitingDecision(next.comments[0]!)).toBe(true);
+    expect(dismissedCount(next)).toBe(0);
+    expect(unsentCount(next)).toBe(0);
+  });
+});
+
+describe('draftDecided — refusals', () => {
+  it('returns the same object for a foreign taskId, an unknown id, a sent comment or a human draft', () => {
+    const draft = aiDraft();
+    const sent = aiDraft({ sentAt: 7, acceptedAt: 6 });
+    const human = comment();
+    const state = withComments(draft, sent, human);
+
+    expect(draftDecided(state, 'b', draft.id, 'accept', 10)).toBe(state);
+    expect(draftDecided(state, 'a', 'nope', 'accept', 10)).toBe(state);
+    expect(draftDecided(state, 'a', sent.id, 'dismiss', 10)).toBe(state);
+    expect(draftDecided(state, 'a', human.id, 'accept', 10)).toBe(state);
+  });
+});
+
+describe('editing an AI draft', () => {
+  it('opens the editor on it, and the save answer upserts an accepted comment', () => {
+    const draft = aiDraft({ body: 'the AI said this' });
+    let state = openExistingDraft(withComments(draft), draft);
+    expect(state.editor).toMatchObject({ commentId: draft.id, draft: 'the AI said this' });
+    expect(unsentCount(state)).toBe(0);
+
+    state = saveStarted(editDraft(state, 'the human says this'));
+    const saved: ReviewComment = {
+      ...draft,
+      body: 'the human says this',
+      acceptedAt: 20,
+      updatedAt: 20,
+    };
+    state = commentSaved(state, 'a', saved);
+
+    expect(state.editor).toBeNull();
+    expect(state.comments).toEqual([saved]);
+    expect(sendableDrafts(state)).toEqual([saved]);
+    expect(unsentCount(state)).toBe(1);
+  });
+});
+
+describe('toggleShowDismissed', () => {
+  it('flips the flag both ways', () => {
+    const state = withComments();
+    expect(state.showDismissed).toBe(false);
+
+    const on = toggleShowDismissed(state);
+    expect(on.showDismissed).toBe(true);
+    expect(toggleShowDismissed(on).showDismissed).toBe(false);
+  });
+
+  it('is reset by summaryLoadStarted for a new subject, and kept for the same one', () => {
+    const on = toggleShowDismissed(withComments());
+
+    expect(summaryLoadStarted(on, 'a', 2).showDismissed).toBe(true);
+    expect(summaryLoadStarted(on, 'b', 2).showDismissed).toBe(false);
+  });
+});
+
+describe('visibleComments', () => {
+  it('hides dismissed drafts unless showDismissed, and commentsAt follows it', () => {
+    const kept = aiDraft({ acceptedAt: 2 });
+    const dismissed = aiDraft({ dismissedAt: 2 });
+    const human = comment();
+    const state = withComments(kept, dismissed, human);
+
+    expect(visibleComments(state)).toEqual([kept, human]);
+    expect(commentsAt(state, 'a.ts', 'new', 3)).toEqual([kept, human]);
+
+    const shown = toggleShowDismissed(state);
+    expect(visibleComments(shown)).toEqual([kept, dismissed, human]);
+    expect(commentsAt(shown, 'a.ts', 'new', 3)).toEqual([kept, dismissed, human]);
+  });
+});
+
+describe('unsentCount / canSend / sendableDrafts with AI drafts', () => {
+  it('ignore unaccepted and dismissed AI drafts — canSend is false when only those exist', () => {
+    const state = withComments(
+      aiDraft(),
+      aiDraft({ dismissedAt: 2 }),
+      aiDraft({ acceptedAt: 1, dismissedAt: 2 }),
+    );
+
+    expect(sendableDrafts(state)).toEqual([]);
+    expect(unsentCount(state)).toBe(0);
+    expect(canSend(state)).toBe(false);
+  });
+
+  it('count human drafts and accepted AI drafts only', () => {
+    const human = comment();
+    const kept = aiDraft({ acceptedAt: 2 });
+    const state = withComments(human, aiDraft(), kept, aiDraft({ dismissedAt: 3 }));
+
+    expect(sendableDrafts(state)).toEqual([human, kept]);
+    expect(unsentCount(state)).toBe(2);
+    expect(canSend(state)).toBe(true);
+  });
+
+  it('sendableDrafts never contains an unaccepted AI draft', () => {
+    const state = withComments(aiDraft(), aiDraft({ severity: 'blocker' }), comment());
+
+    expect(sendableDrafts(state).some(isAwaitingDecision)).toBe(false);
+    expect(sendableDrafts(state).every((c) => !isAiDraft(c) || c.acceptedAt != null)).toBe(true);
   });
 });

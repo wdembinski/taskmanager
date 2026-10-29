@@ -15,8 +15,14 @@
  *    review message quotes; whether it still matches the code is a fact about the CURRENT
  *    diff, not the comment, so `list` recomputes it fresh on every call instead of trusting
  *    a column that would go stale the moment the agent touches the file again.
- *  - **`send` batches every open draft into one follow-up.** It reuses `list`'s `outdated`
- *    recompute, formats every comment still unsent into one message via `formatReviewMessage`,
+ *  - **An AI draft is the human's only once accepted.** `update` stamps the decision itself
+ *    (`Date.now()`): `accept` sets `acceptedAt` and clears `dismissedAt`, `dismiss` sets
+ *    `dismissedAt` and clears `acceptedAt`, `restore` clears `dismissedAt` — and a body edit
+ *    on an AI draft accepts it, since editing is accepting. On a human draft a decision is a
+ *    harmless no-op.
+ *  - **`send` batches every sendable draft into one follow-up.** It reuses `list`'s `outdated`
+ *    recompute, formats every draft {@link isSendableDraft} admits — unsent, not dismissed,
+ *    and human or accepted — into one message via `formatReviewMessage`,
  *    and hands that to `chatWithAgent` — the same chat path a human types into, so a card
  *    running an approved plan has the message land on its live step rather than the card
  *    itself. Nothing is stamped `sentAt` until delivery actually succeeds.
@@ -24,6 +30,7 @@
 import {
   excerptFor,
   formatReviewMessage,
+  isSendableDraft,
   markOutdated,
   type DiffStale,
   type ReviewAddResult,
@@ -101,9 +108,9 @@ export class ReviewService {
   }
 
   /**
-   * Edit a draft's body, move its anchor (re-quoting `excerpt`), or both. Refused `sent`
-   * once the comment has gone out in a review message, or `stale` when an anchor move
-   * names a `diffId` the worktree has moved on from.
+   * Edit a draft's body, move its anchor (re-quoting `excerpt`), record a decision on an AI
+   * draft, or any mix of them. Refused `sent` once the comment has gone out in a review
+   * message, or `stale` when an anchor move names a `diffId` the worktree has moved on from.
    */
   async update(taskId: string, id: string, patch: ReviewCommentPatch): Promise<ReviewUpdateResult> {
     if (!this.deps.store.getTask(taskId)) throw new Error('That card is no longer in the app.');
@@ -121,8 +128,15 @@ export class ReviewService {
     const body = patch.body !== undefined ? patch.body.trim() : undefined;
     if (body !== undefined && !body) throw new Error('A review comment needs a body.');
 
+    const stamps = existing.origin === 'ai' ? decisionStamps(patch, Date.now()) : {};
+    // A decision on a human draft changes nothing; answer it without touching the row.
+    if (body === undefined && !patch.anchor && Object.keys(stamps).length === 0) {
+      return { status: 'ok', comment: existing };
+    }
+
     const updated = this.deps.store.updateReviewComment(id, {
       ...(body !== undefined ? { body } : {}),
+      ...stamps,
       ...(patch.anchor
         ? {
             diffId: patch.anchor.diffId,
@@ -153,13 +167,14 @@ export class ReviewService {
   }
 
   /**
-   * Batch every open draft on `taskId` into one follow-up and send it down `deps.chat` — the
+   * Batch every sendable draft on `taskId` into one follow-up and send it down `deps.chat` — the
    * same path a human's own chat message takes, so a card running an approved plan has the
    * message land on its live step rather than the card itself.
    *
    * Refuses `unknown-task` when the card is gone; `landed`/`conflicted`/`no-branch` when
    * `diffs.summary` cannot resolve a diff to put in the message's header; `nothing-to-send`
-   * when every draft has already gone out (the double-send case); `empty-message` as a guard
+   * when no draft is sendable — every one has already gone out (the double-send case), or
+   * all that is left are dismissed or unaccepted AI drafts; `empty-message` as a guard
    * if `formatReviewMessage` still comes back `''`; and whatever `deps.chat` itself refuses
    * with — in every refusal, nothing is stamped.
    */
@@ -177,7 +192,7 @@ export class ReviewService {
 
     const drafts = this.deps.store
       .listReviewComments(taskId)
-      .filter((c) => c.sentAt === null)
+      .filter(isSendableDraft)
       .map((c) => {
         const current = listed.find((l) => l.id === c.id);
         return current ? { ...c, outdated: current.outdated } : c;
@@ -230,4 +245,28 @@ export class ReviewService {
     if (excerpt === null) throw new Error(`That line is no longer part of ${path}'s diff.`);
     return { excerpt, ...(entry.oldPath ? { oldPath: entry.oldPath } : {}) };
   }
+}
+
+/**
+ * The `acceptedAt`/`dismissedAt` writes an AI draft's patch implies. A body edit accepts;
+ * an explicit `decision` is applied after it, so `{ body, decision: 'dismiss' }` dismisses.
+ */
+function decisionStamps(
+  patch: ReviewCommentPatch,
+  now: number,
+): { acceptedAt?: number | null; dismissedAt?: number | null } {
+  const stamps: { acceptedAt?: number | null; dismissedAt?: number | null } = {};
+  if (patch.body !== undefined) Object.assign(stamps, { acceptedAt: now, dismissedAt: null });
+  switch (patch.decision) {
+    case 'accept':
+      Object.assign(stamps, { acceptedAt: now, dismissedAt: null });
+      break;
+    case 'dismiss':
+      Object.assign(stamps, { acceptedAt: null, dismissedAt: now });
+      break;
+    case 'restore':
+      stamps.dismissedAt = null;
+      break;
+  }
+  return stamps;
 }

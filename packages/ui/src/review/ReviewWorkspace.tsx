@@ -44,6 +44,7 @@ import {
   type DiffStale,
   type ReviewComment,
   type ReviewCommentInput,
+  type ReviewCommentPatch,
   type ReviewCommentSent,
   type ReviewQueue,
   type ReviewQueueItem,
@@ -63,6 +64,7 @@ import {
   contextFailed,
   contextLoadStarted,
   contextRequest,
+  draftDecided,
   editDraft,
   EMPTY_REVIEW,
   fileArrived,
@@ -74,12 +76,14 @@ import {
   saveRefused,
   saveStarted,
   selectFile,
+  sendableDrafts,
   sendStarted,
   setViewed,
   summaryArrived,
   summaryFailed,
   summaryLoadStarted,
   toggleExpanded,
+  toggleShowDismissed,
   viewedArrived,
   viewedLoadStarted,
   viewedStatuses,
@@ -375,6 +379,21 @@ export function ReviewWorkspace({
     });
   }
 
+  /** Keep/Dismiss/Restore on an AI draft: stamped locally first, then reconciled with the
+   * server's answer — or, when it refuses or fails, with a fresh read of the comments. */
+  function onDecide(id: string, decision: NonNullable<ReviewCommentPatch['decision']>): void {
+    if (subjectId === null || taskId === null || unreachable !== undefined) return;
+    const key = subjectId;
+    setState((s) => draftDecided(s, key, id, decision, Date.now()));
+    void transport.invoke('review:update', taskId, id, { decision }).then(
+      (result) => {
+        if (result.status === 'ok') setState((s) => commentSaved(s, key, result.comment));
+        else void loadComments();
+      },
+      () => void loadComments(),
+    );
+  }
+
   function onSave(): void {
     const editor = state.editor;
     if (editor === null || subjectId === null || taskId === null) return;
@@ -438,13 +457,7 @@ export function ReviewWorkspace({
   // ── Copy review as Markdown and Open on forge (a PR only) ─────────────────────────────────
 
   const summary = state.summary?.status === 'ok' ? state.summary.summary : null;
-  const markdown =
-    summary === null
-      ? ''
-      : formatReviewMessage(
-          state.comments.filter((c) => c.sentAt === null),
-          summary,
-        );
+  const markdown = summary === null ? '' : formatReviewMessage([...sendableDrafts(state)], summary);
 
   function onCopyMarkdown(): void {
     if (markdown === '') return;
@@ -620,6 +633,10 @@ export function ReviewWorkspace({
         onCancel={() => setState((s) => closeEditor(s))}
         onEdit={(comment) => setState((s) => openExistingDraft(s, comment))}
         onDelete={onDelete}
+        onAccept={(id) => onDecide(id, 'accept')}
+        onDismiss={(id) => onDecide(id, 'dismiss')}
+        onRestore={(id) => onDecide(id, 'restore')}
+        onToggleShowDismissed={() => setState((s) => toggleShowDismissed(s))}
       />
     </div>
   );

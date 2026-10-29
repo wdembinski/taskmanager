@@ -262,6 +262,9 @@ export interface DiffViewProps {
   onCancel: () => void;
   onEdit: (comment: ReviewComment) => void;
   onDelete: (id: string) => void;
+  onAccept?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onRestore?: (id: string) => void;
 }
 
 export function DiffView({
@@ -290,6 +293,9 @@ export function DiffView({
   onCancel,
   onEdit,
   onDelete,
+  onAccept,
+  onDismiss,
+  onRestore,
 }: DiffViewProps): JSX.Element {
   const styles = useStyles();
   const rows = useRef<Record<string, HTMLDivElement | null>>({});
@@ -339,6 +345,9 @@ export function DiffView({
             onCancel={onCancel}
             onEdit={onEdit}
             onDelete={onDelete}
+            onAccept={onAccept}
+            onDismiss={onDismiss}
+            onRestore={onRestore}
           />
         </div>
       ))}
@@ -351,6 +360,9 @@ export function DiffView({
           onCancel={onCancel}
           onEdit={onEdit}
           onDelete={onDelete}
+          onAccept={onAccept}
+          onDismiss={onDismiss}
+          onRestore={onRestore}
         />
       )}
     </div>
@@ -368,6 +380,9 @@ function OrphanedComments({
   onCancel,
   onEdit,
   onDelete,
+  onAccept,
+  onDismiss,
+  onRestore,
 }: {
   comments: readonly ReviewComment[];
   editor: CommentEditor | null;
@@ -376,6 +391,9 @@ function OrphanedComments({
   onCancel: () => void;
   onEdit: (comment: ReviewComment) => void;
   onDelete: (id: string) => void;
+  onAccept?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onRestore?: (id: string) => void;
 }): JSX.Element {
   const styles = useStyles();
   const byPath = new Map<string, ReviewComment[]>();
@@ -398,6 +416,9 @@ function OrphanedComments({
             onCancel={onCancel}
             onEdit={onEdit}
             onDelete={onDelete}
+            onAccept={onAccept}
+            onDismiss={onDismiss}
+            onRestore={onRestore}
           />
         </div>
       ))}
@@ -419,6 +440,9 @@ interface CommentHandlers {
   onCancel: () => void;
   onEdit: (comment: ReviewComment) => void;
   onDelete: (id: string) => void;
+  onAccept?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onRestore?: (id: string) => void;
 }
 
 function FileSection({
@@ -515,6 +539,9 @@ function FileSection({
             onCancel={handlers.onCancel}
             onEdit={handlers.onEdit}
             onDelete={handlers.onDelete}
+            onAccept={handlers.onAccept}
+            onDismiss={handlers.onDismiss}
+            onRestore={handlers.onRestore}
           />
         </div>
       )}
@@ -753,6 +780,9 @@ function Hunk({
   onCancel,
   onEdit,
   onDelete,
+  onAccept,
+  onDismiss,
+  onRestore,
 }: {
   path: string;
   hunk: DiffHunk;
@@ -807,6 +837,9 @@ function Hunk({
               onCancel={onCancel}
               onEdit={onEdit}
               onDelete={onDelete}
+              onAccept={onAccept}
+              onDismiss={onDismiss}
+              onRestore={onRestore}
             />
           </div>
         );
@@ -837,6 +870,9 @@ function SplitHunk({
   onCancel,
   onEdit,
   onDelete,
+  onAccept,
+  onDismiss,
+  onRestore,
 }: {
   path: string;
   hunk: DiffHunk;
@@ -852,6 +888,9 @@ function SplitHunk({
   onCancel: () => void;
   onEdit: (comment: ReviewComment) => void;
   onDelete: (id: string) => void;
+  onAccept?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onRestore?: (id: string) => void;
 }): JSX.Element {
   const styles = useStyles();
   const words = pairWordDiffs(hunk.lines);
@@ -896,6 +935,9 @@ function SplitHunk({
                 onCancel={onCancel}
                 onEdit={onEdit}
                 onDelete={onDelete}
+                onAccept={onAccept}
+                onDismiss={onDismiss}
+                onRestore={onRestore}
               />
             </div>
             <div className={mergeClasses(styles.splitColumn, styles.splitColumnRight)}>
@@ -917,6 +959,9 @@ function SplitHunk({
                 onCancel={onCancel}
                 onEdit={onEdit}
                 onDelete={onDelete}
+                onAccept={onAccept}
+                onDismiss={onDismiss}
+                onRestore={onRestore}
               />
             </div>
           </div>

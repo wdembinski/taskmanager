@@ -777,7 +777,10 @@ export interface ReviewCommentInput {
   body: string;
 }
 
-/** What `review:update` takes: a body edit, an anchor move (re-quotes `excerpt`), or both. */
+/**
+ * What `review:update` takes: a body edit, an anchor move (re-quotes `excerpt`), a decision,
+ * or any mix of them.
+ */
 export interface ReviewCommentPatch {
   body?: string;
   anchor?: {
@@ -786,6 +789,28 @@ export interface ReviewCommentPatch {
     line: number;
     start?: { side: DiffSide; line: number };
   };
+  /**
+   * The human's verdict on an AI draft — AI drafts only; on a human draft it is a no-op.
+   * The desktop stamps the times: `accept` sets `acceptedAt` and clears `dismissedAt`;
+   * `dismiss` sets `dismissedAt` and clears `acceptedAt`; `restore` clears `dismissedAt`.
+   * A `body` edit on an AI draft accepts it too.
+   */
+  decision?: 'accept' | 'dismiss' | 'restore';
+}
+
+/**
+ * Whether `comment` goes out in the next review message: unsent, not dismissed, and — for an
+ * AI draft — accepted. The one predicate `review:send`, the draft counts and the Markdown
+ * copy all share, so an unaccepted AI draft never reaches `formatReviewMessage`.
+ */
+export function isSendableDraft(
+  comment: Pick<ReviewComment, 'sentAt' | 'origin' | 'acceptedAt' | 'dismissedAt'>,
+): boolean {
+  return (
+    comment.sentAt === null &&
+    comment.dismissedAt == null &&
+    (comment.origin !== 'ai' || comment.acceptedAt != null)
+  );
 }
 
 /** Refused: the comment already went out in a review message and is no longer a draft. */

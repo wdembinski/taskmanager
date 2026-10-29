@@ -159,7 +159,12 @@ export function handleIpcInvoke(state, fixture, channel, args) {
       const [taskId, commentId, patch] = args;
       const list = state.reviewComments.get(taskId) ?? [];
       const comment = list.find((c) => c.id === commentId);
-      if (comment) Object.assign(comment, patch, { updatedAt: Date.now() });
+      if (comment) {
+        const { decision, ...rest } = patch;
+        Object.assign(comment, rest, decisionStamps(comment, patch, Date.now()), {
+          updatedAt: Date.now(),
+        });
+      }
       return { ok: true, value: { status: 'ok', comment } };
     }
     case 'review:delete': {
@@ -172,13 +177,18 @@ export function handleIpcInvoke(state, fixture, channel, args) {
     }
     case 'review:send': {
       const [taskId, note] = args;
-      const list = (state.reviewComments.get(taskId) ?? []).map((c) => ({
-        ...c,
-        sentAt: Date.now(),
-      }));
+      // Only what `ReviewService.send` would send: unsent, not dismissed, human or accepted.
+      const at = Date.now();
+      const stamped = [];
+      const list = (state.reviewComments.get(taskId) ?? []).map((c) => {
+        if (!isSendableDraft(c)) return c;
+        const sent = { ...c, sentAt: at };
+        stamped.push(sent);
+        return sent;
+      });
       state.reviewComments.set(taskId, list);
-      state.reviewSendLog.push({ taskId, note: note ?? null, at: Date.now() });
-      return { ok: true, value: { status: 'sent', taskId, runId: 'run-1', comments: list } };
+      state.reviewSendLog.push({ taskId, note: note ?? null, at });
+      return { ok: true, value: { status: 'sent', taskId, runId: 'run-1', comments: stamped } };
     }
     case 'task:move': {
       const [taskId, toColumn] = args;
@@ -193,6 +203,22 @@ export function handleIpcInvoke(state, fixture, channel, args) {
       return { ok: false, error: `fake relay: unhandled channel ${channel}` };
     }
   }
+}
+
+/** `isSendableDraft` from `@tm/shared`'s review.ts, restated: plain .mjs cannot import the TS source. */
+function isSendableDraft(c) {
+  return c.sentAt === null && c.dismissedAt == null && (c.origin !== 'ai' || c.acceptedAt != null);
+}
+
+/** The stamps `ReviewService.update` writes for an AI draft's patch; none on a human draft. */
+function decisionStamps(comment, patch, now) {
+  if (comment.origin !== 'ai') return {};
+  const stamps = {};
+  if (patch.body !== undefined) Object.assign(stamps, { acceptedAt: now, dismissedAt: null });
+  if (patch.decision === 'accept') Object.assign(stamps, { acceptedAt: now, dismissedAt: null });
+  if (patch.decision === 'dismiss') Object.assign(stamps, { acceptedAt: null, dismissedAt: now });
+  if (patch.decision === 'restore') stamps.dismissedAt = null;
+  return stamps;
 }
 
 /**
