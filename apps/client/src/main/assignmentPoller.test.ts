@@ -26,6 +26,7 @@ function ticketProject(id: string): Project {
     planPath: '',
     defaultModel: 'sonnet',
     planningModel: null,
+    reviewModel: null,
     defaultPermissionMode: 'acceptEdits',
     concurrency: 1,
     useWorktrees: false,

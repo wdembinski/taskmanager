@@ -325,6 +325,8 @@ interface ProjectRow {
   defaultModel: string;
   /** The planning model; NULL (pre-migration, and the default) = "same as execution". */
   planningModel: string | null;
+  /** The AI-review model; NULL (pre-migration, and the default) = "same as planning". */
+  reviewModel: string | null;
   defaultPermissionMode: string;
   concurrency: number;
   useWorktrees: number;
@@ -1756,6 +1758,7 @@ export function createStore(dbPath: string): Store {
       planPath              TEXT NOT NULL,
       defaultModel          TEXT NOT NULL,
       planningModel         TEXT,
+      reviewModel           TEXT,
       defaultPermissionMode TEXT NOT NULL,
       concurrency           INTEGER NOT NULL DEFAULT 1,
       useWorktrees          INTEGER NOT NULL DEFAULT 1,
@@ -2629,6 +2632,13 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN planningModel TEXT`);
   }
 
+  // Migrate databases created before AI reviews had a model rung of their own (F16.10).
+  // NULL, for the same reason as `planningModel`: it means "same as planning", so every
+  // existing project reviews exactly as it did until a human names a model.
+  if (!projectColumns.some((c) => c.name === 'reviewModel')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN reviewModel TEXT`);
+  }
+
   // Migrate databases created before native ticket projects (Phase 24). NULL on every
   // existing row — no project had a key prefix, and NULL rather than '' is what lets the
   // partial unique index below ignore them all instead of finding one collision per row.
@@ -3361,8 +3371,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoVisualSignOff, autoVisualSignOffMaxRounds, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, uiVerifyCommand, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoVisualSignOff, @autoVisualSignOffMaxRounds, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @uiVerifyCommand, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, reviewModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoVisualSignOff, autoVisualSignOffMaxRounds, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, uiVerifyCommand, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @reviewModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoVisualSignOff, @autoVisualSignOffMaxRounds, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @uiVerifyCommand, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -4644,6 +4654,8 @@ export function createStore(dbPath: string): Store {
       // not a missing model. Collapsing it to `defaultModel` here would read back as an
       // explicit choice and the dropdown would stop being able to say "same as execution".
       planningModel: (r.planningModel as Project['planningModel']) ?? null,
+      // NULL stays null too: "review on whatever you plan on".
+      reviewModel: (r.reviewModel as Project['reviewModel']) ?? null,
       defaultPermissionMode: r.defaultPermissionMode as Project['defaultPermissionMode'],
       concurrency: r.concurrency,
       useWorktrees: r.useWorktrees !== 0,
@@ -4714,6 +4726,7 @@ export function createStore(dbPath: string): Store {
       planPath: project.planPath,
       defaultModel: project.defaultModel,
       planningModel: project.planningModel ?? null,
+      reviewModel: project.reviewModel ?? null,
       defaultPermissionMode: project.defaultPermissionMode,
       concurrency: project.concurrency,
       useWorktrees: project.useWorktrees ? 1 : 0,
@@ -6025,6 +6038,11 @@ export function createStore(dbPath: string): Store {
       if (patch.planningModel !== undefined) {
         sets.push(`planningModel = @planningModel`);
         params.planningModel = patch.planningModel ?? null;
+      }
+      // Same three-state idiom: `null` means "review on the planning model again".
+      if (patch.reviewModel !== undefined) {
+        sets.push(`reviewModel = @reviewModel`);
+        params.reviewModel = patch.reviewModel ?? null;
       }
       if (patch.defaultPermissionMode !== undefined) {
         sets.push(`defaultPermissionMode = @defaultPermissionMode`);

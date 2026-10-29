@@ -108,6 +108,8 @@ export function buildProject(
       input.planningModel !== undefined
         ? input.planningModel
         : (defaults.defaultPlanningModel ?? null),
+    // No app-wide seed: null is "same as planning", so a new project reviews on what it plans on.
+    reviewModel: input.reviewModel ?? null,
     defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
     concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
     useWorktrees: input.useWorktrees ?? true,

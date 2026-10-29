@@ -28,6 +28,7 @@ import {
   AiReviewRunner,
   REVIEW_ALLOWED_TOOLS,
   REVIEW_DISALLOWED_TOOLS,
+  reviewModelFor,
   type AiReviewRunnerDeps,
 } from './aiReviewRunner';
 
@@ -35,6 +36,7 @@ const PROJECT = {
   id: 'p',
   path: '/repo',
   planningModel: null,
+  reviewModel: null,
   defaultModel: 'sonnet',
 } as unknown as Project;
 
@@ -299,6 +301,26 @@ async function started(h: ReturnType<typeof harness>, subjectId = 'task:t1'): Pr
   await flush();
   return review;
 }
+
+describe('reviewModelFor — the review rung (F16.10)', () => {
+  it("runs on the project's reviewModel, even when a planning model is set", () => {
+    expect(
+      reviewModelFor({ reviewModel: 'opus', planningModel: 'haiku', defaultModel: 'sonnet' }),
+    ).toBe('opus');
+  });
+
+  it('falls back to the planning model when reviewModel is null', () => {
+    expect(
+      reviewModelFor({ reviewModel: null, planningModel: 'haiku', defaultModel: 'sonnet' }),
+    ).toBe('haiku');
+  });
+
+  it('falls back to the execution model when both are null', () => {
+    expect(reviewModelFor({ reviewModel: null, planningModel: null, defaultModel: 'sonnet' })).toBe(
+      'sonnet',
+    );
+  });
+});
 
 describe('AiReviewRunner — a clean run', () => {
   it('lands every finding in one batch, then cleans up and reports done', async () => {
