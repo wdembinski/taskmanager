@@ -15,6 +15,7 @@ import {
   app,
   BrowserWindow,
   dialog,
+  ipcMain,
   nativeTheme,
   protocol,
   safeStorage,
@@ -26,6 +27,7 @@ import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
 import { PRODUCT_NAME } from '@shared/product';
 import { DEFAULT_SETTINGS } from '@shared/settings';
 import { AppTray } from './appTray';
+import { bootAppearanceFor } from './bootAppearance';
 import { closeAction, shouldQuitOnClose, trayLikelyAvailable } from './backgroundMode';
 import { registerContextMenu } from './contextMenu';
 import { registerMediaPermissionGuard } from './mediaPermission';
@@ -253,11 +255,18 @@ function windowAppearance(): { backgroundColor: string; material: WindowMaterial
     material === 'none'
       ? WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)]
       : '#00000000';
+  currentMaterial = material;
   return { backgroundColor, material };
 }
 
 // Holds the engine so we can shut its sessions and database down cleanly on quit.
 let engine: Engine | undefined;
+
+/**
+ * The material the current window was created with — set by {@link windowAppearance}, which
+ * both creation sites call, and handed to the renderer's first frame by `window:boot`.
+ */
+let currentMaterial: WindowMaterial = 'none';
 
 /** Guard so a cascade of rejections can't stack a dozen modal dialogs. */
 let reportedFatal = false;
@@ -333,6 +342,17 @@ void app.whenReady().then(() => {
   // Session-wide, not per-window — must run once here, before any window (and thus
   // any renderer) exists, and must NOT be re-registered from `activate` below.
   registerMediaPermissionGuard(session.defaultSession);
+
+  // The preload's synchronous first-frame read (`window.api.boot`). Registered once, before
+  // any window exists, so even the very first renderer finds it. Answers from the live store
+  // once the engine is up — a Ctrl+R after changing a setting boots with the new value — and
+  // straight off disk before then, plus the material this window was actually created with.
+  ipcMain.on('window:boot', (event) => {
+    event.returnValue = bootAppearanceFor(
+      engine ? engine.store.getSettings() : readSavedWindowSettings(app.getPath('userData')),
+      currentMaterial,
+    );
+  });
 
   const appearance = windowAppearance();
   const window = createWindow(appearance);

@@ -33,6 +33,37 @@ describe('partitionChannels', () => {
   });
 });
 
+describe('buildApiStub boot', () => {
+  it('hands the merged settings and material to window.api.boot', () => {
+    const window = {};
+    new Function(
+      'window',
+      buildApiStub({
+        defaultSettings: {
+          board: {},
+          appearance: 'system',
+          transparency: 'system',
+          fontSizePx: 14,
+        },
+        fixture: { SETTINGS_OVERRIDES: {}, BOOT_CHANNELS: {} },
+        settingsOverrides: { appearance: 'dark', transparency: 'full' },
+        nativeMaterial: 'mica',
+      }),
+    )(window);
+
+    expect(window.api.boot).toEqual({
+      appearance: 'dark',
+      transparency: 'full',
+      fontSizePx: 14,
+      nativeMaterial: 'mica',
+    });
+  });
+
+  it('defaults the material to none', () => {
+    expect(stubApi({}).boot.nativeMaterial).toBeNull();
+  });
+});
+
 describe('buildApiStub per-arg lookup', () => {
   it('keys on the first argument by default', async () => {
     const api = stubApi({ 'task:get': { byArgTable: { a: 'A', b: 'B' }, fallback: 'none' } });
