@@ -40,6 +40,7 @@ const CLASSIFIED: ReadonlyArray<readonly [string, string]> = [
   ['milestone:changed', 'replace-last'],
   ['automations:changed', 'replace-last'],
   ['review:queues:changed', 'replace-last'],
+  ['aiReview:changed', 'replace-by-key'],
   ['project:boardReviewChanged', 'replace-by-key'],
   ['window:maximizedChanged', 'drop'],
   ['project:tasksChanged', 'drop'],
@@ -110,6 +111,13 @@ describe('the coalescing key', () => {
   it('keys a scheduler change by its project and a gap by its run', () => {
     expect(coalesceKey('scheduler:changed', { projectId: 'p1', state: 'running' })).toContain('p1');
     expect(coalesceKey('session:gap', { runId: 'r9' })).toContain('r9');
+  });
+
+  it('separates two AI reviews, and collapses two updates to one review', () => {
+    const first = coalesceKey('aiReview:changed', { id: 'ai-1', status: 'queued' });
+    expect(first).toContain('ai-1');
+    expect(first).toBe(coalesceKey('aiReview:changed', { id: 'ai-1', status: 'done' }));
+    expect(first).not.toBe(coalesceKey('aiReview:changed', { id: 'ai-2', status: 'queued' }));
   });
 
   it('is null for a stream, and for anything that should never have been queued', () => {

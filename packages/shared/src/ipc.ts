@@ -60,6 +60,7 @@ import type {
   TicketPatch,
 } from './model';
 import type { AddAgentProfileInput, AgentProfile, AgentProfilePatch } from './agent';
+import type { AiReview, AiReviewRefusal } from './aiReview';
 import type { NativeMaterial } from './canvas';
 import type { PastedAttachment, TaskAttachment, UploadedAttachment } from './attachments';
 import type { IssuePage, IssueProviderId, IssueQuery } from './issues';
@@ -954,6 +955,20 @@ export interface IpcApi {
     path: string,
     blobSha: string | null,
   ) => Promise<ReviewViewedMark[]>;
+
+  /**
+   * Start an AI review of a review subject (F16.11), on the human's behalf. Answers with the
+   * new review's row — never its findings, which land later as AI drafts through the review
+   * reads — or, when nothing was spent and no row was made, an `AiReviewRefusal` naming why
+   * (`no-capability` for a `forge-api` PR, `too-large` over the caps, and so on).
+   */
+  'aiReview:start': (subjectId: string) => Promise<AiReview | AiReviewRefusal>;
+  /** Cancel a queued, running or parked AI review. `false` when there was none to cancel. */
+  'aiReview:cancel': (id: string) => Promise<boolean>;
+  /** Every AI review of one review subject, in no particular order. */
+  'aiReview:list': (subjectId: string) => Promise<AiReview[]>;
+  /** One AI review's row — its status and cost — or `null` when there is no such review. */
+  'aiReview:get': (id: string) => Promise<AiReview | null>;
 
   /**
    * Delegate a My Tasks card to an agent: persist the assignment (agent project +
@@ -2068,6 +2083,12 @@ export interface IpcEvents {
    * differs from the previous one — a forge outage that changes nothing stays silent.
    */
   'review:queues:changed': ReviewQueuesSnapshot;
+  /**
+   * One AI review's row changed (F16.11) — it started, moved status, parked, or landed with
+   * its cost and verdict. Carries the whole row, never findings: those arrive as drafts
+   * through the review reads. A web viewer sees a review start and land through this.
+   */
+  'aiReview:changed': AiReview;
 }
 
 /** Convenience: the set of valid invoke channel names. */

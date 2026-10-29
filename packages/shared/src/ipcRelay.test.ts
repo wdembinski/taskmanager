@@ -121,6 +121,10 @@ describe('the channels that DO relay', () => {
     'review:context',
     'review:viewed',
     'review:setViewed',
+    'aiReview:start',
+    'aiReview:cancel',
+    'aiReview:list',
+    'aiReview:get',
   ];
 
   for (const channel of MUST_RELAY) {

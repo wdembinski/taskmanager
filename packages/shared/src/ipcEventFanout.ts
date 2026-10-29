@@ -37,6 +37,7 @@
  * Pure: no transport, no queue, no timers. The forwarder that reads this lives in apps/client
  * and the receiver in apps/web; both are later steps.
  */
+import type { AiReview } from './aiReview';
 import type { IpcEvents } from './ipc';
 import type { SchedulerChange, TaskChange } from './scheduler';
 
@@ -130,6 +131,9 @@ export const EVENT_FANOUT = {
   // Review workspace (F15.9) — the whole, already-deduped snapshot, reproducible from
   // `review:queues` (F15.10), like every other whole-list event above.
   'review:queues:changed': { kind: 'replace-last' },
+  // AI reviews (F16.11) — each payload is one review's whole row, so two updates to the
+  // same review collapse and two different reviews never do, like `task:changed`.
+  'aiReview:changed': { kind: 'replace-by-key', key: (review: AiReview) => review.id },
   // "Review open tickets" — the whole row, one per project, reproducible from
   // `project:boardReview`.
   'project:boardReviewChanged': {
