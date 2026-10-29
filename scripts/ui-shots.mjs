@@ -9,7 +9,7 @@
  * `loadScreens`), so a new UI card adds a file there instead of editing a shared list every
  * other UI card also touches.
  *
- *     node scripts/ui-shots.mjs [--out dir] [--only name,…] [--attach]
+ *     node scripts/ui-shots.mjs [--out dir] [--only name,…] [--attach] [--fixture scale]
  *
  * `--out` defaults to `.vipper/shots` (see `.gitignore`'s own comment on `.vipper/`) and holds,
  * per row: `<name>.png` (the real screenshot), `<name>-mockup.png` (the mockup rasterized at the
@@ -19,6 +19,10 @@
  * separated subset of `SCREENS`' own `name`s — and skips building whichever `app` no selected
  * row needs. `--attach` additionally copies the whole `--out` directory into
  * `<cwd>/.vipper/attach/` — the outbox the plan's step 5 ingests once a run settles.
+ * `--fixture scale` boots every `'client'` row against `scripts/fixtures/scaleFixture.mjs`'s
+ * seeded 5,000-card board (F29.1) instead of `uiShotsFixture.mjs` — to see the board at the
+ * owner's scale, not to compare with a mockup; a row whose `setup` names a small-fixture card
+ * will miss. `'web'` rows keep the small fixture.
  *
  * Exits 1 if any row threw (a failed build, a setup step that never found its target, a timed-
  * out wait) or logged an uncaught page exception — never silently drops a row and calls the run
@@ -184,6 +188,7 @@ import {
 } from './lib/cdp.mjs';
 import { startFakeRelay } from './lib/fakeRelay.mjs';
 import * as uiShotsFixture from './fixtures/uiShotsFixture.mjs';
+import { buildScaleFixture } from './fixtures/scaleFixture.mjs';
 import { layoutProblems, shotProblems } from './lib/shotChecks.mjs';
 import { loadScreens } from './lib/shotModules.mjs';
 
@@ -192,7 +197,7 @@ export const SCREENS = await loadScreens();
 // ── CLI ───────────────────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const opts = { out: null, only: null, attach: false };
+  const opts = { out: null, only: null, attach: false, fixture: 'default' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--out') opts.out = argv[++i];
@@ -202,7 +207,12 @@ function parseArgs(argv) {
         .map((s) => s.trim())
         .filter(Boolean);
     } else if (arg === '--attach') opts.attach = true;
-    else throw new Error(`unknown argument: ${arg}`);
+    else if (arg === '--fixture') {
+      opts.fixture = argv[++i];
+      if (opts.fixture !== 'default' && opts.fixture !== 'scale') {
+        throw new Error(`--fixture must be 'default' or 'scale', got: ${opts.fixture}`);
+      }
+    } else throw new Error(`unknown argument: ${arg}`);
   }
   return opts;
 }
@@ -276,14 +286,17 @@ window.__tm = {
  * `attachmentUrls` is `buildFixtureAttachmentUrls`'s own table (`main`, below) — real, fetchable
  * URLs for the handful of fixture attachment ids a row actually draws as `<img>`, threaded
  * straight through to `buildApiStub`.
+ *
+ * `baseFixture` is `uiShotsFixture.mjs` unless `--fixture scale` swapped in
+ * `buildScaleFixture()`'s board.
  */
-function clientInitScript(defaultSettings, row, attachmentUrls) {
+function clientInitScript(defaultSettings, row, attachmentUrls, baseFixture = uiShotsFixture) {
   const fixture = row.channelOverrides
     ? {
-        ...uiShotsFixture,
-        BOOT_CHANNELS: { ...uiShotsFixture.BOOT_CHANNELS, ...row.channelOverrides },
+        ...baseFixture,
+        BOOT_CHANNELS: { ...baseFixture.BOOT_CHANNELS, ...row.channelOverrides },
       }
-    : uiShotsFixture;
+    : baseFixture;
   const stub = buildApiStub({
     defaultSettings,
     fixture,
@@ -892,6 +905,7 @@ async function main() {
   }
 
   const needsClient = rows.some((r) => r.app === 'client');
+  const clientFixture = opts.fixture === 'scale' ? buildScaleFixture() : uiShotsFixture;
   const needsWeb = rows.some((r) => r.app === 'web');
 
   const scratch = mkdtempSync(join(tmpdir(), 'tm-ui-shots-'));
@@ -994,7 +1008,7 @@ async function main() {
 
         let initScript;
         if (row.app === 'client') {
-          initScript = clientInitScript(clientDefaultSettings, row, attachmentUrls);
+          initScript = clientInitScript(clientDefaultSettings, row, attachmentUrls, clientFixture);
           await freshLoad(cdp, clientOrigin, initScript, row.path ?? '');
         } else {
           relayHandle.state.settings.appearance = row.scheme;
