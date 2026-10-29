@@ -90,7 +90,7 @@ import {
   type LandedDoneMoveDeps,
   type LandThenMoveDeps,
 } from './landedDoneMove';
-import { preserveLocalTrust } from './gateTrust';
+import { saveAndBroadcastSettings } from './settingsSave';
 import { toMoveActivity, transitionThenRecord } from './moveActivity';
 import { AutomationRunner } from './automationRunner';
 import { fireTrackerSweep, type FireTrackerSweepDeps } from './automationTrackerFirings';
@@ -108,7 +108,6 @@ import {
 } from '@shared/statusResolve';
 import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
-import { normalizeBaseUrl } from '@shared/jiraUrl';
 import { sanitizeToken, tokenHadNoise } from '@shared/secretToken';
 import { createJiraClient } from './jira/jiraConfig';
 import { explainJiraFailure } from './jira/jiraDiagnostics';
@@ -2195,55 +2194,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   });
 
   handle('settings:get', async () => store.getSettings());
-  handle('settings:save', async (settings) => {
-    // A relayed write from the web can name any model string — see the identical guard
-    // in `task:assignAgent`. `defaultModel`/`defaultPlanningModel` are both replayed
-    // straight from the cloud settings mirror (see `settings.ts`'s global-keys list).
-    if (!isUsableModel(settings.defaultModel)) {
-      throw new Error(`Not a usable model: ${settings.defaultModel}`);
-    }
-    if (settings.defaultPlanningModel !== null && !isUsableModel(settings.defaultPlanningModel)) {
-      throw new Error(`Not a usable model: ${settings.defaultPlanningModel}`);
-    }
-    // Normalize the JIRA URL once, on the way in, so every consumer sees the same
-    // origin — the client, the epic-field and identity caches (both keyed by baseUrl),
-    // and the issue links written onto cards.
-    const storedSettings = store.getSettings();
-    const stored = storedSettings.jira;
-    const baseUrl = normalizeBaseUrl(settings.jira.baseUrl);
-    // The discovered API gateway belongs to ONE site and ONE deployment mode, and it is
-    // never typed — the probe writes it (see `JiraSettings.apiBaseUrl`). Two rules follow.
-    // Point the settings at a different site, or flip the dropdown, and it is stale, so it
-    // goes. Otherwise it survives a form the renderer read BEFORE the probe found it —
-    // which is every save that follows a Test connection, and losing it there would undo
-    // the fix on the next click.
-    const gatewayStillApplies =
-      baseUrl === normalizeBaseUrl(stored.baseUrl) &&
-      settings.jira.deployment === stored.deployment;
-    store.saveSettings({
-      ...settings,
-      jira: {
-        ...settings.jira,
-        baseUrl,
-        cloudEmail: settings.jira.cloudEmail.trim(),
-        apiBaseUrl: gatewayStillApplies
-          ? settings.jira.apiBaseUrl?.trim() || stored.apiBaseUrl || ''
-          : '',
-      },
-      cloud: { ...settings.cloud, baseUrl: normalizeBaseUrl(settings.cloud.baseUrl) },
-      // Machine-local trust (F8.8) never travels on this channel — see `preserveLocalTrust`.
-      trustedGateCommands: preserveLocalTrust(storedSettings, settings),
-    });
-    // Pick up a changed poll interval (or enable/disable) without a restart.
-    syncPoller.reschedule();
-    // Same reason, on the cloud mirror's own clock — an edit to `cloud.enabled`/`baseUrl`
-    // takes effect at once rather than waiting for whatever tick was already in flight.
-    cloudPoller.reschedule();
-    cloudBoardPuller.reschedule();
-    // The countdown is drawn from the interval, so a changed one has to reach the bar or
-    // the ring would keep draining at the old rate until the next sync landed.
-    pushSyncState();
-  });
+  // Validation, normalisation and the `settings:changed` broadcast all live in `settingsSave.ts`.
+  handle('settings:save', async (settings) =>
+    saveAndBroadcastSettings(
+      { store, send, syncPoller, cloudPoller, cloudBoardPuller, pushSyncState },
+      settings,
+    ),
+  );
 
   // Whether the token is being protected by the weak built-in password rather than an
   // OS keyring. `setUsePlainTextEncryption(true)` in main/index.ts makes storage WORK on
