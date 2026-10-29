@@ -58,6 +58,9 @@
  *   origin either way.
  * - `scheme` — `'light'` or `'dark'`, fed to the same `appearance` setting
  *   `shots-board.mjs`'s `clientInitScript` already threads through.
+ * - `osScheme` — `'light'` or `'dark'`, the OS `prefers-color-scheme` the page is emulated
+ *   with. Omit it to follow `scheme`; set it to the other one to shoot the app's own Theme over
+ *   an OS that disagrees (`015-theme-glass.mjs`). `scheme` alone still feeds `appearance`.
  * - `transparency` — the `transparency` setting the row boots with. Omit it for `'reduced'`
  *   (opaque panes, so every other row's pixels stay deterministic); `'full'` turns the CSS glass
  *   on (`resolveAppearance` picks `css` wherever `backdrop-filter` is supported, which headless
@@ -945,7 +948,7 @@ async function main() {
       try {
         exceptions.count = 0;
         await setViewport(cdp, row.viewport.width, row.viewport.height);
-        await emulateScheme(cdp, row.scheme);
+        await emulateScheme(cdp, row.osScheme ?? row.scheme);
 
         let initScript;
         if (row.app === 'client') {

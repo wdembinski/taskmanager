@@ -12,7 +12,7 @@
  * highlight.js has something to colour. The `+N −M` counts are the mockup's; the hunks are an
  * excerpt of each file's patch, not a line-for-line match to them.
  *
- * Nothing here joins the shared `CHANNELS`: only the review rows
+ * Only an empty `review:queues` joins the shared `CHANNELS`: only the review rows
  * (`150-review-workspace.mjs`, `155-review-entry.mjs`) answer with it, through their own
  * `channelOverrides` — the same arrangement as `95-board-review.mjs`.
  */
@@ -350,5 +350,14 @@ export const PR_VIEWED = ['src/upload/backoff.ts', 'src/net/link.ts'].map((path)
   viewedAt: now - 20 * 60_000,
 }));
 
-/** Empty on purpose — see the header doc. */
-export const CHANNELS = {};
+/**
+ * Only an EMPTY `review:queues` — see the header doc. The shell's Reviews row reads it at boot
+ * (`useRequestedReviewCount`) on every screen, and an unanswered channel crashed every row.
+ */
+export const CHANNELS = {
+  'review:queues': {
+    items: [],
+    asOf: { requested: null, mine: null, agent: null },
+    partial: [],
+  },
+};

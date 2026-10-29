@@ -33,6 +33,7 @@ import { registerIpcHandlers, type Engine } from './ipc';
 import { formatError, getLogPath, logMain } from './log';
 import { runShutdownSteps, type ShutdownStep } from './shutdown';
 import { readSavedWindowSettings } from './store';
+import { themeSourceFor } from './themeSource';
 import {
   isRemoteSession,
   windowMaterialFor,
@@ -236,6 +237,9 @@ function createWindow({
  */
 function windowAppearance(): { backgroundColor: string; material: WindowMaterial } {
   const { appearance, transparency } = readSavedWindowSettings(app.getPath('userData'));
+  // Before any window exists, so Windows paints the material in the app's Theme rather than
+  // the OS's — and so the `shouldUseDarkColors` read below already agrees with it.
+  nativeTheme.themeSource = themeSourceFor(appearance);
   const material = windowMaterialFor(
     process.platform,
     windowsBuildOf(osRelease()),

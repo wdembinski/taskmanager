@@ -37,6 +37,7 @@ import {
   type Rectangle,
 } from 'electron';
 import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
+import { themeSourceFor } from './themeSource';
 import type { WindowMaterial } from './windowMaterial';
 import type {
   BoardScope,
@@ -553,6 +554,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   const send = <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]): void => {
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
     cloudEvents.publish(channel, payload);
+    // Steer the theme Electron reports with the Theme setting, unconditionally: Windows paints
+    // the Mica/Acrylic material in that theme, so the material path is the one that needs it
+    // most (see `themeSource.ts`). Set first, so the `shouldUseDarkColors` read below agrees.
+    if (channel === 'settings:changed') {
+      nativeTheme.themeSource = themeSourceFor((payload as AppSettings).appearance);
+    }
     // Resync the WINDOW's own background the moment `appearance` changes, so a later
     // restore from hidden/minimized (the tray path above) repaints with the CURRENT
     // scheme rather than whatever colour `createWindow` picked at boot — see
@@ -562,7 +569,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     // `'#00000000'` (see `windowAppearance`, main/index.ts), and painting an opaque colour
     // over it would switch the material off (F13.6's spike finding) — a transparent window
     // never shows the white/wrong-scheme flash on restore that this exists to fix, so there
-    // is nothing to resync anyway.
+    // is no colour to resync; the material's own theme follows `themeSource` above.
     if (channel === 'settings:changed' && !mainWindow.isDestroyed() && material === 'none') {
       const { appearance } = payload as AppSettings;
       mainWindow.setBackgroundColor(
