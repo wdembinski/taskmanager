@@ -31,7 +31,6 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
-  ArrowRightRegular,
   BeakerRegular,
   BookmarkRegular,
   BugRegular,
@@ -67,6 +66,7 @@ import { MAX_SHOWN_FILES } from '@tm/shared/fileOverlap';
 import type { ChainDecline } from '@tm/shared/taskChain';
 import type { ChainFileHold } from './chainStates';
 import type { LinkChips } from './linkChips';
+import { NeedsUnblocksRow } from './NeedsUnblocksRow';
 import type { RunPurpose } from '@tm/shared/scheduler';
 import { delegatedAgentName } from '@tm/shared/tickets';
 import type { VariantGroupState } from '@tm/shared/variants';
@@ -384,19 +384,6 @@ const useStyles = makeStyles({
     },
     ':focus-visible': { outline: `1px solid ${tokens.colorStrokeFocus2}` },
   },
-  /** The needs/unblocks row (F13.20) — what `chainChip` says with an arrow and a chip, said
-   *  instead in plain words once Off has turned that arrow off. */
-  linkChipsRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    flexWrap: 'wrap',
-    color: tokens.colorNeutralForeground3,
-  },
-  linkChipsIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
-  /** The one predecessor whose finishing releases this card right now — cyan, the overlay's
-   *  own "starting next", and the only colour this row spends. */
-  linkChipReleasing: { color: FLUO_VAR.cyan },
   footer: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
   /** The epic/feature chip — a flag glyph and a truncated label, monochrome like every other
@@ -880,26 +867,7 @@ export function TaskCard({
    */
   const needsUnblocksRow =
     linkChips && (linkChips.needs.length > 0 || linkChips.unblocks.length > 0) ? (
-      <Caption1 className={styles.linkChipsRow}>
-        {linkChips.needs.length > 0 && (
-          <span title={`Needs ${linkChips.needs.map((n) => n.key).join(', ')} to run first`}>
-            <ArrowRightRegular className={styles.linkChipsIcon} /> needs{' '}
-            {linkChips.needs.map((n, i) => (
-              <span key={n.key}>
-                {i > 0 && ', '}
-                <span className={n.tone === 'releasing' ? styles.linkChipReleasing : undefined}>
-                  {n.key}
-                </span>
-              </span>
-            ))}
-          </span>
-        )}
-        {linkChips.unblocks.length > 0 && (
-          <span title={`Unblocks ${linkChips.unblocks.map((u) => u.key).join(', ')} once done`}>
-            unblocks {linkChips.unblocks.map((u) => u.key).join(', ')}
-          </span>
-        )}
-      </Caption1>
+      <NeedsUnblocksRow chips={linkChips} />
     ) : null;
 
   const keyLink = isExternal && task.externalUrl ? task.externalUrl : null;
