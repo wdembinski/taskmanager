@@ -79,3 +79,16 @@ export function timeHandler<A extends unknown[], R>(
 export function logEvent(channel: string, payload: unknown, write: PerfWrite): void {
   safeWrite(write, `perf event ${channel} ${payloadBytes(payload)}B`);
 }
+
+/**
+ * The line for one renderer long task the preload's `logPerf` sent over `perf:longtask`:
+ * `perf longtask <screen> <ms>ms`. The payload crossed a process boundary, so its shape is
+ * checked rather than trusted — anything without a string `screen` and a finite `ms` gives
+ * `null` (nothing to log). Whitespace in `screen` becomes `_` so the line stays greppable.
+ */
+export function formatLongTask(entry: unknown): string | null {
+  if (typeof entry !== 'object' || entry === null) return null;
+  const { screen, ms } = entry as { screen?: unknown; ms?: unknown };
+  if (typeof screen !== 'string' || typeof ms !== 'number' || !Number.isFinite(ms)) return null;
+  return `perf longtask ${screen.trim().replace(/\s+/g, '_') || '?'} ${formatMs(ms)}ms`;
+}

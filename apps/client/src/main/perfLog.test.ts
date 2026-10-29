@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { logEvent, payloadBytes, perfLogEnabled, timeHandler } from './perfLog';
+import { formatLongTask, logEvent, payloadBytes, perfLogEnabled, timeHandler } from './perfLog';
 
 const IPC_LINE = /^perf ipc (\S+) (\d+\.\d)ms in=(-?\d+)B (out=(-?\d+)B|err)$/;
 
@@ -125,5 +125,26 @@ describe('logEvent', () => {
     cyclic.self = cyclic;
     expect(() => logEvent('weird', cyclic, write)).not.toThrow();
     expect(lines).toEqual(['perf event weird -1B']);
+  });
+});
+
+describe('formatLongTask', () => {
+  it('formats a valid entry', () => {
+    expect(formatLongTask({ screen: 'mytasks/card', ms: 123.456, at: 9 })).toBe(
+      'perf longtask mytasks/card 123.5ms',
+    );
+  });
+
+  it('keeps the line greppable when the screen has spaces', () => {
+    expect(formatLongTask({ screen: ' my tasks ', ms: 50 })).toBe('perf longtask my_tasks 50.0ms');
+  });
+
+  it('rejects anything that is not { screen: string, ms: number }', () => {
+    expect(formatLongTask(null)).toBeNull();
+    expect(formatLongTask('perf')).toBeNull();
+    expect(formatLongTask({ screen: 'board' })).toBeNull();
+    expect(formatLongTask({ screen: 1, ms: 50 })).toBeNull();
+    expect(formatLongTask({ screen: 'board', ms: '50' })).toBeNull();
+    expect(formatLongTask({ screen: 'board', ms: Number.NaN })).toBeNull();
   });
 });

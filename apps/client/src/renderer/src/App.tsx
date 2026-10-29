@@ -57,6 +57,7 @@ import {
   type DesktopPaletteSnapshot,
   type DesktopPaletteTab,
 } from './paletteSource';
+import { setPerfScreen } from './perfObserver';
 import { currentSprintName } from '@ui/board/currentSprint';
 // The ticket WORKSPACE (backlog table + Gantt over one ticket project's own tickets),
 // distinct from the admin `Projects` screen below — see the TabId doc above.
@@ -431,6 +432,12 @@ export function App(): JSX.Element {
       offSettings();
     };
   }, []);
+
+  // The screen renderer long tasks are charged to in `main.log` (F29.1) — the tab, plus
+  // `/card` while a card is open on the board. Cheap enough to keep up even when logging is off.
+  useEffect(() => {
+    setPerfScreen(tab === 'mytasks' && selectedTaskId ? 'mytasks/card' : tab);
+  }, [tab, selectedTaskId]);
 
   // A project archived (or restored) on the Projects tab changes which projects the
   // switcher should offer — `archive:apply`/`archive:restore` carry no push of their own
