@@ -42,6 +42,7 @@ const REVIEW: AiReview = {
   droppedCount: 0,
   error: null,
   requestedBy: 'human',
+  reviewDoc: 'default',
 };
 
 function entry(path: string, over: Partial<DiffFileEntry> = {}): DiffFileEntry {

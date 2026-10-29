@@ -6,6 +6,7 @@
 import { AI_REVIEW_RESULT_MAX_BYTES } from '@shared/aiReview';
 import type {
   AiReview,
+  AiReviewDoc,
   AiReviewRequester,
   AiReviewStatus,
   AiReviewTokens,
@@ -34,6 +35,7 @@ export interface AiReviewRow {
   droppedCount: number;
   error: string | null;
   requestedBy: string;
+  reviewDoc: string | null;
   resultText: string | null;
   createdAt: number;
 }
@@ -49,6 +51,7 @@ const STATUSES: readonly AiReviewStatus[] = [
 ];
 const VERDICTS: readonly AiReviewVerdict[] = ['approve', 'comment', 'request-changes'];
 const REQUESTERS: readonly AiReviewRequester[] = ['human', 'automation'];
+const REVIEW_DOCS: readonly AiReviewDoc[] = ['REVIEW.md', 'default'];
 
 function isOneOf<T extends string>(values: readonly T[], value: string | null): value is T {
   return (values as readonly (string | null)[]).includes(value);
@@ -113,6 +116,7 @@ export function aiReviewToRow(
     droppedCount: r.droppedCount,
     error: r.error,
     requestedBy: r.requestedBy,
+    reviewDoc: r.reviewDoc,
     resultText: resultText === null ? null : capResultText(resultText),
     createdAt,
   };
@@ -122,7 +126,8 @@ export function aiReviewToRow(
  * The inverse of `aiReviewToRow`, dropping `resultText` and `createdAt`. The enums are plain
  * TEXT, so each is coerced rather than trusted (the kind-coercion defence, memory
  * *phase24-tickets-design*): an unknown `status` reads as `'failed'`, an unknown `verdict` as
- * `null`, an unknown `requestedBy` as `'human'`, and `tokens` that do not parse as `null`.
+ * `null`, an unknown `requestedBy` as `'human'`, an unknown `reviewDoc` (or a row from before
+ * the column) as `null`, and `tokens` that do not parse as `null`.
  */
 export function rowToAiReview(r: AiReviewRow): AiReview {
   return {
@@ -143,5 +148,6 @@ export function rowToAiReview(r: AiReviewRow): AiReview {
     droppedCount: r.droppedCount,
     error: r.error,
     requestedBy: isOneOf(REQUESTERS, r.requestedBy) ? r.requestedBy : 'human',
+    reviewDoc: isOneOf(REVIEW_DOCS, r.reviewDoc) ? r.reviewDoc : null,
   };
 }

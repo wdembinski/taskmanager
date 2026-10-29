@@ -33,6 +33,7 @@ import {
   parseFindings,
   validateFindings,
   type AiReview,
+  type AiReviewDoc,
   type AiReviewRequester,
   type AiReviewStatus,
   type AiReviewTokens,
@@ -61,7 +62,7 @@ import {
   type AiReviewSubjectSource,
   type ReviewTarget,
 } from './aiReviewSubjects';
-import { buildReviewPrompt } from './reviewPrompt';
+import { buildReviewPrompt, usedReviewDoc } from './reviewPrompt';
 import type { ReviewWorktrees } from './reviewWorktrees';
 
 export type { AiReviewRefusal, AiReviewRefusalCode };
@@ -269,6 +270,7 @@ export class AiReviewRunner {
       verdict: null,
       error: null,
       requestedBy,
+      reviewDoc: reviewDocOf(target),
     });
     const gate = this.gateUp();
     if (gate) return this.parkRow(live.id, gate) ?? review;
@@ -592,6 +594,7 @@ export class AiReviewRunner {
       diffId: target.summary.diffId,
       headSha: target.summary.headSha,
       model: live.model,
+      reviewDoc: reviewDocOf(target),
     });
     this.queue.push(live);
   }
@@ -660,6 +663,11 @@ export class AiReviewRunner {
 
 function refuse(refused: AiReviewRefusalCode, reason: string): AiReviewRefusal {
   return { refused, reason };
+}
+
+/** The checklist the target's prompt carries — the same test the prompt itself makes. */
+function reviewDocOf(target: ReviewTarget): AiReviewDoc {
+  return usedReviewDoc(target.prompt) ? 'REVIEW.md' : 'default';
 }
 
 /** A restart's earlier sessions plus this one's running totals. */

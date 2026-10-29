@@ -2409,6 +2409,7 @@ export function createStore(dbPath: string): Store {
       droppedCount INTEGER NOT NULL DEFAULT 0,
       error        TEXT,
       requestedBy  TEXT NOT NULL,   -- 'human' | 'automation'
+      reviewDoc    TEXT,            -- AiReviewDoc: 'REVIEW.md' | 'default'; NULL before F16.13
       resultText   TEXT,
       createdAt    INTEGER NOT NULL
     );
@@ -2508,6 +2509,17 @@ export function createStore(dbPath: string): Store {
       }
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_review_drafts_ai_review ON review_drafts(aiReviewId)`);
+  }
+
+  // Migrate ai_reviews created before F16.13 recorded which checklist a review used. An
+  // older row never said, so it stays NULL — read back as "not recorded", never guessed.
+  {
+    const reviewColumns = db.prepare(`PRAGMA table_info(ai_reviews)`).all() as Array<{
+      name: string;
+    }>;
+    if (!reviewColumns.some((c) => c.name === 'reviewDoc')) {
+      db.exec(`ALTER TABLE ai_reviews ADD COLUMN reviewDoc TEXT`);
+    }
   }
 
   // Migrate ledgers written before the relay stored results. Every existing row is one of
@@ -4272,11 +4284,11 @@ export function createStore(dbPath: string): Store {
     `INSERT INTO ai_reviews
        (id, subjectId, diffId, headSha, status, parkReason, model, startedAt, finishedAt,
         costUsd, tokens, summary, verdict, findingCount, droppedCount, error, requestedBy,
-        resultText, createdAt)
+        reviewDoc, resultText, createdAt)
      VALUES
        (@id, @subjectId, @diffId, @headSha, @status, @parkReason, @model, @startedAt,
         @finishedAt, @costUsd, @tokens, @summary, @verdict, @findingCount, @droppedCount,
-        @error, @requestedBy, @resultText, @createdAt)`,
+        @error, @requestedBy, @reviewDoc, @resultText, @createdAt)`,
   );
   const selectAiReviewStmt = db.prepare(`SELECT * FROM ai_reviews WHERE id = ?`);
   const selectAiReviewsForSubject = db.prepare(
@@ -4294,7 +4306,7 @@ export function createStore(dbPath: string): Store {
            model = @model, startedAt = @startedAt, finishedAt = @finishedAt,
            costUsd = @costUsd, tokens = @tokens, summary = @summary, verdict = @verdict,
            findingCount = @findingCount, droppedCount = @droppedCount, error = @error,
-           requestedBy = @requestedBy, resultText = @resultText
+           requestedBy = @requestedBy, reviewDoc = @reviewDoc, resultText = @resultText
      WHERE id = @id`,
   );
 
@@ -7273,6 +7285,7 @@ export function createStore(dbPath: string): Store {
         droppedCount: 0,
         error: input.error,
         requestedBy: input.requestedBy,
+        reviewDoc: input.reviewDoc,
       };
       insertAiReviewStmt.run(aiReviewToRow(review, Date.now()));
       return review;
