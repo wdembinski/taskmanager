@@ -6,7 +6,7 @@
  * itself draws the peek's read-only body or the full page's layout.
  *
  * The headers differ, per v9-1 and v9-2: the peek prints just the mono key and the muted epic
- * title (`TM-71   F4 Linear integration`), wrapping rather than ellipsized, while the full
+ * title (`TM-71   F14 Milestone archiving`), wrapping rather than ellipsized, while the full
  * page keeps the whole project › milestone › epic breadcrumb.
  *
  * Both sit on `GlassPane` (`shell/GlassPane.tsx`), per F13's restraint rule that glass means

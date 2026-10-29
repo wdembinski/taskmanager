@@ -34,8 +34,6 @@ import {
   MessageBarTitle,
   Option,
   ProgressBar,
-  Radio,
-  RadioGroup,
   Spinner,
   SpinButton,
   Subtitle2,
@@ -61,8 +59,6 @@ import type {
   GitHubSettings,
   GitLabSettings,
   JiraSettings,
-  LinearSettings,
-  LinearStateType,
   PriorityDisplay,
   UpdateSettings,
 } from '@shared/settings';
@@ -84,8 +80,6 @@ import type {
   JiraConfigStatus,
   JiraStatusOption,
   JiraTestResult,
-  LinearStateList,
-  LinearTeamList,
   UpdateTokenStatus,
 } from '@shared/ipc';
 import { cloudAuthHint, cloudTokenPlaceholder } from './cloudAuthHint';
@@ -115,16 +109,6 @@ import {
   type StatusMapRow,
 } from '@ui/statusMap';
 import { buildGitHubLabelRows } from '@ui/statusMapView';
-import {
-  buildLinearTargetRows,
-  clampRetentionDays,
-  LINEAR_STATE_TYPE_ORDER,
-  patchLinear,
-  setColumnTargetState,
-  toggleStateType,
-  toggleTeamKey,
-  validateAdvancedFilter,
-} from '@ui/linearSettingsForm';
 import {
   execTargetLabel,
   formatExecTarget,
@@ -218,16 +202,6 @@ const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermiss
 const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
   COLUMN_META.map((c) => [c.column, STATUS_LABEL[statusForColumn(c.column)]]),
 ) as Record<BoardColumn, string>;
-
-/** {@link LinearStateType}, spelled for a checkbox label — {@link LINEAR_STATE_TYPE_ORDER}'s order. */
-const LINEAR_STATE_TYPE_LABEL: Record<LinearStateType, string> = {
-  triage: 'Triage',
-  backlog: 'Backlog',
-  unstarted: 'Unstarted',
-  started: 'Started',
-  completed: 'Completed',
-  canceled: 'Canceled',
-};
 
 /**
  * The eight feature switches, in the order the Features tab lists them — keyed by the
@@ -359,23 +333,6 @@ export function Settings({
   // GitHub's label → column map, edited exactly as JIRA's status map is and seeded the same
   // way — once, so a blank row somebody is part-way through filling in survives a Save.
   const [labelRows, setLabelRows] = useState<StatusMapRow[]>([]);
-  // Linear: the same status/key/message/test four as GitHub, plus what a per-team tracker
-  // needs that neither JIRA nor GitHub do — a team list to offer in the picker, and each
-  // picked team's own workflow states (there is no instance-wide list the way JIRA's
-  // statuses are one, so these are fetched per team and kept keyed by team key).
-  const [linearStatus, setLinearStatus] = useState<JiraConfigStatus | null>(null);
-  const [linearKey, setLinearKey] = useState('');
-  const [linearMsg, setLinearMsg] = useState<string | null>(null);
-  const [linearTest, setLinearTest] = useState<JiraTestResult | null>(null);
-  const [linearTeams, setLinearTeams] = useState<LinearTeamList>({ teams: [], error: null });
-  const [linearStates, setLinearStates] = useState<Record<string, LinearStateList>>({});
-  // Linear's state-name → column overrides, edited exactly as GitHub's label map is above.
-  const [linearOverrideRows, setLinearOverrideRows] = useState<StatusMapRow[]>([]);
-  // The advanced filter is validated (`validateAdvancedFilter`) before it is stored, so its
-  // draft is kept apart from `settings`: an invalid draft must stay on screen and typeable
-  // rather than snap back to the last value that WAS valid once `settings` stops changing.
-  const [linearFilterText, setLinearFilterText] = useState('');
-  const [linearFilterError, setLinearFilterError] = useState<string | null>(null);
   // Cloud: the poller (`cloudPoller.ts`) needs `enabled` + `baseUrl` from this pane, plus a
   // pasted personal access token — everything the poller actually authenticates with, not a
   // form field saved with the rest, so it gets its own save/clear pair beside GitLab's.
@@ -405,18 +362,6 @@ export function Settings({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadJiraStatuses` is stable
   }, [section]);
 
-  // Each selected team's workflow states, fetched on demand: there is no instance-wide list
-  // the way JIRA's statuses are one, so a team picked earlier (already in `teamKeys` from a
-  // prior save) gets its states loaded the moment the Linear tab is open, and a team newly
-  // checked in the picker gets them the moment `teamKeys` changes.
-  useEffect(() => {
-    if (section !== 'integrations' || provider !== 'linear' || !settings) return;
-    for (const key of settings.linear.teamKeys) {
-      if (!linearStates[key]) void loadLinearStates(key);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadLinearStates` is stable
-  }, [section, provider, settings?.linear.teamKeys]);
-
   const seed = useCallback(async () => {
     const [appSettings, status] = await Promise.all([
       window.api.invoke('settings:get'),
@@ -425,12 +370,9 @@ export function Settings({
     setSettings(appSettings);
     setStatusRows(statusMapToRows(appSettings.jira.statusCategoryOverrides));
     setLabelRows(statusMapToRows(appSettings.github.labelColumnOverrides));
-    setLinearOverrideRows(statusMapToRows(appSettings.linear.stateColumnOverrides));
-    setLinearFilterText(appSettings.linear.advancedFilter ?? '');
     setJiraStatus(status);
     setGitlabStatus(await window.api.invoke('gitlab:getConfigStatus'));
     setGithubStatus(await window.api.invoke('github:getConfigStatus'));
-    setLinearStatus(await window.api.invoke('linear:getConfigStatus'));
     setCloudStatus(await window.api.invoke('cloud:getConfigStatus'));
     void loadJiraStatuses();
   }, []);
@@ -531,48 +473,6 @@ export function Settings({
     await window.api.invoke('update:clearToken');
     setUpdateTokenMsg('Token cleared.');
     setUpdateTokenStatus(await window.api.invoke('update:getTokenStatus'));
-  }
-
-  async function saveLinearKey(): Promise<void> {
-    // Save the form first, for the same reason the GitHub path does: main reads the STORED
-    // settings, so a key saved against unsaved team keys would be paired with stale config.
-    await save();
-    const res = await window.api.invoke('linear:setCredentials', linearKey);
-    setLinearMsg(res.message);
-    setLinearKey('');
-    setLinearStatus(await window.api.invoke('linear:getConfigStatus'));
-  }
-
-  async function clearLinearKey(): Promise<void> {
-    await window.api.invoke('linear:clearCredentials');
-    setLinearMsg('API key cleared.');
-    setLinearStatus(await window.api.invoke('linear:getConfigStatus'));
-  }
-
-  async function testLinear(): Promise<void> {
-    setLinearTest(null);
-    // Saved first: the probe names which configured team keys don't exist in the
-    // workspace by reading STORED settings, so testing an edited-but-unsaved `teamKeys`
-    // list would report on the previous one.
-    await save();
-    setLinearTest(await window.api.invoke('linear:testConnection'));
-  }
-
-  /** The team picker's "Load teams" — refuses while Linear is off, same as the IPC handler. */
-  async function loadLinearTeams(): Promise<void> {
-    if (!settings?.linear.enabled) {
-      setLinearTeams((prev) => ({ ...prev, error: 'Save with Linear enabled first.' }));
-      return;
-    }
-    await save();
-    setLinearTeams(await window.api.invoke('linear:teams'));
-  }
-
-  /** A team's own workflow states, for its column → state table. Fetched on demand, per
-   *  team, since there is no instance-wide list the way JIRA's statuses are one. */
-  async function loadLinearStates(teamKey: string): Promise<void> {
-    const list = await window.api.invoke('linear:states', teamKey);
-    setLinearStates((prev) => ({ ...prev, [teamKey]: list }));
   }
 
   /** Fetch the instance's statuses. Fails soft — the field stays typeable regardless. */
@@ -688,53 +588,6 @@ export function Settings({
     patchLabelRows([...others, { name, column }]);
   }
 
-  /** `patchGitHub`'s merge, via the pure helper (`linearSettingsForm.ts`) step 2 built so the
-   *  chip toggles and column → state picker below can be tested without a DOM. */
-  function patchLinearSettings(change: Partial<LinearSettings>): void {
-    setSettings((prev) => (prev ? patchLinear(prev, change) : prev));
-    setSaved(false);
-  }
-
-  /** The same round trip as `patchLabelRows`, for Linear's state-name → column map. */
-  function patchLinearOverrideRows(next: StatusMapRow[]): void {
-    setLinearOverrideRows(next);
-    patchLinearSettings({ stateColumnOverrides: rowsToStatusMap(next) });
-  }
-
-  function toggleLinearTeam(key: string): void {
-    patchLinearSettings({ teamKeys: toggleTeamKey(settings?.linear.teamKeys ?? [], key) });
-  }
-
-  function toggleLinearStateType(type: LinearStateType): void {
-    patchLinearSettings({
-      includeStateTypes: toggleStateType(settings?.linear.includeStateTypes ?? [], type),
-    });
-  }
-
-  function setLinearColumnTarget(teamKey: string, column: BoardColumn, stateName: string): void {
-    patchLinearSettings({
-      columnTargetStates: setColumnTargetState(
-        settings?.linear.columnTargetStates ?? {},
-        teamKey,
-        column,
-        stateName,
-      ),
-    });
-  }
-
-  /** Validate the advanced-filter draft and only patch `settings` when it parses — an
-   *  invalid draft stays on screen (and typeable) via `linearFilterText` instead. */
-  function onLinearFilterChange(text: string): void {
-    setLinearFilterText(text);
-    const result = validateAdvancedFilter(text);
-    if (result.ok) {
-      setLinearFilterError(null);
-      patchLinearSettings({ advancedFilter: result.value });
-    } else {
-      setLinearFilterError(result.message);
-    }
-  }
-
   async function save(): Promise<void> {
     if (!settings) return;
     await window.api.invoke('settings:save', settings);
@@ -817,7 +670,6 @@ export function Settings({
   const jira = settings.jira;
   const gitlab = settings.gitlab;
   const github = settings.github;
-  const linear = settings.linear;
   const cloud = settings.cloud;
   const updates = settings.updates;
   // An *.atlassian.net site configured as Server/DC is the one misconfiguration we can
@@ -1189,9 +1041,6 @@ export function Settings({
                   const githubNames = githubLabelRows
                     .filter((r) => r.column === c.column)
                     .map((r) => r.name);
-                  const linearNames = Object.entries(linear.stateColumnOverrides)
-                    .filter(([, col]) => col === c.column)
-                    .map(([name]) => name);
                   const ticketNames = ticketStatusesByColumn[c.column].map((s) => STATUS_LABEL[s]);
                   return (
                     <div key={c.column}>
@@ -1217,11 +1066,6 @@ export function Settings({
                         {githubNames.length > 0 && (
                           <Caption1 className={styles.hint}>
                             GitHub: {githubNames.join(', ')}
-                          </Caption1>
-                        )}
-                        {linearNames.length > 0 && (
-                          <Caption1 className={styles.hint}>
-                            Linear: {linearNames.join(', ')}
                           </Caption1>
                         )}
                         {ticketNames.length > 0 && (
@@ -1986,314 +1830,6 @@ export function Settings({
                   </MessageBarBody>
                 </MessageBar>
               ))}
-            </div>
-          ) : provider === 'linear' ? (
-            <div className={styles.pane}>
-              <Subtitle2>Linear</Subtitle2>
-              <Body1 className={styles.hint}>
-                Linear does one job here — it is where cards come from, mirrored from the teams you
-                name below. Unlike JIRA or GitHub it has no cross-team search a personal key can run
-                cheaply, so each team is picked explicitly rather than folded into one query.
-              </Body1>
-
-              <div className={styles.gridWide}>
-                <Field className={styles.capped} label="Enable Linear">
-                  <Switch
-                    checked={linear.enabled}
-                    onChange={(_e, d) => patchLinearSettings({ enabled: d.checked })}
-                  />
-                </Field>
-
-                <Field
-                  className={styles.capped}
-                  label="API key"
-                  hint={
-                    linearStatus?.encryptionAvailable === false
-                      ? 'The OS secure store is unavailable, so a key cannot be saved on this machine.'
-                      : linearStatus?.plainTextStorage
-                        ? 'No keyring on this machine, so the key is obfuscated on disk rather than kept secret.'
-                        : `Stored encrypted on this machine.${
-                            linearStatus?.hasToken ? ' A key is stored.' : ''
-                          }`
-                  }
-                >
-                  <Input
-                    type="password"
-                    value={linearKey}
-                    placeholder={linearStatus?.hasToken ? '•••••••• (stored)' : 'lin_api_…'}
-                    onChange={(_e, d) => setLinearKey(d.value)}
-                  />
-                </Field>
-
-                <Field
-                  label="Teams to mirror"
-                  hint="Which Linear teams' issues become cards. Save a key above, then load the list — or check a key you already know the team key of."
-                >
-                  <div className={styles.actions}>
-                    <Button size="small" onClick={() => void loadLinearTeams()}>
-                      Load teams
-                    </Button>
-                  </div>
-                  {linearTeams.error && (
-                    <MessageBar className={styles.capped} intent="warning">
-                      <MessageBarBody>{linearTeams.error}</MessageBarBody>
-                    </MessageBar>
-                  )}
-                  <div className={styles.columnList}>
-                    {linearTeams.teams.map((t) => (
-                      <Checkbox
-                        key={t.id}
-                        checked={linear.teamKeys.includes(t.key.toUpperCase())}
-                        label={`${t.name} (${t.key})`}
-                        onChange={() => toggleLinearTeam(t.key)}
-                      />
-                    ))}
-                    {linear.teamKeys
-                      .filter(
-                        (k) =>
-                          !linearTeams.teams.some((t) => t.key.toUpperCase() === k.toUpperCase()),
-                      )
-                      .map((k) => (
-                        <Checkbox
-                          key={k}
-                          checked
-                          label={`${k} (not loaded)`}
-                          onChange={() => toggleLinearTeam(k)}
-                        />
-                      ))}
-                  </div>
-                </Field>
-
-                <Field className={styles.capped} label="Which issues">
-                  <RadioGroup
-                    value={linear.assignee}
-                    onChange={(_e, d) =>
-                      patchLinearSettings({ assignee: d.value as LinearSettings['assignee'] })
-                    }
-                  >
-                    <Radio value="me" label="Assigned to me" />
-                    <Radio value="anyone" label="Anyone on the team" />
-                  </RadioGroup>
-                </Field>
-
-                <Field
-                  label="Which state types to mirror"
-                  hint="Mirroring completed/canceled by default would flood the board with a team's entire history, so those start unchecked."
-                >
-                  <div className={styles.switchRow}>
-                    {LINEAR_STATE_TYPE_ORDER.map((type) => (
-                      <Checkbox
-                        key={type}
-                        checked={linear.includeStateTypes.includes(type)}
-                        label={LINEAR_STATE_TYPE_LABEL[type]}
-                        onChange={() => toggleLinearStateType(type)}
-                      />
-                    ))}
-                  </div>
-                </Field>
-
-                <Field
-                  className={styles.capped}
-                  label="Advanced filter (optional)"
-                  hint="A raw Linear issue filter (its GraphQL filter syntax, as JSON), ANDed onto the fields above."
-                  validationState={linearFilterError ? 'error' : 'none'}
-                  validationMessage={linearFilterError ?? undefined}
-                >
-                  <Textarea
-                    value={linearFilterText}
-                    resize="vertical"
-                    onChange={(_e, d) => onLinearFilterChange(d.value)}
-                  />
-                </Field>
-
-                <Field
-                  label="State name mapping"
-                  hint="Which board column a Linear workflow STATE NAME means, matched ignoring case — overriding the state type's own default column."
-                >
-                  <div className={styles.mapList}>
-                    {linearOverrideRows.map((row, i) => (
-                      <div key={i} className={styles.mapRow}>
-                        <Input
-                          className={styles.mapName}
-                          value={row.name}
-                          placeholder="Linear state, e.g. in review"
-                          onChange={(_e, d) =>
-                            patchLinearOverrideRows(
-                              linearOverrideRows.map((r, j) =>
-                                j === i ? { ...r, name: d.value } : r,
-                              ),
-                            )
-                          }
-                        />
-                        <Dropdown
-                          className={styles.mapColumn}
-                          value={COLUMN_LABEL[row.column]}
-                          selectedOptions={[row.column]}
-                          onOptionSelect={(_e, d) =>
-                            d.optionValue &&
-                            patchLinearOverrideRows(
-                              linearOverrideRows.map((r, j) =>
-                                j === i ? { ...r, column: d.optionValue as BoardColumn } : r,
-                              ),
-                            )
-                          }
-                        >
-                          {MAPPABLE_COLUMNS.map((c) => (
-                            <Option key={c} value={c}>
-                              {COLUMN_LABEL[c]}
-                            </Option>
-                          ))}
-                        </Dropdown>
-                        <Button
-                          size="small"
-                          appearance="subtle"
-                          icon={<DismissRegular />}
-                          title="Remove this mapping"
-                          onClick={() =>
-                            patchLinearOverrideRows(linearOverrideRows.filter((_r, j) => j !== i))
-                          }
-                        />
-                      </div>
-                    ))}
-                    <div>
-                      <Button
-                        size="small"
-                        icon={<AddRegular />}
-                        onClick={() =>
-                          patchLinearOverrideRows([
-                            ...linearOverrideRows,
-                            { name: '', column: 'in-review' },
-                          ])
-                        }
-                      >
-                        Add mapping
-                      </Button>
-                    </div>
-                  </div>
-                </Field>
-
-                {linear.teamKeys.map((teamKey) => {
-                  const list = linearStates[teamKey];
-                  const rows = buildLinearTargetRows(
-                    teamKey,
-                    list?.states ?? [],
-                    linear.columnTargetStates,
-                    linear.learnedStateColumns,
-                  );
-                  return (
-                    <Field
-                      key={teamKey}
-                      label={`${teamKey}’s column → state`}
-                      hint="Which workflow state a drag into each column transitions the issue to, for this team. Blocked never transitions the issue — the move stays local."
-                    >
-                      {list?.error && (
-                        <MessageBar className={styles.capped} intent="warning">
-                          <MessageBarBody>{list.error}</MessageBarBody>
-                        </MessageBar>
-                      )}
-                      {!list && (
-                        <Caption1 className={styles.hint}>Loading {teamKey}’s states…</Caption1>
-                      )}
-                      <div className={styles.mapList}>
-                        {rows.map((row) => (
-                          <div key={row.column} className={styles.mapRow}>
-                            <Caption1 className={styles.mapName}>
-                              {COLUMN_LABEL[row.column]}
-                            </Caption1>
-                            {row.localOnly ? (
-                              <Caption1 className={styles.hint}>Stays local</Caption1>
-                            ) : (
-                              <>
-                                <Dropdown
-                                  className={styles.mapColumn}
-                                  value={row.selected || '—'}
-                                  selectedOptions={row.selected ? [row.selected] : []}
-                                  onOptionSelect={(_e, d) =>
-                                    d.optionValue !== undefined &&
-                                    setLinearColumnTarget(teamKey, row.column, d.optionValue)
-                                  }
-                                >
-                                  {row.options.map((s) => (
-                                    <Option key={s.id} value={s.name}>
-                                      {s.name}
-                                    </Option>
-                                  ))}
-                                </Dropdown>
-                                {row.fromLearned && (
-                                  <Caption1 className={styles.hint}>Learned from a move</Caption1>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </Field>
-                  );
-                })}
-
-                <Field
-                  className={styles.capped}
-                  label="Keep finished cards for (days)"
-                  hint="The default scope stops matching an issue the moment it finishes, so the card you had just dragged into Done would vanish out of it. A finished card is kept this long instead. 0 = take it off the board as soon as it drops out of scope."
-                >
-                  <SpinButton
-                    min={0}
-                    max={365}
-                    value={linear.doneRetentionDays}
-                    onChange={(_e, d) => {
-                      const n = d.value ?? Number(d.displayValue);
-                      if (Number.isFinite(n))
-                        patchLinearSettings({ doneRetentionDays: clampRetentionDays(n as number) });
-                    }}
-                  />
-                </Field>
-              </div>
-
-              {linearStatus?.plainTextStorage && (
-                <MessageBar className={styles.capped} intent="warning">
-                  <MessageBarBody>
-                    This machine has no OS keyring (typical on WSL, a headless session, or a minimal
-                    desktop), so the key is stored with a fixed built-in key — obfuscated on disk,
-                    but readable by anyone who can read your app data. To get real encryption
-                    instead, install a keyring (e.g. <code>gnome-keyring</code> /{' '}
-                    <code>libsecret</code>) and restart the app.
-                  </MessageBarBody>
-                </MessageBar>
-              )}
-
-              <div className={styles.actions}>
-                <Button appearance="primary" onClick={() => void save()}>
-                  Save
-                </Button>
-                {saved && <Caption1 className={styles.saved}>Saved.</Caption1>}
-              </div>
-
-              <div className={styles.actions}>
-                <Button
-                  appearance="secondary"
-                  disabled={!linearKey.trim() || linearStatus?.encryptionAvailable === false}
-                  onClick={() => void saveLinearKey()}
-                >
-                  Save key
-                </Button>
-                <Button
-                  appearance="secondary"
-                  disabled={!linearStatus?.hasToken}
-                  onClick={() => void clearLinearKey()}
-                >
-                  Clear key
-                </Button>
-                <Button appearance="primary" onClick={() => void testLinear()}>
-                  Test connection
-                </Button>
-                {linearMsg && <Caption1 className={styles.saved}>{linearMsg}</Caption1>}
-              </div>
-
-              {linearTest && (
-                <MessageBar className={styles.capped} intent={linearTest.ok ? 'success' : 'error'}>
-                  <MessageBarBody>{linearTest.message}</MessageBarBody>
-                </MessageBar>
-              )}
             </div>
           ) : provider === 'cloud' ? (
             <div className={styles.pane}>

@@ -76,10 +76,10 @@ describe('statusSegments', () => {
 
       it("resolves a selected step to its parent card's agentBranch", () => {
         const tasks = [
-          task('p', { agentBranch: 'tm-71-linear-identifiers', workedAt: 1 }),
+          task('p', { agentBranch: 'tm-71-ticket-identifiers', workedAt: 1 }),
           task('p-1', { parentTaskId: 'p', status: 'running', workedAt: 2 }),
         ];
-        expect(on({ tasks, selectedTaskId: 'p-1' }).branch).toBe('tm-71-linear-identifiers');
+        expect(on({ tasks, selectedTaskId: 'p-1' }).branch).toBe('tm-71-ticket-identifiers');
       });
 
       it('falls back to the legacy orch/<id> branch on a card that has run', () => {

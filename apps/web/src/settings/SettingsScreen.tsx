@@ -84,7 +84,7 @@ import { PromptTemplatesSection } from '@tm/ui/PromptTemplatesSection';
 import { SkillsSection } from '@tm/ui/SkillsSection';
 import { WorkflowBuilder } from '@tm/ui/WorkflowBuilder';
 import { PaneLoading } from '@tm/ui/PaneLoading';
-import { SettingsPage, SettingsRow } from '@tm/ui/settings/SettingsPage';
+import { SettingsPage } from '@tm/ui/settings/SettingsPage';
 import { useInitialLoad } from '@tm/ui/useInitialLoad';
 import { useTransport } from '@tm/ui/transport';
 import { COLUMN_META, statusForColumn } from '@tm/ui/board/boardColumns';
@@ -116,7 +116,6 @@ import {
   type AppearancePrefs,
 } from '../appearancePrefs';
 import { selectAgentProjects } from '../board/boardSelectors';
-import { describeLinearSettings } from './linearSettingsView';
 import { ProjectsEmpty, ProjectsSection } from './ProjectsSection';
 import {
   resolveWebSettingsNav,
@@ -903,27 +902,6 @@ export function SettingsScreen({
         </div>
       )}
 
-      {section === 'integrations' && provider === 'linear' && settings && (
-        <div className={styles.pane}>
-          <Subtitle2>Linear</Subtitle2>
-          <MessageBar intent="info">
-            <MessageBarBody>
-              These settings are edited on the desktop app’s Linear tab — the connection test and
-              the team/state pickers need the desktop’s own API key, which never leaves that
-              machine.
-            </MessageBarBody>
-          </MessageBar>
-
-          <div>
-            {describeLinearSettings(settings.linear).map((row) => (
-              <SettingsRow key={row.label} label={row.label}>
-                <Body1>{row.value}</Body1>
-              </SettingsRow>
-            ))}
-          </div>
-        </div>
-      )}
-
       {section === 'tokens' && (
         <div className={styles.pane}>
           <TokensSection apiBase={apiBase} getAccessToken={getAccessToken} />
@@ -1006,7 +984,7 @@ export function SettingsScreen({
  */
 const HOST_ONLY_SECTIONS: ReadonlyArray<{ title: string; why: string }> = [
   {
-    title: 'JIRA, GitLab and Linear credentials',
+    title: 'JIRA and GitLab credentials',
     why:
       'a token typed here would cross the network inside a relayed command and land in the ' +
       'server’s audit trail. The desktop app writes it straight into your machine’s own ' +

@@ -90,7 +90,7 @@ import type {
 } from './review';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { TicketLinkResult } from './ticketLinks';
-import type { AppSettings, LinearStateType } from './settings';
+import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
 import type { Automation, AutomationRun } from './automation';
@@ -262,49 +262,13 @@ export interface JiraTestResult {
   /**
    * What `@shared/autoMerge`'s `autoMergePrerequisites` found missing for each project with
    * "Merge on green" switched on whose `origin` belongs to this forge — GitHub's and
-   * GitLab's own `testConnection` handlers fill this in, never JIRA's or Linear's. Absent
+   * GitLab's own `testConnection` handlers fill this in, never JIRA's. Absent
    * (not just empty) when nothing was checked, so Settings can tell "no projects to check"
    * apart from "checked, nothing missing" without a third state on `missing`. Deliberately
    * independent of {@link ok}: a missing prerequisite is never a reason to fail the token
    * check that is the rest of this result.
    */
   prerequisites?: { project: string; missing: string[] }[];
-}
-
-/** One Linear team the Settings UI can offer for `teamKeys` — `key` appears nowhere else. */
-export interface LinearTeamOption {
-  id: string;
-  key: string;
-  name: string;
-}
-
-/**
- * The team list plus why it might be empty — the same `error` contract as `JiraStatusList`:
- * null on success (including a genuine empty workspace), the reason otherwise.
- */
-export interface LinearTeamList {
-  teams: LinearTeamOption[];
-  error: string | null;
-}
-
-/**
- * One workflow state a Linear team defines, for the Settings status-map viewer — the
- * `JiraStatusOption` idea, one tracker over. `column` is what the state would map to
- * WITHOUT an override (`resolveLinearColumn`'s own verdict), exactly as `category` is for
- * `JiraStatusOption`. `position` is Linear's own ordering within the team's workflow.
- */
-export interface LinearStateOption {
-  id: string;
-  name: string;
-  type: LinearStateType;
-  position: number;
-  column: BoardColumn;
-}
-
-/** The state list plus why it might be empty — the same `error` contract as `LinearTeamList`. */
-export interface LinearStateList {
-  states: LinearStateOption[];
-  error: string | null;
 }
 
 /**
@@ -1343,70 +1307,6 @@ export interface IpcApi {
    * named for the other tracker, and both names go through one implementation.
    */
   'github:markRead': (taskId: string) => Promise<Task>;
-
-  // --- Linear. Reuses JIRA's/GitHub's shapes again, plus two reads of its own for setup. ---
-  //
-  // `teams` and `states` have no JIRA or GitHub counterpart: a personal token can list JIRA's
-  // projects or GitHub's repos from the token's own scope, but Linear's `teamKeys` and
-  // per-team workflow states are exactly what `LinearSettings` asks the user to type in by
-  // hand, so the Settings UI needs its own reads to turn that into a picker instead of a
-  // blank text field.
-  /** Whether Linear is enabled, has a stored API key, and can encrypt one. */
-  'linear:getConfigStatus': () => Promise<JiraConfigStatus>;
-  /** Store the Linear personal API key, encrypted via the OS secure store. */
-  'linear:setCredentials': (apiKey: string) => Promise<{ ok: boolean; message: string }>;
-  /** Remove the stored Linear API key. */
-  'linear:clearCredentials': () => Promise<void>;
-  /** Verify the API key by calling Linear's GraphQL `viewer` query; returns the display name. */
-  'linear:testConnection': () => Promise<JiraTestResult>;
-  /**
-   * The workspace's teams, for the Settings UI's `teamKeys` picker — a team's `key` (e.g.
-   * `ENG`) is what `LinearSettings.teamKeys` stores, and it appears nowhere in Linear's own
-   * UI, only in its issue identifiers, so a picker beats asking the user to guess it.
-   */
-  'linear:teams': () => Promise<LinearTeamList>;
-  /**
-   * One team's workflow states, keyed by `teamKey`, for the Settings status-map viewer —
-   * `jira:statuses`, one tracker over: the column each state would fall into on its own, so
-   * the names don't have to be typed from memory. Empty when Linear is off, no key is
-   * stored, or the call failed; the failure travels alongside the list rather than being
-   * thrown, for the same reason `jira:statuses` does.
-   */
-  'linear:states': (teamKey: string) => Promise<LinearStateList>;
-  /**
-   * Fetch Linear's issues and reconcile them onto the board. Returns the full list — every
-   * provider's, exactly as `gitlab:sync`/`github:sync` do, since one board list holds them
-   * all.
-   */
-  'linear:sync': () => Promise<Task[]>;
-  /**
-   * The linked Linear issue's comments as timeline entries (empty for non-Linear tasks) —
-   * `jira:fetchComments`/`github:fetchComments`, one tracker over, and the same read: the
-   * app fetches the thread itself and the pane merges it in. Also keeps the unread marker
-   * honest, as those two do.
-   */
-  'linear:fetchComments': (taskId: string) => Promise<TaskActivityEntry[]>;
-  /**
-   * Post a comment to the linked Linear issue; also marks the task's comments as read.
-   *
-   * The draft shape is `JiraCommentDraft` verbatim, the same reuse as `github:addComment`.
-   *
-   * `attachmentPaths` is, as for GitHub, the one field with no Linear behind it and is
-   * **ignored**: uploading a file needs a signed upload URL requested in its own mutation
-   * first, a round trip this channel does not make, so the composer offers no attach button
-   * on a Linear card. Silently dropping a path would post the words without the file — see
-   * the handler, which refuses instead.
-   */
-  'linear:addComment': (taskId: string, body: JiraCommentDraft) => Promise<void>;
-  /**
-   * Mark a Linear task's comments as read (clears the unread border); returns the task.
-   *
-   * An alias of `jira:markRead`/`github:markRead`, which was never tracker-specific (it
-   * touches nothing but our own two markers). It exists so a Linear card's pane does not
-   * have to invoke a channel named for another tracker, and all three names go through one
-   * implementation.
-   */
-  'linear:markRead': (taskId: string) => Promise<Task>;
 
   // --- Merge requests, whichever forge they came from -----------------------
   /**

@@ -109,7 +109,7 @@ export type ArchivedBy = { by: 'project' | 'milestone' | 'epic' | 'self'; id: st
  * its tracker project, its milestone, its epic, then itself.
  *
  * Always `null` for a row that is not a **native** ticket ({@link isNativeTicket}): a
- * JIRA/GitHub/Linear row's lifecycle belongs to its tracker, not this one.
+ * JIRA/GitHub row's lifecycle belongs to its tracker, not this one.
  *
  * A lookup miss — `milestoneId` or `epicTaskId` naming a row that has been deleted, or one
  * simply absent from `index` — counts as **not archived** at that step, the same way a

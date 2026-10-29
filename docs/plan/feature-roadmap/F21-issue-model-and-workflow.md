@@ -49,8 +49,7 @@ Everything except the cloud-specific parts works on a **local workspace** too, w
   *card-state-is-the-humans*).
 - **Trackers already map foreign workflows onto the five columns.**
   `resolveStatusColumn` (`packages/shared/src/statusResolve.ts`) resolves a JIRA status by
-  explicit map, learned map, name heuristic, then category; `linearCategory` folds Linear's six
-  state types onto JIRA's three categories; `nativeStatusesByColumn`
+  explicit map, learned map, name heuristic, then category; `nativeStatusesByColumn`
   (`packages/shared/src/columnStatuses.ts`) is the native equivalent, a pure re-bucket of
   `columnForStatus`.
 - **Priority is a name.** `priorityBucket` / `priorityRank` / `priorityIndicatorShown` in
@@ -166,7 +165,7 @@ Everything except the cloud-specific parts works on a **local workspace** too, w
   category level; per-state hiding is a team setting in the workflow editor. A state's `color` is
   drawn as the column header's small status glyph only, never as a card fill (memory
   *board-colour-budget*).
-- **Trackers are untouched.** JIRA, GitHub and Linear cards never get a `stateId`;
+- **Trackers are untouched.** JIRA and GitHub cards never get a `stateId`;
   `resolveStatusColumn` and the learned maps still decide their column.
 
 ### Mapping states onto the agent engine
@@ -350,7 +349,7 @@ show, as today.
 - Per-team priority scales.
 - Recurring tickets on a calendar rule richer than F1's `ScheduleShape` (monthly, "last
   Friday").
-- Native workflow states for JIRA/GitHub/Linear mirrors; their columns stay resolver-driven.
+- Native workflow states for JIRA/GitHub mirrors; their columns stay resolver-driven.
 
 ## Open questions
 

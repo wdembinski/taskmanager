@@ -100,7 +100,7 @@ export const REVIEW_QUEUES = {
       subjectId: 'task:71',
       queue: 'agent',
       subject: task('71'),
-      title: 'TM-71 Linear identifiers',
+      title: 'TM-71 Milestone archiving',
       author: 'Claude',
       repoPath: 'vipper/task-manager',
       ref: '',

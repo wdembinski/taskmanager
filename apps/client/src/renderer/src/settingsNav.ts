@@ -13,7 +13,6 @@ export const SETTINGS_PROVIDERS = [
   { id: 'jira', title: 'JIRA' },
   { id: 'gitlab', title: 'GitLab' },
   { id: 'github', title: 'GitHub' },
-  { id: 'linear', title: 'Linear' },
   { id: 'cloud', title: 'Cloud' },
 ] as const;
 

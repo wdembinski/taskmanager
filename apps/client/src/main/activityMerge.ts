@@ -17,8 +17,8 @@ import type { TaskActivityEntry } from '@shared/model';
 // transcript events that message caused. `status-note` follows `status` because moving
 // a card and then saying why is the order those two are written in.
 //
-// `github-comment` and `linear-comment` share `jira-comment`'s weight rather than taking one
-// after it: a card is linked to ONE tracker, so these kinds never meet on the same timeline
+// `github-comment` shares `jira-comment`'s weight rather than taking one after it: a card
+// is linked to ONE tracker, so these kinds never meet on the same timeline
 // and any order between them would be a rule about a case that cannot arise. What they must
 // agree on is where a ticket comment sits relative to everything else, and that is what
 // sharing says.
@@ -29,7 +29,6 @@ const KIND_ORDER: Record<TaskActivityEntry['kind'], number> = {
   chat: 3,
   'jira-comment': 4,
   'github-comment': 4,
-  'linear-comment': 4,
   event: 5,
 };
 

@@ -27,7 +27,6 @@ describe('trackerOf', () => {
   it('names the trackers there are', () => {
     expect(trackerOf(task({ externalSource: 'jira' }))).toBe('jira');
     expect(trackerOf(task({ externalSource: 'github' }))).toBe('github');
-    expect(trackerOf(task({ externalSource: 'linear' }))).toBe('linear');
   });
 
   it('reads a card with no tracker, and one naming a tracker it has never heard of, as none', () => {
@@ -42,7 +41,6 @@ describe('trackerName', () => {
   it('spells each tracker the way that tracker spells itself', () => {
     expect(trackerName(task({ externalSource: 'jira' }))).toBe('JIRA');
     expect(trackerName(task({ externalSource: 'github' }))).toBe('GitHub');
-    expect(trackerName(task({ externalSource: 'linear' }))).toBe('Linear');
     expect(trackerName(task({}))).toBeNull();
   });
 });
@@ -51,12 +49,6 @@ describe('shortTicketKey', () => {
   it("leaves JIRA's key alone — it is already as short as it gets", () => {
     expect(shortTicketKey(task({ externalSource: 'jira', externalKey: 'PROJ-123' }))).toBe(
       'PROJ-123',
-    );
-  });
-
-  it("leaves Linear's key alone — it is already as short as it gets", () => {
-    expect(shortTicketKey(task({ externalSource: 'linear', externalKey: 'ENG-12' }))).toBe(
-      'ENG-12',
     );
   });
 
@@ -78,7 +70,7 @@ describe('shortTicketKey', () => {
 });
 
 describe('ticketChannels', () => {
-  it("maps each tracker to its own channel family, with Linear's @mention picker absent", () => {
+  it('maps each tracker to its own channel family', () => {
     expect(ticketChannels('jira')).toEqual({
       fetchComments: 'jira:fetchComments',
       markRead: 'jira:markRead',
@@ -91,12 +83,6 @@ describe('ticketChannels', () => {
       addComment: 'github:addComment',
       searchUsers: 'github:searchUsers',
     });
-    expect(ticketChannels('linear')).toEqual({
-      fetchComments: 'linear:fetchComments',
-      markRead: 'linear:markRead',
-      addComment: 'linear:addComment',
-      searchUsers: null,
-    });
   });
 });
 
@@ -108,9 +94,6 @@ describe('ticketLinkTitle', () => {
     expect(
       ticketLinkTitle(task({ externalSource: 'github', externalKey: 'octocat/hello-world#123' })),
     ).toBe('Open octocat/hello-world#123 in GitHub');
-    expect(ticketLinkTitle(task({ externalSource: 'linear', externalKey: 'ENG-12' }))).toBe(
-      'Open ENG-12 in Linear',
-    );
   });
 
   it('is null for a card with no external key', () => {

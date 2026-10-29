@@ -345,7 +345,7 @@ and `cloudPoller.ts`, and beside them, not inside them:
 this machine, `useWorktrees`, `target`, the exec host), sessions and `task_events` transcripts,
 steps (`parentTaskId` children, which are run artefacts), attention items, token usage,
 `merge_requests`, forge and tracker credentials, machine-local settings, and every
-JIRA/GitHub/Linear-sourced card (those stay in local workspaces in v1). A cloud ticket may
+JIRA/GitHub-sourced card (those stay in local workspaces in v1). A cloud ticket may
 reference a local agent project through `projectTagId`. That reference is a **local** field,
 because another desktop has no such project. F20 turns it into a team-visible assignment.
 
@@ -469,7 +469,7 @@ file-based export is F27.
 - Cycles and projects-with-progress (F24); saved views and search (F25).
 - SSO/SAML, SCIM, audit log, fine-grained permissions, file export (F27).
 - A replica on the phone (F23 reads the server directly).
-- Moving JIRA, GitHub or Linear-sourced cards into a cloud workspace.
+- Moving JIRA- or GitHub-sourced cards into a cloud workspace.
 - Real-time co-editing of a description (whole-field LWW only).
 - Automatic migration of today's mirror rows into a cloud workspace.
 

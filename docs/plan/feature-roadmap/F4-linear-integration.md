@@ -1,5 +1,8 @@
 # F4 — Linear integration
 
+**Status:** withdrawn 2026-10-15 — the integration was removed; the built-in tracker
+(F19–F27) replaces it.
+
 > **Status:** proposed · **Where:** client (desktop) + web (settings and cards via the mirror/relay) — no server code · **Depends on:** nothing · **Unlocks:** F1 Linear-event triggers, F5 one-click hand-to-agent for Linear issues
 > Only the `- [ ]` checkboxes under **Tasks** become cards when this file is imported as a plan; everything else is context.
 

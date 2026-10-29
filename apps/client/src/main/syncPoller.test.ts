@@ -110,7 +110,7 @@ describe('SyncPoller', () => {
       const resetAt = Date.now() + 5 * 60_000;
       const jiraRun = vi.fn().mockResolvedValue(undefined);
       const githubRun = vi.fn().mockResolvedValue(undefined);
-      const linearRun = vi
+      const gitlabRun = vi
         .fn()
         .mockRejectedValueOnce(new Error('rate limited'))
         .mockResolvedValue(undefined);
@@ -118,34 +118,34 @@ describe('SyncPoller', () => {
         { id: 'jira', isEnabled: () => true, run: jiraRun },
         { id: 'github', isEnabled: () => true, run: githubRun },
         {
-          id: 'linear',
+          id: 'gitlab',
           isEnabled: () => true,
-          run: linearRun,
+          run: gitlabRun,
           backoffUntil: () => resetAt,
         },
       ];
       const poller = new SyncPoller(storeWith(1), services);
       poller.reschedule();
 
-      // First tick: all three are due; linear rejects and records its back-off.
+      // First tick: all three are due; gitlab rejects and records its back-off.
       await vi.advanceTimersByTimeAsync(60_000);
       expect(jiraRun).toHaveBeenCalledTimes(1);
       expect(githubRun).toHaveBeenCalledTimes(1);
-      expect(linearRun).toHaveBeenCalledTimes(1);
+      expect(gitlabRun).toHaveBeenCalledTimes(1);
 
       // Next few ticks, still inside the back-off window: jira/github keep running every
-      // interval, linear is skipped.
+      // interval, gitlab is skipped.
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(jiraRun).toHaveBeenCalledTimes(4);
       expect(githubRun).toHaveBeenCalledTimes(4);
-      expect(linearRun).toHaveBeenCalledTimes(1);
+      expect(gitlabRun).toHaveBeenCalledTimes(1);
 
-      // One more tick lands exactly on the reset: linear is swept again (and this time
+      // One more tick lands exactly on the reset: gitlab is swept again (and this time
       // succeeds).
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(linearRun).toHaveBeenCalledTimes(2);
+      expect(gitlabRun).toHaveBeenCalledTimes(2);
 
       poller.dispose();
     } finally {
@@ -158,11 +158,11 @@ describe('SyncPoller', () => {
     try {
       const jiraRun = vi.fn().mockResolvedValue(undefined);
       const githubRun = vi.fn().mockResolvedValue(undefined);
-      const linearRun = vi.fn(() => new Promise<void>(() => {})); // never settles
+      const gitlabRun = vi.fn(() => new Promise<void>(() => {})); // never settles
       const services: SyncService[] = [
         { id: 'jira', isEnabled: () => true, run: jiraRun },
         { id: 'github', isEnabled: () => true, run: githubRun },
-        { id: 'linear', isEnabled: () => true, run: linearRun },
+        { id: 'gitlab', isEnabled: () => true, run: gitlabRun },
       ];
       const poller = new SyncPoller(storeWith(1), services);
       poller.reschedule();
@@ -170,15 +170,15 @@ describe('SyncPoller', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(jiraRun).toHaveBeenCalledTimes(1);
       expect(githubRun).toHaveBeenCalledTimes(1);
-      expect(linearRun).toHaveBeenCalledTimes(1);
+      expect(gitlabRun).toHaveBeenCalledTimes(1);
 
-      // jira/github keep being swept on the following ticks; linear is never re-entered
+      // jira/github keep being swept on the following ticks; gitlab is never re-entered
       // since it is still "in flight".
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(jiraRun).toHaveBeenCalledTimes(3);
       expect(githubRun).toHaveBeenCalledTimes(3);
-      expect(linearRun).toHaveBeenCalledTimes(1);
+      expect(gitlabRun).toHaveBeenCalledTimes(1);
 
       poller.dispose();
     } finally {
@@ -191,7 +191,7 @@ describe('SyncPoller', () => {
     try {
       const run = vi.fn().mockRejectedValue(new Error('transient'));
       const service: SyncService = {
-        id: 'linear',
+        id: 'gitlab',
         isEnabled: () => true,
         run,
         backoffUntil: () => null,

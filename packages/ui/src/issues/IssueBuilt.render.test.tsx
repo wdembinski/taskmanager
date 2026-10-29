@@ -25,7 +25,7 @@ describe('IssueBuilt', () => {
   it('shows the branch and one line per open or merged MR', () => {
     const html = renderToStaticMarkup(
       <IssueBuilt
-        task={{ agentBranch: 'tm-71-linear-identifiers' }}
+        task={{ agentBranch: 'tm-71-milestone-archiving' }}
         mergeRequests={[
           mr(),
           mr({ id: 'gl-1-124', number: 124, state: 'merged', pipelineStatus: 'none' }),
@@ -34,7 +34,7 @@ describe('IssueBuilt', () => {
       />,
     );
     expect(html).toContain('>Built<');
-    expect(html).toContain('tm-71-linear-identifiers');
+    expect(html).toContain('tm-71-milestone-archiving');
     expect(html).toContain('!191 open · pipeline passed');
     // A merged MR with no pipeline verdict says only that it merged.
     expect(html).toContain('>!124 merged<');

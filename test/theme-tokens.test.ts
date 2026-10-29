@@ -53,7 +53,6 @@ const ALLOWED: Record<string, string> = {
   'packages/ui/src/ColorSwatches.tsx': 'user-pickable project colours are data, not theme',
   'packages/ui/src/JiraMark.tsx': "brand mark keeps the owner's exact colours",
   'packages/ui/src/GitHubMark.tsx': "brand mark keeps the owner's exact colours",
-  'packages/ui/src/LinearMark.tsx': "brand mark keeps the owner's exact colours",
 };
 
 const SOURCE_FILE = /\.(ts|tsx|css)$/;

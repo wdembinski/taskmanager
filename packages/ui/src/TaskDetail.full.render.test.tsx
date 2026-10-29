@@ -53,11 +53,11 @@ const mr = {
 
 const card = task({
   id: 'card-1',
-  title: 'Show Linear identifiers and comments on cards',
+  title: 'Show ticket identifiers and comments on cards',
   ticketKey: 'TM-71',
-  externalDescription: 'Cards from Linear should carry their identifier.',
+  externalDescription: 'Cards from the tracker should carry their identifier.',
   agentProjectId: 'proj',
-  agentBranch: 'tm-71-linear-identifiers',
+  agentBranch: 'tm-71-ticket-identifiers',
 });
 const steps = [
   task({ id: 'step-1', parentTaskId: 'card-1', title: 'Read the identifier', order: 1 }),
@@ -73,7 +73,7 @@ describe('TaskDetail, layout="full"', () => {
   it('puts the key above a large title', () => {
     expect(full).toContain('data-issue-key');
     expect(full).toContain('TM-71');
-    expect(full).toMatch(/<h1[^>]*>Show Linear identifiers and comments on cards<\/h1>/);
+    expect(full).toMatch(/<h1[^>]*>Show ticket identifiers and comments on cards<\/h1>/);
     expect(full.indexOf('TM-71')).toBeLessThan(full.indexOf('<h1'));
   });
 
@@ -86,11 +86,11 @@ describe('TaskDetail, layout="full"', () => {
 
   it('shows the description as text, the steps list and Built', () => {
     expect(full).toContain('data-issue-description');
-    expect(full).toContain('Cards from Linear should carry their identifier.');
+    expect(full).toContain('Cards from the tracker should carry their identifier.');
     expect(full).toContain('>Steps<');
     expect(full).toContain('Read the identifier');
     expect(full).toContain('data-issue-built');
-    expect(full).toContain('tm-71-linear-identifiers');
+    expect(full).toContain('tm-71-ticket-identifiers');
     expect(full).toContain('!191 open · pipeline passed');
   });
 

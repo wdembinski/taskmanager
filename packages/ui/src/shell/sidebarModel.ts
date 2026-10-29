@@ -126,7 +126,7 @@ function ticketNode(ticket: Task, foldSet: ReadonlySet<string>): SidebarTreeNode
     id,
     kind: 'ticket',
     label: ticket.title,
-    // `ticketKey` is a native ticket's own key; a mirrored tracker row (jira/github/linear)
+    // `ticketKey` is a native ticket's own key; a mirrored tracker row (jira/github)
     // carries its key as `externalKey` instead — same fallback `cardParts.ts`/`issueRowParts.ts`
     // already use, so a row like LIN-203 shows its key here too.
     ticketKey: ticket.ticketKey ?? ticket.externalKey ?? undefined,

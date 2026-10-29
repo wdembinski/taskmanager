@@ -29,12 +29,11 @@ describe('sectionNeedsSettings', () => {
   });
 
   it('still gates the panes that render AppSettings fields', () => {
-    // These six ARE forms over the blob, so they genuinely cannot draw until it loads.
+    // These five ARE forms over the blob, so they genuinely cannot draw until it loads.
     expect(sectionNeedsSettings('general')).toBe(true);
     expect(sectionNeedsSettings('board')).toBe(true);
     expect(sectionNeedsSettings('features')).toBe(true);
     expect(sectionNeedsSettings('jira')).toBe(true);
-    expect(sectionNeedsSettings('linear')).toBe(true);
     expect(sectionNeedsSettings('promptTemplates')).toBe(true);
   });
 
@@ -62,7 +61,6 @@ describe('sectionNeedsSettings', () => {
       projects: false,
       integrations: true,
       jira: true,
-      linear: true,
       tokens: false,
       people: false,
       desktop: false,
@@ -78,7 +76,7 @@ describe('sectionNeedsSettings', () => {
   });
 
   it('gates the Integrations and Appearance panes — both render AppSettings fields', () => {
-    // Integrations holds the JIRA and Linear forms; Appearance holds Monochrome code beside
+    // Integrations holds the JIRA form; Appearance holds Monochrome code beside
     // the per-browser theme, so neither can draw its Save-backed half before the blob loads.
     expect(sectionNeedsSettings('integrations')).toBe(true);
     expect(sectionNeedsSettings('appearance')).toBe(true);
@@ -109,18 +107,16 @@ describe('WEB_SETTINGS_GROUPS', () => {
   });
 
   it('lists every nav section exactly once, and no provider as a nav item', () => {
-    // JIRA and Linear live inside Integrations; a nav item for either would draw it twice.
+    // JIRA lives inside Integrations; a nav item for it would draw it twice.
     const ids = WEB_SETTINGS_GROUPS.flatMap((g) => g.items.map((i) => i.id));
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).not.toContain('jira');
-    expect(ids).not.toContain('linear');
   });
 });
 
 describe('resolveWebSettingsNav', () => {
   it('opens a provider id as Integrations on that provider’s tab', () => {
     expect(resolveWebSettingsNav('jira')).toEqual({ nav: 'integrations', provider: 'jira' });
-    expect(resolveWebSettingsNav('linear')).toEqual({ nav: 'integrations', provider: 'linear' });
   });
 
   it('opens any other id as its own nav item', () => {
