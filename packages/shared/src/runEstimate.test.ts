@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { estimateRun, type RunEstimateStats } from './runEstimate';
+import { estimateRun, summariseRunSamples, type RunEstimateStats } from './runEstimate';
 
 const stats = (overrides: Partial<RunEstimateStats> = {}): RunEstimateStats => ({
   sessionCount: 40,
@@ -50,5 +50,28 @@ describe('estimateRun', () => {
   it('keeps a short run in whole minutes rather than rounding it to nothing', () => {
     expect(estimateRun(stats({ minutesPerSession: 1 }), 1)?.duration).toBe('~2 min');
     expect(estimateRun(stats({ minutesPerSession: 0.1 }), 0)?.duration).toBe('~1 min');
+  });
+});
+
+describe('summariseRunSamples', () => {
+  it('returns null with no sessions to go on', () => {
+    expect(summariseRunSamples([])).toBeNull();
+  });
+
+  it('takes the quartile costs and the median known duration', () => {
+    const samples = [0.5, 1, 1.5, 2, 4].map((costUsd, i) => ({
+      costUsd,
+      durationMs: i === 4 ? null : (i + 1) * 60_000,
+    }));
+    expect(summariseRunSamples(samples)).toEqual({
+      sessionCount: 5,
+      costPerSessionUsd: { low: 1, high: 2 },
+      // 1, 2, 3, 4 minutes known — nearest rank of the median is 3.
+      minutesPerSession: 3,
+    });
+  });
+
+  it('reads no duration as zero minutes rather than inventing one', () => {
+    expect(summariseRunSamples([{ costUsd: 1, durationMs: null }])?.minutesPerSession).toBe(0);
   });
 });

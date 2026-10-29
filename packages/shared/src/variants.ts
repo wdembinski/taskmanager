@@ -139,7 +139,7 @@ export interface VariantRowDraft {
   agentMode: Task['agentMode'];
   agentModel: Task['agentModel'];
   agentPlanningModel: Task['agentPlanningModel'];
-  /** The leader's F28 role settings, copied as they are — the dialog cannot set them yet. */
+  /** The F28 role settings: the dialog's choice over the leader's own, like the models. */
   agentLeadModel: Task['agentLeadModel'];
   agentReviewModel: Task['agentReviewModel'];
   agentLeadEffort: Task['agentLeadEffort'];
@@ -189,12 +189,12 @@ export function planVariants(
       agentMode: input.mode ?? leader.agentMode ?? null,
       agentModel: input.model ?? leader.agentModel ?? null,
       agentPlanningModel: input.planningModel ?? leader.agentPlanningModel ?? null,
-      agentLeadModel: leader.agentLeadModel ?? null,
-      agentReviewModel: leader.agentReviewModel ?? null,
-      agentLeadEffort: leader.agentLeadEffort ?? null,
-      agentPlanningEffort: leader.agentPlanningEffort ?? null,
-      agentEffort: leader.agentEffort ?? null,
-      agentReviewEffort: leader.agentReviewEffort ?? null,
+      agentLeadModel: input.leadModel ?? leader.agentLeadModel ?? null,
+      agentReviewModel: input.reviewModel ?? leader.agentReviewModel ?? null,
+      agentLeadEffort: input.leadEffort ?? leader.agentLeadEffort ?? null,
+      agentPlanningEffort: input.planningEffort ?? leader.agentPlanningEffort ?? null,
+      agentEffort: input.effort ?? leader.agentEffort ?? null,
+      agentReviewEffort: input.reviewEffort ?? leader.agentReviewEffort ?? null,
       notes,
       attachmentNames: attachments.map((a) => a.name),
     };

@@ -174,6 +174,7 @@ export const RELAY_POLICY: {
   'project:gitPreflight': 'relay',
   'project:alignPlan': 'relay',
   'project:hasReleaseDoc': 'relay',
+  'project:runStats': 'relay',
 
   'git:graph': 'relay',
 

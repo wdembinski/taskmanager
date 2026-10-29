@@ -1897,6 +1897,19 @@ export interface AssignAgentInput {
   model?: ClaudeModel;
   /** Model for this card's planning runs; omitted = the project's planning model. */
   planningModel?: ClaudeModel;
+  /** Model for this card's lead (F28); omitted = the project's lead rung. */
+  leadModel?: ClaudeModel;
+  /** Model for this card's AI review runs (F28); omitted = the project's review rung. */
+  reviewModel?: ClaudeModel;
+  /**
+   * Effort per role for this card (F28) — see {@link resolveRoleEffort}. Omitted = the
+   * project's effort for that role, then the app default.
+   */
+  leadEffort?: Effort;
+  planningEffort?: Effort;
+  /** The workers' effort — steps and parts. */
+  effort?: Effort;
+  reviewEffort?: Effort;
   /**
    * Free-text instructions for the agent. Recorded as a comment on the task's
    * timeline (not just passed to the process), so it is visible to the human and

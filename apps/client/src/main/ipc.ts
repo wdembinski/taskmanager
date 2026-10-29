@@ -52,6 +52,7 @@ import {
   hasRepo,
   isAutoMergeBy,
   isAutoMergeMethod,
+  isEffort,
   isFilingProject,
   isManualStatus,
   isPersonalBoard,
@@ -390,6 +391,34 @@ function ensureAligned(store: Store, project: Project, hasMarkers: boolean): Pro
  * would render as "assigned, idle, nobody knows why" and the one fix (sign in) would go
  * unsaid. That one keeps throwing.
  */
+/**
+ * The F28 role fields' relayed-write guard: a browser can name any string, and these reach a
+ * spawned CLI's argv as `--model` / `--effort`. `undefined` (not part of this write) and
+ * `null` ("the next rung") both pass; anything else must be a usable model or an `Effort`.
+ */
+function assertRoleOptions(options: {
+  leadModel?: string | null;
+  reviewModel?: string | null;
+  leadEffort?: string | null;
+  planningEffort?: string | null;
+  workerEffort?: string | null;
+  effort?: string | null;
+  reviewEffort?: string | null;
+}): void {
+  for (const model of [options.leadModel, options.reviewModel]) {
+    if (model != null && !isUsableModel(model)) throw new Error(`Not a usable model: ${model}`);
+  }
+  for (const effort of [
+    options.leadEffort,
+    options.planningEffort,
+    options.workerEffort,
+    options.effort,
+    options.reviewEffort,
+  ]) {
+    if (effort != null && !isEffort(effort)) throw new Error(`Not a usable effort: ${effort}`);
+  }
+}
+
 function isReportablePark(refusal: RunRefusal): boolean {
   return isParkedRefusal(refusal) && CARD_RECORDS_PARK[refusal];
 }
@@ -1118,6 +1147,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     ) {
       throw new Error(`Not a usable model: ${input.reviewModel}`);
     }
+    assertRoleOptions(input);
     const project = store.addProject(input);
     refreshProjectRepoSkillsIfCloudEnabled(project);
     // Only a project with a plan file has anything to parse or watch. Asked as `hasPlan`
@@ -1184,6 +1214,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     ) {
       throw new Error(`Not a usable model: ${patch.reviewModel}`);
     }
+    assertRoleOptions(patch);
     // Same relayed-write guard as the model checks above: a browser can name any string.
     if (patch.autoMergeMethod !== undefined && !isAutoMergeMethod(patch.autoMergeMethod)) {
       throw new Error(`Not a usable merge method: ${patch.autoMergeMethod}`);
@@ -1370,6 +1401,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     // opens the same file under `\\wsl.localhost\<distro>\…`.
     return Boolean(project?.path) && existsSync(appProjectFile(project!, RELEASE_DOC));
   });
+  handle('project:runStats', async (projectId) => store.projectRunStats(projectId));
   handle('task:history', async (taskId) => store.getTaskHistory(taskId));
   handle('task:cleanupWorktree', async (taskId) => {
     const task = store.getTask(taskId);
@@ -1467,6 +1499,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     if (input.planningModel !== undefined && !isUsableModel(input.planningModel)) {
       throw new Error(`Not a usable model: ${input.planningModel}`);
     }
+    assertRoleOptions(input);
 
     const starting = input.start !== false;
 
@@ -1478,6 +1511,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       agentMode: input.mode ?? null,
       agentModel: input.model ?? null,
       agentPlanningModel: input.planningModel ?? null,
+      // The F28 role settings are reset with the models, for the same reason: this is a new
+      // assignment, and whatever the dialog leaves unset follows the project.
+      agentLeadModel: input.leadModel ?? null,
+      agentReviewModel: input.reviewModel ?? null,
+      agentLeadEffort: input.leadEffort ?? null,
+      agentPlanningEffort: input.planningEffort ?? null,
+      agentEffort: input.effort ?? null,
+      agentReviewEffort: input.reviewEffort ?? null,
       agentBranch: branch,
       // A previous attempt's session is not this assignment's; start a fresh
       // conversation so the agent gets the full single-ticket brief.
@@ -1625,6 +1666,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     if (input.planningModel !== undefined && !isUsableModel(input.planningModel)) {
       throw new Error(`Not a usable model: ${input.planningModel}`);
     }
+    assertRoleOptions(input);
     const branch = input.branch?.trim() || null;
     if (branch) {
       const branchCheck = validateBranchName(branch);
@@ -1929,12 +1971,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     ) {
       throw new Error(`Not a usable model: ${options.planningModel}`);
     }
+    assertRoleOptions(options);
     // Deliberately allowed mid-run: the live run captured its own model/mode when it
     // started (see `Run`), so this only decides what the NEXT run uses. Reassigning is
     // still what you want if you mean "start over with these settings".
     const task = store.updateTask(taskId, {
       ...(options.model !== undefined ? { agentModel: options.model } : {}),
       ...(options.planningModel !== undefined ? { agentPlanningModel: options.planningModel } : {}),
+      ...(options.leadModel !== undefined ? { agentLeadModel: options.leadModel } : {}),
+      ...(options.reviewModel !== undefined ? { agentReviewModel: options.reviewModel } : {}),
+      ...(options.leadEffort !== undefined ? { agentLeadEffort: options.leadEffort } : {}),
+      ...(options.planningEffort !== undefined
+        ? { agentPlanningEffort: options.planningEffort }
+        : {}),
+      ...(options.effort !== undefined ? { agentEffort: options.effort } : {}),
+      ...(options.reviewEffort !== undefined ? { agentReviewEffort: options.reviewEffort } : {}),
       ...(options.mode !== undefined ? { agentMode: options.mode } : {}),
       // Read at merge time, not at run time, so flipping it while the agent works still
       // decides what happens when that work lands.

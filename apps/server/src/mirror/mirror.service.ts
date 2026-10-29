@@ -543,6 +543,12 @@ export class MirrorService {
     if (request.planPath !== undefined) next.planPath = request.planPath;
     if (request.defaultModel !== undefined) next.defaultModel = request.defaultModel;
     if (request.planningModel !== undefined) next.planningModel = request.planningModel ?? null;
+    // F28 roles, carried the way `planningModel` is: `null` is "the next rung", a real value.
+    if (request.leadModel !== undefined) next.leadModel = request.leadModel ?? null;
+    if (request.leadEffort !== undefined) next.leadEffort = request.leadEffort ?? null;
+    if (request.planningEffort !== undefined) next.planningEffort = request.planningEffort ?? null;
+    if (request.workerEffort !== undefined) next.workerEffort = request.workerEffort ?? null;
+    if (request.reviewEffort !== undefined) next.reviewEffort = request.reviewEffort ?? null;
     if (request.defaultPermissionMode !== undefined) {
       next.defaultPermissionMode = request.defaultPermissionMode;
     }

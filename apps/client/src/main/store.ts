@@ -18,9 +18,11 @@ import Database from 'better-sqlite3';
 import {
   type AddProjectInput,
   type DiscoveredModel,
+  type Effort,
   hasPlan,
   isAutoMergeBy,
   isAutoMergeMethod,
+  isEffort,
   type Milestone,
   type MilestoneInput,
   type MilestonePatch,
@@ -84,6 +86,7 @@ import {
 } from '@shared/skills';
 import { validateWorkflow, type WorkflowDoc, type WorkflowStep } from '@shared/workflow';
 import { STARTER_WORKFLOWS } from '@shared/workflowStarters';
+import { summariseRunSamples, type RunEstimateStats, type RunSample } from '@shared/runEstimate';
 import {
   type ActivityCursor,
   type ActivityDetail,
@@ -243,6 +246,16 @@ interface TaskRow {
   agentModel: string | null;
   /** Per-assignment planning-model override; NULL = same as this task's own steps override. */
   agentPlanningModel: string | null;
+  /** Per-card lead-model override; NULL = the project's lead rung. See `Task.agentLeadModel`. */
+  agentLeadModel: string | null;
+  /** Per-card review-model override; NULL = the project's review rung. */
+  agentReviewModel: string | null;
+  /** Per-card effort per role; NULL = the project's, then the app default. Cast and validated
+   *  with `isEffort` on read — an unknown value reads null. See `Task.agentLeadEffort`. */
+  agentLeadEffort: string | null;
+  agentPlanningEffort: string | null;
+  agentEffort: string | null;
+  agentReviewEffort: string | null;
   /** The plan a `plan`-mode delegated run produced, as markdown. NULL until it plans. */
   agentPlan: string | null;
   /** The git branch this card's worktree runs on; NULL = the legacy `orch/<taskId>`. */
@@ -328,6 +341,14 @@ interface ProjectRow {
   planningModel: string | null;
   /** The AI-review model; NULL (pre-migration, and the default) = "same as planning". */
   reviewModel: string | null;
+  /** The lead model; NULL (pre-migration, and the default) = "same as planning". */
+  leadModel: string | null;
+  /** Effort per role; NULL (pre-migration, and the default) = the app default for that role.
+   *  Cast and validated with `isEffort` on read — an unknown value reads null. */
+  leadEffort: string | null;
+  planningEffort: string | null;
+  workerEffort: string | null;
+  reviewEffort: string | null;
   defaultPermissionMode: string;
   concurrency: number;
   useWorktrees: number;
@@ -522,6 +543,12 @@ export interface Store {
         | 'agentMode'
         | 'agentModel'
         | 'agentPlanningModel'
+        | 'agentLeadModel'
+        | 'agentReviewModel'
+        | 'agentLeadEffort'
+        | 'agentPlanningEffort'
+        | 'agentEffort'
+        | 'agentReviewEffort'
         | 'agentPlan'
         | 'agentBranch'
         | 'landedAt'
@@ -1593,6 +1620,13 @@ export interface Store {
    */
   ticketDoneTimes(): Map<string, number>;
   /**
+   * What this project's recent sessions cost and how long they ran (F28.1) — the input to
+   * the Start dialog's estimate line. Read off the newest {@link RUN_STATS_SAMPLE} costed
+   * `run-finished` rows, each timed from its own `run-started` row; `null` when there are
+   * none. See `summariseRunSamples`.
+   */
+  projectRunStats(projectId: string): RunEstimateStats | null;
+  /**
    * A keyset page of the log, newest first (`at DESC, id DESC`) — never a page number, so
    * rows landing at the top never shift a later page. `query.cursor` resumes after the last
    * row of an earlier page (the one `encodeCursor`d into that page's `nextCursor`); a cursor
@@ -1739,6 +1773,12 @@ export function readSavedWindowSettings(userData: string): {
 }
 
 /**
+ * How many of a project's newest costed sessions `projectRunStats` reads — recent enough to
+ * reflect today's models and efforts, enough to make the quartiles mean something.
+ */
+const RUN_STATS_SAMPLE = 200;
+
+/**
  * The tracker integration this app used to ship and no longer does. What it left behind is
  * read back as if it had never been there: its `app_state` rows are deleted on open, its
  * settings group is dropped from the blob, and a card it filed reads as a plain card.
@@ -1763,6 +1803,12 @@ export function createStore(dbPath: string): Store {
       defaultModel          TEXT NOT NULL,
       planningModel         TEXT,
       reviewModel           TEXT,
+      -- F28 roles: the lead's model and each role's effort. NULL = the next rung.
+      leadModel             TEXT,
+      leadEffort            TEXT,
+      planningEffort        TEXT,
+      workerEffort          TEXT,
+      reviewEffort          TEXT,
       defaultPermissionMode TEXT NOT NULL,
       concurrency           INTEGER NOT NULL DEFAULT 1,
       useWorktrees          INTEGER NOT NULL DEFAULT 1,
@@ -1853,6 +1899,13 @@ export function createStore(dbPath: string): Store {
       agentMode              TEXT,
       agentModel             TEXT,
       agentPlanningModel     TEXT,
+      -- F28 roles: per-card lead/review models and per-role efforts. NULL = the next rung.
+      agentLeadModel         TEXT,
+      agentReviewModel       TEXT,
+      agentLeadEffort        TEXT,
+      agentPlanningEffort    TEXT,
+      agentEffort            TEXT,
+      agentReviewEffort      TEXT,
       agentPlan              TEXT,
       agentBranch            TEXT,
       planRound              INTEGER,
@@ -2655,6 +2708,26 @@ export function createStore(dbPath: string): Store {
     db.exec(`ALTER TABLE projects ADD COLUMN reviewModel TEXT`);
   }
 
+  // Migrate databases created before F28's roles: the lead's model and each role's effort.
+  // NULL on every existing project, which is the "next rung" value — the lead follows
+  // planning and every effort follows `AppSettings.defaultEfforts` until a human names one.
+  // One line per column, so `scripts/verify-role-effort-migration.mjs` catches a lost one.
+  if (!projectColumns.some((c) => c.name === 'leadModel')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN leadModel TEXT`);
+  }
+  if (!projectColumns.some((c) => c.name === 'leadEffort')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN leadEffort TEXT`);
+  }
+  if (!projectColumns.some((c) => c.name === 'planningEffort')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN planningEffort TEXT`);
+  }
+  if (!projectColumns.some((c) => c.name === 'workerEffort')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN workerEffort TEXT`);
+  }
+  if (!projectColumns.some((c) => c.name === 'reviewEffort')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN reviewEffort TEXT`);
+  }
+
   // Migrate databases created before native ticket projects (Phase 24). NULL on every
   // existing row — no project had a key prefix, and NULL rather than '' is what lets the
   // partial unique index below ignore them all instead of finding one collision per row.
@@ -2945,6 +3018,14 @@ export function createStore(dbPath: string): Store {
     // steps only). NULL means "same as this task's own steps override", true of every
     // pre-existing row.
     ['agentPlanningModel', 'TEXT'],
+    // F28 roles: per-card lead and review models and each role's effort. NULL means "the
+    // project's rung", which is what every pre-existing card wants.
+    ['agentLeadModel', 'TEXT'],
+    ['agentReviewModel', 'TEXT'],
+    ['agentLeadEffort', 'TEXT'],
+    ['agentPlanningEffort', 'TEXT'],
+    ['agentEffort', 'TEXT'],
+    ['agentReviewEffort', 'TEXT'],
     // The markdown plan a `plan`-mode run produced, kept so it survives a restart and
     // can be re-read (and re-split into subtasks) after the fact.
     ['agentPlan', 'TEXT'],
@@ -3387,8 +3468,8 @@ export function createStore(dbPath: string): Store {
   }
 
   const insertProject = db.prepare<[ProjectRow]>(
-    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, reviewModel, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoVisualSignOff, autoVisualSignOffMaxRounds, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, uiVerifyCommand, color, createdAt)
-     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @reviewModel, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoVisualSignOff, @autoVisualSignOffMaxRounds, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @uiVerifyCommand, @color, @createdAt)`,
+    `INSERT INTO projects (id, name, path, planPath, defaultModel, planningModel, reviewModel, leadModel, leadEffort, planningEffort, workerEffort, reviewEffort, defaultPermissionMode, concurrency, useWorktrees, baseBranch, writeBackPlan, autoRelease, autoCreatePr, autoMergeOnGreen, autoMergeMethod, autoMergeBy, autoMergeRequiredChecks, autoVisualSignOff, autoVisualSignOffMaxRounds, autoIntegrate, autoApprovePlans, autoApproveMaxSteps, readyLanes, autoDoneOnLand, planAligned, kind, jiraEpicKeys, ticketPrefix, ticketSeq, personal, target, instructions, uiVerifyCommand, color, createdAt)
+     VALUES (@id, @name, @path, @planPath, @defaultModel, @planningModel, @reviewModel, @leadModel, @leadEffort, @planningEffort, @workerEffort, @reviewEffort, @defaultPermissionMode, @concurrency, @useWorktrees, @baseBranch, @writeBackPlan, @autoRelease, @autoCreatePr, @autoMergeOnGreen, @autoMergeMethod, @autoMergeBy, @autoMergeRequiredChecks, @autoVisualSignOff, @autoVisualSignOffMaxRounds, @autoIntegrate, @autoApprovePlans, @autoApproveMaxSteps, @readyLanes, @autoDoneOnLand, @planAligned, @kind, @jiraEpicKeys, @ticketPrefix, @ticketSeq, @personal, @target, @instructions, @uiVerifyCommand, @color, @createdAt)`,
   );
   const selectProjects = db.prepare(`SELECT * FROM projects ORDER BY createdAt`);
   const selectProject = db.prepare(`SELECT * FROM projects WHERE id = ?`);
@@ -3447,6 +3528,8 @@ export function createStore(dbPath: string): Store {
         externalDescription,
         preBlockStatus, preRunStatus, retainedSince, pinnedImport, archivedAt, archivedReason, lastReadCommentAt, latestCommentAt,
         projectTagId, agentProjectId, agentMode, agentModel, agentPlanningModel,
+        agentLeadModel, agentReviewModel, agentLeadEffort, agentPlanningEffort, agentEffort,
+        agentReviewEffort,
         agentPlan, agentBranch, planRound, variantOf, variantLabel, pickedVariantId,
         landedAt, chainLandedAt, workedAt, stoppedAt, decisionQuestion, decisionAskedAt,
         autoRelease, autoCreatePr, autoIntegrate,
@@ -3464,6 +3547,8 @@ export function createStore(dbPath: string): Store {
         -- an UPDATE, so a card created already filed (the Add-task dialog's Project
         -- picker) used to lose its project between the form and the row.
         @projectTagId, @agentProjectId, @agentMode, @agentModel, @agentPlanningModel,
+        @agentLeadModel, @agentReviewModel, @agentLeadEffort, @agentPlanningEffort, @agentEffort,
+        @agentReviewEffort,
         @agentPlan, @agentBranch, @planRound, @variantOf, @variantLabel, @pickedVariantId,
         @landedAt, @chainLandedAt, @workedAt, @stoppedAt, @decisionQuestion, @decisionAskedAt,
         @autoRelease, @autoCreatePr, @autoIntegrate,
@@ -4662,6 +4747,11 @@ export function createStore(dbPath: string): Store {
   }
 
   /** SQLite stores writeBackPlan as 0/1; present it to the app as a real boolean. */
+  /** A stored effort column read back: an `Effort`, else null ("the next rung"). */
+  function effortOrNull(value: string | null | undefined): Effort | null {
+    return isEffort(value) ? value : null;
+  }
+
   function rowToProject(r: ProjectRow): Project {
     return {
       id: r.id,
@@ -4675,12 +4765,14 @@ export function createStore(dbPath: string): Store {
       planningModel: (r.planningModel as Project['planningModel']) ?? null,
       // NULL stays null too: "review on whatever you plan on".
       reviewModel: (r.reviewModel as Project['reviewModel']) ?? null,
-      // The F28 role fields have no columns yet; null is "next rung" for every one of them.
-      leadModel: null,
-      leadEffort: null,
-      planningEffort: null,
-      workerEffort: null,
-      reviewEffort: null,
+      // F28 roles. NULL stays null — "the next rung" — and an effort this build does not
+      // know (a hand-edited row, a newer version's value) reads null too rather than
+      // reaching `--effort` unvalidated.
+      leadModel: (r.leadModel as Project['leadModel']) ?? null,
+      leadEffort: effortOrNull(r.leadEffort),
+      planningEffort: effortOrNull(r.planningEffort),
+      workerEffort: effortOrNull(r.workerEffort),
+      reviewEffort: effortOrNull(r.reviewEffort),
       defaultPermissionMode: r.defaultPermissionMode as Project['defaultPermissionMode'],
       concurrency: r.concurrency,
       useWorktrees: r.useWorktrees !== 0,
@@ -4752,6 +4844,12 @@ export function createStore(dbPath: string): Store {
       defaultModel: project.defaultModel,
       planningModel: project.planningModel ?? null,
       reviewModel: project.reviewModel ?? null,
+      // A project pulled from a build that predates the F28 fields arrives without them.
+      leadModel: project.leadModel ?? null,
+      leadEffort: project.leadEffort ?? null,
+      planningEffort: project.planningEffort ?? null,
+      workerEffort: project.workerEffort ?? null,
+      reviewEffort: project.reviewEffort ?? null,
       defaultPermissionMode: project.defaultPermissionMode,
       concurrency: project.concurrency,
       useWorktrees: project.useWorktrees ? 1 : 0,
@@ -4946,6 +5044,12 @@ export function createStore(dbPath: string): Store {
       agentMode: task.agentMode ?? null,
       agentModel: task.agentModel ?? null,
       agentPlanningModel: task.agentPlanningModel ?? null,
+      agentLeadModel: task.agentLeadModel ?? null,
+      agentReviewModel: task.agentReviewModel ?? null,
+      agentLeadEffort: task.agentLeadEffort ?? null,
+      agentPlanningEffort: task.agentPlanningEffort ?? null,
+      agentEffort: task.agentEffort ?? null,
+      agentReviewEffort: task.agentReviewEffort ?? null,
       agentPlan: task.agentPlan ?? null,
       agentBranch: task.agentBranch ?? null,
       planRound: task.planRound ?? null,
@@ -5051,6 +5155,13 @@ export function createStore(dbPath: string): Store {
       agentMode: (r.agentMode as Task['agentMode']) ?? null,
       agentModel: (r.agentModel as Task['agentModel']) ?? null,
       agentPlanningModel: (r.agentPlanningModel as Task['agentPlanningModel']) ?? null,
+      // F28 roles; an effort this build does not know reads null, like the project's.
+      agentLeadModel: (r.agentLeadModel as Task['agentLeadModel']) ?? null,
+      agentReviewModel: (r.agentReviewModel as Task['agentReviewModel']) ?? null,
+      agentLeadEffort: effortOrNull(r.agentLeadEffort),
+      agentPlanningEffort: effortOrNull(r.agentPlanningEffort),
+      agentEffort: effortOrNull(r.agentEffort),
+      agentReviewEffort: effortOrNull(r.agentReviewEffort),
       agentPlan: r.agentPlan,
       agentBranch: r.agentBranch,
       // Every step that predates re-planning came from the card's one and only approved
@@ -5578,7 +5689,9 @@ export function createStore(dbPath: string): Store {
     // `ticketSeq` is deliberately absent — see `projectToRow`.
     `UPDATE projects SET
        name = @name, path = @path, planPath = @planPath, defaultModel = @defaultModel,
-       planningModel = @planningModel, defaultPermissionMode = @defaultPermissionMode,
+       planningModel = @planningModel, leadModel = @leadModel, leadEffort = @leadEffort,
+       planningEffort = @planningEffort, workerEffort = @workerEffort,
+       reviewEffort = @reviewEffort, defaultPermissionMode = @defaultPermissionMode,
        concurrency = @concurrency, useWorktrees = @useWorktrees, baseBranch = @baseBranch,
        writeBackPlan = @writeBackPlan, autoRelease = @autoRelease, autoIntegrate = @autoIntegrate,
        planAligned = @planAligned, kind = @kind, jiraEpicKeys = @jiraEpicKeys,
@@ -5603,6 +5716,9 @@ export function createStore(dbPath: string): Store {
        lastReadCommentAt = @lastReadCommentAt, latestCommentAt = @latestCommentAt,
        projectTagId = @projectTagId, agentProjectId = @agentProjectId, agentMode = @agentMode,
        agentModel = @agentModel, agentPlanningModel = @agentPlanningModel,
+       agentLeadModel = @agentLeadModel, agentReviewModel = @agentReviewModel,
+       agentLeadEffort = @agentLeadEffort, agentPlanningEffort = @agentPlanningEffort,
+       agentEffort = @agentEffort, agentReviewEffort = @agentReviewEffort,
        agentPlan = @agentPlan, agentBranch = @agentBranch,
        planRound = @planRound, variantOf = @variantOf, variantLabel = @variantLabel,
        pickedVariantId = @pickedVariantId,
@@ -5946,6 +6062,16 @@ export function createStore(dbPath: string): Store {
   // LIKE on the raw TEXT column, for the same reason `selectActivityPage`'s filters use
   // `json_each` — the column is JSON, and the engine's own extraction function is the
   // correct way to read one field out of it.
+  // `projectRunStats`: the newest costed finishes, each joined to its own start through
+  // `runId` — the pair `idx_activity_log_run_once` keeps to one row each.
+  const selectProjectRunSamples = db.prepare(
+    `SELECT f.costUsd AS costUsd, f.at - s.at AS durationMs
+       FROM activity_log f
+       LEFT JOIN activity_log s ON s.runId = f.runId AND s.kind = 'run-started'
+      WHERE f.kind = 'run-finished' AND f.projectId = ? AND f.costUsd IS NOT NULL
+      ORDER BY f.at DESC
+      LIMIT ${RUN_STATS_SAMPLE}`,
+  );
   const selectTicketDoneTimes = db.prepare(
     `SELECT taskId, MAX(at) AS at FROM activity_log
      WHERE kind = 'status-moved' AND taskId IS NOT NULL
@@ -6068,6 +6194,19 @@ export function createStore(dbPath: string): Store {
       if (patch.reviewModel !== undefined) {
         sets.push(`reviewModel = @reviewModel`);
         params.reviewModel = patch.reviewModel ?? null;
+      }
+      // F28 roles, same three-state idiom: `null` means "the next rung" again.
+      for (const key of [
+        'leadModel',
+        'leadEffort',
+        'planningEffort',
+        'workerEffort',
+        'reviewEffort',
+      ] as const) {
+        if (patch[key] !== undefined) {
+          sets.push(`${key} = @${key}`);
+          params[key] = patch[key] ?? null;
+        }
       }
       if (patch.defaultPermissionMode !== undefined) {
         sets.push(`defaultPermissionMode = @defaultPermissionMode`);
@@ -6291,6 +6430,12 @@ export function createStore(dbPath: string): Store {
         'agentMode',
         'agentModel',
         'agentPlanningModel',
+        'agentLeadModel',
+        'agentReviewModel',
+        'agentLeadEffort',
+        'agentPlanningEffort',
+        'agentEffort',
+        'agentReviewEffort',
         'agentPlan',
         'agentBranch',
         'landedAt',
@@ -6507,6 +6652,12 @@ export function createStore(dbPath: string): Store {
         agentMode: draft.agentMode,
         agentModel: draft.agentModel,
         agentPlanningModel: draft.agentPlanningModel,
+        agentLeadModel: draft.agentLeadModel,
+        agentReviewModel: draft.agentReviewModel,
+        agentLeadEffort: draft.agentLeadEffort,
+        agentPlanningEffort: draft.agentPlanningEffort,
+        agentEffort: draft.agentEffort,
+        agentReviewEffort: draft.agentReviewEffort,
         agentBranch: branch,
       };
       insertTask.run(taskToRow(task));
@@ -6560,6 +6711,15 @@ export function createStore(dbPath: string): Store {
         agentModel: null,
         // Steps never plan, so a planning-model override has nothing to apply to either.
         agentPlanningModel: null,
+        // The F28 role settings follow `agentModel`'s path: a step copies none of them from
+        // its card. NULL is "the project's rung", and a step needing its own is set one step
+        // at a time, exactly like its model.
+        agentLeadModel: null,
+        agentReviewModel: null,
+        agentLeadEffort: null,
+        agentPlanningEffort: null,
+        agentEffort: null,
+        agentReviewEffort: null,
         agentMode: 'bypassPermissions',
         // A caller that knows which planning round it is filling (`approvePlan`) says so;
         // everyone else — the "Add step…" form above all — joins the round already in
@@ -8027,6 +8187,10 @@ export function createStore(dbPath: string): Store {
       });
       if (result.changes === 0) return null;
       return { id: Number(result.lastInsertRowid), ...row };
+    },
+
+    projectRunStats(projectId) {
+      return summariseRunSamples(selectProjectRunSamples.all(projectId) as RunSample[]);
     },
 
     ticketDoneTimes() {

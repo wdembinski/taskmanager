@@ -81,4 +81,30 @@ describe('saveAndBroadcastSettings', () => {
     expect(h.calls).toEqual([]);
     expect(h.emitted).toEqual([]);
   });
+
+  it.each([
+    ['an unknown effort', { ...DEFAULT_SETTINGS.defaultEfforts, workers: 'ultra' }],
+    ['a non-object', 'high'],
+  ])('refuses %s in defaultEfforts without saving', (_case, defaultEfforts) => {
+    const h = harness(stored);
+    expect(() =>
+      saveAndBroadcastSettings(h.deps, {
+        ...structuredClone(stored),
+        defaultEfforts: defaultEfforts as unknown as AppSettings['defaultEfforts'],
+      }),
+    ).toThrow(/Not a usable/);
+    expect(h.calls).toEqual([]);
+  });
+
+  it('saves a chosen set of default efforts', () => {
+    const h = harness(stored);
+    const defaultEfforts = {
+      lead: 'max',
+      planner: 'xhigh',
+      workers: 'medium',
+      reviewer: 'low',
+    } as const;
+    saveAndBroadcastSettings(h.deps, { ...structuredClone(stored), defaultEfforts });
+    expect(h.stored().defaultEfforts).toEqual(defaultEfforts);
+  });
 });

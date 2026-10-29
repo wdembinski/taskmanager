@@ -35,6 +35,7 @@ import type {
   BoardColumn,
   ChatSendResult,
   DiscoveredModel,
+  Effort,
   GitPreflight,
   JiraStatusCategory,
   ManualStatus,
@@ -66,6 +67,7 @@ import type { PastedAttachment, TaskAttachment, UploadedAttachment } from './att
 import type { IssuePage, IssueProviderId, IssueQuery } from './issues';
 import type { GitGraph } from './gitGraph';
 import type { ExecTarget, TargetReadiness } from './execTarget';
+import type { RunEstimateStats } from './runEstimate';
 import type { ActiveRun, RunOutcome, SchedulerChange, TaskChange } from './scheduler';
 import type { VariantCount, VariantSummaryRow } from './variants';
 import type { AttentionAnswer, AttentionItem } from './attention';
@@ -640,6 +642,13 @@ export interface IpcApi {
    */
   'project:hasReleaseDoc': (projectId: string) => Promise<boolean>;
   /**
+   * What this project's past sessions cost and how long they ran (F28.1), summarised from
+   * the activity log's finished runs — the input to the Start dialog's estimate line
+   * (`estimateRun`). `null` when the project has no costed session yet, so the dialog shows
+   * no estimate rather than a guess.
+   */
+  'project:runStats': (projectId: string) => Promise<RunEstimateStats | null>;
+  /**
    * Create an ad-hoc task in a project (Phase 8) — no plan line required, so
    * plan-less projects are usable and you can add work on the fly. Returns the task.
    */
@@ -802,6 +811,17 @@ export interface IpcApi {
        * project's planning/execution models — see `resolveRunModel`.
        */
       planningModel?: ClaudeModel | null;
+      /**
+       * The card's F28 role settings: the lead's and the reviewer's model, and each role's
+       * effort (`effort` is the workers'). `null` hands the decision back to the project's
+       * rung for that role — see `resolveRoleModel` / `resolveRoleEffort`.
+       */
+      leadModel?: ClaudeModel | null;
+      reviewModel?: ClaudeModel | null;
+      leadEffort?: Effort | null;
+      planningEffort?: Effort | null;
+      effort?: Effort | null;
+      reviewEffort?: Effort | null;
       mode?: PermissionMode | null;
       /**
        * Release this card after its branch merges (`@shared/release`). `null` hands the
