@@ -98,12 +98,16 @@ every tracker feature is designed around cards that agents can run. F11 is super
 | F25 | Speed and views: keyboard everywhere, palette, saved views, bulk edit, search, insights | client · web | F9, F21 | [F25](F25-speed-and-views.md) |
 | F26 | Triage and git automation: triage inbox, AI triage, ticket-key branches, PR-driven moves, imports | client · server | F20, F21, F22 | [F26](F26-triage-and-git-automation.md) |
 | F27 | Enterprise: SSO and SCIM via the IAM, audit log, guests and permissions, workspace export | server · web | F19, F22 | [F27](F27-enterprise.md) |
+| F28 | Lead agent: one agent per card that reviews plans and diffs, compares attempts and runs parallel helpers; model and effort per role | client · web | F10, F16 | [F28](F28-lead-agent.md) |
+| F29 | Performance at scale: a 5,000-card board that answers within a frame, plus one-at-a-time sidebar groups | client · web | — | [F29](F29-performance-at-scale.md) |
 
 Mockups are in [`mockups/`](mockups/), all in the approved look. The `v9-*` set covers the
 issues list, issue detail, review workspace, board (sidebar folded) and mobile, light and dark.
 The `v10-*` set covers every other tab: milestones, timeline, cycles, projects and initiatives,
 inbox, agents, automations, insights, triage, settings, the command palette, the archive, and
-the board's chain links in all three modes (All, Focus, Off).
+the board's chain links in all three modes (All, Focus, Off). The `v11-*` set covers the
+lead agent (F28): a workflow run, a step-by-step run, the compare view and the Start dialog,
+with a clickable prototype in `mockups/v11-lead-agent-prototype.html`.
 
 ### Two tracks
 
