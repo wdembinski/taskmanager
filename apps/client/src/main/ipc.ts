@@ -100,12 +100,7 @@ import { createTicketIpc } from './ticketIpc';
 import type { Automation } from '@shared/automation';
 import { createSkillHandlers } from './skillHandlers';
 import { createWorkflowHandlers } from './workflowHandlers';
-import {
-  isBlockedishStatus,
-  linearCategory,
-  resolveGitHubColumn,
-  resolveLinearColumn,
-} from '@shared/statusResolve';
+import { isBlockedishStatus, resolveGitHubColumn } from '@shared/statusResolve';
 import { clampSyncInterval, pickGlobalSettings, type AppSettings } from '@shared/settings';
 import { sameExecTarget, type ExecTarget } from '@shared/execTarget';
 import { sanitizeToken, tokenHadNoise } from '@shared/secretToken';
@@ -213,22 +208,6 @@ import {
   reconcilePullRequests,
   rematchPullRequests,
 } from './github/githubPrSync';
-import {
-  LinearAuthError,
-  LinearClient,
-  LinearRateLimitError,
-  type LinearComment,
-  type LinearIssue,
-  type LinearTeam,
-  type LinearViewer,
-} from './linear/linearClient';
-import { buildIssueFilter } from './linear/linearQueries';
-import { describeLinearProbe } from './linear/linearProbe';
-import {
-  issuesToRecheck as linearIssuesToRecheck,
-  reconcileLinearIssues,
-} from './linear/linearSync';
-import { resolveLinearMove, shouldLearnState, type LinearWorkflowState } from './linear/linearMove';
 import {
   forgeName,
   mrIsSettled,
@@ -2501,181 +2480,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   handle('review:context', reviewHandlers['review:context']);
   handle('review:viewed', reviewHandlers['review:viewed']);
   handle('review:setViewed', reviewHandlers['review:setViewed']);
-
-  /**
-   * The GitHub builder above, one source over — same guard, same reason — but a raw API
-   * key goes on the wire rather than a Bearer token, and there is no base URL to resolve:
-   * Linear has one endpoint.
-   */
-  const buildLinearClient = (): LinearClient => {
-    const cipher = store.loadLinearApiKey();
-    if (!cipher) throw new Error('No Linear API key saved — add one in Settings.');
-    return new LinearClient({ apiKey: decryptSecret(cipher, 'Linear') });
-  };
-
-  /**
-   * The key's own identity, cached in memory only — unlike JIRA/GitHub's `app_state`-backed
-   * identity caches, a Linear API key has no base URL to key the cache by, so "the key
-   * changed" is the only invalidation that matters, and `linear:setCredentials`/
-   * `linear:clearCredentials` below already drop it on that.
-   */
-  let linearViewer: { id: string; name: string } | null = null;
-
-  /** Fetch the viewer on demand when the cache is empty. Fails soft to null. */
-  const linearViewerFor = async (
-    client: LinearClient,
-  ): Promise<{ id: string; name: string } | null> => {
-    if (linearViewer) return linearViewer;
-    try {
-      const viewer = await client.getViewer();
-      linearViewer = { id: viewer.id, name: viewer.displayName };
-      return linearViewer;
-    } catch (e) {
-      logMain('Linear viewer lookup failed', e);
-      return null;
-    }
-  };
-
-  /**
-   * One team's workflow states, cached per team key — see `syncLinear` below, which clears
-   * this on every sync so a state a team adds mid-session is picked up on the next one
-   * rather than staying invisible until restart.
-   */
-  const linearStatesCache = new Map<string, LinearWorkflowState[]>();
-
-  handle('linear:getConfigStatus', async () => {
-    const { linear } = store.getSettings();
-    return {
-      enabled: linear.enabled,
-      hasToken: store.loadLinearApiKey() !== null,
-      encryptionAvailable: safeStorage.isEncryptionAvailable(),
-      plainTextStorage: usesPlainTextStorage(),
-      // Linear has one auth mode and one fixed endpoint; 'server' is the honest answer here
-      // too, for the same reason it is for GitLab/GitHub above.
-      deployment: 'server' as const,
-      baseUrl: 'https://api.linear.app/graphql',
-    };
-  });
-
-  handle('linear:setCredentials', async (apiKey) => {
-    if (!apiKey.trim()) {
-      store.clearLinearApiKey();
-      // A changed key means a changed identity and possibly a changed workspace — neither
-      // cache is trustworthy against whatever comes next.
-      linearViewer = null;
-      linearStatesCache.clear();
-      return { ok: true, message: 'API key cleared.' };
-    }
-    if (!safeStorage.isEncryptionAvailable()) {
-      return {
-        ok: false,
-        message: 'OS secure storage is unavailable, so the API key was not saved.',
-      };
-    }
-    // Same paste hygiene as the JIRA/GitLab/GitHub tokens above.
-    const noise = tokenHadNoise(apiKey);
-    store.saveLinearApiKey(safeStorage.encryptString(sanitizeToken(apiKey)).toString('base64'));
-    linearViewer = null;
-    linearStatesCache.clear();
-    return {
-      ok: true,
-      message: usesPlainTextStorage()
-        ? 'API key saved — but this machine has no keyring, so it is only obfuscated on disk.'
-        : noise
-          ? 'API key saved — whitespace came with the paste and was stripped.'
-          : 'API key saved.',
-    };
-  });
-
-  handle('linear:clearCredentials', async () => {
-    store.clearLinearApiKey();
-    linearViewer = null;
-    linearStatesCache.clear();
-  });
-
-  handle('linear:testConnection', async () => {
-    let client: LinearClient;
-    try {
-      client = buildLinearClient();
-    } catch (e) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) };
-    }
-
-    let viewer: LinearViewer;
-    try {
-      viewer = await client.getViewer();
-    } catch (e) {
-      logMain('Linear test connection failed', e);
-      const message = e instanceof Error ? e.message : String(e);
-      return {
-        ok: false,
-        message: e instanceof LinearAuthError ? `Key rejected: ${message}` : message,
-      };
-    }
-    // The test is also the cheapest possible moment to learn who you are — see the GitHub
-    // test connection handler's own note on why that's worth caching rather than re-asking.
-    linearViewer = { id: viewer.id, name: viewer.displayName };
-
-    let teams: LinearTeam[];
-    try {
-      teams = await client.listTeams();
-    } catch (e) {
-      logMain('Linear test connection — team list failed', e);
-      const message = e instanceof Error ? e.message : String(e);
-      return {
-        ok: false,
-        displayName: viewer.displayName,
-        message: `Signed in, but the team list failed: ${message}`,
-      };
-    }
-
-    const { linear } = store.getSettings();
-    return describeLinearProbe({
-      viewer,
-      organization: viewer.organization,
-      teams,
-      teamKeys: linear.teamKeys,
-      enabled: linear.enabled,
-    });
-  });
-
-  handle('linear:teams', async () => {
-    const { linear } = store.getSettings();
-    if (!linear.enabled) return { teams: [], error: 'Linear is switched off.' };
-    try {
-      const teams = await buildLinearClient().listTeams();
-      return { teams, error: null };
-    } catch (e) {
-      logMain('Linear team list failed', e);
-      return { teams: [], error: e instanceof Error ? e.message : String(e) };
-    }
-  });
-
-  handle('linear:states', async (teamKey) => {
-    const { linear } = store.getSettings();
-    if (!linear.enabled) return { states: [], error: 'Linear is switched off.' };
-    try {
-      let states = linearStatesCache.get(teamKey);
-      if (!states) {
-        states = await buildLinearClient().listTeamStates(teamKey);
-        linearStatesCache.set(teamKey, states);
-      }
-      return {
-        states: states.map((s) => ({
-          id: s.id,
-          name: s.name,
-          type: s.type,
-          position: s.position,
-          // WITHOUT an override, the same contract `jira:statuses`' `category` keeps.
-          column: resolveLinearColumn(s.name, s.type).column,
-        })),
-        error: null,
-      };
-    } catch (e) {
-      logMain('Linear state list failed', e);
-      return { states: [], error: e instanceof Error ? e.message : String(e) };
-    }
-  });
 
   handle('github:getConfigStatus', async () => {
     const { github } = store.getSettings();
@@ -5245,144 +5049,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   };
 
   /**
-   * `githubCommentsReadAt`, one tracker over: when we last read an issue's comments, by
-   * UUID → the issue's `updatedAt` at that moment, so only an issue that has actually
-   * moved since costs a comment fetch.
-   */
-  const linearCommentsReadAt = new Map<string, number>();
-
-  /**
-   * One Linear sync: run the user's issue filter, re-read by id whatever it left out,
-   * fetch comments for anything that moved, reconcile, apply.
-   *
-   * `syncGitHubIssues` above, one tracker over — same order, same reasons, down to
-   * upsert-then-archive. The one rule with no GitHub analogue: a `LinearRateLimitError`,
-   * however it surfaces, is RETHROWN rather than logged-and-kept the way a single failed
-   * recheck or comment fetch is — the background poller's back-off only engages if the
-   * error actually reaches it.
-   */
-  const syncLinear = async (): Promise<Task[]> => {
-    const { linear, features } = store.getSettings();
-    if (!linear.enabled) return store.getPersonalTasks();
-    const client = buildLinearClient();
-    // A team's workflow states rarely change, but a stale set would silently outlive this
-    // app run otherwise — `linear:states` repopulates it, lazily, team by team.
-    linearStatesCache.clear();
-    // Who the key belongs to, so your own comments sit on your side of the pane below —
-    // see `githubIdentity`'s own note on why that's worth a call here.
-    const viewer = await linearViewerFor(client);
-
-    const filterResult = buildIssueFilter(linear);
-    if (!filterResult.ok) throw new Error(filterResult.error);
-    const filter = filterResult.filter;
-    const filterKey = JSON.stringify(filter);
-    // Whether the question itself changed since last time. Null is read as *unchanged*, so
-    // the first sync after an upgrade does not have the guard stand down on a board it has
-    // never seen.
-    const lastFilter = store.loadLinearLastFilter();
-    const queryChanged = lastFilter !== null && lastFilter !== filterKey;
-
-    const { issues, truncated } = await client.fetchIssues(filter);
-    if (truncated) {
-      logMain(
-        `Linear sync: the issue filter returned ${issues.length} issues without reaching ` +
-          `the end of the filter — nothing will be removed from the board this sync.`,
-      );
-    }
-
-    // The ONE read that includes archived cards — see `getPersonalTasksForSync`'s doc on
-    // the GitHub sync above.
-    const personalForSync = store.getPersonalTasksForSync();
-
-    // Re-read, by UUID, every card the filter left out. Bounded by the board, and on a
-    // healthy board it is zero calls.
-    const toRecheck = linearIssuesToRecheck(personalForSync, issues);
-    let rechecked: Map<string, LinearIssue> | null = new Map();
-    const recheckedIds = new Set<string>(toRecheck);
-    if (toRecheck.length > 0) {
-      try {
-        const fetched = await client.fetchIssuesByIds(toRecheck);
-        rechecked = new Map(fetched.map((issue) => [issue.id, issue] as const));
-      } catch (e) {
-        // A rate limit must reach the poller, not read as "kept" — everything else (a
-        // transient error, an issue that just went private) leaves the card untouched
-        // rather than retiring it on a question that failed to get answered.
-        if (e instanceof LinearRateLimitError) throw e;
-        logMain('Linear sync: re-read of missing issues failed — kept', e);
-        rechecked = null;
-      }
-    }
-
-    // The comments, for the issues that could have gained one since `linearCommentsReadAt`.
-    // A key ABSENT from this map means "not asked this time", which keeps whatever the card
-    // already knew; present-and-empty means "asked, and there are none".
-    const comments = new Map<string, LinearComment[]>();
-    const commentQueue = [...issues, ...(rechecked ? rechecked.values() : [])].filter((issue) => {
-      const updatedAt = Date.parse(issue.updatedAt) || 0;
-      return updatedAt > (linearCommentsReadAt.get(issue.id) ?? 0);
-    });
-    const commentWorker = async (): Promise<void> => {
-      for (let issue = commentQueue.shift(); issue; issue = commentQueue.shift()) {
-        try {
-          comments.set(issue.id, await client.fetchComments(issue.id));
-          linearCommentsReadAt.set(issue.id, Date.parse(issue.updatedAt) || 0);
-        } catch (e) {
-          if (e instanceof LinearRateLimitError) throw e;
-          logMain(`Linear sync: comments for ${issue.id} could not be read — kept as they were`, e);
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(4, commentQueue.length) }, commentWorker));
-
-    const now = Date.now();
-    // Recorded before the reconcile rather than after: nothing below can throw a network
-    // error, so this is the last point at which "the filter we just ran" is true.
-    store.saveLinearLastFilter(filterKey);
-    const { upserts, removals, refused, warning } = reconcileLinearIssues(personalForSync, issues, {
-      overrides: linear.stateColumnOverrides,
-      learned: linear.learnedStateColumns,
-      comments,
-      // So answering a ticket in Linear's own UI never lights your own card.
-      isMine: viewer ? (c) => c.user?.id === viewer.id : undefined,
-      rechecked,
-      recheckedIds,
-      truncated,
-      queryChanged,
-      now,
-      retentionMs: Math.max(0, linear.doneRetentionDays) * 24 * 60 * 60 * 1000,
-      assignOwnBoard: features.ticketsToOwnBoard,
-      projects: store.listProjects(),
-    });
-    for (const t of upserts) store.upsertJiraTask(t);
-    // ARCHIVED, not deleted — see the same loop in `syncJira`/`syncGitHubIssues`.
-    for (const r of removals) {
-      store.archiveTask(r.taskId, now, r.reason);
-      logMain(`Linear sync: archived ${r.key} — ${r.reason} (${r.title})`);
-    }
-    for (const r of refused) {
-      logMain(`Linear sync: REFUSED to remove ${r.key} (${r.title}) — ${warning ?? 'guarded'}`);
-    }
-    if (warning) {
-      logMain(`Linear sync: ${warning}`);
-      // Its own bar, not the error bar: nothing failed, and a warning that reads as an
-      // error teaches people to dismiss both.
-      send('board:notice', { text: warning, intent: 'warning' });
-    }
-    const tasks = store.getPersonalTasks();
-    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
-    return tasks;
-  };
-
-  handle('linear:sync', async () => {
-    try {
-      return await trackSync('linear', syncLinear);
-    } catch (e) {
-      logMain('Linear sync failed', e);
-      throw new Error(e instanceof Error ? e.message : String(e));
-    }
-  });
-
-  /**
    * `syncJira`, with the diagnosis attached to whatever it throws — so the board's error
    * bar explains a bad deployment/credential the same way the Settings "Test connection"
    * button does.
@@ -5653,69 +5319,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   };
 
   /**
-   * Remember that a Linear workflow STATE means the column the user just dropped a card
-   * into. `learnStatusColumn`/`learnLabelColumn` above, a tracker over each — same reason,
-   * same shape: the decision of whether the drag taught us anything is `shouldLearnState`'s,
-   * in `linear/linearMove.ts` where it is testable; this is only the trim, the guard and the
-   * write.
-   */
-  const learnStateColumn = (
-    stateName: string,
-    stateType: LinearWorkflowState['type'],
-    column: BoardColumn,
-  ): void => {
-    const name = stateName.trim();
-    const settings = store.getSettings();
-    const { linear } = settings;
-    if (!shouldLearnState(name, stateType, column, linear)) return;
-    const next: AppSettings = {
-      ...settings,
-      linear: {
-        ...linear,
-        learnedStateColumns: { ...linear.learnedStateColumns, [name]: column },
-      },
-    };
-    store.saveSettings(next);
-    send('settings:changed', next);
-  };
-
-  /**
-   * Write a card's move back to Linear — `moveGitHubIssue`, a tracker over, under the same
-   * contract: called BEFORE any local write, and it **throws** rather than returning a
-   * failure, so `task:move` rejects and the optimistic move in the UI rolls back.
-   *
-   * BLOCKED and a no-op never reach here with a `target` — `resolveLinearMove` already read
-   * those as local-only — but a team with no state for the dropped column still throws via
-   * `refusal`, same as JIRA's "no transition means this column" error above.
-   */
-  const moveLinearIssue = async (task: Task, toColumn: BoardColumn): Promise<TransitionOutcome> => {
-    const { linear } = store.getSettings();
-    if (!linear.enabled || !task.externalId) return { applied: false, patch: {} };
-
-    // Cached per team (`task.phase`, for a Linear card) the same way `linear:states` caches
-    // it — see `linearStatesCache` above, cleared on every sync so a state a team adds
-    // mid-session is not invisible until restart.
-    let states = linearStatesCache.get(task.phase);
-    if (!states) {
-      states = await buildLinearClient().listTeamStates(task.phase);
-      linearStatesCache.set(task.phase, states);
-    }
-
-    const resolution = resolveLinearMove(task, toColumn, { teamKey: task.phase, states }, linear);
-    if (resolution.refusal) throw new Error(resolution.refusal);
-    if (!resolution.target) return { applied: false, patch: {} };
-
-    const { state } = resolution.target;
-    await buildLinearClient().updateIssueState(task.externalId, state.id);
-    learnStateColumn(state.name, state.type, toColumn);
-
-    return {
-      applied: true,
-      patch: { externalStatus: state.name, externalStatusCategory: linearCategory(state.type) },
-    };
-  };
-
-  /**
    * The forge write one drop needs, whichever forge the card came from, or null when it came
    * from neither. One place, so the two controls that move a card — the board's drag and the
    * detail pane's dropdown — cannot drift into supporting different trackers.
@@ -5723,8 +5326,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
    * Each resolver answers only its own half: the local half (`resolveMove`) is shared and is
    * already in hand by the time this is called, and the GitHub resolver's `target` is the one
    * fact it adds — which column the ISSUE has to be made to say, or null for a card GitHub has
-   * never heard of. Linear's own resolver (`resolveLinearMove`) lives inside `moveLinearIssue`
-   * instead, since unlike GitHub's it can also refuse the move outright.
+   * never heard of.
    */
   const writeMoveToForge = async (
     task: Task,
@@ -5732,7 +5334,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     toColumn: BoardColumn,
   ): Promise<TransitionOutcome | null> => {
     if (move.jiraTransition) return transitionIssue(task, move.jiraTransition, toColumn);
-    if (task.externalSource === 'linear') return moveLinearIssue(task, toColumn);
     const target = resolveGitHubMove(task, toColumn).target;
     return target ? moveGitHubIssue(task, target) : null;
   };
@@ -5812,17 +5413,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
           author: c.user?.login ?? 'GitHub',
           body: (c.body ?? '').trim(),
           createdAt: Date.parse(c.created_at) || 0,
-        }))
-        .sort((a, b) => a.createdAt - b.createdAt)
-        .map(({ author, body }) => ({ author, body }));
-    }
-    if (task.externalSource === 'linear' && settings.linear.enabled && task.externalId) {
-      const comments = await buildLinearClient().fetchComments(task.externalId);
-      return comments
-        .map((c) => ({
-          author: c.user?.displayName ?? c.user?.name ?? 'Linear',
-          body: c.body.replace(/\s+$/, ''),
-          createdAt: Date.parse(c.createdAt) || 0,
         }))
         .sort((a, b) => a.createdAt - b.createdAt)
         .map(({ author, body }) => ({ author, body }));
@@ -5967,11 +5557,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
    * markers, and "opening a card clears its unread border" is the same statement for a GitHub
    * issue as for a JIRA ticket.
    *
-   * One implementation behind three channel names. `jira:markRead` keeps its name because
+   * One implementation behind two channel names. `jira:markRead` keeps its name because
    * the renderer's contract already has it and what it does never was tracker-specific;
-   * `github:markRead`/`linear:markRead` exist so a GitHub or Linear pane need not call a
-   * channel named for a different tracker. A second *implementation* is what would
-   * eventually let them disagree.
+   * `github:markRead` exists so a GitHub pane need not call a channel named for a different
+   * tracker. A second *implementation* is what would eventually let them disagree.
    */
   const markCommentsRead = async (taskId: string): Promise<Task> => {
     const task = store.getTask(taskId);
@@ -5986,7 +5575,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
 
   handle('jira:markRead', (taskId) => markCommentsRead(taskId));
   handle('github:markRead', (taskId) => markCommentsRead(taskId));
-  handle('linear:markRead', (taskId) => markCommentsRead(taskId));
 
   /**
    * The issue behind a GitHub card, or null when this card is not one.
@@ -6105,66 +5693,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     if (updated) send('task:changed', { task: updated, runId: null });
   });
 
-  handle('linear:fetchComments', async (taskId) => {
-    const task = store.getTask(taskId);
-    if (!task || task.externalSource !== 'linear' || !task.externalId) return [];
-    const client = buildLinearClient();
-    // Who the key belongs to, so your own comments sit on your side of the pane. Unknown
-    // identity → every comment reads as someone else's, deliberately — same rule as GitHub's.
-    const viewer = await linearViewerFor(client);
-    const comments = await client.fetchComments(task.externalId);
-    // No attachment pass, same reason as GitHub: a Linear comment's body is Markdown, and an
-    // uploaded file is a link inside it already.
-    const entries = comments.map((c) => ({
-      kind: 'linear-comment' as const,
-      id: c.id,
-      author: c.user?.displayName ?? c.user?.name ?? 'Linear',
-      body: c.body.replace(/\s+$/, ''),
-      createdAt: Date.parse(c.createdAt) || 0,
-      mine: viewer != null && c.user?.id === viewer.id,
-    }));
-    // Keep the unread marker honest with freshly-fetched comments — OTHER people's only, for
-    // the reason `jira:fetchComments`/`github:fetchComments` give: folding your own back in
-    // would undo `markRead` the instant the pane opened.
-    const latest = entries
-      .filter((e) => !e.mine)
-      .reduce((m, e) => Math.max(m, e.createdAt), task.latestCommentAt ?? 0);
-    if (latest && latest !== task.latestCommentAt) {
-      store.updateTask(taskId, { latestCommentAt: latest });
-    }
-    return entries;
-  });
-
-  handle('linear:addComment', async (taskId, draft) => {
-    const task = store.getTask(taskId);
-    if (!task || task.externalSource !== 'linear' || !task.externalId) {
-      throw new Error('This task is not linked to a Linear issue.');
-    }
-    // Trailing whitespace only — same reason as the JIRA/GitHub handlers: a mention range is
-    // an offset into this exact string, and the front has to stay put.
-    //
-    // Mentions themselves go in as plain text and are otherwise ignored: Linear's comment
-    // body is Markdown with no `@login`-style syntax we can build without risking a link to
-    // the wrong person, unlike GitHub's `@login`. Whatever the composer typed at that range
-    // is posted exactly as written.
-    const text = draft.text.replace(/\s+$/, '');
-    if (draft.attachmentPaths?.length) {
-      // Refused, not ignored — same reason as GitHub: uploading a file needs a signed URL
-      // from a mutation this channel does not make, and posting the words while quietly
-      // dropping the file is the failure the human would find out about last.
-      throw new Error(
-        'Linear has no API for attaching files to an issue from here — attach it in Linear, ' +
-          'or link to it from the comment.',
-      );
-    }
-    if (!text) throw new Error('A comment needs some text.');
-    const created = await buildLinearClient().createComment(task.externalId, text);
-    // Bump both markers so our own comment never lights the unread border.
-    const at = Date.parse(created.createdAt) || Date.now();
-    const updated = store.updateTask(taskId, { latestCommentAt: at, lastReadCommentAt: at });
-    if (updated) send('task:changed', { task: updated, runId: null });
-  });
-
   // Frameless-window controls for the renderer's custom title bar, plus a push so
   // the title bar's maximize/restore icon tracks OS-driven changes (snap, drag).
   // The state behind them (`manualBounds`, `requestMaximize`) is set up near the top,
@@ -6265,13 +5793,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       // GitHub cards current, and a poller wired to only one of the two halves is exactly how
       // an integration comes to work when you press the button and not otherwise.
       run: () => trackSync('github', syncGitHub),
-    },
-    {
-      id: 'linear',
-      isEnabled: (s) => s.getSettings().linear.enabled,
-      run: () => trackSync('linear', syncLinear),
-      backoffUntil: (e) =>
-        e instanceof LinearRateLimitError ? (e.resetAt ?? Date.now() + 60_000) : null,
     },
   ]);
   syncPoller.reschedule();

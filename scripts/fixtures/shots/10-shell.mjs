@@ -51,7 +51,6 @@ const OFF_STATUS = {
 export const JIRA_STATUS = { ...OFF_STATUS };
 export const GITLAB_STATUS = { ...OFF_STATUS };
 export const GITHUB_STATUS = { ...OFF_STATUS };
-export const LINEAR_STATUS = { ...OFF_STATUS };
 export const CLOUD_STATUS = {
   hasToken: false,
   encryptionAvailable: true,
@@ -62,8 +61,8 @@ export const CLOUD_STATUS = {
   legacySignInRetired: false,
 };
 
-/** `TASKS`, keyed by id — the table `jira:markRead`/`github:markRead`/`linear:markRead` answer
- *  from below: all three just hand back the task they marked read. */
+/** `TASKS`, keyed by id — the table `jira:markRead`/`github:markRead` answer from below: both
+ *  just hand back the task they marked read. */
 const TASKS_BY_ID = Object.fromEntries(TASKS.map((t) => [t.id, t]));
 
 /** Claude's own `/usage` reading, so the status bar draws its 5h/7d pair — the mockups'
@@ -142,10 +141,8 @@ export const CHANNELS = {
   'task:diffSummary': { status: 'no-branch' },
 
   'github:fetchComments': 'list',
-  'linear:fetchComments': 'list',
   'jira:markRead': { byArgTable: TASKS_BY_ID, fallback: null },
   'github:markRead': { byArgTable: TASKS_BY_ID, fallback: null },
-  'linear:markRead': { byArgTable: TASKS_BY_ID, fallback: null },
 
   'exec:listDistros': 'list',
   'exec:targetsInUse': EXEC_TARGETS_IN_USE,
@@ -158,6 +155,5 @@ export const CHANNELS = {
   'jira:getConfigStatus': JIRA_STATUS,
   'gitlab:getConfigStatus': GITLAB_STATUS,
   'github:getConfigStatus': GITHUB_STATUS,
-  'linear:getConfigStatus': LINEAR_STATUS,
   'cloud:getConfigStatus': CLOUD_STATUS,
 };

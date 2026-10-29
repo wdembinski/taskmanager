@@ -37,8 +37,6 @@ const HOST_ONLY: ReadonlyArray<readonly [string, HostOnlyReason]> = [
   ['gitlab:clearCredentials', 'credential-write'],
   ['github:setCredentials', 'credential-write'],
   ['github:clearCredentials', 'credential-write'],
-  ['linear:setCredentials', 'credential-write'],
-  ['linear:clearCredentials', 'credential-write'],
   ['cloud:setCredentials', 'credential-write'],
   ['cloud:clearCredentials', 'credential-write'],
   ['update:setToken', 'credential-write'],
@@ -126,26 +124,6 @@ describe('the channels that DO relay', () => {
   ];
 
   for (const channel of MUST_RELAY) {
-    it(`${channel} relays`, () => {
-      expect(isRelayable(channel)).toBe(true);
-      expect(hostOnlyReason(channel)).toBeNull();
-    });
-  }
-});
-
-describe('the Linear channels that relay', () => {
-  const LINEAR_RELAYABLE = [
-    'linear:getConfigStatus',
-    'linear:testConnection',
-    'linear:teams',
-    'linear:states',
-    'linear:sync',
-    'linear:fetchComments',
-    'linear:addComment',
-    'linear:markRead',
-  ];
-
-  for (const channel of LINEAR_RELAYABLE) {
     it(`${channel} relays`, () => {
       expect(isRelayable(channel)).toBe(true);
       expect(hostOnlyReason(channel)).toBeNull();

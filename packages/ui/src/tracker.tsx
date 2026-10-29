@@ -18,11 +18,10 @@ import type { Task } from '@tm/shared/model';
 
 import { GitHubMark } from './GitHubMark';
 import { JiraMark } from './JiraMark';
-import { LinearMark } from './LinearMark';
 import { TRACKER_NAME } from './chat/turns';
 
 /** A card's tracker, narrowed off `externalSource` — null for a card that is nobody's ticket. */
-export type Tracker = 'jira' | 'github' | 'linear';
+export type Tracker = 'jira' | 'github';
 
 /**
  * Which tracker this card belongs to, or null.
@@ -32,9 +31,7 @@ export type Tracker = 'jira' | 'github' | 'linear';
  * as "no tracker" and lose its mark, not draw the wrong one.
  */
 export function trackerOf(task: Pick<Task, 'externalSource'>): Tracker | null {
-  return task.externalSource === 'github' ||
-    task.externalSource === 'jira' ||
-    task.externalSource === 'linear'
+  return task.externalSource === 'github' || task.externalSource === 'jira'
     ? task.externalSource
     : null;
 }
@@ -93,8 +90,6 @@ export function TrackerMark({ task, size = 12, color }: TrackerMarkProps): JSX.E
       return <JiraMark size={size} color={color} />;
     case 'github':
       return <GitHubMark size={size} color={color} />;
-    case 'linear':
-      return <LinearMark size={size} color={color} />;
     default:
       return null;
   }
@@ -112,7 +107,7 @@ export interface TicketChannels {
   fetchComments: Extract<IpcInvokeChannel, `${Tracker}:fetchComments`>;
   markRead: Extract<IpcInvokeChannel, `${Tracker}:markRead`>;
   addComment: Extract<IpcInvokeChannel, `${Tracker}:addComment`>;
-  /** Null for a tracker whose @mention picker has nowhere to search from (Linear's). */
+  /** Null for a tracker whose @mention picker has nowhere to search from. */
   searchUsers: Extract<IpcInvokeChannel, `${Tracker}:searchUsers`> | null;
 }
 
@@ -133,12 +128,6 @@ const TICKET_CHANNELS: Record<Tracker, TicketChannels> = {
     markRead: 'github:markRead',
     addComment: 'github:addComment',
     searchUsers: 'github:searchUsers',
-  },
-  linear: {
-    fetchComments: 'linear:fetchComments',
-    markRead: 'linear:markRead',
-    addComment: 'linear:addComment',
-    searchUsers: null,
   },
 };
 
