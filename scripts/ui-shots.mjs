@@ -290,6 +290,7 @@ function clientInitScript(defaultSettings, row, attachmentUrls) {
       fontSizePx: 14,
     },
     attachmentUrls,
+    nativeMaterial: row.nativeMaterial ?? null,
   });
   return `${clockShimSource(row.clock)}\n${PAGE_HELPERS_SRC}\n${stub}`;
 }

@@ -1,3 +1,5 @@
+import type { AppearanceSetting, TransparencySetting } from './settings';
+
 /**
  * The window's own background colour, per scheme — read by `@tm/ui/tokens`'s `SEMANTIC`
  * (the single source for both the Fluent theme and the document background) and by the
@@ -9,6 +11,19 @@ export type WindowScheme = 'light' | 'dark';
 
 /** The Windows window-chrome materials Electron's `backgroundMaterial` can paint — see F13.7. */
 export type NativeMaterial = 'mica' | 'acrylic';
+
+/**
+ * What the renderer's first frame needs to paint the right scheme, glass and type size —
+ * handed over synchronously by the preload (`window.api.boot`, answered by main's
+ * `window:boot`) so the root never renders with a guess and then corrects itself.
+ * `nativeMaterial` is `null` when the window was created without one.
+ */
+export interface BootAppearance {
+  appearance: AppearanceSetting;
+  transparency: TransparencySetting;
+  fontSizePx: number;
+  nativeMaterial: NativeMaterial | null;
+}
 
 export const WINDOW_CANVAS: Record<WindowScheme, string> = {
   light: '#F7F8FA',

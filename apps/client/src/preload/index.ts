@@ -8,7 +8,7 @@
  * runs with privileges and exposes a small, explicit object onto `window`. The
  * UI can only ever call the methods we deliberately list here — nothing more.
  *
- * We expose three things:
+ * We expose four things:
  *   - `window.api.invoke(channel, ...args)` — call an engine handler and await
  *     its reply (maps to ipcMain.handle in src/main/ipc.ts).
  *   - `window.api.on(channel, cb)` — subscribe to engine-pushed events, and get
@@ -16,13 +16,40 @@
  *   - `window.api.pathForFile(file)` — the one thing here that is about a FEATURE
  *     rather than about the boundary itself, and it is here only because Electron
  *     leaves no other door (see its comment below).
+ *   - `window.api.boot` — the saved appearance the renderer's first frame paints with
+ *     (see `readBoot` below).
  *
  * The types come from the shared IPC contract, so the UI gets full
  * autocomplete and type-checking on every call.
  */
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import type { BootAppearance } from '@shared/canvas';
 import type { IpcApi, IpcEvents } from '@shared/ipc';
 import { ipcErrorMessage } from '@shared/ipcError';
+
+/**
+ * The saved appearance, font size and window material, read from main's `window:boot` once,
+ * as this preload runs.
+ *
+ * Synchronous on purpose: the renderer root seeds its very first render from it, and an async
+ * `invoke` cannot answer before React's first frame — that gap is exactly what used to paint a
+ * guessed scheme and glass, then correct it. One tiny round trip before the page's scripts run
+ * is the whole cost.
+ *
+ * Not `webPreferences.additionalArguments`: those are fixed when the window is created, so a
+ * Ctrl+R after changing a setting would boot with the stale values and flash again. This read
+ * runs on every load, so it is always current.
+ *
+ * `null` if main cannot answer (no listener, a throw there) — the renderer then falls back to
+ * its own defaults and corrects itself from `settings:get`, as it did before this existed.
+ */
+function readBoot(): BootAppearance | null {
+  try {
+    return (ipcRenderer.sendSync('window:boot') as BootAppearance | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /** The typed API surface the renderer sees as `window.api`. */
 const api = {
@@ -64,6 +91,9 @@ const api = {
   pathForFile(file: File): string {
     return webUtils.getPathForFile(file);
   },
+
+  /** The first frame's appearance — see {@link readBoot}. */
+  boot: readBoot(),
 };
 
 // `exposeInMainWorld` is what actually publishes `api` onto the page's `window`.

@@ -1709,14 +1709,18 @@ export interface PendingCloudResult extends StoredCloudOutcome {
  * setting existed (see `withExistingInstallAppearance`).
  *
  * `transparency` has no such history — the setting predates nothing, so `'system'` (its
- * {@link DEFAULT_SETTINGS} value) is the fallback in every one of those same cases.
+ * {@link DEFAULT_SETTINGS} value) is the fallback in every one of those same cases, and
+ * `fontSizePx` likewise falls back to its {@link DEFAULT_SETTINGS} value (also for a stored
+ * `0`/non-number, which the renderer has always read as "the base size").
  */
 export function readSavedWindowSettings(userData: string): {
   appearance: AppearanceSetting;
   transparency: TransparencySetting;
+  fontSizePx: number;
 } {
+  const fontSizePx = DEFAULT_SETTINGS.fontSizePx;
   const dbPath = join(userData, 'orchestrator.db');
-  if (!existsSync(dbPath)) return { appearance: 'system', transparency: 'system' };
+  if (!existsSync(dbPath)) return { appearance: 'system', transparency: 'system', fontSizePx };
   try {
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     try {
@@ -1724,17 +1728,21 @@ export function readSavedWindowSettings(userData: string): {
       // that constant lives inside createStore's own closure.
       const row = db.prepare('SELECT value FROM app_state WHERE key = ?').get('settings') as
         { value: string } | undefined;
-      if (!row) return { appearance: 'dark', transparency: 'system' };
+      if (!row) return { appearance: 'dark', transparency: 'system', fontSizePx };
       const parsed = JSON.parse(row.value) as Partial<AppSettings>;
       return {
         appearance: parsed.appearance ?? 'dark',
         transparency: parsed.transparency ?? 'system',
+        fontSizePx:
+          typeof parsed.fontSizePx === 'number' && parsed.fontSizePx > 0
+            ? parsed.fontSizePx
+            : fontSizePx,
       };
     } finally {
       db.close();
     }
   } catch {
-    return { appearance: 'dark', transparency: 'system' };
+    return { appearance: 'dark', transparency: 'system', fontSizePx };
   }
 }
 

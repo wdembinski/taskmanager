@@ -16,7 +16,6 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
-import type { NativeMaterial } from '@shared/canvas';
 import type { AppSettings } from '@shared/settings';
 import { App } from './App';
 import { isFileDrag } from '@ui/AttachmentStrip';
@@ -62,26 +61,32 @@ for (const type of ['dragover', 'drop'] as const) {
  * in `makeStyles`, which tokens cannot reach — those call `fontPx()`. Both are derived from
  * the same number, so they can never disagree.
  *
- * `appearance`/`transparency` start at `'dark'`/`'system'` — the window's own
- * `backgroundColor` (`main/index.ts`) resolves the same pair the same way before this ever
- * mounts, so an existing install never flashes a different scheme while this first read is
- * in flight. Re-read on `settings:changed` so a change takes effect as you pick it rather
- * than on next launch; `useResolvedAppearance` re-resolves the two settings into a scheme
- * on top of that, and keeps `document.documentElement` in step with it.
+ * The first render already uses the saved values: `fontSizePx`, `appearance`,
+ * `transparency` and `nativeMaterial` start from `window.api.boot`, which the preload read
+ * synchronously from main (`window:boot`) before this script ran. `useResolvedAppearance`
+ * resolves in its own `useState` initializer, so the very first frame paints the right
+ * scheme and glass — no guess that a later async answer corrects. Under native glass that
+ * frame keeps the canvas wash over Mica/Acrylic, exactly as every later one does, so there is
+ * no haze that appears and then vanishes. Without a hand-off (`boot` is `null`: main could
+ * not answer) the old defaults stand in — `'dark'`/`'system'`, matching the window's own
+ * `backgroundColor` for an existing install — until the first `settings:get` lands.
  *
- * `nativeMaterial` starts `null` and is asked for exactly once, over `window:nativeMaterial`
- * — the main process decided it (if at all) before this window was even created, so there is
- * nothing to re-read later. The first frame therefore always resolves `glass: 'css'`, with
- * the opaque canvas still painted behind it (F13.7's anti-flash colour), so nothing flashes
- * while the answer is in flight; it switches to `'native'` once it arrives, if Windows
- * granted a material.
+ * `nativeMaterial` is never re-read: main chose it (if at all) before this window existed.
+ * Everything else is re-read on `settings:changed`, so a change takes effect as you pick it
+ * rather than on next launch; `useResolvedAppearance` re-resolves on top of that and keeps
+ * `document.documentElement` in step with it.
  */
 function ThemedApp(): JSX.Element {
-  const [fontSizePx, setFontSizePx] = useState(BASE_FONT_PX);
+  const boot = window.api.boot ?? null;
+  const [fontSizePx, setFontSizePx] = useState(boot?.fontSizePx || BASE_FONT_PX);
   const [toasts, setToasts] = useState(true);
-  const [appearance, setAppearance] = useState<AppSettings['appearance']>('dark');
-  const [transparency, setTransparency] = useState<AppSettings['transparency']>('system');
-  const [nativeMaterial, setNativeMaterial] = useState<NativeMaterial | null>(null);
+  const [appearance, setAppearance] = useState<AppSettings['appearance']>(
+    boot?.appearance ?? 'dark',
+  );
+  const [transparency, setTransparency] = useState<AppSettings['transparency']>(
+    boot?.transparency ?? 'system',
+  );
+  const nativeMaterial = boot?.nativeMaterial ?? null;
 
   useEffect(() => {
     const read = (): void => {
@@ -97,13 +102,6 @@ function ThemedApp(): JSX.Element {
     };
     read();
     return window.api.on('settings:changed', read);
-  }, []);
-
-  useEffect(() => {
-    void window.api
-      .invoke('window:nativeMaterial')
-      .then(setNativeMaterial)
-      .catch(() => null);
   }, []);
 
   const { scheme } = useResolvedAppearance({ appearance, transparency }, nativeMaterial);

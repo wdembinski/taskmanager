@@ -57,13 +57,29 @@ export function partitionChannels(bootChannels) {
  * missing from the table returns `undefined` so callers' own `transport.attachmentUrl?.(a) ??
  * attachmentUrl(a.id)` fallback still reaches for that scheme unchanged, the same broken image
  * every row that carries no real fixture bytes already rendered before this existed.
+ *
+ * `boot` mirrors the preload's synchronous `window.api.boot` (the renderer root seeds its first
+ * render from it), built from the same merged `settings` plus `nativeMaterial` — so a shot boots
+ * the way the app does, instead of from the root's no-hand-off fallback.
  */
-export function buildApiStub({ defaultSettings, fixture, settingsOverrides = {}, attachmentUrls = {} }) {
+export function buildApiStub({
+  defaultSettings,
+  fixture,
+  settingsOverrides = {},
+  attachmentUrls = {},
+  nativeMaterial = null,
+}) {
   const settings = {
     ...defaultSettings,
     ...fixture.SETTINGS_OVERRIDES,
     ...settingsOverrides,
     board: { ...defaultSettings.board, hiddenColumns: [], ...(settingsOverrides.board ?? {}) },
+  };
+  const boot = {
+    appearance: settings.appearance,
+    transparency: settings.transparency,
+    fontSizePx: settings.fontSizePx,
+    nativeMaterial,
   };
 
   const { fixed, byArg, listChannels, nullChannels } = partitionChannels(fixture.BOOT_CHANNELS);
@@ -76,6 +92,7 @@ export function buildApiStub({ defaultSettings, fixture, settingsOverrides = {},
     const NULL_CHANNELS = new Set(${JSON.stringify(nullChannels)});
     const ATTACHMENT_URLS = ${JSON.stringify(attachmentUrls)};
     window.api = {
+      boot: ${JSON.stringify(boot)},
       invoke(channel, ...args) {
         if (channel === 'settings:get') return Promise.resolve(SETTINGS);
         if (channel === 'settings:save') return Promise.resolve(undefined);
