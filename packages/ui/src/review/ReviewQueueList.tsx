@@ -9,17 +9,26 @@
  * Monochrome (memory *board-colour-budget*): a ref, an author and a draft count are static
  * facts about a row, so nothing here takes a hue — except the pipeline dot, because a pipeline
  * moves. The selected row reuses the tree's own selected background.
+ *
+ * **Ask AI to review** (F16.13) is a row's context menu: a right-click opens it, so no visible
+ * button is added (v9-6's rows have none). Its one item is disabled, with the reason as its
+ * title, when `askAiReason` knows one. With no `onAskAi`, a row has no menu at all.
  */
 import type { JSX } from 'react';
 import {
   Avatar,
   Badge,
   Caption1,
+  Menu,
+  MenuItem,
+  MenuList,
+  MenuPopover,
+  MenuTrigger,
   makeStyles,
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import { ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
+import { BotRegular, ChevronDownRegular, ChevronRightRegular } from '@fluentui/react-icons';
 import type { ReviewQueue, ReviewQueueItem, ReviewQueuesSnapshot } from '@tm/shared/review';
 import { PIPELINE_WORD } from '../issues/IssueBuilt';
 import { MONO } from '../theme';
@@ -88,12 +97,41 @@ export function queueRowMeta(item: ReviewQueueItem): string[] {
   return parts;
 }
 
+/** A queue row's context menu: one *Ask AI to review*, disabled with `reason` as its title. */
+export function AskAiMenuList({
+  subjectId,
+  reason,
+  onAskAi,
+}: {
+  subjectId: string;
+  reason: string | null;
+  onAskAi: (subjectId: string) => void;
+}): JSX.Element {
+  return (
+    <MenuList>
+      <MenuItem
+        icon={<BotRegular />}
+        disabled={reason !== null}
+        title={reason ?? undefined}
+        data-ask-ai={subjectId}
+        onClick={() => onAskAi(subjectId)}
+      >
+        Ask AI to review
+      </MenuItem>
+    </MenuList>
+  );
+}
+
 export interface ReviewQueueListProps {
   snapshot: ReviewQueuesSnapshot;
   selectedSubjectId: string | null;
   collapsed: readonly ReviewQueue[];
   onToggleGroup: (queue: ReviewQueue) => void;
   onSelect: (item: ReviewQueueItem) => void;
+  /** Starts an AI review of a row's subject — its context menu's one item. */
+  onAskAi?: (subjectId: string) => void;
+  /** Why a row's subject cannot be asked about, or null when it can (or nothing is known). */
+  askAiReason?: (subjectId: string) => string | null;
 }
 
 export function ReviewQueueList({
@@ -102,8 +140,27 @@ export function ReviewQueueList({
   collapsed,
   onToggleGroup,
   onSelect,
+  onAskAi,
+  askAiReason,
 }: ReviewQueueListProps): JSX.Element {
   const styles = useStyles();
+
+  /** `row` wrapped in its context menu — see the module header. */
+  function withMenu(subjectId: string, row: JSX.Element): JSX.Element {
+    if (!onAskAi) return row;
+    return (
+      <Menu key={subjectId} openOnContext>
+        <MenuTrigger disableButtonEnhancement>{row}</MenuTrigger>
+        <MenuPopover>
+          <AskAiMenuList
+            subjectId={subjectId}
+            reason={askAiReason?.(subjectId) ?? null}
+            onAskAi={onAskAi}
+          />
+        </MenuPopover>
+      </Menu>
+    );
+  }
 
   return (
     <div className={styles.root}>
@@ -129,7 +186,8 @@ export function ReviewQueueList({
                   const selected = item.subjectId === selectedSubjectId;
                   const meta = queueRowMeta(item);
                   const pipeline = knownPipeline(item);
-                  return (
+                  return withMenu(
+                    item.subjectId,
                     <div
                       key={item.subjectId}
                       role="option"
@@ -178,7 +236,7 @@ export function ReviewQueueList({
                           )}
                         </Caption1>
                       )}
-                    </div>
+                    </div>,
                   );
                 })}
               </div>

@@ -3,7 +3,8 @@
  * (F15.14b): drawn in the wide toolbar only when the host passed `onOpenInWorkspace` (its
  * `ReviewWorkspaceOpener`), and never in the compact pane — the phone keeps its own Changes
  * tab. The loaded state is seeded through `reviewState.ts`'s real transitions, so the toolbar
- * rendered here is the one a real summary would draw.
+ * rendered here is the one a real summary would draw. Also F16.13's *Ask AI to review* in the
+ * same toolbar, disabled with its refusal as the tooltip.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -83,5 +84,47 @@ describe('ReviewPaneView: Open in review workspace', () => {
     const html = render({ layout: 'compact', onOpenInWorkspace: () => {} });
     expect(html).toContain('aria-label="Refresh the diff"');
     expect(html).not.toContain('data-open-review-workspace');
+  });
+});
+
+describe('ReviewPaneView: Ask AI to review', () => {
+  const noop = (): void => {};
+
+  /** The wide toolbar: from the totals to the file tree. */
+  function toolbar(html: string): string {
+    return html.slice(html.indexOf('Diff layout'), html.indexOf('aria-label="Refresh the diff"'));
+  }
+
+  it('draws the control in the toolbar when the pane passes one', () => {
+    const html = render({
+      ai: {
+        control: { kind: 'ask', label: 'Ask AI to review', reason: null },
+        onAsk: noop,
+        onCancel: noop,
+      },
+    });
+    const button = /<button[^>]*data-ai-review="ask"[^>]*>(.*?)<\/button>/.exec(toolbar(html));
+    expect(button?.[1]).toContain('Ask AI to review');
+    expect(button?.[0]).not.toContain('aria-disabled="true"');
+  });
+
+  it('disables it with the refusal as its tooltip', () => {
+    const reason = 'too large to review — 5,210 changed lines, cap 4,000';
+    const html = render({
+      ai: {
+        control: { kind: 'ask', label: 'Ask AI to review', reason },
+        onAsk: noop,
+        onCancel: noop,
+      },
+    });
+    const button = /<button[^>]*data-ai-review="ask"[^>]*>/.exec(toolbar(html))?.[0] ?? '';
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain(`data-refusal="${reason}"`);
+    // The Tooltip describes the button: its content is rendered on hover, linked by id.
+    expect(button).toMatch(/aria-describedby="[^"]+"/);
+  });
+
+  it('draws nothing without ai', () => {
+    expect(render()).not.toContain('data-ai-review');
   });
 });

@@ -252,6 +252,10 @@ export interface ReviewWorkspaceViewProps {
   onToggleShowDismissed?: () => void;
   /** *Ask AI to review* (F16.13); omitted, the `ai-review` slot stays empty. */
   ai?: ReviewWorkspaceAi;
+  /** *Ask AI to review* from a queue row's context menu; omitted, rows have no menu. */
+  onAskAi?: (subjectId: string) => void;
+  /** Why a queue row's subject cannot be asked about, or null — the menu item's title. */
+  askAiReason?: (subjectId: string) => string | null;
 }
 
 /** See the module header for what each state means. */
@@ -280,6 +284,8 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
     onRefresh,
     onReload,
     onCloseKeys,
+    onAskAi,
+    askAiReason,
   } = props;
   const styles = useStyles();
   const status = workspaceState(queues, selected, state);
@@ -325,6 +331,8 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
               collapsed={collapsedGroups}
               onToggleGroup={onToggleGroup}
               onSelect={onSelectSubject}
+              onAskAi={onAskAi}
+              askAiReason={askAiReason}
             />
           )}
         </div>

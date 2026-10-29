@@ -1,12 +1,14 @@
 /**
  * Static-markup coverage for `ReviewQueueList`: the three groups and their counts, a collapsed
  * group dropping its rows, the selected row, the draft badge appearing only with drafts, and
- * the two-line row: the PR ref first, then the `author · +a −d · pipeline` meta.
+ * the two-line row: the PR ref first, then the `author · +a −d · pipeline` meta. Also the
+ * *Ask AI to review* context menu (F16.13): its trigger wraps every row only when `onAskAi` is
+ * given, and its one item is disabled with the reason as its title.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { ReviewQueue, ReviewQueueItem, ReviewQueuesSnapshot } from '@tm/shared/review';
-import { ReviewQueueList } from './ReviewQueueList';
+import { AskAiMenuList, ReviewQueueList } from './ReviewQueueList';
 
 function item(over: Partial<ReviewQueueItem> & { subjectId: string }): ReviewQueueItem {
   return {
@@ -133,5 +135,55 @@ describe('ReviewQueueList', () => {
     const html = render([], 'm1');
     expect(html).toMatch(/aria-selected="true"[^>]*data-subject-id="m1"/);
     expect(html.match(/aria-selected="true"/g)).toHaveLength(1);
+  });
+});
+
+describe('ReviewQueueList: Ask AI to review', () => {
+  /** The `<div role="option">` opening tags, one per row. */
+  function rows(html: string): string[] {
+    return html.match(/<div role="option"[^>]*>/g) ?? [];
+  }
+
+  it("wraps every row in the context menu's trigger when onAskAi is given", () => {
+    const html = renderToStaticMarkup(
+      <ReviewQueueList
+        snapshot={snapshot}
+        selectedSubjectId={null}
+        collapsed={[]}
+        onToggleGroup={() => {}}
+        onSelect={() => {}}
+        onAskAi={() => {}}
+      />,
+    );
+    const opened = rows(html);
+    expect(opened).toHaveLength(5);
+    // MenuTrigger stamps its id on the row it wraps; no visible button is added.
+    for (const row of opened) expect(row).toMatch(/ id="menu[^"]*"/);
+    expect(html).not.toContain('Ask AI to review');
+  });
+
+  it('adds no menu without onAskAi', () => {
+    for (const row of rows(render())) expect(row).not.toMatch(/ id="menu/);
+  });
+
+  it('offers the item enabled with no known reason', () => {
+    const html = renderToStaticMarkup(
+      <AskAiMenuList subjectId="r1" reason={null} onAskAi={() => {}} />,
+    );
+    const item = /<div[^>]*data-ask-ai="r1"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(item).toContain('role="menuitem"');
+    expect(item).not.toContain('aria-disabled="true"');
+    expect(item).not.toContain('title=');
+    expect(html).toContain('Ask AI to review');
+  });
+
+  it('disables the item with the reason as its title', () => {
+    const reason = 'add the repo as a project to let the AI review it';
+    const html = renderToStaticMarkup(
+      <AskAiMenuList subjectId="r1" reason={reason} onAskAi={() => {}} />,
+    );
+    const item = /<div[^>]*data-ask-ai="r1"[^>]*>/.exec(html)?.[0] ?? '';
+    expect(item).toContain('aria-disabled="true"');
+    expect(item).toContain(`title="${reason}"`);
   });
 });
