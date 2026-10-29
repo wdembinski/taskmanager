@@ -15,7 +15,12 @@
  *
  * Never throws: anything that cannot be resolved is a refusal, as data.
  */
-import { AI_REVIEW_MAX_CHANGED_LINES, AI_REVIEW_MAX_FILES } from '@shared/aiReview';
+import {
+  AI_REVIEW_MAX_CHANGED_LINES,
+  AI_REVIEW_MAX_FILES,
+  type AiReviewRefusal,
+  type AiReviewRefusalCode,
+} from '@shared/aiReview';
 import { hasRepo, type Project, type Task } from '@shared/model';
 import {
   parseSubjectId,
@@ -29,22 +34,7 @@ import type { DiffService } from './diffService';
 import { reviewDocShowArgs, type ReviewPromptContext } from './reviewPrompt';
 import type { ReviewSubjectService } from './subjectService';
 
-/** Why an AI review was refused before anything was spent. Checked in this order. */
-export type AiReviewRefusalCode =
-  | 'shutting-down'
-  | 'unknown-subject'
-  | 'no-capability'
-  | 'too-large'
-  | 'duplicate'
-  | 'already-reviewed'
-  | 'card-running'
-  | 'sandbox-unsupported';
-
-/** A refused start: no review row is created. `reason` is shown as the button's tooltip. */
-export interface AiReviewRefusal {
-  refused: AiReviewRefusalCode;
-  reason: string;
-}
+export type { AiReviewRefusal, AiReviewRefusalCode };
 
 /** A subject resolved and pinned at the moment its review started. */
 export interface ReviewTarget {

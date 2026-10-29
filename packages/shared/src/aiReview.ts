@@ -99,6 +99,28 @@ export interface AiReview {
   requestedBy: AiReviewRequester;
 }
 
+/** Why an AI review was refused before anything was spent. Checked in this order. */
+export type AiReviewRefusalCode =
+  | 'shutting-down'
+  | 'unknown-subject'
+  | 'no-capability'
+  | 'too-large'
+  | 'duplicate'
+  | 'already-reviewed'
+  | 'card-running'
+  | 'sandbox-unsupported';
+
+/** A refused start: no review row is created. `reason` is shown as the button's tooltip. */
+export interface AiReviewRefusal {
+  refused: AiReviewRefusalCode;
+  reason: string;
+}
+
+/** Whether `aiReview:start`'s answer is a refusal rather than the review row it started. */
+export function isAiReviewRefusal(value: AiReview | AiReviewRefusal): value is AiReviewRefusal {
+  return 'refused' in value;
+}
+
 /** Where a `review_drafts` row came from. Absent on `ReviewComment` means `'human'`. */
 export type ReviewDraftOrigin = 'human' | 'ai';
 

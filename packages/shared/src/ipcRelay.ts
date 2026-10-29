@@ -301,6 +301,13 @@ export const RELAY_POLICY: {
   'review:context': 'relay',
   'review:viewed': 'relay',
   'review:setViewed': 'relay',
+  // AI reviews (F16.11): a browser may start a paid review, just as it may start a card.
+  // Every answer is a review's row and never its findings, which reach the browser as
+  // drafts through F15's review reads like any other comment.
+  'aiReview:start': 'relay',
+  'aiReview:cancel': 'relay',
+  'aiReview:list': 'relay',
+  'aiReview:get': 'relay',
   'task:assignAgent': 'relay',
   'task:stopAgent': 'relay',
   'task:resumeAgent': 'relay',
