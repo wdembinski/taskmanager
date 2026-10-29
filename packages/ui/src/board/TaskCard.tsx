@@ -74,7 +74,6 @@ import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_LABEL } from '../taskStatus';
 import { automationOriginTitle, type AutomationOrigin } from './automationOrigin';
 import { cardParts, type CardInk } from './cardParts';
-import type { ChainPosition } from './chainPosition';
 import {
   CHAIN_LINK_MIME,
   TASK_ID_ATTR,
@@ -559,9 +558,6 @@ export interface TaskCardProps {
   /** Turn {@link fileHold} into a permanent after-merge arrow from the holder to this card.
    *  Absent on a board that cannot draw arrows, which is also what hides the button. */
   onMakeArrow?: (fromTaskId: string) => void;
-  /** Where this card sits in its chain — folded into the status line as the lowest-priority
-   *  fallback by `cardParts` when nothing else is worth a line. */
-  chainPosition?: ChainPosition;
   /** Stop the agent working this card — absent on a board that does not offer it, which is
    *  also what hides the button. */
   onStop?: () => void;
@@ -644,7 +640,6 @@ export function TaskCard({
   chainBlocked = null,
   fileHold,
   onMakeArrow,
-  chainPosition,
   onLinkTo,
   onLinkArm,
   onStop,
@@ -679,7 +674,6 @@ export function TaskCard({
     agentName: assigneeAgentName,
     runPurposes,
     epicName,
-    chainPosition,
   });
   const elapsed = parts.statusLine?.kind === 'running' ? runStartedAt?.get(task.id) : undefined;
   const elapsedLabel = elapsed != null ? formatElapsed(now - elapsed) : undefined;

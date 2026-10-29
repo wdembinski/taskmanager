@@ -30,7 +30,6 @@ import { assigneeDisplayParts, type AssigneeDisplayParts } from '../projects/ass
 import { dueParts, pickMergeRequest, runLabel } from '../issues/issueRowParts';
 import { cardBadgeStatus, subtaskProgress } from './boardColumns';
 import { STATUS_COLOR, STATUS_LABEL } from '../taskStatus';
-import type { ChainPosition } from './chainPosition';
 
 /** The short label a chip earns above the title; never a literal colour (see `CardStatusLine`). */
 export type CardInk = 'cyan' | 'attention' | 'danger' | 'success' | 'faint';
@@ -59,24 +58,23 @@ export interface CardPartsContext {
   /** The epic/feature's resolved name, for the footer — see the render site in `TaskCard`'s
    *  own `epicName` prop for why this is a caller-resolved string rather than a lookup. */
   epicName?: string;
-  /** Where this card sits in its chain (`chainPosition`), already scoped to it by the
-   *  caller. The chain CHIP (named predecessors) moved to the F12 peek (F13.24); this is
-   *  only the quiet "n of m" a card with nothing else to say can still carry. */
-  chainPosition?: ChainPosition;
 }
 
 /**
  * The card's one status line, in the priority order the Board bullet's anatomy implies: a
  * live run outranks everything (it is the one thing actually moving), then whatever
- * `cardRunLabel` has to say about a non-moving run phase (waiting, paused, queued), then a
- * terminal status the column doesn't already say (`cardBadgeStatus`), then the one MR verdict
- * worth a line, and last the chain position a card with nothing else to show can still carry.
+ * `cardRunLabel` has to say about a run phase that is waiting on someone (waiting for you,
+ * stopped at a step, paused on the usage limit), then a terminal status the column doesn't
+ * already say (`cardBadgeStatus`), and last the one MR verdict worth a line.
+ *
+ * Only things that move or wait for you earn the line (v9-7 / v10-7e): a resting fact —
+ * "Assigned — not started", "Queued", a chain's "n of m", a closed MR — leaves the card
+ * without one, so the column stays quiet.
  */
 export type CardStatusLine =
   | { kind: 'running'; label: string; ink: 'cyan' }
   | { kind: 'status'; label: string; ink: CardInk }
-  | { kind: 'verdict'; label: string; ink: CardInk }
-  | { kind: 'chain'; label: string; ink: 'faint' };
+  | { kind: 'verdict'; label: string; ink: CardInk };
 
 /** The footer's one trailing fact — the MR ref, else the due date, never both. */
 export type CardTrailing =
@@ -102,7 +100,8 @@ export interface CardParts {
 /** `cardRunLabel`'s ink, once it has something to say: `needsAgentInput`/`parkedStep` decide
  *  whether it is a question (attention) or a failure (danger); a usage-limit pause is the
  *  harder stop `STATUS_COLOR['blocked-by-limit']` already calls `severe`, so it shares that
- *  ink; everything left (queued, "assigned — not started") is a resting fact, not a shout. */
+ *  ink; anything left is a resting fact, not a shout. (Queued and "assigned — not started"
+ *  never reach here — `statusLineFor` drops them before asking.) */
 function waitingInk(task: Task, subtasks: Task[], run: RunState): CardInk {
   if (needsAgentInput(task)) return 'attention';
   const parked = parkedStep(subtasks);
@@ -131,7 +130,7 @@ function inkForStatus(status: TaskStatus): CardInk {
  * requested` asks a question rather than reporting a failure, hence attention rather than
  * danger — the same split the mockup's own orange "Changes requested" draws. `approved` and
  * `unopposed` are both "ready to merge", which is worth a line precisely because it is
- * actionable. `closed` is history worth noting once, quietly.
+ * actionable.
  */
 function verdictInk(verdict: MrVerdict): CardInk {
   switch (verdict) {
@@ -151,15 +150,19 @@ function verdictInk(verdict: MrVerdict): CardInk {
  * The verdicts that say nothing new: `awaiting` is every open MR's resting state (nobody has
  * looked yet, which is not itself news), and `merged` is the footer's own MR ref saying
  * "this landed" already — the v9 mockup draws neither with a verdict row (`!124`/`!114` sit
- * quietly in Done with no line above them, unlike `!190`'s "Changes requested").
+ * quietly in Done with no line above them, unlike `!190`'s "Changes requested"). `closed` is
+ * history, not something moving or waiting for you, so it draws no line either.
  */
 const VERDICT_WORTH_A_LINE: ReadonlySet<MrVerdict> = new Set([
   'changes-requested',
   'blocked',
   'approved',
   'unopposed',
-  'closed',
 ]);
+
+/** The run phases `cardRunLabel` still has words for that are only a resting fact — an agent
+ *  assigned but never started, a run queued behind others — so the card draws no line. */
+const RESTING_RUN_PHASES: ReadonlySet<RunState['phase']> = new Set(['idle', 'queued']);
 
 function capitalize(text: string): string {
   return text.length ? text.charAt(0).toUpperCase() + text.slice(1) : text;
@@ -178,15 +181,17 @@ function capitalize(text: string): string {
  * answer. Folding it into the one status line here means a later-step rewrite can't forget
  * to ask for it a second time.
  *
- * Below that: whatever `cardRunLabel` says about a non-moving run phase — "Waiting for you",
- * "Paused — usage limit", "Stopped at step 2 of 4" — covers the case `cardBadgeStatus` alone
- * cannot see: a chain parked on a step that failed or asked a question leaves the PARENT
- * resting exactly where its column already says it is (`cardBadgeStatus` finds nothing to
- * badge), so without this branch a stopped chain showed nothing at all.
+ * Below that: whatever `cardRunLabel` says about a run phase waiting on someone — "Waiting
+ * for you", "Paused — usage limit", "Stopped at step 2 of 4" — covers the case
+ * `cardBadgeStatus` alone cannot see: a chain parked on a step that failed or asked a
+ * question leaves the PARENT resting exactly where its column already says it is
+ * (`cardBadgeStatus` finds nothing to badge), so without this branch a stopped chain showed
+ * nothing at all. The resting phases (`idle` "Assigned — not started", `queued`) are dropped
+ * here: they neither move nor wait for you (`RESTING_RUN_PHASES`). `cardRunLabel` itself keeps
+ * them for the detail pane.
  *
  * Then a terminal status the column doesn't already imply (`cardBadgeStatus` — `failed`,
- * `stopped`, `cancelled`), then the MR verdict when it is worth a line, and last the chain
- * position for a card with nothing else to say.
+ * `stopped`, `cancelled`), and last the MR verdict when it is worth a line.
  */
 function statusLineFor(
   task: Task,
@@ -203,7 +208,9 @@ function statusLineFor(
     };
   }
 
-  const waiting = cardRunLabel(run, isAgentAssigned(task));
+  const waiting = RESTING_RUN_PHASES.has(run.phase)
+    ? null
+    : cardRunLabel(run, isAgentAssigned(task));
   if (waiting) return { kind: 'status', label: waiting, ink: waitingInk(task, subtasks, run) };
 
   const badge = cardBadgeStatus(task, run);
@@ -215,14 +222,6 @@ function statusLineFor(
     if (VERDICT_WORTH_A_LINE.has(verdict)) {
       return { kind: 'verdict', label: capitalize(verdictSummary(mr)), ink: verdictInk(verdict) };
     }
-  }
-
-  if (ctx.chainPosition) {
-    return {
-      kind: 'chain',
-      label: `${ctx.chainPosition.n} of ${ctx.chainPosition.m}`,
-      ink: 'faint',
-    };
   }
 
   return undefined;

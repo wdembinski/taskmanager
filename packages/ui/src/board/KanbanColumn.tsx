@@ -24,7 +24,6 @@ import { STATUS_GLYPH } from '../issues/IssueRow';
 import { TaskCard } from './TaskCard';
 import type { AutomationOrigin } from './automationOrigin';
 import type { BoardCard, BoardColumn } from './boardColumns';
-import type { ChainPosition } from './chainPosition';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 import type { ChainState } from './chainStates';
 import type { LinkChips } from './linkChips';
@@ -202,13 +201,6 @@ export interface KanbanColumnProps {
    * as it always did.
    */
   linkChipsOf?: (task: Task) => LinkChips | undefined;
-  /**
-   * A chained card's "step n of m" (F3.5) — the compact board's stand-in for the wide
-   * board's arrows, which there is no room to draw over a single column. Asked per card like
-   * `chainStateOf`, over `@tm/ui/board/chainPosition`'s pure walk of the chain graph. Absent
-   * on every wide caller, so wide rendering is unchanged.
-   */
-  chainPositionOf?: (task: Task) => ChainPosition | undefined;
   selectedTaskId: string | null;
   draggingId: string | null;
   /**
@@ -362,7 +354,6 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onMakeArrow={
                 props.onMakeArrow && ((fromTaskId) => props.onMakeArrow?.(fromTaskId, task.id))
               }
-              chainPosition={props.chainPositionOf?.(task)}
               linkChips={props.linkChipsOf?.(task)}
               // A chain says what runs after what, never where a card belongs; and a run
               // only BORROWS the card's status (`cardStatusGuard`), so not even a live agent
