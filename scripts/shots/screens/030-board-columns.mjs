@@ -33,7 +33,7 @@ export default [
   },
   {
     // Same state and target card as `board-sidebar-open-detail-open` above, narrowed to 1100 —
-    // this is where the column floor (260px) forces the columns grid to scroll sideways rather
+    // this is where the fixed column width (260px) forces the columns grid to scroll sideways rather
     // than crush further, which is exactly what this row exists to check holds together with
     // the detail pane open too.
     name: 'board-sidebar-open-detail-open-1100x800',

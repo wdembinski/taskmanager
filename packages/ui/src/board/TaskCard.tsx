@@ -31,7 +31,6 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import {
-  ArrowRightRegular,
   BeakerRegular,
   BookmarkRegular,
   BugRegular,
@@ -67,6 +66,7 @@ import { MAX_SHOWN_FILES } from '@tm/shared/fileOverlap';
 import type { ChainDecline } from '@tm/shared/taskChain';
 import type { ChainFileHold } from './chainStates';
 import type { LinkChips } from './linkChips';
+import { NeedsUnblocksRow } from './NeedsUnblocksRow';
 import type { RunPurpose } from '@tm/shared/scheduler';
 import { delegatedAgentName } from '@tm/shared/tickets';
 import type { VariantGroupState } from '@tm/shared/variants';
@@ -74,7 +74,6 @@ import { AgentGlyph } from '../AgentGlyph';
 import { STATUS_LABEL } from '../taskStatus';
 import { automationOriginTitle, type AutomationOrigin } from './automationOrigin';
 import { cardParts, type CardInk } from './cardParts';
-import type { ChainPosition } from './chainPosition';
 import {
   CHAIN_LINK_MIME,
   TASK_ID_ATTR,
@@ -163,7 +162,7 @@ const useStyles = makeStyles({
   key: {
     flexShrink: 0,
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
-    fontSize: tokens.fontSizeBase200,
+    fontSize: '11px',
     color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
     textDecoration: 'none',
   },
@@ -215,8 +214,11 @@ const useStyles = makeStyles({
    *  grows to fit a whole sentence; the full title is in the tooltip and the peek.
    *  `overflowWrap: 'anywhere'` so a long key-like token with no spaces (a ticket id pasted
    *  into the title) breaks instead of overflowing a crushed column. */
+  // 13px regular on an 18px step (v9-7) — a bare `<Text>` would take Fluent's 14px base.
   title: {
     minWidth: 0,
+    fontSize: '13px',
+    fontWeight: 400,
     lineHeight: '18px',
     display: '-webkit-box',
     WebkitLineClamp: 2,
@@ -301,13 +303,19 @@ const useStyles = makeStyles({
   },
   runText: {
     color: FLUO_VAR.cyan,
+    fontSize: '11.5px',
     flex: 1,
     minWidth: 0,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  elapsed: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`, flexShrink: 0 },
+  elapsed: {
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    fontSize: '11px',
+    flexShrink: 0,
+  },
   /** The run row's progress track — 3px, `FLUO_VAR.cyan` fill over a faint rest. */
   progressTrack: {
     height: '3px',
@@ -319,6 +327,7 @@ const useStyles = makeStyles({
   /** A non-running status line — one line, clipped; the ink comes from `INK_COLOR` inline,
    *  since it varies per state rather than per class. */
   statusText: {
+    fontSize: '11.5px',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -384,19 +393,6 @@ const useStyles = makeStyles({
     },
     ':focus-visible': { outline: `1px solid ${tokens.colorStrokeFocus2}` },
   },
-  /** The needs/unblocks row (F13.20) — what `chainChip` says with an arrow and a chip, said
-   *  instead in plain words once Off has turned that arrow off. */
-  linkChipsRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    flexWrap: 'wrap',
-    color: tokens.colorNeutralForeground3,
-  },
-  linkChipsIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
-  /** The one predecessor whose finishing releases this card right now — cyan, the overlay's
-   *  own "starting next", and the only colour this row spends. */
-  linkChipReleasing: { color: FLUO_VAR.cyan },
   footer: { display: 'flex', alignItems: 'center', gap: '8px' },
   grow: { flex: 1, minWidth: 0 },
   /** The epic/feature chip — a flag glyph and a truncated label, monochrome like every other
@@ -406,22 +402,22 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '4px',
     minWidth: 0,
-    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
-    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
+    fontSize: '11.5px',
   },
   epicIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
   epicText: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   trailingMr: {
     flexShrink: 0,
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
-    fontSize: tokens.fontSizeBase200,
-    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontSize: '11px',
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
     textDecoration: 'none',
   },
   trailingDue: {
     flexShrink: 0,
-    fontSize: tokens.fontSizeBase200,
-    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontSize: '11.5px',
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
   },
   trailingDueFlagged: {
     fontWeight: tokens.fontWeightSemibold,
@@ -572,9 +568,6 @@ export interface TaskCardProps {
   /** Turn {@link fileHold} into a permanent after-merge arrow from the holder to this card.
    *  Absent on a board that cannot draw arrows, which is also what hides the button. */
   onMakeArrow?: (fromTaskId: string) => void;
-  /** Where this card sits in its chain — folded into the status line as the lowest-priority
-   *  fallback by `cardParts` when nothing else is worth a line. */
-  chainPosition?: ChainPosition;
   /** Stop the agent working this card — absent on a board that does not offer it, which is
    *  also what hides the button. */
   onStop?: () => void;
@@ -657,7 +650,6 @@ export function TaskCard({
   chainBlocked = null,
   fileHold,
   onMakeArrow,
-  chainPosition,
   onLinkTo,
   onLinkArm,
   onStop,
@@ -692,9 +684,17 @@ export function TaskCard({
     agentName: assigneeAgentName,
     runPurposes,
     epicName,
-    chainPosition,
   });
-  const elapsed = parts.statusLine?.kind === 'running' ? runStartedAt?.get(task.id) : undefined;
+  // A card whose step is the one running ("Step 2 of 4") times that step's run — the card
+  // itself has none of its own.
+  const elapsed =
+    parts.statusLine?.kind === 'running'
+      ? (runStartedAt?.get(task.id) ??
+        subtasks
+          .filter((s) => s.status === 'running' || liveRunTaskIds?.has(s.id) === true)
+          .map((s) => runStartedAt?.get(s.id))
+          .find((at) => at != null))
+      : undefined;
   const elapsedLabel = elapsed != null ? formatElapsed(now - elapsed) : undefined;
   /**
    * Whether this card is a MIRROR of something in a tracker — the key stays plain text for a
@@ -880,26 +880,7 @@ export function TaskCard({
    */
   const needsUnblocksRow =
     linkChips && (linkChips.needs.length > 0 || linkChips.unblocks.length > 0) ? (
-      <Caption1 className={styles.linkChipsRow}>
-        {linkChips.needs.length > 0 && (
-          <span title={`Needs ${linkChips.needs.map((n) => n.key).join(', ')} to run first`}>
-            <ArrowRightRegular className={styles.linkChipsIcon} /> needs{' '}
-            {linkChips.needs.map((n, i) => (
-              <span key={n.key}>
-                {i > 0 && ', '}
-                <span className={n.tone === 'releasing' ? styles.linkChipReleasing : undefined}>
-                  {n.key}
-                </span>
-              </span>
-            ))}
-          </span>
-        )}
-        {linkChips.unblocks.length > 0 && (
-          <span title={`Unblocks ${linkChips.unblocks.map((u) => u.key).join(', ')} once done`}>
-            unblocks {linkChips.unblocks.map((u) => u.key).join(', ')}
-          </span>
-        )}
-      </Caption1>
+      <NeedsUnblocksRow chips={linkChips} />
     ) : null;
 
   const keyLink = isExternal && task.externalUrl ? task.externalUrl : null;

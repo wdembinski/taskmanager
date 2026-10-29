@@ -24,7 +24,6 @@ import { STATUS_GLYPH } from '../issues/IssueRow';
 import { TaskCard } from './TaskCard';
 import type { AutomationOrigin } from './automationOrigin';
 import type { BoardCard, BoardColumn } from './boardColumns';
-import type { ChainPosition } from './chainPosition';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 import type { ChainState } from './chainStates';
 import type { LinkChips } from './linkChips';
@@ -75,8 +74,18 @@ const useStyles = makeStyles({
     fontSize: '14px',
     color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
   },
-  headerLabel: { color: tokens.colorNeutralForeground1, fontSize: '13px' },
-  count: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})` },
+  // The mockup's header type (v9-7, v10-7e): the name 12.5px semibold, the count 12px
+  // regular in faint ink.
+  headerLabel: {
+    color: tokens.colorNeutralForeground1,
+    fontSize: '12.5px',
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  count: {
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontSize: '12px',
+    fontWeight: 400,
+  },
   addButton: { marginLeft: 'auto', color: tokens.colorNeutralForeground3 },
   // No scroll of its own — the board's column container owns that. `flex: 1` keeps the
   // empty space below the last card inside the drop zone.
@@ -202,13 +211,6 @@ export interface KanbanColumnProps {
    * as it always did.
    */
   linkChipsOf?: (task: Task) => LinkChips | undefined;
-  /**
-   * A chained card's "step n of m" (F3.5) — the compact board's stand-in for the wide
-   * board's arrows, which there is no room to draw over a single column. Asked per card like
-   * `chainStateOf`, over `@tm/ui/board/chainPosition`'s pure walk of the chain graph. Absent
-   * on every wide caller, so wide rendering is unchanged.
-   */
-  chainPositionOf?: (task: Task) => ChainPosition | undefined;
   selectedTaskId: string | null;
   draggingId: string | null;
   /**
@@ -362,7 +364,6 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
               onMakeArrow={
                 props.onMakeArrow && ((fromTaskId) => props.onMakeArrow?.(fromTaskId, task.id))
               }
-              chainPosition={props.chainPositionOf?.(task)}
               linkChips={props.linkChipsOf?.(task)}
               // A chain says what runs after what, never where a card belongs; and a run
               // only BORROWS the card's status (`cardStatusGuard`), so not even a live agent

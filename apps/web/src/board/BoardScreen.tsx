@@ -43,7 +43,6 @@ import { hiddenBoardColumns, withColumnHidden } from '@tm/shared/settings';
 import { KanbanColumn } from '@tm/ui/board/KanbanColumn';
 import { ColumnSwitcher } from '@tm/ui/board/ColumnSwitcher';
 import { columnSwitcherItems } from '@tm/ui/board/compactColumns';
-import { chainPosition } from '@tm/ui/board/chainPosition';
 import { MoveToSheet } from '@tm/ui/board/MoveToSheet';
 import { ShelfStrip } from '@tm/ui/board/ShelfStrip';
 import { ChainLegend, ChainOverlay } from '@tm/ui/board/ChainOverlay';
@@ -896,8 +895,7 @@ export function BoardScreen({
           </Caption1>
         ) : compact ? (
           // The compact board: no chain overlay, no link-drag handles, no popover — there is
-          // no second column to draw an arrow into, and `chainPositionOf` says in words what
-          // the arrows would have. `compact.column` is only `null` when every column is
+          // no second column to draw an arrow into. `compact.column` is only `null` when every column is
           // hidden, which this simply renders as nothing rather than an empty-state lie (the
           // board is not empty — there is just nowhere configured to show it).
           compact.column && (
@@ -915,7 +913,6 @@ export function BoardScreen({
               runStartedAt={extras.runStartedAt}
               mergingTaskIds={extras.mergingTaskIds}
               chainStateOf={(t) => chainState.get(t.id)}
-              chainPositionOf={(t) => chainPosition(extras.chainLinks, t.id) ?? undefined}
               selectedTaskId={selectedTaskId}
               draggingId={draggingId}
               onStopTask={(taskId) => void extras.stopTask(taskId).catch(reportError)}

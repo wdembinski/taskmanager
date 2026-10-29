@@ -148,8 +148,8 @@
  * `fold`, `collapse`, and `sidebarVisible`/`sidebarOpen` and found none; `Sidebar.tsx`'s own
  * `folds` are per-project-tree-node, not a toggle for the pane as a whole. Every `'client'`
  * row below therefore already shows the sidebar open — there is no "folded" state to add a
- * row for. The `board-sidebar-open-*` rows exist instead to check the column-width floor
- * (`BOARD_COLUMN_MIN_WIDTH`, `packages/ui/src/board/boardLayout.ts`) and the header-cluster
+ * row for. The `board-sidebar-open-*` rows exist instead to check the column width
+ * (`BOARD_COLUMN_WIDTH`, `packages/ui/src/board/boardLayout.ts`) and the header-cluster
  * split (`TaskCard.tsx`) at both 1440 and 1100, with the detail pane closed and open.
  * `board-light` above already covers 1440/closed, so it is not repeated among them.
  */

@@ -226,13 +226,19 @@ describe('cardParts', () => {
       });
     });
 
-    it('says "Assigned — not started", faint, for an agent assigned but never run', () => {
+    it('draws no line for an agent assigned but never run — "Assigned — not started" is a resting fact', () => {
       const card = task({ status: 'pending', agentProjectId: 'proj-1' });
-      expect(cardParts(card, ctx()).statusLine).toEqual({
-        kind: 'status',
-        label: 'Assigned — not started',
-        ink: 'faint',
-      });
+      expect(cardParts(card, ctx()).statusLine).toBeUndefined();
+    });
+
+    it('draws no line for a queued card — waiting its turn is a resting fact, not for you', () => {
+      // A chain between steps: one done, the next not yet picked up — `runPhase` says "Queued".
+      const card = task({ id: 'c1', status: 'in-progress', agentProjectId: 'proj-1' });
+      const subtasks = [
+        task({ id: 's1', parentTaskId: 'c1', status: 'done' }),
+        task({ id: 's2', parentTaskId: 'c1', status: 'pending' }),
+      ];
+      expect(cardParts(card, ctx({ subtasks })).statusLine).toBeUndefined();
     });
   });
 
@@ -329,20 +335,37 @@ describe('cardParts', () => {
       );
       expect(parts.statusLine).toBeUndefined();
     });
+
+    it('is silent for a closed MR — history, not something moving or waiting for you', () => {
+      const parts = cardParts(
+        task({ status: 'in-review' }),
+        ctx({ mergeRequests: [mr({ state: 'closed' })] }),
+      );
+      expect(parts.statusLine).toBeUndefined();
+    });
   });
 
-  describe('statusLine — the chain position, last and quietest', () => {
-    it('shows "2 of 3", faint, for a card with nothing else to say but a chain', () => {
-      const parts = cardParts(task(), ctx({ chainPosition: { n: 2, m: 3 } }));
-      expect(parts.statusLine).toEqual({ kind: 'chain', label: '2 of 3', ink: 'faint' });
+  describe('statusLine — a chained card with nothing moving draws no line', () => {
+    it('no longer says "n of m" for a card whose only fact is its place in a chain', () => {
+      // The chain position is no longer part of the context at all: a card in an arrow
+      // chain with nothing moving and nothing waiting for you is a card with no line.
+      const card = task({ id: 'c1', status: 'pending' });
+      expect(cardParts(card, ctx()).statusLine).toBeUndefined();
     });
 
-    it('never shows once a live run has something to say instead', () => {
-      const parts = cardParts(
-        task({ status: 'running', agentProjectId: 'proj-1' }),
-        ctx({ chainPosition: { n: 2, m: 3 } }),
-      );
-      expect(parts.statusLine).toEqual({ kind: 'running', label: 'Running', ink: 'cyan' });
+    it('still says "Step 2 of 4" — never "Running step 2 of 4" — once the chain moves', () => {
+      const card = task({ id: 'c1', status: 'in-progress' });
+      const subtasks = [
+        task({ id: 's1', parentTaskId: 'c1', status: 'done' }),
+        task({ id: 's2', parentTaskId: 'c1', status: 'running' }),
+        task({ id: 's3', parentTaskId: 'c1', status: 'pending' }),
+        task({ id: 's4', parentTaskId: 'c1', status: 'pending' }),
+      ];
+      expect(cardParts(card, ctx({ subtasks })).statusLine).toEqual({
+        kind: 'running',
+        label: 'Step 2 of 4',
+        ink: 'cyan',
+      });
     });
   });
 
