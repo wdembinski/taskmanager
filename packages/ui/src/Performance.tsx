@@ -205,7 +205,8 @@ function ProjectBlock({
   onToggle: () => void;
 }): JSX.Element {
   const styles = useStyles();
-  const hasChildren = project.tasks.length > 0 || project.orchestratorTokens > 0;
+  const hasChildren =
+    project.tasks.length > 0 || project.orchestratorTokens > 0 || project.reviewTokens > 0;
   return (
     <div className={styles.project}>
       <button className={styles.projectHead} onClick={onToggle} aria-expanded={expanded}>
@@ -248,6 +249,17 @@ function ProjectBlock({
                   pct: project.tokens > 0 ? (project.orchestratorTokens / project.tokens) * 100 : 0,
                 }}
                 color={ORCH_COLOR}
+              />
+            )}
+            {project.reviewTokens > 0 && (
+              <ShareRow
+                slice={{
+                  id: `${project.projectId ?? 'none'}-review`,
+                  label: 'AI reviews',
+                  tokens: project.reviewTokens,
+                  pct: project.tokens > 0 ? (project.reviewTokens / project.tokens) * 100 : 0,
+                }}
+                color={BAR_COLORS[2]}
               />
             )}
           </div>
@@ -331,7 +343,7 @@ export function Performance(): JSX.Element {
   const rangeLabel = RANGES.find((r) => r.id === range)?.label ?? '';
 
   return (
-    <div className={styles.root}>
+    <div className={styles.root} data-performance>
       {summary.runningLow !== 'ok' && (
         <MessageBar intent={summary.runningLow === 'critical' ? 'error' : 'warning'}>
           <MessageBarBody>
@@ -379,10 +391,10 @@ export function Performance(): JSX.Element {
       )}
 
       <div className={styles.main}>
-        {/* Left rail: the Tasks-vs-Orchestrator split (orchestrator called out on its own). */}
+        {/* Left rail: the split by source — tasks, the orchestrator and AI reviews. */}
         <div className={styles.rail}>
           <div className={styles.section}>
-            <span className={styles.sectionTitle}>Tasks vs orchestrator</span>
+            <span className={styles.sectionTitle}>By source</span>
             <div className={styles.rowList}>
               {summary.bySource.length === 0 ? (
                 <span className={styles.rowNums}>No usage yet</span>
@@ -391,7 +403,13 @@ export function Performance(): JSX.Element {
                   <ShareRow
                     key={s.id}
                     slice={s}
-                    color={s.id === 'orchestrator' ? ORCH_COLOR : BAR_COLORS[0]}
+                    color={
+                      s.id === 'orchestrator'
+                        ? ORCH_COLOR
+                        : s.id === 'review'
+                          ? BAR_COLORS[2]
+                          : BAR_COLORS[0]
+                    }
                   />
                 ))
               )}
@@ -421,6 +439,16 @@ export function Performance(): JSX.Element {
                       : 0,
                 }}
                 color={ORCH_COLOR}
+              />
+              <ShareRow
+                slice={{
+                  id: 'reviews',
+                  label: 'AI reviews',
+                  tokens: summary.reviewTotal,
+                  pct:
+                    summary.windowTotal > 0 ? (summary.reviewTotal / summary.windowTotal) * 100 : 0,
+                }}
+                color={BAR_COLORS[2]}
               />
             </div>
           </div>
