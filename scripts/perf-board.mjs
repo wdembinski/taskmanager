@@ -7,13 +7,15 @@
  * Builds `@tm/client`'s renderer (`lib/uiDriver.mjs`'s `buildClientRenderer`), serves it
  * statically, and boots it in headless Chrome at 1440×900 over `scaleFixture.mjs`'s seeded
  * board of `--cards` task rows. Main is modelled, never launched: `lib/perfStub.mjs` wraps
- * `apiStub.mjs`'s `window.api` so every invoke is recorded, listeners are kept, and the
- * channels that change state emit what main's handlers `send` today:
+ * `apiStub.mjs`'s `window.api` so every invoke is recorded, listeners are kept, `board:tasks`
+ * answers card summaries, `task:get` answers one card in full, and the channels that change
+ * state emit what main's handlers `send` today (F29.2):
  *
- * - `attention:answer` → `attention:resolved` + `tasks:changed` upserting the whole board;
- * - `task:move` → `task:changed` with the moved card;
+ * - `attention:answer` → `attention:resolved` + `tasks:changed` upserting the approved card
+ *   and its new steps, as summaries;
+ * - `task:move` → `task:changed` with the moved card's summary;
  * - the other `tasks:changed` senders listed in `perfStub.mjs`'s
- *   `TASKS_CHANGED_CHANNELS` → `tasks:changed` upserting the whole board.
+ *   `TASKS_CHANGED_CHANNELS` → `tasks:changed` with the card they changed.
  *
  * Each run is one fresh load, then six interactions in order. Each is armed (buffers cleared),
  * acted, and then waited on until the page has been quiet for 500 ms — no frame gap over
@@ -449,8 +451,12 @@ async function main() {
     const exceptions = collectExceptions(cdp);
     await setViewport(cdp, VIEWPORT.width, VIEWPORT.height);
 
+    const { toTaskSummary, TASK_SUMMARY_KEYS } = requireFromClient('@tm/shared/taskSummary');
     const initScript = `${PAGE_HELPERS_SRC}\n${buildPerfStub({
       projectId: SCALE_PROJECT_ID,
+      approveTaskId: SCALE_APPROVE_TASK_ID,
+      toTaskSummary,
+      summaryKeys: TASK_SUMMARY_KEYS,
       defaultSettings,
       fixture,
       settingsOverrides: { appearance: 'light', transparency: 'reduced', fontSizePx: 14 },

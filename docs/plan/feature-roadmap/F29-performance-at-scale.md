@@ -107,9 +107,32 @@ passed 20 ms (one frame plus vsync jitter). Approve moves 27 MB twice: the
   `perf event <channel> <bytes>B`, and each renderer long task
   `perf longtask <screen> <ms>ms`.
 - **IPC bytes are modelled.** `scripts/lib/perfStub.mjs` answers from the fixture and, for
-  the channels that change state, emits what main's handlers send today: Approve and the
-  other `project:tasksChanged` senders send the whole board, a drag sends `task:changed`
-  with the moved card. When F29.2 changes what main sends, the stub must change with it.
+  the channels that change state, emits what main's handlers send. Since F29.2 that is:
+  `board:tasks` answers card summaries (`toTaskSummary`, from the built
+  `@tm/shared/taskSummary`), `task:get` answers one card in full from the fixture's rows,
+  Approve sends `tasks:changed` upserting the approved card and its new steps as summaries,
+  the other delta senders upsert the card they return, and a drag sends `task:changed` with
+  the moved card's summary. When main changes what it sends, the stub must change with it.
+
+## After F29.2 (2026-10-29)
+
+Card summaries, deltas and `task:get` (F29.2). Same command, same fixture and machine as
+the baseline; medians of 3 runs.
+
+| Interaction   | longest task (ms) | longest frame gap (ms) | long tasks (count) | IPC in (KB) | events (KB) | budget (ms) | verdict |
+| ------------- | ----------------: | ---------------------: | -----------------: | ----------: | ----------: | ----------: | ------- |
+| open-card     |             650.0 |                  650.0 |                  5 |        16.9 |         0.0 |          16 | over    |
+| approve       |             433.4 |                  433.4 |                  1 |        10.8 |         1.7 |          16 | over    |
+| drag-card     |             566.9 |                  566.9 |                  5 |         2.4 |         0.4 |          16 | over    |
+| scroll-column |             633.3 |                  633.3 |                 45 |         0.3 |         0.0 |          16 | over    |
+| scroll-issues |              33.4 |                   33.4 |                  0 |         0.0 |         0.0 |          16 | over    |
+| expand-group  |             100.1 |                  100.1 |                  1 |         0.0 |         0.0 |          16 | over    |
+
+Approve went from 27734.0 KB in and 27731.1 KB of events to 10.8 KB and 1.7 KB: the delta
+carries five summaries (the card and its four new steps), and nothing re-reads the board.
+Open-card reads more (7.9 → 16.9 KB) because the opened card's plan and ticket text now
+arrive through `task:get` instead of riding along in every board row. The long tasks are
+drawing, which F29.3 (windowing) targets.
 
 ## Out of scope
 
