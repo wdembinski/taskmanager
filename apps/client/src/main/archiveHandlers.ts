@@ -36,8 +36,8 @@ export interface ArchiveHandlersDeps {
   /** `send('milestone:changed', …)` — the board push `milestone:save`/`milestone:remove` already
    *  make after a store write lands. */
   pushMilestones(): Milestone[];
-  /** `send('project:tasksChanged', …)` for one project — the board push every other `task:*`
-   *  write in `ipc.ts` makes after a store write lands. */
+  /** `pushTaskDelta(projectId)` — the `tasks:changed` push every other `task:*` write in
+   *  `ipc.ts` makes after a store write lands. */
   pushTasks(projectId: string): void;
   now(): number;
 }

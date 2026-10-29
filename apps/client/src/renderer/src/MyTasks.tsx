@@ -915,7 +915,7 @@ export function MyTasks({
    * never happen — `archivedBy`'s own `self` only ever names one, see `archiveEpicTx`) has no
    * target to restore, so this just selects the card, same as opening it would.
    *
-   * Restoring a milestone or epic pushes `milestone:changed`/`project:tasksChanged`, which
+   * Restoring a milestone or epic pushes `milestone:changed`/`tasks:changed`, which
    * this screen already listens for — nothing to re-fetch. Restoring a project does not (its
    * own row changed, not a task or milestone list), so `project:list` is re-read by hand, the
    * same gap `archiveHandlers.ts`'s own docstring calls out.

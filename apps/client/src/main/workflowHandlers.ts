@@ -58,8 +58,8 @@ export interface WorkflowHandlersDeps {
   /** `cloudWorkflowPusher.scan()` — pushes a changed workflow to the cloud without waiting
    *  for the poller's own next tick. */
   workflowsChanged(): void;
-  /** `send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) })` — the
-   *  board push a card's own fresh steps need after landing. */
+  /** `pushTaskDelta(projectId)` — the `tasks:changed` push a card's own fresh steps need
+   *  after landing. */
   tasksChanged(projectId: string): void;
 }
 

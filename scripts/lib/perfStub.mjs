@@ -27,8 +27,9 @@ import { buildApiStub } from './apiStub.mjs';
 
 /**
  * What each modelled channel emits after resolving, read from `apps/client/src/main/ipc.ts`
- * and `scheduler.ts` (2026-10-29). `tasksChanged` is `project:tasksChanged` with the WHOLE
- * board (`{ projectId, tasks: store.getTasks(projectId) }`).
+ * and `scheduler.ts` (2026-10-29). `tasksChanged` is a `tasks:changed` delta (F29.2, main's
+ * `pushTaskDelta`), modelled for now as the WHOLE board upserted — what main sends for a board
+ * it holds no snapshot of — until F29.2's measuring step narrows it to the cards that changed.
  *
  * - `attention:answer` → `scheduler.answerAttention`; approving a plan runs `approvePlan`,
  *   which calls the `setTasksChangedNotifier` callback (`ipc.ts:799`) → `tasksChanged`, and the
@@ -148,7 +149,7 @@ export function buildPerfStub({ projectId, ...stubOptions }) {
   async function modelEmits(channel, args, result) {
     if (channel === 'attention:answer') emit('attention:resolved', { id: args[0] });
     if (TASKS_CHANGED.has(channel)) {
-      emit('project:tasksChanged', { projectId: PROJECT_ID, tasks: await allTasks() });
+      emit('tasks:changed', { projectId: PROJECT_ID, upserted: await allTasks(), removed: [] });
     }
     if (channel === 'task:move' && result) emit('task:changed', { task: result, runId: null });
   }

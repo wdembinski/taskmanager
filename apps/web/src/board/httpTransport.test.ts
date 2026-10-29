@@ -1649,7 +1649,7 @@ describe("HttpTransport: the Projects panel's channels", () => {
    * The pane's own live refresh — `task:changed` (a ticket row), `ticketLink:changed`,
    * `chain:changed`, `person:changed`, `milestone:changed` and `label:changed` (the four
    * native-ticket registries), plus `settings:changed` (the pane's own display/feature
-   * flags) — must all reach the browser. `project:tasksChanged`, which `useProjectTickets.ts`
+   * flags) — must all reach the browser. `tasks:changed`, which `useProjectTickets.ts`
    * and `TimelinePane.tsx`/`GraphPane.tsx` also listen for, is deliberately excluded: it is
    * classified `drop` in `ipcEventFanout.ts` because its rows already reach the browser
    * through the mirror.

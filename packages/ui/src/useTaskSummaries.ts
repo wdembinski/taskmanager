@@ -7,11 +7,6 @@
  * `patchTaskSummary` (`taskSummaryStore.ts`, the pure half, tested there). Each surface
  * still holds its own copy — there is no shared store — but they all take a change the
  * same way now.
- *
- * TEMPORARY: until the main process sends `tasks:changed` itself (F29.2 step 3), it also
- * accepts the legacy `project:tasksChanged`, mapped through `deltaFromBoardList` into the
- * delta it amounts to. That branch is the only `project:tasksChanged` listener left in the
- * renderer, and step 3 deletes it.
  */
 import {
   useCallback,
@@ -24,12 +19,7 @@ import {
 import type { TaskDelta, TaskSummary } from '@tm/shared/taskSummary';
 import { useTransport } from './transport';
 import { useInitialLoad, type InitialLoad } from './useInitialLoad';
-import {
-  applyTaskDelta,
-  deltaFromBoardList,
-  patchTaskSummary,
-  type TaskListScope,
-} from './taskSummaryStore';
+import { applyTaskDelta, patchTaskSummary, type TaskListScope } from './taskSummaryStore';
 
 export interface UseTaskSummariesOptions {
   /**
@@ -65,8 +55,6 @@ export function useTaskSummaries(
 ): TaskSummaries {
   const transport = useTransport();
   const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
-  const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
   const optionsRef = useRef(options);
   optionsRef.current = options;
   // The scope the newest load was asked for — an older load landing late is dropped.
@@ -100,19 +88,9 @@ export function useTaskSummaries(
     const offTask = transport.on('task:changed', ({ task }) =>
       setTasks((prev) => (prev ? patchTaskSummary(prev, task) : prev)),
     );
-    // TEMPORARY (F29.2 step 3 deletes it): one board's whole list, as the delta it amounts
-    // to — worked out against the list inside the updater, so two pushes in one batch agree.
-    const offLegacy = transport.on('project:tasksChanged', ({ projectId, tasks: next }) => {
-      if (!inScope(projectId)) return;
-      setTasks((prev) =>
-        prev ? applyTaskDelta(prev, deltaFromBoardList(prev, projectId, next), scope) : prev,
-      );
-      optionsRef.current.onDelta?.(deltaFromBoardList(tasksRef.current ?? [], projectId, next));
-    });
     return () => {
       offDelta();
       offTask();
-      offLegacy();
     };
   }, [transport, scope]);
 
@@ -123,9 +101,6 @@ export function useTaskSummaries(
  * Every board's deltas, for a caller that holds no list of its own but must know when one
  * of its cards changed — the open card (`TaskDetailHost`), which re-reads `task:get` only
  * when a delta touches it. Read through a ref, so an inline handler is fine.
- *
- * TEMPORARY, like `useTaskSummaries`' own branch: the legacy `project:tasksChanged` arrives
- * as a delta that upserts that board's whole list and removes nothing it could name.
  */
 export function useTaskDeltas(enabled: boolean, onDelta: (delta: TaskDelta) => void): void {
   const transport = useTransport();
@@ -133,13 +108,6 @@ export function useTaskDeltas(enabled: boolean, onDelta: (delta: TaskDelta) => v
   onDeltaRef.current = onDelta;
   useEffect(() => {
     if (!enabled) return;
-    const offDelta = transport.on('tasks:changed', (delta) => onDeltaRef.current(delta));
-    const offLegacy = transport.on('project:tasksChanged', ({ projectId, tasks }) =>
-      onDeltaRef.current(deltaFromBoardList([], projectId, tasks)),
-    );
-    return () => {
-      offDelta();
-      offLegacy();
-    };
+    return transport.on('tasks:changed', (delta) => onDeltaRef.current(delta));
   }, [transport, enabled]);
 }

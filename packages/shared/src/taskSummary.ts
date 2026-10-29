@@ -150,3 +150,23 @@ export function toTaskSummary(task: TaskSummary): TaskSummary {
   }
   return out as TaskSummary;
 }
+
+/**
+ * Whether two summaries draw the same card: shallow equality over the summary keys, with the
+ * array fields (`dependsOn`, `labels`) compared by element. Every summary field is a primitive
+ * or an array of them, so this is exact.
+ */
+export function sameTaskSummary(a: TaskSummary, b: TaskSummary): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    const x = (a as Record<string, unknown>)[key];
+    const y = (b as Record<string, unknown>)[key];
+    if (x === y) continue;
+    if (Array.isArray(x) && Array.isArray(y)) {
+      if (x.length !== y.length || x.some((v, i) => v !== y[i])) return false;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}

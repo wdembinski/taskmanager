@@ -5,8 +5,8 @@
  * doc gives for why a project switch remounts rather than reconciles.
  *
  * Loads its own tickets the same way `BacklogTable`/`TimelinePane` do: seed via `board:tasks`,
- * then stay live off `task:changed` (per-ticket patch) and `project:tasksChanged` (whole-list
- * replace — a ticket can also leave this way).
+ * then stay live off `task:changed` (per-ticket patch) and `tasks:changed` (a delta merged in
+ * — a ticket can also leave this way).
  *
  * **Layout.** `ticketGraph:getLayout` is fetched alongside `board:tasks` in the same seed
  * (one `Promise.all`, so the saved layout is already in state by the time `tickets` first

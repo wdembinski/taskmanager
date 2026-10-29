@@ -10,10 +10,10 @@
  * `apiStub.mjs`'s `window.api` so every invoke is recorded, listeners are kept, and the
  * channels that change state emit what main's handlers `send` today:
  *
- * - `attention:answer` → `attention:resolved` + `project:tasksChanged` with the whole board;
+ * - `attention:answer` → `attention:resolved` + `tasks:changed` upserting the whole board;
  * - `task:move` → `task:changed` with the moved card;
- * - the other `project:tasksChanged` senders listed in `perfStub.mjs`'s
- *   `TASKS_CHANGED_CHANNELS` → `project:tasksChanged` with the whole board.
+ * - the other `tasks:changed` senders listed in `perfStub.mjs`'s
+ *   `TASKS_CHANGED_CHANNELS` → `tasks:changed` upserting the whole board.
  *
  * Each run is one fresh load, then six interactions in order. Each is armed (buffers cleared),
  * acted, and then waited on until the page has been quiet for 500 ms — no frame gap over

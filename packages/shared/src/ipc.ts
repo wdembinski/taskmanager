@@ -132,7 +132,7 @@ import type {
   WorkflowSaveResult,
 } from './workflow';
 import type { BoardReviewRecord } from './boardReview';
-import type { TaskBundle, TaskDelta } from './taskSummary';
+import type { TaskBundle, TaskDelta, TaskSummary } from './taskSummary';
 import type {
   ArchivedListing,
   ArchiveResult,
@@ -1440,8 +1440,11 @@ export interface IpcApi {
    * every board's cards unioned together — Personal plus every other project with no
    * plan file — and any other value is one board's own project id, `PERSONAL_PROJECT_ID`
    * included.
+   *
+   * Card summaries (F29.2), not full rows: a list draws none of the heavy fields, and
+   * `task:get` reads them when a card opens.
    */
-  'board:tasks': (scope?: string) => Promise<Task[]>;
+  'board:tasks': (scope?: string) => Promise<TaskSummary[]>;
   /**
    * The cards that have been taken OFF a board and not destroyed — most recently removed
    * first. The complement of `board:tasks`, same `scope` rule, and the list "Removed cards"
@@ -1523,7 +1526,7 @@ export interface IpcApi {
    * — the same shape `ticketLink:add`'s `TicketLinkResult` uses — rather than a rejected
    * promise, since "that's already archived" is something to tell the human, not an error.
    * `choice` says what to do with the target's still-open tickets; omitted, they are left
-   * where they are. A successful change rides `milestone:changed` and `project:tasksChanged`
+   * where they are. A successful change rides `milestone:changed` and `tasks:changed`
    * for the renderer to patch without a full refetch; archiving a project also needs a
    * `project:list` re-read, since the project row itself changed.
    */
@@ -1532,7 +1535,7 @@ export interface IpcApi {
    * Restore a milestone, epic or ticket project. Refusals come back as data (`ArchiveResult`)
    * — the same shape `ticketLink:add`'s `TicketLinkResult` uses — rather than a rejected
    * promise, since "that's not archived" is something to tell the human, not an error. A
-   * successful change rides `milestone:changed` and `project:tasksChanged` for the renderer to
+   * successful change rides `milestone:changed` and `tasks:changed` for the renderer to
    * patch without a full refetch; restoring a project also needs a `project:list` re-read,
    * since the project row itself changed.
    */
@@ -1992,14 +1995,10 @@ export interface IpcEvents {
   /** The frameless window was maximized (true) or restored (false) — updates the title-bar icon. */
   'window:maximizedChanged': boolean;
   /**
-   * A project's task list changed as a whole (Phase 8): the plan file was edited
-   * (by a human or the agent mid-run) and re-synced live, or a task was created/
-   * deleted. Carries the project's full, current task list so the UI can replace it.
-   */
-  'project:tasksChanged': { projectId: string; tasks: Task[] };
-  /**
    * Only the cards of one board that changed (F29.2), as summaries: the ones to insert or
-   * replace, and the ids that left it. A list merges it with `applyTaskDelta`
+   * replace, and the ids that left it. Sent after anything changes a board's list — a card
+   * created, deleted, moved or archived, a plan's steps, a plan file edit, a tracker sync —
+   * by `apps/client/src/main/taskDelta.ts`, which diffs the board against what it last sent. A list merges it with `applyTaskDelta`
    * (`@tm/ui/taskSummaryStore`); an open card re-reads its heavy half through `task:get`.
    */
   'tasks:changed': TaskDelta;
@@ -2018,8 +2017,7 @@ export interface IpcEvents {
   'board:notice': { text: string; intent: 'warning' | 'error' };
   /**
    * The merge-request list changed — a forge sync landed, or a read marker moved.
-   * Mirrors `project:tasksChanged`: the whole list, every provider's, so the board
-   * replaces rather than patches.
+   * The whole list, every provider's, so the board replaces rather than patches.
    */
   'mergeRequests:changed': MergeRequest[];
   /**

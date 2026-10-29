@@ -102,7 +102,7 @@ describe('the listener gate', () => {
   it('never queues a channel classified `drop`', () => {
     const { forwarder } = make();
     watched(forwarder);
-    forwarder.publish('project:tasksChanged', { projectId: 'p1', tasks: [] } as never);
+    forwarder.publish('tasks:changed', { projectId: 'p1', upserted: [], removed: [] } as never);
     forwarder.publish('window:maximizedChanged', true as never);
     expect(forwarder.pending).toBe(0);
   });

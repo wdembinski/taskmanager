@@ -25,11 +25,13 @@
  *
  * ## What it proves
  *
- * The two renderer caches are modelled the way the hooks hold them: `backlog` is
- * `useProjectTickets`'s (`board:tasks(projectId)`, then a `project:tasksChanged` for that
- * project replaces it); `board` is `MyTasks`'s All scope (`board:tasks('all')`, then the same
- * event replaces that project's slice); `panelLinks` is `useTicketRegistries`'s (replaced by
- * every `ticketLink:changed`). Every event `createTicketIpc` sends is drained into them.
+ * The two renderer caches are modelled the way the hooks hold them (F29.2): `backlog` is
+ * `useProjectTickets`'s (`board:tasks(projectId)` summaries, then every `tasks:changed` for
+ * that project merged in with `applyTaskDelta`); `board` is `MyTasks`'s All scope
+ * (`board:tasks('all')`, the same deltas merged on the `'all'` scope); `panelLinks` is
+ * `useTicketRegistries`'s (replaced by every `ticketLink:changed`). The deltas come from the
+ * real `createTaskDeltaPusher` (`taskDelta.ts`), seeded by those two loads the way
+ * `board:tasks` seeds it. Every event `createTicketIpc` sends is drained into the caches.
  *
  * Milestone: `ticketPatchFor('milestoneId', …)` produces exactly `{ milestoneId }` (and `{}`
  * for an unchanged value, which sends nothing); after `updateTicket`, the Backlog row and
@@ -123,6 +125,7 @@ if (!process.versions.electron) {
   // backticks a Windows path would break.
   const projects = join(root, 'packages', 'ui', 'src', 'projects');
   const spec = (file) => JSON.stringify(join(projects, file).replace(/\\/g, '/'));
+  const srcSpec = (...parts) => JSON.stringify(join(root, ...parts).replace(/\\/g, '/'));
   const uiEntry = join(scratch, 'ui-entry.ts');
   writeFileSync(
     uiEntry,
@@ -130,12 +133,19 @@ if (!process.versions.electron) {
       'export { ticketPatchFor } from ' + spec('ticketFields.ts') + ';',
       'export { linkedTicketRows, linkAddRefusal } from ' + spec('linkedTickets.ts') + ';',
       'export { ticketSummaryLine } from ' + spec('ticketSummary.ts') + ';',
+      'export { applyTaskDelta } from ' +
+        srcSpec('packages', 'ui', 'src', 'taskSummaryStore.ts') +
+        ';',
+      'export { toTaskSummary } from ' +
+        srcSpec('packages', 'shared', 'src', 'taskSummary.ts') +
+        ';',
       '',
     ].join('\n'),
   );
 
   bundle(join(root, 'apps/client/src/main/store.ts'), join(scratch, 'store.cjs'), 'better-sqlite3');
   bundle(join(root, 'apps/client/src/main/ticketIpc.ts'), join(scratch, 'ticketIpc.cjs'));
+  bundle(join(root, 'apps/client/src/main/taskDelta.ts'), join(scratch, 'taskDelta.cjs'));
   bundle(uiEntry, join(scratch, 'ui.cjs'));
 
   const electron = join(
@@ -175,9 +185,15 @@ let store;
 try {
   const { createStore } = require(join(scratch, 'store.cjs'));
   const { createTicketIpc } = require(join(scratch, 'ticketIpc.cjs'));
-  const { ticketPatchFor, linkedTicketRows, linkAddRefusal, ticketSummaryLine } = require(
-    join(scratch, 'ui.cjs'),
-  );
+  const { createTaskDeltaPusher } = require(join(scratch, 'taskDelta.cjs'));
+  const {
+    ticketPatchFor,
+    linkedTicketRows,
+    linkAddRefusal,
+    ticketSummaryLine,
+    applyTaskDelta,
+    toTaskSummary,
+  } = require(join(scratch, 'ui.cjs'));
 
   store = createStore(join(scratch, 'one-panel.db'));
   const project = store.addProject({ path: '', ticketPrefix: 'OP', name: 'one-panel' });
@@ -192,11 +208,21 @@ try {
   check('seed: three tickets and a milestone were created', !!A && !!B && !!C && !!M1);
 
   const sent = [];
-  const ipc = createTicketIpc({ store, send: (ch, p) => sent.push([ch, p]) });
+  const taskDeltas = createTaskDeltaPusher({
+    readBoard: (projectId) => store.getBoardTasks(projectId),
+    send: (delta) => sent.push(['tasks:changed', delta]),
+  });
+  const ipc = createTicketIpc({
+    store,
+    send: (ch, p) => sent.push([ch, p]),
+    pushTasks: (projectId) => taskDeltas.push(projectId),
+  });
 
   // ── The renderer's caches, seeded the way the hooks seed them ─────────────────────────
-  let backlog = store.getBoardTasks(project.id); // useProjectTickets
-  let board = store.getAllBoardTasks(); // MyTasks, All scope
+  // `board:tasks` answers summaries and seeds the pusher's snapshot with them.
+  let backlog = store.getBoardTasks(project.id).map(toTaskSummary); // useProjectTickets
+  taskDeltas.seed(project.id, backlog);
+  let board = store.getAllBoardTasks().map(toTaskSummary); // MyTasks, All scope
   let panelLinks = store.listTicketLinks(); // useTicketRegistries
   check(
     'seed: the Backlog and the board both hold A, B and C',
@@ -206,10 +232,9 @@ try {
   /** Drain `sent` into the caches, the way each hook's `transport.on` handler does. */
   function applyEvents() {
     for (const [channel, payload] of sent.splice(0)) {
-      if (channel === 'project:tasksChanged') {
-        if (payload.projectId !== project.id) continue;
-        backlog = payload.tasks;
-        board = [...board.filter((t) => t.projectId !== payload.projectId), ...payload.tasks];
+      if (channel === 'tasks:changed') {
+        backlog = applyTaskDelta(backlog, payload, project.id);
+        board = applyTaskDelta(board, payload, 'all');
       } else if (channel === 'ticketLink:changed') {
         panelLinks = payload;
       }

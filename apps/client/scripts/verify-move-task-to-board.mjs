@@ -12,7 +12,9 @@
  * launched).
  *
  * Section 5 mirrors `task:setBoard` from `ipc.ts` — its guards, its `store.moveTaskToBoard`
- * call and its two `send`s — the same shape `verify-jira-move.mjs` uses for `task:move`:
+ * call, its `task:changed` and its two `pushTaskDelta`s (F29.2: the REAL
+ * `createTaskDeltaPusher` from `taskDelta.ts`, seeded by a mirror of `board:tasks`) — the
+ * same shape `verify-jira-move.mjs` uses for `task:move`:
  * `ipc.ts` has no test file (`registerIpcHandlers` builds its own store from
  * `app.getPath('userData')`, a real `BrowserWindow`, pollers and git clients — out of reach
  * for a harness like this one), so the handler is copied here line for line rather than
@@ -30,7 +32,7 @@
  * created, an adhoc card moves onto the prefixed one first (a fresh key, `source: 'ticket'`),
  * then onto the keyless one (the key freezes at what the FIRST move gave it, not what it was
  * born with — sections 1 and 3 each cover one half of this on separate cards, never chained).
- * Both hops go through the `setBoard` mirror so the two `project:tasksChanged` sends are
+ * Both hops go through the `setBoard` mirror so the two `tasks:changed` deltas are
  * re-checked here too, and `board:scopes` is re-read afterwards to confirm both new boards
  * are in it.
  *
@@ -57,6 +59,8 @@ const require = createRequire(import.meta.url);
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** `@shared` for the packages/shared workspace package. */
 const sharedSrc = join(repo, '..', '..', 'packages', 'shared', 'src');
+/** `@protocol` for packages/protocol — `store.ts` reaches it through `cloudDelta.ts`. */
+const protocolSrc = join(repo, '..', '..', 'packages', 'protocol', 'src');
 
 /**
  * Everything this script writes lives here, INSIDE the app package: the bundle keeps
@@ -99,7 +103,7 @@ async function bundle(entry, outDir) {
   await build({
     configFile: false,
     logLevel: 'error',
-    resolve: { alias: { '@shared': sharedSrc, electron: stub } },
+    resolve: { alias: { '@shared': sharedSrc, '@protocol': protocolSrc, electron: stub } },
     build: {
       ssr: entry,
       outDir,
@@ -185,7 +189,9 @@ const SCENARIOS = String.raw`
 import { mkdirSync, rmSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { createStore } from '__REPO__/src/main/store';
+import { createTaskDeltaPusher } from '__REPO__/src/main/taskDelta';
 import { PERSONAL_PROJECT_ID, hasPlan } from '@shared/model';
+import { toTaskSummary } from '@shared/taskSummary';
 
 let failures = 0;
 function check(label, condition, detail) {
@@ -398,11 +404,50 @@ check('and its return value is literally undefined too', resultMissingTask === u
 section('5. task:setBoard (ipc.ts), mirrored — its guards, its move, its two sends');
 
 /**
+ * ipc.ts's \`send\` choke point and its delta pusher (F29.2), minus the window: an event lands
+ * on \`sink\`, the \`sent\` list of whichever \`setBoard\` call is running. \`task:changed\` is
+ * mapped to a summary and noted, exactly as \`send\` does.
+ */
+let sink = [];
+function send(channel, payload) {
+  if (channel === 'task:changed') {
+    const task = toTaskSummary(payload.task);
+    taskDeltas.noteChanged(task);
+    payload = { ...payload, task };
+  }
+  sink.push([channel, payload]);
+}
+const taskDeltas = createTaskDeltaPusher({
+  readBoard: (projectId) => store.getBoardTasks(projectId),
+  send: (delta) => send('tasks:changed', delta),
+});
+const pushTaskDelta = (projectId) => taskDeltas.push(projectId);
+
+/** Copied from the real \`handle('board:tasks', ...)\` — what the renderer loads, and seeds. */
+function boardTasks(scope) {
+  const all = !scope || scope === 'all';
+  const summaries = (all ? store.getAllBoardTasks() : store.getBoardTasks(scope)).map(toTaskSummary);
+  if (!all) {
+    taskDeltas.seed(scope, summaries);
+    return summaries;
+  }
+  const byBoard = new Map();
+  for (const row of summaries) {
+    const board = byBoard.get(row.projectId);
+    if (board) board.push(row);
+    else byBoard.set(row.projectId, [row]);
+  }
+  for (const [projectId, rows] of byBoard) taskDeltas.seed(projectId, rows);
+  return summaries;
+}
+
+/**
  * Copied line for line from the real \`handle('task:setBoard', ...)\` in ipc.ts, minus the
- * parts that need its closure (the real \`send\` becomes a push onto \`sent\` instead of an
- * IPC broadcast). If ipc.ts changes, this must be re-read against it.
+ * parts that need its closure (\`send\` above lands on \`sent\` instead of an IPC broadcast).
+ * If ipc.ts changes, this must be re-read against it.
  */
 function setBoard(taskId, boardId, sent) {
+  sink = sent;
   const existing = store.getTask(taskId);
   if (!existing) throw new Error('Task not found.');
   if (existing.status === 'running' || existing.status === 'waiting-input') {
@@ -427,12 +472,9 @@ function setBoard(taskId, boardId, sent) {
 
   const task = store.moveTaskToBoard(taskId, boardId);
   if (!task) throw new Error('Task not found.');
-  sent.push(['task:changed', { task, runId: null }]);
-  sent.push([
-    'project:tasksChanged',
-    { projectId: existing.projectId, tasks: store.getTasks(existing.projectId) },
-  ]);
-  sent.push(['project:tasksChanged', { projectId: boardId, tasks: store.getTasks(boardId) }]);
+  send('task:changed', { task, runId: null });
+  pushTaskDelta(existing.projectId);
+  pushTaskDelta(boardId);
   return task;
 }
 
@@ -517,22 +559,35 @@ check(
 );
 
 // -- both-board events emitted -------------------------------------------------
+// The renderer has the board open: \`board:tasks('all')\` seeds every board's snapshot, so each
+// delta below is measured against what a window actually holds.
+boardTasks('all');
 const sent = [];
 const moved = setBoard(plainTask.id, destC.id, sent);
 check('the move itself succeeded', moved.projectId === destC.id);
 check('exactly three events were sent', sent.length === 3, JSON.stringify(sent.map((s) => s[0])));
 check("the first is task:changed, carrying the moved task", sent[0][0] === 'task:changed' && sent[0][1].task.id === plainTask.id);
 check(
-  'the second is project:tasksChanged for the SOURCE board (Personal), which no longer lists the card',
-  sent[1][0] === 'project:tasksChanged' &&
-    sent[1][1].projectId === PERSONAL_PROJECT_ID &&
-    !sent[1][1].tasks.some((t) => t.id === plainTask.id),
+  'and it carries the summary only — no heavy field rides along',
+  !('description' in sent[0][1].task) && !('agentPlan' in sent[0][1].task),
+  JSON.stringify(Object.keys(sent[0][1].task)),
 );
 check(
-  'the third is project:tasksChanged for the DESTINATION board, which now lists the card',
-  sent[2][0] === 'project:tasksChanged' &&
+  'the second is tasks:changed for the SOURCE board (Personal), removing exactly the card',
+  sent[1][0] === 'tasks:changed' &&
+    sent[1][1].projectId === PERSONAL_PROJECT_ID &&
+    JSON.stringify(sent[1][1].removed) === JSON.stringify([plainTask.id]) &&
+    sent[1][1].upserted.length === 0,
+  JSON.stringify(sent[1]),
+);
+check(
+  'the third is tasks:changed for the DESTINATION board, upserting exactly the card',
+  sent[2][0] === 'tasks:changed' &&
     sent[2][1].projectId === destC.id &&
-    sent[2][1].tasks.some((t) => t.id === plainTask.id),
+    JSON.stringify(sent[2][1].upserted.map((t) => t.id)) === JSON.stringify([plainTask.id]) &&
+    sent[2][1].upserted[0].projectId === destC.id &&
+    sent[2][1].removed.length === 0,
+  JSON.stringify(sent[2]),
 );
 
 // A move onto the card's own current board is a no-op: no store write, no events.
@@ -586,7 +641,7 @@ section('7. end-to-end: adhoc -> a prefixed board -> a keyless board, via task:s
 /**
  * The scenario the plan step names directly: one project WITH a prefix, one WITHOUT, one
  * adhoc card walked across both through the real IPC entry point (not \`store\` directly, so
- * this also re-proves the two \`project:tasksChanged\` sends at each hop). The interesting
+ * this also re-proves the two \`tasks:changed\` deltas at each hop). The interesting
  * claim is the SECOND move: a keyless board must freeze the key the card got from the FIRST
  * move, not just a key it was born with — sections 1 and 3 each prove one half of this on
  * separate cards, never chained on the same one.
@@ -598,6 +653,7 @@ check('the second board really has no prefix', e2eKeyless.ticketPrefix === '');
 const e2eCard = store.createTask(PERSONAL_PROJECT_ID, { title: 'an adhoc card for the full round trip' });
 check('starts adhoc and keyless', e2eCard.source === 'adhoc' && !e2eCard.ticketKey);
 
+boardTasks('all');
 const sentToPrefixed = [];
 const onPrefixed = setBoard(e2eCard.id, e2ePrefixed.id, sentToPrefixed);
 check(
@@ -607,9 +663,9 @@ check(
 );
 check("and its source becomes 'ticket'", onPrefixed.source === 'ticket');
 check(
-  'that move fired project:tasksChanged for both Personal (source) and E2E (destination)',
+  'that move fired tasks:changed for both Personal (source) and E2E (destination)',
   sentToPrefixed
-    .filter((s) => s[0] === 'project:tasksChanged')
+    .filter((s) => s[0] === 'tasks:changed')
     .map((s) => s[1].projectId)
     .sort()
     .join(',') === [PERSONAL_PROJECT_ID, e2ePrefixed.id].sort().join(','),
@@ -625,9 +681,9 @@ check(
 );
 check("its source stays 'ticket' — freezing does not downgrade it back to adhoc", onKeyless.source === 'ticket');
 check(
-  'that move fired project:tasksChanged for both E2E (source) and the keyless board (destination)',
+  'that move fired tasks:changed for both E2E (source) and the keyless board (destination)',
   sentToKeyless
-    .filter((s) => s[0] === 'project:tasksChanged')
+    .filter((s) => s[0] === 'tasks:changed')
     .map((s) => s[1].projectId)
     .sort()
     .join(',') === [e2ePrefixed.id, e2eKeyless.id].sort().join(','),

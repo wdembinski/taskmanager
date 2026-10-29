@@ -6,7 +6,12 @@
  * Both functions return the SAME array reference when nothing changed, so a `useState`
  * setter handed their result skips the re-render on its own.
  */
-import { toTaskSummary, type TaskDelta, type TaskSummary } from '@tm/shared/taskSummary';
+import {
+  sameTaskSummary,
+  toTaskSummary,
+  type TaskDelta,
+  type TaskSummary,
+} from '@tm/shared/taskSummary';
 
 /**
  * A list's scope: one board's project id, or `'all'` for the union of every board — the
@@ -39,7 +44,7 @@ export function applyTaskDelta(
     const upsert = upserts.get(row.id);
     if (upsert) {
       upserts.delete(row.id);
-      if (!sameSummary(row, upsert)) {
+      if (!sameTaskSummary(row, upsert)) {
         next.push(upsert);
         changed = true;
         continue;
@@ -63,33 +68,16 @@ export function patchTaskSummary(list: TaskSummary[], task: TaskSummary): TaskSu
   const index = list.findIndex((row) => row.id === task.id);
   if (index < 0) return list;
   const summary = toTaskSummary(task);
-  if (sameSummary(list[index]!, summary)) return list;
+  if (sameTaskSummary(list[index]!, summary)) return list;
   const next = list.slice();
   next[index] = summary;
   return next;
 }
 
-/** Shallow equality over summary fields, with the array fields compared by element. */
-function sameSummary(a: TaskSummary, b: TaskSummary): boolean {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const key of keys) {
-    const x = (a as Record<string, unknown>)[key];
-    const y = (b as Record<string, unknown>)[key];
-    if (x === y) continue;
-    if (Array.isArray(x) && Array.isArray(y)) {
-      if (x.length !== y.length || x.some((v, i) => v !== y[i])) return false;
-      continue;
-    }
-    return false;
-  }
-  return true;
-}
-
 /**
- * The legacy `project:tasksChanged` (one board's WHOLE list) as the delta it amounts to
+ * One board's WHOLE list — what a tracker sync answers with — as the delta it amounts to
  * against `list`: every card of that board upserted, and every card `list` holds for that
- * board but the new list lacks, removed. Temporary — `useTaskSummaries` reads it only until
- * the main process sends `tasks:changed` itself (F29.2 step 3).
+ * board but the new list lacks, removed.
  */
 export function deltaFromBoardList(
   list: readonly TaskSummary[],

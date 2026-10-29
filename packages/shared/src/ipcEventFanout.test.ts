@@ -43,7 +43,6 @@ const CLASSIFIED: ReadonlyArray<readonly [string, string]> = [
   ['aiReview:changed', 'replace-by-key'],
   ['project:boardReviewChanged', 'replace-by-key'],
   ['window:maximizedChanged', 'drop'],
-  ['project:tasksChanged', 'drop'],
   ['tasks:changed', 'drop'],
   ['activity:appended', 'drop'],
 ];
@@ -70,7 +69,6 @@ describe('the fanout classification', () => {
 
   it('says WHY a dropped channel is dropped, and says nothing for one that is not', () => {
     expect(dropReason('window:maximizedChanged')).toContain('no app window');
-    expect(dropReason('project:tasksChanged')).toContain('mirror');
     expect(dropReason('tasks:changed')).toContain('mirror');
     expect(dropReason('activity:appended')).toContain('activity:list');
     expect(dropReason('task:changed')).toBeNull();

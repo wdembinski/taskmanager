@@ -41,7 +41,8 @@ function milestone(id: string, projectId: string): Milestone {
 }
 
 interface Sent {
-  channel: keyof IpcEvents;
+  /** An event, or `pushTasks` for the injected board push. */
+  channel: keyof IpcEvents | 'pushTasks';
   payload: unknown;
 }
 
@@ -64,7 +65,6 @@ function harness(tasks: Task[], milestones: Milestone[] = [], people: Person[] =
   });
   const store: TicketIpcDeps['store'] = {
     getTask: (id) => byId.get(id),
-    getTasks: (projectId) => [...byId.values()].filter((t) => t.projectId === projectId),
     updateTask: updateTask as unknown as TicketIpcDeps['store']['updateTask'],
     listMilestones: (projectId) => milestones.filter((m) => m.projectId === projectId),
     listPeople: () => people,
@@ -77,7 +77,16 @@ function harness(tasks: Task[], milestones: Milestone[] = [], people: Person[] =
   const send: TicketIpcDeps['send'] = (channel, payload) => {
     sent.push({ channel, payload });
   };
-  return { ticketIpc: createTicketIpc({ store, send }), store, sent, updateTask, addTicketLink };
+  const pushTasks: TicketIpcDeps['pushTasks'] = (projectId) => {
+    sent.push({ channel: 'pushTasks', payload: projectId });
+  };
+  return {
+    ticketIpc: createTicketIpc({ store, send, pushTasks }),
+    store,
+    sent,
+    updateTask,
+    addTicketLink,
+  };
 }
 
 describe('updateTicket', () => {
@@ -120,10 +129,7 @@ describe('updateTicket', () => {
     expect(h.updateTask.mock.calls[0][1]).toStrictEqual({ milestoneId: 'm-1' });
     expect(updated.milestoneId).toBe('m-1');
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0]).toEqual({
-      channel: 'project:tasksChanged',
-      payload: { projectId: 'project-1', tasks: h.store.getTasks('project-1') },
-    });
+    expect(h.sent[0]).toEqual({ channel: 'pushTasks', payload: 'project-1' });
   });
 });
 

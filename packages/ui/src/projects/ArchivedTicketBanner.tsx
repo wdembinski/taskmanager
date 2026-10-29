@@ -12,7 +12,7 @@
  *
  * `ArchivedTicketBanner` renders nothing (`null`) for a ticket that isn't archived — the
  * common case, so most panels draw no bar at all — and never needs a reload once a restore
- * lands ok: `archive:restore` already pushes `milestone:changed`/`project:tasksChanged` for a
+ * lands ok: `archive:restore` already pushes `milestone:changed`/`tasks:changed` for a
  * milestone or epic target, which the host's own registries listen for, so the next render
  * finds `archivedBy` returning `null` and the bar disappears on its own. Restoring a PROJECT
  * target pushes neither (see `archiveHandlers.ts`'s own docstring) — the bar can linger one

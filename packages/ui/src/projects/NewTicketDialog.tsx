@@ -7,7 +7,7 @@
  *
  * Reached two ways from `BacklogTable`: the toolbar's "New ticket" button (no epic preset)
  * and an epic group header's "Add child" button (`defaultEpicTaskId` preset to that epic).
- * Neither caller needs to pass an `onCreated` — `ticket:create`'s `project:tasksChanged`
+ * Neither caller needs to pass an `onCreated` — `ticket:create`'s `tasks:changed`
  * broadcast already refreshes `BacklogTable`'s own list, the same way an edit in the shared
  * ticket panel flows back down without a callback.
  *
