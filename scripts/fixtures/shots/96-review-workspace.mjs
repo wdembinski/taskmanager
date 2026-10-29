@@ -350,6 +350,101 @@ export const PR_VIEWED = ['src/upload/backoff.ts', 'src/net/link.ts'].map((path)
   viewedAt: now - 20 * 60_000,
 }));
 
+/** The agent card `TM-87 Send comments back`'s `subjectId` (`taskSubjectId('87')`). */
+export const TASK87_SUBJECT_ID = 'task:87';
+
+/**
+ * `review:subjectSummary(TASK87_SUBJECT_ID)`'s answer: `!412`'s diff read from the card's own
+ * worktree, so the card subject has comments, an AI reviewer and *Send to agent*. Reusing the
+ * PR's `diffId` lets `PR_FILES` answer this subject's `review:subjectFile` unchanged.
+ */
+export const TASK87_SUMMARY = {
+  status: 'ok',
+  summary: {
+    ...PR_SUMMARY.summary,
+    subjectId: TASK87_SUBJECT_ID,
+    source: 'worktree',
+    // `WORKTREE_CAPABILITIES` (`@tm/shared/review`), spelled out.
+    capabilities: { expandContext: true, aiReview: true, sendToAgent: true, publish: false },
+  },
+};
+
+/** The new-side text of `src/upload/retry.ts` line `line`, from the loaded hunks. */
+function retryLine(line) {
+  for (const h of HUNKS['src/upload/retry.ts']) {
+    const found = h.lines.find((l) => l.kind !== 'del' && l.newLine === line);
+    if (found) return found.text;
+  }
+  throw new Error(`src/upload/retry.ts has no new-side line ${line} in its hunks`);
+}
+
+const draft = (fields) => ({
+  taskId: '87',
+  diffId: PR_DIFF_ID,
+  path: 'src/upload/retry.ts',
+  side: 'new',
+  excerpt: retryLine(fields.line),
+  createdAt: now - 30 * 60_000,
+  updatedAt: now - 30 * 60_000,
+  sentAt: null,
+  ...fields,
+});
+
+const aiDraft = (fields) =>
+  draft({
+    origin: 'ai',
+    aiReviewId: 'air-87-1',
+    suggestion: null,
+    acceptedAt: null,
+    dismissedAt: null,
+    createdAt: now - 12 * 60_000,
+    updatedAt: now - 12 * 60_000,
+    ...fields,
+  });
+
+/**
+ * `review:list('87')`'s answer: the v9-6 thread on line 18 — Jonas's question, then the AI's
+ * blocker with a suggestion — plus one unaccepted AI draft per other severity, one dismissed AI
+ * draft (behind "show dismissed (1)") and nothing accepted, so the header's draft count is 1.
+ */
+export const TASK87_DRAFTS = [
+  draft({ id: 'c-87-human', line: 18, body: 'Should backoff cap at 30s?' }),
+  aiDraft({
+    id: 'c-87-ai-blocker',
+    line: 18,
+    severity: 'blocker',
+    body: 'After the last try the error is swallowed and upload() resolves undefined. Rethrow after the loop.',
+    suggestion: 'export async function upload(f: File): Promise<UploadResult> {',
+  }),
+  aiDraft({
+    id: 'c-87-ai-major',
+    line: 26,
+    severity: 'major',
+    body: 'Backoff also runs after the final attempt, so a failed upload waits the longest delay before it rethrows.',
+    suggestion: '      if (i < MAX_TRIES - 1) await backoff(i);',
+  }),
+  aiDraft({
+    id: 'c-87-ai-minor',
+    line: 24,
+    severity: 'minor',
+    body: 'A non-link error is rethrown without the attempt number; worth adding it for the logs.',
+  }),
+  aiDraft({
+    id: 'c-87-ai-nit',
+    line: 19,
+    severity: 'nit',
+    body: '`last` reads better as `lastError`.',
+    suggestion: '  let lastError: unknown;',
+  }),
+  aiDraft({
+    id: 'c-87-ai-dismissed',
+    line: 25,
+    severity: 'minor',
+    body: 'Keep the first error rather than the last; it is usually the telling one.',
+    dismissedAt: now - 5 * 60_000,
+  }),
+];
+
 /**
  * Only an EMPTY `review:queues` — see the header doc. The shell's Reviews row reads it at boot
  * (`useRequestedReviewCount`) on every screen, and an unanswered channel crashed every row.

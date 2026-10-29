@@ -61,6 +61,21 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
     border: `1px solid ${tokens.colorNeutralStroke2}`,
   },
+  // v9-6 draws a line's comments as ONE card, each entry under a hairline — not a box apiece.
+  threadBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    borderRadius: tokens.borderRadiusMedium,
+    backgroundColor: tokens.colorNeutralBackground2,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  entry: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+    padding: '6px 8px',
+    ':not(:first-child)': { borderTop: `1px solid ${tokens.colorNeutralStroke2}` },
+  },
   cardHeader: { display: 'flex', alignItems: 'center', gap: '6px' },
   range: { fontFamily: MONO, color: tokens.colorNeutralForeground3 },
   sent: {
@@ -257,7 +272,7 @@ export function CommentCard(props: CommentCardProps): JSX.Element {
 function HumanCommentCard({ comment, onEdit, onDelete }: CommentCardProps): JSX.Element {
   const styles = useStyles();
   return (
-    <div className={styles.card}>
+    <div className={styles.entry}>
       <div className={styles.cardHeader}>
         <Caption1 className={styles.range}>{rangeLabel(comment)}</Caption1>
         {comment.outdated && <OutdatedBadge />}
@@ -289,13 +304,13 @@ function AiDraftCard({
   const kept = decision === 'accepted' && comment.sentAt === null;
   return (
     <div
-      className={mergeClasses(styles.card, decision === 'dismissed' && styles.dismissed)}
+      className={mergeClasses(styles.entry, decision === 'dismissed' && styles.dismissed)}
       data-ai-draft
       data-severity={severity ?? undefined}
       data-decision={decision}
     >
       <div className={styles.cardHeader}>
-        <Badge appearance="filled" color="brand" size="small" data-ai-mark>
+        <Badge appearance="filled" color="brand" size="small" shape="rounded" data-ai-mark>
           AI
         </Badge>
         <Caption1 className={styles.aiTitle}>
@@ -519,21 +534,24 @@ export function CommentThread({
 }: CommentThreadProps): JSX.Element | null {
   const styles = useStyles();
   if (comments.length === 0 && editor === null) return null;
+  const shown = comments.filter((c) => c.id !== editor?.commentId);
   return (
     <div className={styles.thread}>
-      {comments
-        .filter((c) => c.id !== editor?.commentId)
-        .map((c) => (
-          <CommentCard
-            key={c.id}
-            comment={c}
-            onEdit={onEdit}
-            onDelete={onDelete}
-            onAccept={onAccept}
-            onDismiss={onDismiss}
-            onRestore={onRestore}
-          />
-        ))}
+      {shown.length > 0 && (
+        <div className={styles.threadBox}>
+          {shown.map((c) => (
+            <CommentCard
+              key={c.id}
+              comment={c}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onAccept={onAccept}
+              onDismiss={onDismiss}
+              onRestore={onRestore}
+            />
+          ))}
+        </div>
+      )}
       {editor && (
         <CommentEditorCard
           editor={editor}
