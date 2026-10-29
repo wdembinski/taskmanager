@@ -238,6 +238,7 @@ import {
 import { attachmentFile } from './attachmentPaths';
 import { stagePastedFiles, sweepPasteTemp } from './pastedAttachments';
 import { ReviewWorktrees } from './review/reviewWorktrees';
+import { createAiReviewHandlers } from './review/aiReviewHandlers';
 import { AiReviewRunner } from './review/aiReviewRunner';
 import { AiReviewSubjects } from './review/aiReviewSubjects';
 import { probeClaudeCapabilities } from './claudeCapabilities';
@@ -2439,9 +2440,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     hostFor: (provider) => hostOf(forgeBaseUrl(provider, store.getSettings())),
   });
 
-  // --- AI review (F16.8) -------------------------------------------------------
-  // The engine only: F16.11 registers the aiReview channels and points `emitChanged` at the
-  // renderer push once that event has its `IpcEvents` entry and relay classification.
+  // --- AI review (F16.8, F16.11) -----------------------------------------------
+  // The engine, its four `aiReview:*` channels (relayed, so a browser may start a paid run
+  // just as it may start a card), and `aiReview:changed`, pushed to the renderer and over the
+  // relay on every row write — the answer and the event carry the row, never findings.
   const aiReviews = new AiReviewRunner({
     store,
     scheduler,
@@ -2455,13 +2457,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
         (await worktrees.inspect(project, ownerTaskId, branch))?.cwd ?? null,
     }),
     probe: (project) => probeClaudeCapabilities(hostFor(project.target)),
-    emitChanged: (review) =>
-      logMain(`AI review ${review.id} (${review.subjectId}): ${review.status}`),
+    emitChanged: (review) => {
+      logMain(`AI review ${review.id} (${review.subjectId}): ${review.status}`);
+      send('aiReview:changed', review);
+    },
   });
   // F16.9: a review parked by a previous run is held by the gate it parked in, which the
   // restore above brings back; one held by neither (its gate was never saved, or lifted
   // while the app was closed) restarts — after the gates, so it parks behind one still up.
   void gatesRestored.then(() => aiReviews.restoreParked());
+
+  const aiReviewHandlers = createAiReviewHandlers({ runner: aiReviews });
+  handle('aiReview:start', aiReviewHandlers['aiReview:start']);
+  handle('aiReview:cancel', aiReviewHandlers['aiReview:cancel']);
+  handle('aiReview:list', aiReviewHandlers['aiReview:list']);
+  handle('aiReview:get', aiReviewHandlers['aiReview:get']);
 
   const reviewHandlers = createReviewHandlers({
     subjects: reviewSubjects,
