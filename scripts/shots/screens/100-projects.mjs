@@ -63,21 +63,45 @@ const uiVerifyRow = (scheme, mockup) => ({
   channelOverrides: { 'project:list': UI_VERIFY_PROJECTS },
 });
 
-/** The fixture's projects with the first one — the one "Edit" opens — reviewing on Opus. */
-const REVIEW_MODEL_PROJECTS = PROJECTS.map((entry, i) =>
-  i === 0 ? { ...entry, project: { ...entry.project, reviewModel: 'opus' } } : entry,
+/**
+ * The fixture's projects with the first one — the one "Edit" opens — planning on opus with its
+ * reviewer thinking at max, so the roles rows show a picked model, both sentinels and an effort
+ * that is the project's own beside three that follow the app default.
+ */
+const ROLES_PROJECTS = PROJECTS.map((entry, i) =>
+  i === 0
+    ? {
+        ...entry,
+        project: {
+          ...entry.project,
+          defaultModel: 'sonnet',
+          planningModel: 'opus',
+          leadModel: null,
+          reviewModel: null,
+          reviewEffort: 'max',
+        },
+      }
+    : entry,
 );
 
-/** The "Review model" field (F16.13), directly under the planning/execution model row. */
-const reviewModelRow = (scheme, mockup) => ({
-  name: `project-form-review-model-${scheme}`,
+/**
+ * The roles table (F28.1) — the Start dialog's four rows, as this project's defaults. The
+ * drawer puts the block where v11-4's dialog does not, so the shot is clipped to the block
+ * itself and the mockup to its roles rect (x 330-1110, y 252-526).
+ */
+const rolesRow = (scheme) => ({
+  name: `project-form-roles-${scheme}`,
   app: 'client',
-  viewport: { width: 1280, height: 900 },
+  viewport: { width: 1440, height: 900 },
   scheme,
-  setup: [{ click: 'Projects' }, { click: 'Edit' }, { scrollToSelector: '[data-review-model]' }],
-  expect: '[data-review-model] [role="combobox"]',
-  mockup,
-  channelOverrides: { 'project:list': REVIEW_MODEL_PROJECTS },
+  setup: [{ click: 'Projects' }, { click: 'Edit' }, { scrollToSelector: '[data-project-roles]' }],
+  expect: '[data-project-roles] [data-roles-table] [data-role="reviewer"]',
+  mockup: `v11-4-start-roles-effort-${scheme}.svg`,
+  clip: {
+    selector: '[data-project-roles]',
+    mockup: { x: 330, y: 252, width: 780, height: 274 },
+  },
+  channelOverrides: { 'project:list': ROLES_PROJECTS },
 });
 
 export default [
@@ -132,9 +156,8 @@ export default [
   uiVerifyRow('light', 'v10-13-projects-light.svg'),
   // No dark projects mockup exists, so this row has none.
   uiVerifyRow('dark', null),
-  reviewModelRow('light', 'v10-13-projects-light.svg'),
-  // No dark projects mockup exists, so this row has none.
-  reviewModelRow('dark', null),
+  rolesRow('light'),
+  rolesRow('dark'),
   {
     // "Who merges on green" only renders once "Merge on green" is ON, in the row beside
     // "Merge method" and "Required checks". Picking "Task Manager" proves the dropdown's

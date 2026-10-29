@@ -96,8 +96,12 @@ export interface RoleRow {
   role: AgentRole;
   /** The row's own model; `null` = the sentinel ("follow the next rung"). */
   model: ClaudeModel | null;
-  /** What the sentinel option reads — normally the model it falls back to. */
-  sentinelLabel: string;
+  /**
+   * What the sentinel option reads — normally the model it falls back to. Absent, the row
+   * offers no sentinel at all: the project's Workers model IS the bottom rung, so it has no
+   * next one to follow and `model` is never `null`.
+   */
+  sentinelLabel?: string;
   /** The effort shown picked — the resolved one, whether or not it is the row's own. */
   effort: Effort;
 }
@@ -135,9 +139,15 @@ export function RolesTable({
             <div className={styles.cell}>
               <ModelField
                 dropdownClassName={styles.model}
-                value={roleModelOption(row.model)}
+                value={
+                  row.sentinelLabel === undefined ? (row.model ?? '') : roleModelOption(row.model)
+                }
                 onChange={(v) => onModelChange(role, roleModelFromOption(v))}
-                sentinel={{ value: ROLE_DEFAULT, label: row.sentinelLabel }}
+                sentinel={
+                  row.sentinelLabel === undefined
+                    ? undefined
+                    : { value: ROLE_DEFAULT, label: row.sentinelLabel }
+                }
                 allowCustom={false}
                 title={`${name} model`}
               />

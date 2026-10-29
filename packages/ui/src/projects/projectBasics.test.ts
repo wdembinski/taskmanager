@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { Project } from '@tm/shared/model';
-import { ticketModeOf, ticketPrefixError } from './projectBasics';
+import {
+  projectRoleEffort,
+  projectRoleSentinel,
+  projectRoleWrites,
+  seedProjectRoles,
+  setProjectRoleEffort,
+  setProjectRoleModel,
+  ticketModeOf,
+  ticketPrefixError,
+} from './projectBasics';
 
 let seq = 0;
 /** A minimal project fixture — only the fields this module reads are worth naming. */
@@ -97,5 +106,73 @@ describe('ticketPrefixError', () => {
 
   it('accepts a usable, unclaimed prefix', () => {
     expect(ticketPrefixError({ mode: 'tickets', prefix: 'TM', projects: [] })).toBeNull();
+  });
+});
+
+/**
+ * The project form's roles table — it replaced the Planning model / Steps execution model pair,
+ * so the two writes that pair made (`defaultModel`, `planningModel`) must come out the same,
+ * and the new rows must never save a default the human did not pick.
+ */
+describe('project roles', () => {
+  const APP = { defaultModel: 'opus', defaultPlanningModel: null } as const;
+  const HIGH = { lead: 'high', planner: 'high', workers: 'high', reviewer: 'high' } as const;
+
+  it("seeds an edited project's own fields, nulls kept as nulls", () => {
+    const roles = seedProjectRoles(
+      project({ defaultModel: 'sonnet', planningModel: 'opus', workerEffort: 'low' }),
+      APP,
+    );
+    expect(roles.models).toEqual({
+      lead: null,
+      planner: 'opus',
+      workers: 'sonnet',
+      reviewer: null,
+    });
+    expect(roles.efforts).toEqual({ lead: null, planner: null, workers: 'low', reviewer: null });
+  });
+
+  it('seeds a new project from the app defaults', () => {
+    const roles = seedProjectRoles(null, { defaultModel: 'haiku', defaultPlanningModel: 'opus' });
+    expect(roles.models.workers).toBe('haiku');
+    expect(roles.models.planner).toBe('opus');
+  });
+
+  it('names the rung each sentinel follows; Workers has none', () => {
+    expect(projectRoleSentinel('workers')).toBeUndefined();
+    expect(projectRoleSentinel('planner')).toBe('Same as execution');
+    expect(projectRoleSentinel('lead')).toBe('Same as planning');
+    expect(projectRoleSentinel('reviewer')).toBe('Same as planning');
+  });
+
+  it('writes every model, the sentinel as null, and Workers to defaultModel', () => {
+    let roles = seedProjectRoles(project({ planningModel: 'opus', leadModel: 'opus' }), APP);
+    roles = setProjectRoleModel(roles, 'workers', 'haiku');
+    roles = setProjectRoleModel(roles, 'lead', null);
+    expect(projectRoleWrites(roles)).toEqual({
+      defaultModel: 'haiku',
+      planningModel: 'opus',
+      leadModel: null,
+      reviewModel: null,
+    });
+  });
+
+  it('never lets Workers go null', () => {
+    const roles = seedProjectRoles(project({ defaultModel: 'sonnet' }), APP);
+    expect(setProjectRoleModel(roles, 'workers', null).models.workers).toBe('sonnet');
+  });
+
+  it('shows the app default for an unset effort but writes only touched ones', () => {
+    let roles = seedProjectRoles(project({ reviewEffort: 'max' }), APP);
+    expect(projectRoleEffort('lead', roles, HIGH)).toBe('high');
+    expect(projectRoleEffort('reviewer', roles, HIGH)).toBe('max');
+    expect(projectRoleWrites(roles)).not.toHaveProperty('reviewEffort');
+    expect(projectRoleWrites(roles)).not.toHaveProperty('leadEffort');
+
+    roles = setProjectRoleEffort(roles, 'workers', 'xhigh');
+    roles = setProjectRoleEffort(roles, 'workers', 'low');
+    expect(roles.touched).toEqual(['workers']);
+    expect(projectRoleWrites(roles)).toMatchObject({ workerEffort: 'low' });
+    expect(projectRoleWrites(roles)).not.toHaveProperty('planningEffort');
   });
 });

@@ -120,8 +120,11 @@
  *   instead of the whole viewport, so the row shoots the tree on its own rather than whatever
  *   else happens to share the window. `{ x, y, width, height }` (CSS px, inside `viewport`)
  *   crops both the shot **and** the rasterized mockup to that one rect, so a zoomed detail (the
- *   canvas haze, `016-haze.mjs`) is compared like for like. Omit it to capture the full
- *   viewport, same as before.
+ *   canvas haze, `016-haze.mjs`) is compared like for like. `{ selector, mockup: { x, y, width,
+ *   height } }` crops the shot to the first `selector` match's own bounding rect and the mockup
+ *   to the fixed `mockup` rect — for a block the mockup draws in a different place than the
+ *   app puts it (the Start dialog's roles table, reused in the project drawer). Omit it to
+ *   capture the full viewport, same as before.
  * - `allowPersistentSpinner` — `true` for a row whose `setup` lands on a screen that means to
  *   show a Fluent `Spinner` forever, not just until some promise resolves (`waitForIdle`'s own
  *   doc comment explains the one screen that does, and why this flag exists rather than just
@@ -506,14 +509,57 @@ async function sidebarClipRect(cdp) {
   return rect;
 }
 
-/** A row's `clip` as a fixed `{ x, y, width, height }` rect, or `null` for `'sidebar'`/none. */
+/**
+ * The first `selector` match's own bounding rect, in CSS px — a `{ selector }` clip's shot.
+ * Measured until two reads 100ms apart agree: a drawer still sliding in moves its contents
+ * after `expect` already matched, and a rect read mid-slide crops the wrong strip.
+ */
+async function selectorClipRect(cdp, selector) {
+  const measure = () =>
+    evaluate(
+      cdp,
+      `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      })()`,
+    );
+  let rect = await measure();
+  for (let i = 0; i < 30 && rect; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const next = await measure();
+    if (next && JSON.stringify(next) === JSON.stringify(rect)) break;
+    rect = next;
+  }
+  if (!rect) throw new Error(`could not find ${selector} to clip the shot to`);
+  return rect;
+}
+
+/** `rect` checked as a fixed `{ x, y, width, height }`, naming `label` in the error. */
+function checkedRect(row, rect, label) {
+  for (const k of ['x', 'y', 'width', 'height']) {
+    if (typeof rect?.[k] !== 'number')
+      throw new Error(`${row.name}: ${label}.${k} must be a number`);
+  }
+  return rect;
+}
+
+/** A row's `clip` as a fixed `{ x, y, width, height }` rect, or `null` for `'sidebar'`,
+ *  a `{ selector }` clip (measured in the page) or none. */
 function rectClipOf(row) {
   const c = row.clip;
-  if (!c || typeof c !== 'object') return null;
-  for (const k of ['x', 'y', 'width', 'height']) {
-    if (typeof c[k] !== 'number') throw new Error(`${row.name}: clip.${k} must be a number`);
+  if (!c || typeof c !== 'object' || 'selector' in c) return null;
+  return checkedRect(row, c, 'clip');
+}
+
+/** The rect the mockup is cropped to: a fixed clip's own, or a `{ selector }` clip's `mockup`. */
+function mockupClipOf(row) {
+  const c = row.clip;
+  if (c && typeof c === 'object' && 'selector' in c) {
+    return c.mockup ? checkedRect(row, c.mockup, 'clip.mockup') : null;
   }
-  return c;
+  return rectClipOf(row);
 }
 
 /**
@@ -523,7 +569,7 @@ function rectClipOf(row) {
  */
 function rasterizeMockup(browserPath, row, mockupPath) {
   const svgPath = join(mockupsDir, row.mockup);
-  const rect = rectClipOf(row);
+  const rect = mockupClipOf(row);
   if (!rect) {
     renderSvgToPng(browserPath, svgPath, mockupPath, row.viewport.width, row.viewport.height);
     return;
@@ -957,7 +1003,11 @@ async function main() {
 
         const shotPath = join(outDir, `${row.name}.png`);
         const clip =
-          row.clip === 'sidebar' ? await sidebarClipRect(cdp) : (rectClipOf(row) ?? undefined);
+          row.clip === 'sidebar'
+            ? await sidebarClipRect(cdp)
+            : row.clip?.selector
+              ? await selectorClipRect(cdp, row.clip.selector)
+              : (rectClipOf(row) ?? undefined);
         await screenshot(cdp, shotPath, clip);
         result.shotPath = shotPath;
 

@@ -46,6 +46,7 @@ import {
   AUTO_MERGE_BY,
   AUTO_MERGE_BY_LABELS,
   AUTO_MERGE_METHODS,
+  AGENT_ROLES,
   hasPlan,
   hasRepo,
   ownsTickets,
@@ -54,7 +55,8 @@ import {
   type GitPreflight,
   type Project,
 } from '@tm/shared/model';
-import { PERMISSION_MODE_LABELS, type ClaudeModel, type PermissionMode } from '@tm/shared/session';
+import { PERMISSION_MODE_LABELS, type PermissionMode } from '@tm/shared/session';
+import { DEFAULT_EFFORTS } from '@tm/shared/settings';
 import { RELEASE_DOC } from '@tm/shared/release';
 import { suggestTicketPrefix } from '@tm/shared/ticketKey';
 import { DEFAULT_READY_LANES } from '@tm/shared/readyLanes';
@@ -74,12 +76,21 @@ import { distroFromWindowsPath, pathSuitsHost, windowsToLinux } from '@tm/shared
 import { describeGitPreflight } from '@tm/shared/gitPreflight';
 import { BaseBranchField } from '../BaseBranchField';
 import { ColorSwatches } from '../ColorSwatches';
-import { ModelField } from '../ModelField';
-import { PlanningModelField } from '../PlanningModelField';
-import { ReviewModelField } from '../ReviewModelField';
+import { RolesTable, type RoleRow } from '../RolesTable';
 import { useTransport } from '../transport';
 import { ProjectBasicsFields } from './ProjectBasicsFields';
-import { ticketModeOf, ticketPrefixError, type TicketMode } from './projectBasics';
+import {
+  projectRoleEffort,
+  projectRoleSentinel,
+  projectRoleWrites,
+  seedProjectRoles,
+  setProjectRoleEffort,
+  setProjectRoleModel,
+  ticketModeOf,
+  ticketPrefixError,
+  type ProjectRoles,
+  type TicketMode,
+} from './projectBasics';
 
 const useStyles = makeStyles({
   form: { display: 'flex', flexDirection: 'column', gap: '12px', minWidth: '380px' },
@@ -87,6 +98,15 @@ const useStyles = makeStyles({
   grow: { flex: 1 },
   mono: { fontFamily: 'ui-monospace, Consolas, monospace' },
   hint: { color: tokens.colorNeutralForeground3 },
+  /** The roles section, framed by hairlines like the Start dialog's (v11-4). */
+  roles: {
+    display: 'flex',
+    flexDirection: 'column',
+    paddingTop: '12px',
+    paddingBottom: '4px',
+    borderTop: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    borderBottom: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+  },
 });
 
 const MODES: PermissionMode[] = ['acceptEdits', 'plan', 'manual', 'bypassPermissions'];
@@ -194,11 +214,12 @@ export function ProjectForm({
    * following, and that comparison needs the app's answer even when editing.
    */
   const [appAutoIntegrate, setAppAutoIntegrate] = useState(false);
-  const [model, setModel] = useState<ClaudeModel>('sonnet');
-  /** `null` = plan on the execution model, which is what a repo that never ruled does. */
-  const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
-  /** `null` = review on the planning model, which is what a repo that never ruled does. */
-  const [reviewModel, setReviewModel] = useState<ClaudeModel | null>(null);
+  /** The four role rows — see `ProjectRoles` for what `null` means in each. */
+  const [roles, setRoles] = useState<ProjectRoles>(() =>
+    seedProjectRoles(null, { defaultModel: 'sonnet', defaultPlanningModel: null }),
+  );
+  /** The app's effort per role — what a row the project never set shows picked. */
+  const [defaultEfforts, setDefaultEfforts] = useState(DEFAULT_EFFORTS);
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [concurrency, setConcurrency] = useState(1);
   const [writeBackPlan, setWriteBackPlan] = useState(false);
@@ -237,7 +258,10 @@ export function ProjectForm({
     if (!open) return;
     setError(null);
     // Needed whichever mode this is; the defaults fetch below only runs for a new project.
-    void transport.invoke('settings:get').then((s) => setAppAutoIntegrate(s.autoIntegrate));
+    void transport.invoke('settings:get').then((s) => {
+      setAppAutoIntegrate(s.autoIntegrate);
+      setDefaultEfforts(s.defaultEfforts ?? DEFAULT_EFFORTS);
+    });
     if (project) {
       updatePath(project.path);
       setName(project.name);
@@ -263,9 +287,12 @@ export function ProjectForm({
       setAutoApprovePlans(project.autoApprovePlans);
       setAutoApproveMaxSteps(project.autoApproveMaxSteps);
       setReadyLanes(project.readyLanes ?? DEFAULT_READY_LANES);
-      setModel(project.defaultModel);
-      setPlanningModel(project.planningModel);
-      setReviewModel(project.reviewModel);
+      setRoles(
+        seedProjectRoles(project, {
+          defaultModel: project.defaultModel,
+          defaultPlanningModel: null,
+        }),
+      );
       setPermMode(project.defaultPermissionMode);
       setConcurrency(project.concurrency);
       setWriteBackPlan(project.writeBackPlan);
@@ -296,10 +323,8 @@ export function ProjectForm({
       setWriteBackPlan(false); // moot here — this dialog always adds plan-less (see save())
       setInstructions('');
       setUiVerifyCommand('');
-      setReviewModel(null); // review on the planning model until this project says otherwise
       void transport.invoke('settings:get').then((s) => {
-        setModel(s.defaultModel);
-        setPlanningModel(s.defaultPlanningModel);
+        setRoles(seedProjectRoles(null, s));
         setPermMode(s.defaultPermissionMode);
         setConcurrency(s.concurrency);
         updateTarget(s.defaultExecTarget);
@@ -366,9 +391,7 @@ export function ProjectForm({
         const updated = await transport.invoke('project:update', project.id, {
           path,
           name: name.trim() || undefined,
-          defaultModel: model,
-          planningModel,
-          reviewModel,
+          ...projectRoleWrites(roles),
           defaultPermissionMode: permMode,
           concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
@@ -406,9 +429,7 @@ export function ProjectForm({
           // the scheduler's queue instead.
           planPath: '',
           name: name.trim() || undefined,
-          defaultModel: model,
-          planningModel,
-          reviewModel,
+          ...projectRoleWrites(roles),
           defaultPermissionMode: permMode,
           concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
@@ -450,11 +471,19 @@ export function ProjectForm({
   // whether this repo actually runs isolated, hence the live switch rather than a hardcoded true.
   const gitNote = describeGitPreflight(gitPreflight, useWorktrees);
 
+  const roleRows: RoleRow[] = AGENT_ROLES.map((role) => ({
+    role,
+    model: roles.models[role],
+    sentinelLabel: projectRoleSentinel(role),
+    effort: projectRoleEffort(role, roles, defaultEfforts),
+  }));
+
   return (
     <OverlayDrawer
       open={open}
       position="end"
-      size="medium"
+      // Wide enough for the roles table's 730px Role / Model / Effort grid (v11-4).
+      size="large"
       onOpenChange={(_e, d) => !d.open && onClose()}
     >
       <DrawerHeader>
@@ -862,37 +891,16 @@ export function ProjectForm({
             </Field>
           )}
 
-          {/* Same pair, and the same reason for no hints inside the row, as the settings
-              screen: planning is the run that reads this repo and decides what the work
-              is, execution the one that carries out a brief. */}
+          {/* The Start dialog's roles table (v11-4), as this repo's defaults: a card that
+              leaves a role unset runs it on what is picked here. Workers is the execution
+              model; Planner, Lead and Reviewer follow their next rung until picked. */}
           {path && (
-            <div className={styles.row}>
-              <PlanningModelField
-                label="Planning model"
-                className={styles.grow}
-                value={planningModel}
-                executionModel={model}
-                onChange={setPlanningModel}
-              />
-              <ModelField
-                label="Steps execution model"
-                className={styles.grow}
-                value={model}
-                onChange={setModel}
-              />
-            </div>
-          )}
-
-          {/* AI review (F16) reads and judges a diff — the same kind of turn as planning — so
-              its empty choice defers to the planning model, and through it to execution. */}
-          {path && (
-            <div data-review-model>
-              <ReviewModelField
-                label="Review model"
-                hint="The model an AI review of this repo’s pull requests runs on."
-                value={reviewModel}
-                planningModel={planningModel ?? model}
-                onChange={setReviewModel}
+            <div className={styles.roles} data-project-roles>
+              <RolesTable
+                rows={roleRows}
+                disabled={saving}
+                onModelChange={(role, m) => setRoles((r) => setProjectRoleModel(r, role, m))}
+                onEffortChange={(role, e) => setRoles((r) => setProjectRoleEffort(r, role, e))}
               />
             </div>
           )}
