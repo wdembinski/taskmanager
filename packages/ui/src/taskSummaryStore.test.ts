@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Task } from '@tm/shared/model';
 import type { TaskSummary } from '@tm/shared/taskSummary';
-import { applyTaskDelta, patchTaskSummary } from './taskSummaryStore';
+import { applyTaskDelta, deltaFromBoardList, patchTaskSummary } from './taskSummaryStore';
 
 function card(id: string, patch: Partial<Task> = {}): TaskSummary {
   return {
@@ -100,5 +100,27 @@ describe('patchTaskSummary', () => {
 
   it('returns the same reference when nothing changed', () => {
     expect(patchTaskSummary(list, card('a', { dependsOn: ['x'] }))).toBe(list);
+  });
+});
+
+describe('deltaFromBoardList', () => {
+  it('upserts the new list and removes what left that board only', () => {
+    const list = [card('a'), card('b'), card('x', { projectId: 'p2' })];
+    const delta = deltaFromBoardList(list, 'p1', [card('a', { title: 'A2' }), card('c')]);
+    expect(delta.projectId).toBe('p1');
+    expect(delta.upserted.map((t) => t.id)).toEqual(['a', 'c']);
+    expect(delta.removed).toEqual(['b']);
+    const next = applyTaskDelta(list, delta, 'all');
+    expect(next.map((t) => [t.id, t.title])).toEqual([
+      ['a', 'A2'],
+      ['x', 'x'],
+      ['c', 'c'],
+    ]);
+  });
+
+  it('carries summaries, not the heavy fields of a full row', () => {
+    const full = { ...card('a'), agentPlan: 'a long plan' } as TaskSummary;
+    const delta = deltaFromBoardList([], 'p1', [full]);
+    expect(delta.upserted[0]).not.toHaveProperty('agentPlan');
   });
 });

@@ -84,3 +84,22 @@ function sameSummary(a: TaskSummary, b: TaskSummary): boolean {
   }
   return true;
 }
+
+/**
+ * The legacy `project:tasksChanged` (one board's WHOLE list) as the delta it amounts to
+ * against `list`: every card of that board upserted, and every card `list` holds for that
+ * board but the new list lacks, removed. Temporary — `useTaskSummaries` reads it only until
+ * the main process sends `tasks:changed` itself (F29.2 step 3).
+ */
+export function deltaFromBoardList(
+  list: readonly TaskSummary[],
+  projectId: string,
+  tasks: readonly TaskSummary[],
+): TaskDelta {
+  const kept = new Set(tasks.map((t) => t.id));
+  return {
+    projectId,
+    upserted: tasks.map(toTaskSummary),
+    removed: list.filter((t) => t.projectId === projectId && !kept.has(t.id)).map((t) => t.id),
+  };
+}

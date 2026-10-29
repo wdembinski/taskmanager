@@ -8,7 +8,10 @@ import { buildAttentionIndex } from './attentionIndex';
 import {
   assembleTaskDetailProps,
   neededLoads,
+  openTaskOf,
+  touchesOpenTask,
   type HostLoad,
+  type OpenTask,
   type LoadedTaskDetailData,
   type TaskDetailHostProps,
 } from './taskDetailHost';
@@ -101,8 +104,14 @@ const attentionItem = (taskId: string): AttentionItem => {
 
 const EMPTY_LOADED: LoadedTaskDetailData = {};
 
-/** The exact prop set `MyTasks.tsx` passes to the host (`MyTasks.tsx:1553`). */
-function myTasksProps(): TaskDetailHostProps {
+const open = (t: Task, parent: Task | null = null, subtasks: Task[] = []): OpenTask => ({
+  task: t,
+  parent,
+  subtasks,
+});
+
+/** Every prop a host can be handed — what a caller holding every row in full would pass. */
+function everyProp(): TaskDetailHostProps {
   return {
     taskId: 'card-1',
     task: task({ id: 'card-1' }),
@@ -140,6 +149,15 @@ function myTasksProps(): TaskDetailHostProps {
   };
 }
 
+/**
+ * The exact prop set `MyTasks.tsx` passes to the host: everything but the open card's own
+ * rows, which its summary list cannot supply (F29.2) — `task:get` reads them.
+ */
+function myTasksProps(): TaskDetailHostProps {
+  const { task: _task, subtasks: _subtasks, parentTask: _parentTask, ...rest } = everyProp();
+  return rest;
+}
+
 /** The exact prop set the web board's `taskDetailProps` + `task` passes (`BoardScreen.tsx:1036`). */
 function webBoardProps(): TaskDetailHostProps {
   return {
@@ -175,8 +193,12 @@ function webBoardProps(): TaskDetailHostProps {
 }
 
 describe('neededLoads', () => {
-  it('is empty for the exact prop set MyTasks passes — nothing is fetched twice', () => {
-    expect(neededLoads(myTasksProps())).toEqual(new Set());
+  it('is empty when the caller supplies every prop — nothing is fetched twice', () => {
+    expect(neededLoads(everyProp())).toEqual(new Set());
+  });
+
+  it('reads only the open card for the exact prop set MyTasks passes (F29.2)', () => {
+    expect(neededLoads(myTasksProps())).toEqual(new Set(['task']));
   });
 
   it('is empty for the exact prop set the web board passes — nothing is fetched twice', () => {
@@ -184,10 +206,10 @@ describe('neededLoads', () => {
   });
 
   const cases: Array<[keyof TaskDetailHostProps, HostLoad]> = [
-    ['task', 'tasks'],
-    ['subtasks', 'tasks'],
-    ['parentTask', 'tasks'],
-    ['chainTasksById', 'tasks'],
+    ['task', 'task'],
+    ['subtasks', 'task'],
+    ['parentTask', 'task'],
+    ['chainTasksById', 'chainTasks'],
     ['mergeRequests', 'mergeRequests'],
     ['attachments', 'attachments'],
     ['parentAttachments', 'attachments'],
@@ -199,7 +221,7 @@ describe('neededLoads', () => {
   ];
 
   it.each(cases)('returns the specific read for a missing %s prop', (field, load) => {
-    const props = { ...myTasksProps(), [field]: undefined };
+    const props = { ...everyProp(), [field]: undefined };
     expect(neededLoads(props)).toEqual(new Set([load]));
   });
 });
@@ -229,11 +251,12 @@ describe('assembleTaskDetailProps', () => {
     // this leaked through, the assertions below would fail on something other than what
     // `provided` actually said.
     const loaded: LoadedTaskDetailData = {
-      tasks: [
-        task({ id: 'card-1', title: 'loaded title' }),
-        task({ id: 'sibling', parentTaskId: 'card-1' }),
-        task({ id: 'parent-x' }),
-      ],
+      openTask: {
+        task: task({ id: 'card-1', title: 'loaded title' }),
+        parent: task({ id: 'parent-x' }),
+        subtasks: [task({ id: 'sibling', parentTaskId: 'card-1' })],
+      },
+      summaries: [task({ id: 'card-1' }), task({ id: 'parent-x' })],
       mergeRequests: [mr({ id: 'mr-1', taskId: 'card-1' })],
       attachments: [attachment('a1', 'card-1')],
       chainLinks: [link('pred', 'card-1')],
@@ -261,7 +284,7 @@ describe('assembleTaskDetailProps', () => {
   });
 
   it("passes the full-screen and peek layouts through untouched, and leaves it unset when it isn't given", () => {
-    const loaded: LoadedTaskDetailData = { tasks: [task({ id: 'card-1' })] };
+    const loaded: LoadedTaskDetailData = { openTask: open(task({ id: 'card-1' })) };
 
     expect(
       assembleTaskDetailProps('card-1', { taskId: 'card-1', layout: 'full' }, loaded).layout,
@@ -274,7 +297,7 @@ describe('assembleTaskDetailProps', () => {
 
   it('lets an explicit null task win over a loaded row for the same id', () => {
     const provided: TaskDetailHostProps = { taskId: 'card-1', task: null };
-    const loaded: LoadedTaskDetailData = { tasks: [task({ id: 'card-1' })] };
+    const loaded: LoadedTaskDetailData = { openTask: open(task({ id: 'card-1' })) };
 
     expect(assembleTaskDetailProps('card-1', provided, loaded).task).toBeNull();
   });
@@ -289,7 +312,8 @@ describe('assembleTaskDetailProps', () => {
     const pred = task({ id: 'pred', status: 'in-review', agentProjectId: 'repo' });
 
     const loaded: LoadedTaskDetailData = {
-      tasks: [parent, step1, step2, step3, pred],
+      openTask: open(step2, parent, [step1, step2, step3]),
+      summaries: [parent, step1, step2, step3, pred],
       mergeRequests: [mr({ id: 'mr-1', taskId: 'step-2' }), mr({ id: 'mr-2', taskId: 'other' })],
       attachments: [
         attachment('a1', 'step-2'),
@@ -322,7 +346,7 @@ describe('assembleTaskDetailProps', () => {
     const step2 = task({ id: 'step-2', parentTaskId: 'card-1', order: 1 });
 
     const loaded: LoadedTaskDetailData = {
-      tasks: [card, step1, step2],
+      openTask: open(card, null, [step1, step2]),
       attachments: [
         attachment('a1', 'step-1'),
         attachment('a2', 'step-2'),
@@ -354,5 +378,63 @@ describe('assembleTaskDetailProps', () => {
     expect(result.mergingTaskIds).toEqual(new Set());
     expect(result.chainWaitingOn).toBeUndefined();
     expect(result.chainMergeHeld).toBeUndefined();
+  });
+});
+
+describe('openTaskOf', () => {
+  it("lists a card's own steps", () => {
+    const card = task({ id: 'card' });
+    const steps = [task({ id: 's1', parentTaskId: 'card' })];
+    expect(openTaskOf({ task: card, parent: null, steps }, null)).toEqual({
+      task: card,
+      parent: null,
+      subtasks: steps,
+    });
+  });
+
+  it("lists a step's siblings from its parent's answer", () => {
+    const parent = task({ id: 'card' });
+    const s1 = task({ id: 's1', parentTaskId: 'card', order: 0 });
+    const s2 = task({ id: 's2', parentTaskId: 'card', order: 1 });
+    const result = openTaskOf(
+      { task: s2, parent, steps: [] },
+      { task: parent, parent: null, steps: [s1, s2] },
+    );
+    expect(result.parent).toBe(parent);
+    expect(result.subtasks.map((t) => t.id)).toEqual(['s1', 's2']);
+  });
+});
+
+describe('touchesOpenTask', () => {
+  const parent = task({ id: 'card' });
+  const s1 = task({ id: 's1', parentTaskId: 'card' });
+  const s2 = task({ id: 's2', parentTaskId: 'card' });
+  const openStep = open(s2, parent, [s1, s2]);
+
+  it('is true for the card, its parent, a sibling step, or a new step in the family', () => {
+    expect(touchesOpenTask(openStep, 's2', [s2])).toBe(true);
+    expect(touchesOpenTask(openStep, 's2', [parent])).toBe(true);
+    expect(touchesOpenTask(openStep, 's2', [s1])).toBe(true);
+    expect(touchesOpenTask(openStep, 's2', [task({ id: 's3', parentTaskId: 'card' })])).toBe(true);
+    expect(touchesOpenTask(openStep, 's2', [], ['s1'])).toBe(true);
+  });
+
+  it('is false for an unrelated card, so the open card is not re-read', () => {
+    expect(touchesOpenTask(openStep, 's2', [task({ id: 'other' })], ['gone'])).toBe(false);
+  });
+
+  it('still matches the card itself and its new steps before the first answer lands', () => {
+    expect(touchesOpenTask(undefined, 'card', [task({ id: 'card' })])).toBe(true);
+    expect(touchesOpenTask(undefined, 'card', [task({ id: 'n', parentTaskId: 'card' })])).toBe(
+      true,
+    );
+    expect(touchesOpenTask(undefined, 'card', [task({ id: 'other' })])).toBe(false);
+  });
+});
+
+describe('assembleTaskDetailProps with a stale task:get answer', () => {
+  it('never draws an answer for a card that is no longer the one shown', () => {
+    const loaded: LoadedTaskDetailData = { openTask: open(task({ id: 'old' })) };
+    expect(assembleTaskDetailProps('new', { taskId: 'new' }, loaded).task).toBeNull();
   });
 });

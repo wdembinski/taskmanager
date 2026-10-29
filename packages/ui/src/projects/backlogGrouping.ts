@@ -5,7 +5,8 @@
  * bottom, so each mode's order can be tested without a DOM.
  */
 import { useState } from 'react';
-import type { Milestone, Task } from '@tm/shared/model';
+import type { Milestone } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import type { ArchiveIndex } from '@tm/shared/trackerArchive';
 import { buildMilestoneTree, type SidebarTreeNode } from '../shell/sidebarModel';
 import { backlogStatusGroups } from './backlogStatus';
@@ -34,12 +35,12 @@ export interface BacklogSection {
   label: string;
   level: 1 | 2;
   addChildEpicId?: string;
-  tickets: Task[];
+  tickets: TaskSummary[];
   sections: BacklogSection[];
 }
 
 export interface BacklogGroupsInput {
-  tickets: readonly Task[];
+  tickets: readonly TaskSummary[];
   milestones: readonly Milestone[];
   query: string;
   sortKey: BacklogSortKey;
@@ -55,7 +56,7 @@ export function parseGroupMode(raw: string | null | undefined): BacklogGroupMode
 }
 
 /** archive → filter → sort, the same three calls (in the same order) as `backlogRows`. */
-function visibleSorted(input: BacklogGroupsInput): Task[] {
+function visibleSorted(input: BacklogGroupsInput): TaskSummary[] {
   return sortBacklog(
     filterTickets(archiveVisibleTickets(input.tickets, input.archive), input.query),
     input.sortKey,
@@ -118,7 +119,7 @@ export function backlogMilestoneGroups(input: BacklogGroupsInput): BacklogSectio
     : (m: Milestone) => m.archivedAt != null;
   const tree = buildMilestoneTree(input.milestones, sorted, isMilestoneArchived);
 
-  const rowsOf = (node: SidebarTreeNode): Task[] => {
+  const rowsOf = (node: SidebarTreeNode): TaskSummary[] => {
     const ids = leafIds(node);
     return sorted.filter((t) => ids.has(t.id));
   };

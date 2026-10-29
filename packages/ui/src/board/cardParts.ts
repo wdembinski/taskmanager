@@ -9,7 +9,8 @@
  * ids these are — `CardPartsContext` carries exactly the slices this module needs, already
  * scoped to this card's task by the caller. No store, no IPC channel, no other card's data.
  */
-import type { Person, Task, TaskStatus } from '@tm/shared/model';
+import type { Person, TaskStatus } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import {
   cardRunLabel,
   isAgentAssigned,
@@ -39,7 +40,7 @@ export interface CardPartsContext {
    *  `IssueRowContext.now` is (testable due-date flagging). */
   now: number;
   /** This card's own steps (Phase 11), already scoped to it by the caller. See `runPhase`. */
-  subtasks?: Task[];
+  subtasks?: TaskSummary[];
   /** `scheduler:activeRuns`, already scoped. See `runPhase`. */
   liveRunTaskIds?: ReadonlySet<string>;
   /** `scheduler:integrating`, already scoped. See `runPhase`. */
@@ -102,7 +103,7 @@ export interface CardParts {
  *  harder stop `STATUS_COLOR['blocked-by-limit']` already calls `severe`, so it shares that
  *  ink; anything left is a resting fact, not a shout. (Queued and "assigned — not started"
  *  never reach here — `statusLineFor` drops them before asking.) */
-function waitingInk(task: Task, subtasks: Task[], run: RunState): CardInk {
+function waitingInk(task: TaskSummary, subtasks: TaskSummary[], run: RunState): CardInk {
   if (needsAgentInput(task)) return 'attention';
   const parked = parkedStep(subtasks);
   if (parked) return parked.status === 'failed' ? 'danger' : 'attention';
@@ -194,8 +195,8 @@ function capitalize(text: string): string {
  * `stopped`, `cancelled`), and last the MR verdict when it is worth a line.
  */
 function statusLineFor(
-  task: Task,
-  subtasks: Task[],
+  task: TaskSummary,
+  subtasks: TaskSummary[],
   ctx: CardPartsContext,
   run: RunState,
 ): CardStatusLine | undefined {
@@ -227,7 +228,7 @@ function statusLineFor(
   return undefined;
 }
 
-function trailingFor(task: Task, ctx: CardPartsContext): CardTrailing | undefined {
+function trailingFor(task: TaskSummary, ctx: CardPartsContext): CardTrailing | undefined {
   const mr = pickMergeRequest(ctx.mergeRequests);
   if (mr) return { kind: 'mr', ref: mrRef(mr), url: mr.webUrl };
   const due = dueParts(task, ctx.now);
@@ -243,7 +244,7 @@ function truncateLabel(text: string, max: number): string {
 }
 
 function epicLabel(
-  task: Pick<Task, 'externalEpicName' | 'externalParentKey'>,
+  task: Pick<TaskSummary, 'externalEpicName' | 'externalParentKey'>,
   epicName: string | undefined,
 ): string | undefined {
   const label = epicName ?? task.externalEpicName ?? task.externalParentKey ?? undefined;
@@ -254,7 +255,7 @@ function epicLabel(
  * Which optional rows the v9 card draws. See `CardParts` for the shape and `CardStatusLine`
  * for the priority order the one status line is picked in.
  */
-export function cardParts(task: Task, ctx: CardPartsContext): CardParts {
+export function cardParts(task: TaskSummary, ctx: CardPartsContext): CardParts {
   const subtasks = ctx.subtasks ?? [];
   const run = runPhase(task, subtasks, ctx.liveRunTaskIds, ctx.mergingTaskIds);
   const avatar = assigneeDisplayParts(ctx.assignee, ctx.agentName);

@@ -2,8 +2,8 @@
  * The backlog's own view logic — filter, sort and group by epic — kept pure and apart from
  * `BacklogTable` so the grouping and the "TM-9 before TM-10" sort can be tested without a DOM.
  */
-import type { Task } from '@tm/shared/model';
 import { parseTicketKey } from '@tm/shared/ticketKey';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import { isEpic } from '@tm/shared/tickets';
 import { visibleTickets, type ArchiveIndex } from '@tm/shared/trackerArchive';
 
@@ -17,7 +17,7 @@ export interface BacklogGroup {
   /** The epic's own id, or null for the {@link NO_EPIC_GROUP} bucket. */
   epicId: string | null;
   epicTitle: string;
-  tickets: Task[];
+  tickets: TaskSummary[];
 }
 
 export type BacklogSortKey = 'key' | 'due';
@@ -29,10 +29,10 @@ export type BacklogSortKey = 'key' | 'due';
  * memoizes off this result sees no change on a no-op keystroke (an empty box, or one just
  * cleared back to empty) and skips the re-render a fresh array would otherwise force.
  */
-export function filterTickets(tickets: readonly Task[], query: string): Task[] {
+export function filterTickets(tickets: readonly TaskSummary[], query: string): TaskSummary[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return tickets as Task[];
-  return (tickets as Task[]).filter((ticket) => {
+  if (!needle) return tickets as TaskSummary[];
+  return (tickets as TaskSummary[]).filter((ticket) => {
     if (ticket.title.toLowerCase().includes(needle)) return true;
     if (ticket.ticketKey?.toLowerCase().includes(needle)) return true;
     return (ticket.labels ?? []).some((label) => label.toLowerCase().includes(needle));
@@ -44,7 +44,7 @@ export function filterTickets(tickets: readonly Task[], query: string): Task[] {
  * row carries it and parsed out of `ticketKey` otherwise, so a fixture built with only the key
  * set (as most callers are) sorts exactly like a real row.
  */
-function ticketOrdinal(ticket: Pick<Task, 'ticketKey' | 'ticketNumber'>): number {
+function ticketOrdinal(ticket: Pick<TaskSummary, 'ticketKey' | 'ticketNumber'>): number {
   if (typeof ticket.ticketNumber === 'number') return ticket.ticketNumber;
   return parseTicketKey(ticket.ticketKey ?? '')?.ticketNumber ?? 0;
 }
@@ -58,7 +58,10 @@ function ticketOrdinal(ticket: Pick<Task, 'ticketKey' | 'ticketNumber'>): number
  * `'due'` puts undated tickets (`dueAt: null`) last, regardless of direction — an unplanned
  * ticket is not "earliest due", it has no answer to the question being asked.
  */
-export function sortBacklog(tickets: readonly Task[], sortKey: BacklogSortKey): Task[] {
+export function sortBacklog(
+  tickets: readonly TaskSummary[],
+  sortKey: BacklogSortKey,
+): TaskSummary[] {
   const sorted = [...tickets];
   if (sortKey === 'key') {
     sorted.sort((a, b) => ticketOrdinal(a) - ticketOrdinal(b));
@@ -87,21 +90,21 @@ export function sortBacklog(tickets: readonly Task[], sortKey: BacklogSortKey): 
  * to, once as an ordinary "No epic" row. Every epic in the input gets a header, even one with
  * no children yet — an empty group, not a vanished one.
  */
-export function groupTickets(tickets: readonly Task[]): BacklogGroup[] {
-  const epicsById = new Map<string, Task>();
+export function groupTickets(tickets: readonly TaskSummary[]): BacklogGroup[] {
+  const epicsById = new Map<string, TaskSummary>();
   for (const ticket of tickets) {
     if (isEpic(ticket)) epicsById.set(ticket.id, ticket);
   }
 
   const epicOrder: string[] = [];
-  const epicBuckets = new Map<string, Task[]>();
+  const epicBuckets = new Map<string, TaskSummary[]>();
   for (const ticket of tickets) {
     if (!isEpic(ticket) || epicBuckets.has(ticket.id)) continue;
     epicBuckets.set(ticket.id, []);
     epicOrder.push(ticket.id);
   }
 
-  const orphans: Task[] = [];
+  const orphans: TaskSummary[] = [];
   for (const ticket of tickets) {
     if (isEpic(ticket)) continue;
     const epic = ticket.epicTaskId ? epicsById.get(ticket.epicTaskId) : undefined;
@@ -130,14 +133,14 @@ export function groupTickets(tickets: readonly Task[]): BacklogGroup[] {
  * change on a render where nothing archived changed.
  */
 export function archiveVisibleTickets(
-  tickets: readonly Task[],
+  tickets: readonly TaskSummary[],
   archive?: { index: ArchiveIndex; includeArchived?: boolean },
-): Task[] {
-  if (!archive) return tickets as Task[];
+): TaskSummary[] {
+  if (!archive) return tickets as TaskSummary[];
   const visible = visibleTickets(tickets, archive.index, {
     includeArchived: archive.includeArchived,
   });
-  return visible.length === tickets.length ? (tickets as Task[]) : visible;
+  return visible.length === tickets.length ? (tickets as TaskSummary[]) : visible;
 }
 
 /**
@@ -151,7 +154,7 @@ export function archiveVisibleTickets(
  * the same optional shape `bucketBoardCards` (F14.5) already takes.
  */
 export function backlogRows(
-  tickets: readonly Task[],
+  tickets: readonly TaskSummary[],
   query: string,
   sortKey: BacklogSortKey,
   archive?: { index: ArchiveIndex; includeArchived?: boolean },

@@ -29,7 +29,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import type { Task } from '@tm/shared/model';
+import { toTaskSummary, type TaskSummary } from '@tm/shared/taskSummary';
 import { removedAgo } from './board/ArchivedCardsDialog';
 import { groupDecisions, type DecisionGroup, type DecisionRow } from './decisionsIndex';
 import { draftKey, useDraft } from './drafts';
@@ -175,7 +175,7 @@ export interface InboxDecisions {
  */
 export function useInboxDecisions(): InboxDecisions {
   const transport = useTransport();
-  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
   const [names, setNames] = useState<ReadonlyMap<string, string>>(new Map());
 
   useEffect(() => {
@@ -198,7 +198,7 @@ export function useInboxDecisions(): InboxDecisions {
         const rest = prev.filter((t) => t.id !== task.id);
         return rest.length === prev.length && task.decisionQuestion == null
           ? prev
-          : [...rest, task];
+          : [...rest, toTaskSummary(task)];
       });
     });
     return () => {

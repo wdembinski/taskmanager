@@ -4,7 +4,8 @@
  * the renderer-only concerns: display metadata and the "Show Done" toggle.
  */
 import { tokens } from '@fluentui/react-components';
-import type { BoardColumn, Task, TaskStatus } from '@tm/shared/model';
+import type { BoardColumn, TaskStatus } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import type { RunState } from '@tm/shared/board';
 import {
   boardRows,
@@ -72,7 +73,7 @@ export function visibleColumns(hidden: readonly BoardColumn[]): BoardColumn[] {
  * right: a running card's badge would only repeat the label, but a paused one has no label
  * to repeat.
  */
-export function cardBadgeStatus(task: Task, run: RunState): TaskStatus | null {
+export function cardBadgeStatus(task: TaskSummary, run: RunState): TaskStatus | null {
   const canonical = statusForColumn(columnForTask(task));
   const secondary = task.status === canonical ? null : task.status;
   return secondary ?? (run.phase === 'blocked' ? 'blocked-by-limit' : null);
@@ -94,9 +95,9 @@ export function variantStripTone(status: TaskStatus): string {
 
 /** A card as the board renders it: the card itself plus the steps that travel with it. */
 export interface BoardCard {
-  task: Task;
+  task: TaskSummary;
   /** This card's subtasks in execution order; empty for an ordinary card. */
-  subtasks: Task[];
+  subtasks: TaskSummary[];
   /**
    * The merge requests filed under this card. Carried on the CARD rather than the task
    * because `issueToTask` rebuilds the whole task literal on every JIRA sync, so an
@@ -128,12 +129,12 @@ export interface BoardCard {
  * none of them.
  */
 export function groupSubtasks(
-  tasks: readonly Task[],
+  tasks: readonly TaskSummary[],
   mrsByTask: ReadonlyMap<string, MergeRequest[]> = new Map(),
 ): BoardCard[] {
   const rows = boardRows(tasks);
   const ids = new Set(rows.map((t) => t.id));
-  const children = new Map<string, Task[]>();
+  const children = new Map<string, TaskSummary[]>();
   for (const task of rows) {
     const parentId = task.parentTaskId;
     if (!parentId || !ids.has(parentId)) continue;
@@ -142,7 +143,7 @@ export function groupSubtasks(
     else children.set(parentId, [task]);
   }
   for (const list of children.values()) list.sort((a, b) => a.order - b.order);
-  const variantRows = new Map<string, Task[]>();
+  const variantRows = new Map<string, TaskSummary[]>();
   for (const t of tasks) {
     if (!t.variantOf) continue;
     const list = variantRows.get(t.variantOf);
@@ -225,7 +226,7 @@ export function hiddenColumnsSummary(
  * the selection), which reads through focus as "no filter" rather than as an empty board.
  */
 export function focusAnchorId(
-  tasks: readonly Task[],
+  tasks: readonly TaskSummary[],
   selectedTaskId: string | null,
 ): string | null {
   if (!selectedTaskId) return null;
@@ -326,7 +327,7 @@ export function sortCards(
  * index yet to build.
  */
 export function bucketBoardCards(
-  displayTasks: readonly Task[],
+  displayTasks: readonly TaskSummary[],
   mrsByTask: ReadonlyMap<string, MergeRequest[]>,
   focusIds: ReadonlySet<string> | null,
   shelvedIds: ReadonlySet<string>,
@@ -360,24 +361,25 @@ export function bucketBoardCards(
  * `stopped` and `cancelled` steps are NOT counted as done: the chain stopped there,
  * and the caption should show the work that actually landed.
  */
-export function subtaskProgress(subtasks: readonly Task[]): { done: number; total: number } {
+export function subtaskProgress(subtasks: readonly TaskSummary[]): { done: number; total: number } {
   return {
     done: subtasks.filter((s) => s.status === 'done').length,
     total: subtasks.length,
   };
 }
 
-/** One step, with the place it holds in its card's WHOLE chain. */
-export interface StepEntry {
-  step: Task;
+/** One step, with the place it holds in its card's WHOLE chain. Generic over the row, so a
+ *  card's summary steps and the open card's full ones both keep their own type. */
+export interface StepEntry<T extends TaskSummary = TaskSummary> {
+  step: T;
   /** 0-based, across every round — see {@link groupStepsByRound}. */
   index: number;
 }
 
 /** One planning round's steps, with the index each holds in the card's whole chain. */
-export interface StepRound {
+export interface StepRound<T extends TaskSummary = TaskSummary> {
   round: number;
-  steps: StepEntry[];
+  steps: StepEntry<T>[];
 }
 
 /**
@@ -394,8 +396,8 @@ export interface StepRound {
  * groups by round too (it folds the earlier rounds away), and one rule read two ways is how
  * the pane and the card end up disagreeing about where a bunch of steps begins.
  */
-export function groupStepsByRound(subtasks: readonly Task[]): StepRound[] {
-  const rounds: StepRound[] = [];
+export function groupStepsByRound<T extends TaskSummary>(subtasks: readonly T[]): StepRound<T>[] {
+  const rounds: StepRound<T>[] = [];
   subtasks.forEach((step, index) => {
     const round = step.planRound ?? 1;
     const last = rounds[rounds.length - 1];
@@ -421,10 +423,12 @@ export function groupStepsByRound(subtasks: readonly Task[]): StepRound[] {
  *
  * `current` is null only for a card with no steps at all.
  */
-export function splitStepPhases(subtasks: readonly Task[]): {
-  earlier: StepRound[];
-  current: StepRound | null;
-  later: StepRound[];
+export function splitStepPhases<T extends TaskSummary>(
+  subtasks: readonly T[],
+): {
+  earlier: StepRound<T>[];
+  current: StepRound<T> | null;
+  later: StepRound<T>[];
 } {
   const rounds = groupStepsByRound(subtasks);
   if (rounds.length === 0) return { earlier: [], current: null, later: [] };
@@ -447,10 +451,12 @@ export function splitStepPhases(subtasks: readonly Task[]): {
  * earlier steps at all, so nothing is hidden from it: the fold only ever appears on a card
  * that has actually been re-planned and still has unfinished work behind its newest round.
  */
-export function splitEarlierSteps(subtasks: readonly Task[]): {
-  earlier: StepEntry[];
-  latest: StepEntry[];
-  later: StepEntry[];
+export function splitEarlierSteps<T extends TaskSummary>(
+  subtasks: readonly T[],
+): {
+  earlier: StepEntry<T>[];
+  latest: StepEntry<T>[];
+  later: StepEntry<T>[];
 } {
   const { earlier, current, later } = splitStepPhases(subtasks);
   return {
@@ -464,7 +470,7 @@ export function splitEarlierSteps(subtasks: readonly Task[]): {
  * A step's 1-based position among its siblings ("step 2 of 5"), or null when the
  * task isn't in the list — an orphan, or an ordinary card.
  */
-export function stepPosition(subtasks: readonly Task[], taskId: string): number | null {
+export function stepPosition(subtasks: readonly TaskSummary[], taskId: string): number | null {
   const index = subtasks.findIndex((s) => s.id === taskId);
   return index < 0 ? null : index + 1;
 }

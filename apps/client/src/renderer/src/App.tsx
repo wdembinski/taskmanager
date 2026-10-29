@@ -35,7 +35,8 @@ import {
 import type { AuthState } from '@shared/auth';
 import { ACTIVITY_PAGE_MAX, type ActivityCursor } from '@shared/activity';
 import type { AppInfo, ClaudeStatus } from '@shared/ipc';
-import { hasPlan, hasRepo, type Project, type Task } from '@shared/model';
+import { hasPlan, hasRepo, type Project } from '@shared/model';
+import type { TaskSummary } from '@shared/taskSummary';
 import { describeUpdate, type UpdateState } from '@shared/update';
 import { Attention } from '@ui/Attention';
 import { ActivityScreen } from '@ui/activity/ActivityScreen';
@@ -87,6 +88,7 @@ import {
 import { statusSegments } from '@ui/shell/statusSegments';
 import { useSidebarData } from '@ui/shell/useSidebarData';
 import { useTrackerProject } from '@ui/shell/useTrackerProject';
+import { useTaskSummaries } from '@ui/useTaskSummaries';
 import { TOASTER_ID } from '@ui/theme';
 import type { AttentionItem } from '@shared/attention';
 
@@ -148,6 +150,9 @@ const TOAST_TITLE: Record<AttentionItem['kind'], string> = {
   proposal: 'A proposal needs a decision',
 };
 
+/** A stable empty list for the palette while the summaries are still loading. */
+const NO_TASKS: TaskSummary[] = [];
+
 export function App(): JSX.Element {
   const styles = useStyles();
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -179,13 +184,13 @@ export function App(): JSX.Element {
     null,
   );
   /**
-   * The board's own cards and delegable repos, read here ONLY so the command palette
-   * (F9.4) has something to search and act on from any tab — the board itself (`MyTasks`)
-   * keeps its own copies for everything it actually renders. Fetched the same way
-   * `readSprint` below already fetches `tasks` for the sprint name; this just keeps the
-   * result instead of discarding it.
+   * Every board's card summaries (F29.2) — what the command palette (F9.4) searches and acts
+   * on from any tab, what the footer's sprint is named from, and what the sidebar's open
+   * ticket counts are tallied from. The board itself (`MyTasks`) keeps its own copy for
+   * everything it renders. Loaded once and merged from deltas: an event never re-reads it.
    */
-  const [paletteTasks, setPaletteTasks] = useState<Task[]>([]);
+  const boardSummaries = useTaskSummaries('all');
+  const paletteTasks = boardSummaries.tasks ?? NO_TASKS;
   const [agentProjects, setAgentProjects] = useState<Project[]>([]);
   // The card selected on the My Tasks board, reported up by `MyTasks` itself — what the
   // palette's "Start/Stop selected card" acts on, wherever the palette happens to be opened.
@@ -221,7 +226,7 @@ export function App(): JSX.Element {
    * the command palette's design calls out. Assigned every render, the same pattern
    * `MyTasks`' own `scopeRef` uses for the same reason.
    */
-  const paletteTasksRef = useRef<Task[]>(paletteTasks);
+  const paletteTasksRef = useRef<TaskSummary[]>(paletteTasks);
   paletteTasksRef.current = paletteTasks;
   const [paletteOpen, setPaletteOpen] = useState(false);
   useGlobalShortcut('mod+k', () => setPaletteOpen(true));
@@ -265,12 +270,13 @@ export function App(): JSX.Element {
    * ticket project `useTrackerProject` resolves (F13.17): this device's own remembered
    * choice, or else whichever ticket project has the most open tickets. `trackerProjects`
    * is `null` until the boot effect below resolves, or forever if this machine has no
-   * ticket project at all; `openCounts` is kept current by the same `project:tasksChanged`
-   * subscription that already refreshes the footer's sprint.
+   * ticket project at all. `openCounts` is tallied from the merged card summaries, and the
+   * projects are held back until those have loaded, so the choice is never made on counts
+   * that are all still zero.
    */
   const [trackerProjects, setTrackerProjects] = useState<Project[] | null>(null);
-  const [openCounts, setOpenCounts] = useState<ReadonlyMap<string, number>>(new Map());
-  const tracker = useTrackerProject(trackerProjects, openCounts);
+  const openCounts = useMemo(() => openTicketCounts(paletteTasks), [paletteTasks]);
+  const tracker = useTrackerProject(boardSummaries.tasks ? trackerProjects : null, openCounts);
   const [sidebarFolds, toggleSidebarFold] = useDeviceFolds('sidebar-folds');
   // Reviews is always on (F15.14b); its count is the *Requested from me* queue's rows.
   const reviewsCount = useRequestedReviewCount();
@@ -333,7 +339,11 @@ export function App(): JSX.Element {
    * even while another tab is open, and the board keeps knowing nothing about the shell.
    * Null whenever the filter is off or the cards disagree — see `currentSprintName`.
    */
-  const [sprint, setSprint] = useState<string | null>(null);
+  const [currentSprintOnly, setCurrentSprintOnly] = useState(false);
+  const sprint = useMemo(
+    () => (currentSprintOnly ? currentSprintName(paletteTasks) : null),
+    [currentSprintOnly, paletteTasks],
+  );
 
   /**
    * How fresh each tracker's mirror is, for the status bar's countdown rings. Held by the
@@ -372,21 +382,15 @@ export function App(): JSX.Element {
         const projectList = projects.map((p) => p.project);
         setAgentProjects(projectList.filter((p) => hasRepo(p) && !hasPlan(p)));
         setTrackerProjects(projectList);
-        setOpenCounts(openTicketCounts(projects.flatMap((p) => p.tasks)));
       }),
     ]).catch((e: unknown) => setBootError(e instanceof Error ? e.message : String(e)));
 
-    /** Recompute the footer's sprint from the settings flag and the board's cards — and,
-     *  for the same fetch, keep the palette's own copy of the board's cards current. */
-    const readSprint = async (): Promise<void> => {
-      const [settings, tasks] = await Promise.all([
-        window.api.invoke('settings:get'),
-        window.api.invoke('board:tasks'),
-      ]);
-      setSprint(settings.jira.currentSprintOnly ? currentSprintName(tasks) : null);
-      setPaletteTasks(tasks);
-    };
-    void readSprint().catch(() => setSprint(null));
+    // The footer's sprint is named from the merged cards above; only the flag that turns it
+    // on is read here — and re-read whenever the engine rewrites settings behind the UI.
+    void window.api
+      .invoke('settings:get')
+      .then((settings) => setCurrentSprintOnly(settings.jira.currentSprintOnly))
+      .catch(() => setCurrentSprintOnly(false));
 
     const offNew = window.api.on('attention:new', (item) => {
       setAttentionCount((n) => n + 1);
@@ -408,27 +412,15 @@ export function App(): JSX.Element {
     // Fires when a sync starts, finishes or fails — the ring's own countdown between those
     // moments is a local timer inside `SyncRings`, so this is only the resets.
     const offSync = window.api.on('sync:changed', setSyncState);
-    // Both signals matter: a sync replaces the board (the sprint's cards may change),
-    // and the engine can rewrite settings behind the UI's back.
-    const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks }) => {
-      void readSprint();
-      // Patch just the changed project's count rather than re-reading every project's
-      // tasks — the same per-project patch `useSidebarData`'s own `project:tasksChanged`
-      // subscription already makes for its tree.
-      setOpenCounts((counts) => {
-        const next = new Map(counts);
-        next.set(projectId, openTicketCounts(tasks).get(projectId) ?? 0);
-        return next;
-      });
-    });
-    const offSettings = window.api.on('settings:changed', () => void readSprint());
+    const offSettings = window.api.on('settings:changed', (settings) =>
+      setCurrentSprintOnly(settings.jira.currentSprintOnly),
+    );
     return () => {
       offNew();
       offResolved();
       offUpdate();
       offAuth();
       offSync();
-      offTasks();
       offSettings();
     };
   }, []);
@@ -444,9 +436,7 @@ export function App(): JSX.Element {
   // (see `project:list`'s own doc comment), so re-read it on every tab change instead.
   useEffect(() => {
     void window.api.invoke('project:list').then((projects) => {
-      const projectList = projects.map((p) => p.project);
-      setTrackerProjects(projectList);
-      setOpenCounts(openTicketCounts(projects.flatMap((p) => p.tasks)));
+      setTrackerProjects(projects.map((p) => p.project));
     });
   }, [tab]);
 

@@ -52,6 +52,7 @@ import type {
   TicketLabel,
   TicketLink,
 } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { TaskLink } from '@tm/shared/taskChain';
@@ -490,13 +491,13 @@ export interface TaskDetailProps {
    * panel's **Release now** override is offered against. Empty or absent for a card that is
    * not blocked, which is the only reason the button is not there.
    */
-  chainWaitingOn?: readonly Task[];
+  chainWaitingOn?: readonly TaskSummary[];
   /**
    * The subset of {@link chainWaitingOn} waiting on nothing but a merge (`awaitingMerge`) —
    * what the agent panel offers a **Merge** button for. From the board's index, so the
    * card's chip and this pane's button can never disagree about which card that is.
    */
-  chainMergeHeld?: readonly Task[];
+  chainMergeHeld?: readonly TaskSummary[];
   /**
    * Every link on the board, for the **Chain** section — the card's own predecessors and
    * successors as a list, which is the keyboard's route to what the arrows do by dragging.
@@ -506,7 +507,7 @@ export interface TaskDetailProps {
    * anything derived per card would have to be rebuilt here on every poll anyway.
    */
   chainLinks?: readonly TaskLink[];
-  chainTasksById?: ReadonlyMap<string, Task>;
+  chainTasksById?: ReadonlyMap<string, TaskSummary>;
   /** Erase one link. The board owns the call, so its arrow and this pane's row agree. */
   onUnlinkChain?: (linkId: string) => void;
   /** Show another task in this pane (the breadcrumb, and opening a step). */
@@ -597,7 +598,7 @@ export interface TaskDetailProps {
 }
 
 /** One empty map for every pane with no chain index, rather than a new one per render. */
-const NO_TASKS: ReadonlyMap<string, Task> = new Map();
+const NO_TASKS: ReadonlyMap<string, TaskSummary> = new Map();
 /** One empty array for every pane with no ticket registries, rather than a new one per render. */
 const NO_PEOPLE: Person[] = [];
 const NO_MILESTONES: Milestone[] = [];

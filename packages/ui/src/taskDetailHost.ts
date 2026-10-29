@@ -8,6 +8,7 @@
  * implements.
  */
 import type { Task } from '@tm/shared/model';
+import type { TaskBundle, TaskSummary } from '@tm/shared/taskSummary';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { TaskLink } from '@tm/shared/taskChain';
@@ -29,12 +30,63 @@ export type TaskDetailHostProps = Omit<TaskDetailProps, 'task'> & {
 };
 
 /**
+ * The open card in full (F29.2): the card, its parent when it is a step, and the steps the
+ * pane lists — its own, or for a step its siblings (its parent's). Built from `task:get`
+ * answers by {@link openTaskOf}; a list holds summaries only, so this is the one place the
+ * heavy text comes from.
+ */
+export interface OpenTask {
+  task: Task;
+  parent: Task | null;
+  subtasks: Task[];
+}
+
+/**
+ * The open card from its own `task:get` answer and, for a step, its parent's — whose steps
+ * are the step's siblings, the list the pane counts "Step 2 of 5" in.
+ */
+export function openTaskOf(own: TaskBundle, parentBundle: TaskBundle | null): OpenTask {
+  return {
+    task: own.task,
+    parent: own.parent,
+    subtasks: own.task.parentTaskId ? (parentBundle?.steps ?? []) : own.steps,
+  };
+}
+
+/**
+ * Whether a change touches the open card, so its `task:get` must be re-read: the card
+ * itself, its parent, one of the steps it lists, or a new step under the card (or under
+ * its parent, for a step). Anything else on the board leaves the open card as it is.
+ */
+export function touchesOpenTask(
+  open: OpenTask | undefined,
+  taskId: string,
+  changed: readonly Pick<TaskSummary, 'id' | 'parentTaskId'>[],
+  removed: readonly string[] = [],
+): boolean {
+  const ids = new Set([taskId]);
+  if (open) {
+    if (open.parent) ids.add(open.parent.id);
+    if (open.task.parentTaskId) ids.add(open.task.parentTaskId);
+    for (const step of open.subtasks) ids.add(step.id);
+  }
+  const familyRoot = open?.task.parentTaskId ?? taskId;
+  return (
+    changed.some((t) => ids.has(t.id) || t.parentTaskId === familyRoot) ||
+    removed.some((id) => ids.has(id))
+  );
+}
+
+/**
  * The raw lists the host MAY load, each optional — present only once its own read has
  * answered. `attentionItems` is the flat list `buildAttentionIndex` takes, not the index
  * itself, so `assembleTaskDetailProps` builds it the same way every other caller does.
  */
 export interface LoadedTaskDetailData {
-  tasks?: readonly Task[];
+  /** The open card through `task:get` — used only while it is the card `taskId` names. */
+  openTask?: OpenTask;
+  /** Every board's card summaries — the chain index's rows, never the open card's own. */
+  summaries?: readonly TaskSummary[];
   mergeRequests?: readonly MergeRequest[];
   attachments?: readonly TaskAttachment[];
   chainLinks?: readonly TaskLink[];
@@ -45,7 +97,14 @@ export interface LoadedTaskDetailData {
 
 /** One of the host's own reads — see {@link neededLoads}. */
 export type HostLoad =
-  'tasks' | 'mergeRequests' | 'attachments' | 'chainLinks' | 'attention' | 'liveRuns' | 'merging';
+  | 'task'
+  | 'chainTasks'
+  | 'mergeRequests'
+  | 'attachments'
+  | 'chainLinks'
+  | 'attention'
+  | 'liveRuns'
+  | 'merging';
 
 /**
  * Which reads the host still has to make, given what the caller already supplied.
@@ -59,11 +118,11 @@ export function neededLoads(provided: TaskDetailHostProps): ReadonlySet<HostLoad
   if (
     provided.task === undefined ||
     provided.subtasks === undefined ||
-    provided.parentTask === undefined ||
-    provided.chainTasksById === undefined
+    provided.parentTask === undefined
   ) {
-    loads.add('tasks');
+    loads.add('task');
   }
+  if (provided.chainTasksById === undefined) loads.add('chainTasks');
   if (provided.mergeRequests === undefined) loads.add('mergeRequests');
   if (
     provided.attachments === undefined ||
@@ -102,15 +161,6 @@ export function mergeRequestsByTask(rows: readonly MergeRequest[]): Map<string, 
   return map;
 }
 
-/** A card's siblings (or its own steps, for an ordinary card), in chain order. */
-function subtasksOf(tasksById: ReadonlyMap<string, Task>, task: Task | null): Task[] {
-  if (!task) return [];
-  const parentId = task.parentTaskId ?? task.id;
-  return [...tasksById.values()]
-    .filter((t) => t.parentTaskId === parentId)
-    .sort((a, b) => a.order - b.order);
-}
-
 /**
  * Build `TaskDetail`'s props for `taskId`, from whatever the caller already supplied plus
  * whatever the host loaded for it.
@@ -144,19 +194,17 @@ export function assembleTaskDetailProps(
     ...rest
   } = provided;
 
-  const tasksById = providedChainTasksById ?? new Map((loaded.tasks ?? []).map((t) => [t.id, t]));
+  const tasksById: ReadonlyMap<string, TaskSummary> =
+    providedChainTasksById ?? new Map((loaded.summaries ?? []).map((t) => [t.id, t]));
 
-  const task =
-    providedTask !== undefined ? providedTask : taskId ? (tasksById.get(taskId) ?? null) : null;
+  // A `task:get` answer for a card that is no longer the one shown is never drawn.
+  const open = taskId && loaded.openTask?.task.id === taskId ? loaded.openTask : undefined;
 
-  const subtasks = providedSubtasks !== undefined ? providedSubtasks : subtasksOf(tasksById, task);
+  const task = providedTask !== undefined ? providedTask : (open?.task ?? null);
 
-  const parentTask =
-    providedParentTask !== undefined
-      ? providedParentTask
-      : task?.parentTaskId
-        ? (tasksById.get(task.parentTaskId) ?? null)
-        : null;
+  const subtasks = providedSubtasks !== undefined ? providedSubtasks : (open?.subtasks ?? []);
+
+  const parentTask = providedParentTask !== undefined ? providedParentTask : (open?.parent ?? null);
 
   const mergeRequests =
     providedMergeRequests !== undefined

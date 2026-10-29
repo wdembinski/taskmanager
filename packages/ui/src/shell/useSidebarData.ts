@@ -11,11 +11,13 @@
  * name rather than by `hasRepo` alone.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Milestone, Project, Task } from '@tm/shared/model';
+import type { Milestone, Project } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import { PERSONAL_PROJECT_ID, hasRepo, isPersonalBoard } from '@tm/shared/model';
 import { archivedViewModel } from '../projects/archivedView';
 import { useTransport } from '../transport';
 import { useInitialLoad, type InitialLoad } from '../useInitialLoad';
+import { useTaskSummaries } from '../useTaskSummaries';
 import { buildSidebar, type SidebarInput, type SidebarSection } from './sidebarModel';
 
 /** Every project this machine can run an agent in, Personal first — Personal has no `path`
@@ -35,6 +37,9 @@ function machineProjectsOf(projects: readonly Project[]): Array<Pick<Project, 'i
 function isMilestoneArchived(milestone: Milestone): boolean {
   return milestone.archivedAt != null;
 }
+
+/** A stable empty list, so `sections`' own `useMemo` is not busted while nothing is loaded. */
+const NO_TICKETS: TaskSummary[] = [];
 
 export interface UseSidebarDataOptions {
   /** How many items wait on a human — the Inbox row's own count, read by whichever host
@@ -56,9 +61,9 @@ export interface SidebarData extends Pick<InitialLoad, 'error' | 'retry'> {
   sections: SidebarSection[];
   /** True once the seed has resolved at least once. */
   loaded: boolean;
-  /** The selected project's own tickets — `NewTicketDialog`'s own `tickets` prop needs
-   *  exactly this list. */
-  tickets: Task[];
+  /** The selected project's own tickets, as card summaries (F29.2) — `NewTicketDialog`'s
+   *  own `tickets` prop needs exactly this list. */
+  tickets: TaskSummary[];
 }
 
 export function useSidebarData(
@@ -69,7 +74,6 @@ export function useSidebarData(
   const [teamName, setTeamName] = useState<string | undefined>(undefined);
   const [machineProjects, setMachineProjects] = useState<Array<Pick<Project, 'id' | 'name'>>>([]);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
-  const [tickets, setTickets] = useState<Task[]>([]);
   const [archivedCount, setArchivedCount] = useState(0);
   const [loaded, setLoaded] = useState(false);
 
@@ -82,37 +86,35 @@ export function useSidebarData(
     setArchivedCount(archivedViewModel(listing, [], projectId).total);
   }, [transport, projectId]);
 
+  // The selected project's tickets, merged from deltas (F29.2). A delta can archive or
+  // restore a ticket, so it re-reads the Archived row's count too — never the board.
+  const summaries = useTaskSummaries(projectId, {
+    onDelta: () => void loadArchivedCount().catch(() => undefined),
+  });
+  const tickets = projectId ? (summaries.tasks ?? NO_TICKETS) : NO_TICKETS;
+
   const seed = useCallback(async () => {
-    const [allProjects, projectMilestones, projectTickets] = await Promise.all([
+    const [allProjects, projectMilestones] = await Promise.all([
       transport.invoke('project:list'),
       transport.invoke('milestone:list', projectId ?? undefined),
-      projectId ? transport.invoke('board:tasks', projectId) : Promise.resolve<Task[]>([]),
       loadArchivedCount(),
     ]);
     const projectList = allProjects.map((p) => p.project);
     setTeamName(projectList.find((p) => p.id === projectId)?.name);
     setMachineProjects(machineProjectsOf(projectList));
     setMilestones(projectMilestones);
-    setTickets(projectTickets);
     setLoaded(true);
   }, [transport, projectId, loadArchivedCount]);
   const initial = useInitialLoad(seed);
 
-  useEffect(() => {
-    const offTasks = transport.on('project:tasksChanged', ({ projectId: changed, tasks }) => {
-      if (changed !== projectId) return;
-      setTickets(tasks);
-      void loadArchivedCount();
-    });
-    const offMilestones = transport.on('milestone:changed', (ms) => {
-      setMilestones(ms);
-      void loadArchivedCount();
-    });
-    return () => {
-      offTasks();
-      offMilestones();
-    };
-  }, [transport, projectId, loadArchivedCount]);
+  useEffect(
+    () =>
+      transport.on('milestone:changed', (ms) => {
+        setMilestones(ms);
+        void loadArchivedCount();
+      }),
+    [transport, loadArchivedCount],
+  );
 
   const sections = useMemo(() => {
     const input: SidebarInput = {
@@ -147,5 +149,15 @@ export function useSidebarData(
     options.cloudTeamName,
   ]);
 
-  return { sections, loaded, tickets, error: initial.error, retry: initial.retry };
+  return {
+    sections,
+    // The tree is not drawn from half its inputs: the tickets' own load counts too.
+    loaded: loaded && (projectId === null || summaries.tasks !== null),
+    tickets,
+    error: initial.error ?? summaries.error,
+    retry: () => {
+      initial.retry();
+      summaries.retry();
+    },
+  };
 }

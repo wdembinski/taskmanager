@@ -21,8 +21,7 @@
  * `forceConsistentCasingInFileNames` happens to match first — silently handing a caller the
  * pure module instead of this component.
  */
-import { useEffect, useState } from 'react';
-import type { Task } from '@tm/shared/model';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MergeRequest } from '@tm/shared/mergeRequest';
 import type { TaskAttachment } from '@tm/shared/attachments';
 import type { TaskLink } from '@tm/shared/taskChain';
@@ -31,17 +30,22 @@ import { TaskDetail } from './TaskDetail';
 import {
   assembleTaskDetailProps,
   neededLoads,
+  openTaskOf,
+  touchesOpenTask,
   type LoadedTaskDetailData,
+  type OpenTask,
   type TaskDetailHostProps,
 } from './taskDetailHost';
 import { useTransport } from './transport';
+import { useTaskDeltas, useTaskSummaries } from './useTaskSummaries';
 
 export function TaskDetailHost(props: TaskDetailHostProps): JSX.Element {
   const { taskId } = props;
   const transport = useTransport();
   const loads = neededLoads(props);
 
-  const needTasks = loads.has('tasks');
+  const needTask = loads.has('task');
+  const needChainTasks = loads.has('chainTasks');
   const needLiveRuns = loads.has('liveRuns');
   const needMergeRequests = loads.has('mergeRequests');
   const needAttachments = loads.has('attachments');
@@ -49,7 +53,12 @@ export function TaskDetailHost(props: TaskDetailHostProps): JSX.Element {
   const needAttention = loads.has('attention');
   const needMerging = loads.has('merging');
 
-  const [tasks, setTasks] = useState<readonly Task[] | undefined>(undefined);
+  const [openTask, setOpenTask] = useState<OpenTask | undefined>(undefined);
+  const openTaskRef = useRef(openTask);
+  openTaskRef.current = openTask;
+  // The chain index's rows: every board's card summaries, merged from deltas — never
+  // re-read whole on an event (F29.2).
+  const summaries = useTaskSummaries(needChainTasks ? 'all' : null);
   const [liveRunTaskIds, setLiveRunTaskIds] = useState<ReadonlySet<string> | undefined>(undefined);
   const [mergeRequests, setMergeRequests] = useState<readonly MergeRequest[] | undefined>(
     undefined,
@@ -61,18 +70,46 @@ export function TaskDetailHost(props: TaskDetailHostProps): JSX.Element {
   );
   const [mergingTaskIds, setMergingTaskIds] = useState<ReadonlySet<string> | undefined>(undefined);
 
-  // `board:tasks` and `scheduler:activeRuns`, together: a task's own status changing is
-  // exactly what moves it into or out of a live run, so one `task:changed` reloads both.
+  // The open card in full, through `task:get` (and its parent's, for a step's siblings) —
+  // re-read only when a change touches the card, its parent or one of its steps, never on
+  // an unrelated card's change elsewhere on the board.
+  const taskIdRef = useRef(taskId);
+  taskIdRef.current = taskId;
+  const fetchOpenTask = useCallback(async (): Promise<void> => {
+    if (!taskId) return;
+    const own = await transport.invoke('task:get', taskId);
+    const parent = own?.task.parentTaskId
+      ? await transport.invoke('task:get', own.task.parentTaskId)
+      : null;
+    // A card switched away from mid-read: the answer belongs to a card no longer shown.
+    if (taskIdRef.current !== taskId) return;
+    setOpenTask(own ? openTaskOf(own, parent) : undefined);
+  }, [transport, taskId]);
+  const refetch = useCallback(() => void fetchOpenTask().catch(() => undefined), [fetchOpenTask]);
+
   useEffect(() => {
-    if (!needTasks && !needLiveRuns) return;
+    if (!needTask || !taskId) return;
+    refetch();
+    const off = transport.on('task:changed', ({ task }) => {
+      if (touchesOpenTask(openTaskRef.current, taskId, [task])) refetch();
+    });
+    return off;
+  }, [transport, needTask, taskId, refetch]);
+  useTaskDeltas(needTask && taskId !== null, (delta) => {
+    if (taskId && touchesOpenTask(openTaskRef.current, taskId, delta.upserted, delta.removed)) {
+      refetch();
+    }
+  });
+
+  // A task's own status changing is exactly what moves it into or out of a live run, so
+  // every `task:changed` re-reads the live set.
+  useEffect(() => {
+    if (!needLiveRuns) return;
     let live = true;
     const reload = (): void => {
-      if (needTasks) void transport.invoke('board:tasks', 'all').then((v) => live && setTasks(v));
-      if (needLiveRuns) {
-        void transport
-          .invoke('scheduler:activeRuns')
-          .then((runs) => live && setLiveRunTaskIds(new Set(runs.map((r) => r.taskId))));
-      }
+      void transport
+        .invoke('scheduler:activeRuns')
+        .then((runs) => live && setLiveRunTaskIds(new Set(runs.map((r) => r.taskId))));
     };
     reload();
     const off = transport.on('task:changed', reload);
@@ -80,7 +117,7 @@ export function TaskDetailHost(props: TaskDetailHostProps): JSX.Element {
       live = false;
       off();
     };
-  }, [transport, needTasks, needLiveRuns]);
+  }, [transport, needLiveRuns]);
 
   useEffect(() => {
     if (!needMergeRequests) return;
@@ -150,7 +187,8 @@ export function TaskDetailHost(props: TaskDetailHostProps): JSX.Element {
   }, [transport, needMerging]);
 
   const loaded: LoadedTaskDetailData = {
-    tasks,
+    openTask,
+    summaries: summaries.tasks ?? undefined,
     mergeRequests,
     attachments,
     chainLinks,

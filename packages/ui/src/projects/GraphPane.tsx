@@ -115,7 +115,8 @@ import {
   type NodeProps,
   type OnNodeDrag,
 } from '@xyflow/react';
-import type { Milestone, Project, Task, TicketGraphPosition, TicketLink } from '@tm/shared/model';
+import type { Milestone, Project, TicketGraphPosition, TicketLink } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import type { TaskLink } from '@tm/shared/taskChain';
 import { isEpic, typeIconKeyFor } from '@tm/shared/tickets';
 import { archiveIndexOf, visibleTickets } from '@tm/shared/trackerArchive';
@@ -123,6 +124,7 @@ import { PaneLoading } from '../PaneLoading';
 import { FLUO_VAR } from '../tokens';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
+import { useTaskSummaries } from '../useTaskSummaries';
 import { GraphLinkPicker, type EditingGraphLink } from './GraphLinkPicker';
 import { issueTypeGlyph } from './issueTypeGlyph';
 
@@ -208,7 +210,7 @@ const useStyles = makeStyles({
   },
 });
 
-type TicketNodeData = { ticket: Task };
+type TicketNodeData = { ticket: TaskSummary };
 
 function TicketNode({ data }: NodeProps<Node<TicketNodeData>>): JSX.Element {
   const styles = useStyles();
@@ -231,7 +233,7 @@ function TicketNode({ data }: NodeProps<Node<TicketNodeData>>): JSX.Element {
  *  travel in `data` (not just the node's own top-level fields) because a custom node type
  *  owns its DOM sizing itself — React Flow's built-in default node types read `style` for
  *  this, a custom one does not get it applied automatically. */
-type EpicZoneData = { epic: Task; width: number; height: number };
+type EpicZoneData = { epic: TaskSummary; width: number; height: number };
 
 function EpicZoneNode({ data }: NodeProps<Node<EpicZoneData>>): JSX.Element {
   const styles = useStyles();
@@ -253,7 +255,7 @@ function EpicZoneNode({ data }: NodeProps<Node<EpicZoneData>>): JSX.Element {
  *  "real" node for the ticket (that would mean it isn't hidden), only a stand-in so the link
  *  stays drawn instead of silently dropping. `card`'s own layout, dashed and muted, with the
  *  same type glyph `TicketNode` draws — a stub is still THAT ticket, not an anonymous dot. */
-type ArchivedStubData = { ticket: Task };
+type ArchivedStubData = { ticket: TaskSummary };
 
 function ArchivedStubNode({ data }: NodeProps<Node<ArchivedStubData>>): JSX.Element {
   const styles = useStyles();
@@ -356,14 +358,14 @@ export type GraphNode =
  * stub — it is not really here, only standing in for a ticket this view has chosen to hide.
  */
 export function layoutNodes(
-  tickets: Task[],
+  tickets: TaskSummary[],
   saved: Record<string, { x: number; y: number }>,
-  stubs: Task[] = [],
+  stubs: TaskSummary[] = [],
 ): GraphNode[] {
   const epics = tickets.filter((t) => isEpic(t));
   const epicIds = new Set(epics.map((e) => e.id));
-  const childrenByEpic = new Map<string, Task[]>();
-  const others: Task[] = [];
+  const childrenByEpic = new Map<string, TaskSummary[]>();
+  const others: TaskSummary[] = [];
   for (const ticket of tickets) {
     if (isEpic(ticket)) continue;
     if (ticket.epicTaskId && epicIds.has(ticket.epicTaskId)) {
@@ -484,11 +486,11 @@ const STUB_DASH = '4 3';
  * own order, even if it is the hidden end of several such links.
  */
 export function archivedStubs(
-  hidden: Task[],
+  hidden: TaskSummary[],
   links: TicketLink[],
   chainLinks: TaskLink[],
   visibleIds: Set<string>,
-): Task[] {
+): TaskSummary[] {
   const hiddenIds = new Set(hidden.map((t) => t.id));
   const stubIds = new Set<string>();
   const note = (fromId: string, toId: string): void => {
@@ -581,14 +583,23 @@ export function GraphPane({
 }: GraphPaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
-  const [tickets, setTickets] = useState<Task[] | null>(null);
+  // Card summaries (F29.2), merged from deltas — a ticket leaving (deleted) arrives as a
+  // delta's `removed`, which no per-task patch would ever say.
+  const summaries = useTaskSummaries(projectId, { clearOnScopeChange: true });
+  const [layoutLoaded, setLayoutLoaded] = useState(false);
+  // Held back until the layout has landed too, so `positions` is already populated the first
+  // time `tickets` goes non-null.
+  const tickets = layoutLoaded ? summaries.tasks : null;
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [links, setLinks] = useState<TicketLink[]>([]);
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   // The pending connect gesture — `GraphLinkPicker`'s own controlled-open prop, `null` while
   // its dialog is closed. Resolved from `tickets` (not the raw ids `onConnect` hands back) so
   // the picker gets full `Task`s to show titles from and run `canLinkTickets`/`canLink` against.
-  const [pendingConnection, setPendingConnection] = useState<{ from: Task; to: Task } | null>(null);
+  const [pendingConnection, setPendingConnection] = useState<{
+    from: TaskSummary;
+    to: TaskSummary;
+  } | null>(null);
   // The edge an `onEdgeClick` resolved a kind for — `GraphLinkPicker`'s own edit-mode prop,
   // `null` while its dialog is closed the same way `pendingConnection` is for create mode.
   const [editingLink, setEditingLink] = useState<EditingGraphLink | null>(null);
@@ -598,31 +609,19 @@ export function GraphPane({
   // non-null — otherwise a node would render at its grid slot for one frame and then jump
   // to its saved one.
   const seed = useCallback(async () => {
-    const [taskList, layout] = await Promise.all([
-      transport.invoke('board:tasks', projectId),
-      transport.invoke('ticketGraph:getLayout', projectId),
-    ]);
+    setLayoutLoaded(false);
+    const layout = await transport.invoke('ticketGraph:getLayout', projectId);
     setPositions(Object.fromEntries(layout.map((p) => [p.taskId, { x: p.x, y: p.y }])));
-    setTickets(taskList);
+    setLayoutLoaded(true);
   }, [transport, projectId]);
-  const initial = useInitialLoad(seed);
-
-  useEffect(() => {
-    const offTask = transport.on('task:changed', ({ task }) => {
-      if (task.projectId !== projectId) return;
-      setTickets((prev) => (prev ? prev.map((t) => (t.id === task.id ? task : t)) : prev));
-    });
-    // The whole list, replaced — a ticket can also leave this way (deleted), which no
-    // per-task patch would ever say.
-    const offTasks = transport.on('project:tasksChanged', ({ projectId: changed, tasks }) => {
-      if (changed !== projectId) return;
-      setTickets(tasks);
-    });
-    return () => {
-      offTask();
-      offTasks();
-    };
-  }, [transport, projectId]);
+  const layoutLoad = useInitialLoad(seed);
+  const initial = {
+    error: layoutLoad.error ?? summaries.error,
+    retry: () => {
+      layoutLoad.retry();
+      summaries.retry();
+    },
+  };
 
   // Seed-and-subscribe, `TimelinePane`'s own shape: both events hand back the WHOLE list, so
   // there is nothing to patch, only to replace.

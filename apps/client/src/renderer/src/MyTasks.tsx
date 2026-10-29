@@ -13,6 +13,7 @@
  * board to the selected card's chain and nothing else — see `focusIds`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { TaskSummary } from '@shared/taskSummary';
 import {
   Button,
   MessageBar,
@@ -21,14 +22,7 @@ import {
   mergeClasses,
 } from '@fluentui/react-components';
 import { AddRegular } from '@fluentui/react-icons';
-import {
-  hasPlan,
-  hasRepo,
-  PERSONAL_PROJECT_ID,
-  type Milestone,
-  type Project,
-  type Task,
-} from '@shared/model';
+import { hasPlan, hasRepo, PERSONAL_PROJECT_ID, type Milestone, type Project } from '@shared/model';
 import {
   DEFAULT_BOARD_DISPLAY,
   hiddenBoardColumns,
@@ -55,6 +49,8 @@ import { PaneLoading } from '@ui/PaneLoading';
 import { useTicketRegistries } from '@ui/projects/useTicketRegistries';
 import { TaskDetailHost } from '@ui/TaskDetailHostView';
 import { useInitialLoad } from '@ui/useInitialLoad';
+import { useTaskSummaries } from '@ui/useTaskSummaries';
+import { applyTaskDelta, deltaFromBoardList, patchTaskSummary } from '@ui/taskSummaryStore';
 import { useReleaseOnDone } from '@ui/ReleaseWaitingDialog';
 import { KanbanColumn } from '@ui/board/KanbanColumn';
 import { useBoardLayoutStyles } from '@ui/board/boardLayout';
@@ -117,19 +113,9 @@ const EMPTY_TASK_IDS: ReadonlySet<string> = new Set();
  * is what `columnForTask` reads — so the card jumps columns the instant you let go without
  * the spinner, the run strip or the attention ring flickering off and back on.
  */
-function optimisticMove(task: Task, column: BoardColumn): Task {
+function optimisticMove(task: TaskSummary, column: BoardColumn): TaskSummary {
   const status = statusForColumn(column);
   return isRunStatus(task.status) ? { ...task, preRunStatus: status } : { ...task, status };
-}
-
-/**
- * Swap one project's slice of the board for a fresh list from that project, leaving
- * every other project's cards untouched. What the All scope needs whenever an answer
- * arrives that only ever speaks for ONE board — `project:tasksChanged`, JIRA's sync —
- * regardless of how many boards the union is currently showing.
- */
-function replaceProjectSlice(prev: Task[] | null, projectId: string, next: Task[]): Task[] {
-  return [...(prev ?? []).filter((t) => t.projectId !== projectId), ...next];
 }
 
 export interface MyTasksProps {
@@ -165,7 +151,6 @@ export function MyTasks({
   /** The desktop's dictation offer (F9.10) — read once, since `window.navigator.userAgent`
    *  never changes mid-session. */
   const dictation = useMemo(() => dictationAvailable('desktop', window), []);
-  const [tasks, setTasks] = useState<Task[] | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   // The repos a card can be delegated to — fetched once and shared by the cards
   // (glyph tooltip) and the detail pane (assign dialog).
@@ -186,6 +171,9 @@ export function MyTasks({
    * (`board:tasks(scope)`/`board:archived(scope)`) rather than a plain settings write.
    */
   const [scope, setScope] = useState<string>('all');
+  /** False until the saved scope has been read — the board loads nothing before it knows
+   *  which board to load. */
+  const [scopeReady, setScopeReady] = useState(false);
   /**
    * `scope`, for the live-update effect below to read WITHOUT depending on it. That
    * effect subscribes seven events on `[patchTask, refreshArchived]`; putting scope in
@@ -201,6 +189,22 @@ export function MyTasks({
   const scopeIds = useMemo(() => new Set(scopes.map((s) => s.id)), [scopes]);
   const scopeIdsRef = useRef(scopeIds);
   scopeIdsRef.current = scopeIds;
+  /**
+   * The board's cards, as summaries (F29.2): loaded once per scope, then merged from deltas
+   * and `task:changed` rows — never re-read whole on an event. On All, a delta is taken only
+   * for a board the scope picker offers; a single board's scope takes only its own.
+   *
+   * A card leaving the board is a whole-board change and nothing else — there is no per-card
+   * event for it — so a delta that removes cards re-reads the removed list alongside: it is
+   * the one moment that list can have changed.
+   */
+  const board = useTaskSummaries(scopeReady ? scope : null, {
+    accepts: (projectId) => scopeRef.current !== 'all' || scopeIdsRef.current.has(projectId),
+    onDelta: (delta) => {
+      if (delta.removed.length > 0) void refreshArchived();
+    },
+  });
+  const { tasks, setTasks } = board;
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -224,7 +228,7 @@ export function MyTasks({
   const [hiddenNotice, setHiddenNotice] = useState<{
     taskId: string;
     filter: BoardFilter | null;
-    card: Task | null;
+    card: TaskSummary | null;
   } | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -236,7 +240,7 @@ export function MyTasks({
    * because the toolbar button is only offered when there are some, and a count that only
    * became true once you clicked it would be no count at all.
    */
-  const [archived, setArchived] = useState<Task[]>([]);
+  const [archived, setArchived] = useState<TaskSummary[]>([]);
   /**
    * The removed CARDS. `board:archived` answers with rows, and a card's steps were archived
    * with it — see `archivedCards`, which is also why the toolbar's count is derived rather
@@ -323,9 +327,7 @@ export function MyTasks({
   // machine the project runs on, so guessing it ON would spawn one before we know it is wanted.
   const showGraph = settings?.showGitGraph ?? false;
 
-  const refresh = useCallback(async () => {
-    setTasks(await window.api.invoke('board:tasks', scopeRef.current));
-  }, []);
+  const refresh = board.reload;
 
   // One seed load for every channel the board reads, so a failure in any of them is
   // reported rather than leaving the board on its spinner.
@@ -336,19 +338,17 @@ export function MyTasks({
   const seed = useCallback(async () => {
     const appSettings = await window.api.invoke('settings:get');
     const initialScope = appSettings.boardScopeId || 'all';
-    const [board, projects, mrs, chain, files, gone, boardScopeList, milestoneList] =
-      await Promise.all([
-        window.api.invoke('board:tasks', initialScope),
-        window.api.invoke('project:list'),
-        window.api.invoke('mr:mergeRequests'),
-        window.api.invoke('chain:links'),
-        window.api.invoke('attachment:list'),
-        window.api.invoke('board:archived', initialScope),
-        window.api.invoke('board:scopes'),
-        window.api.invoke('milestone:list'),
-      ]);
+    const [projects, mrs, chain, files, gone, boardScopeList, milestoneList] = await Promise.all([
+      window.api.invoke('project:list'),
+      window.api.invoke('mr:mergeRequests'),
+      window.api.invoke('chain:links'),
+      window.api.invoke('attachment:list'),
+      window.api.invoke('board:archived', initialScope),
+      window.api.invoke('board:scopes'),
+      window.api.invoke('milestone:list'),
+    ]);
     setScope(initialScope);
-    setTasks(board);
+    setScopeReady(true);
     setSettings(appSettings);
     const allProjects = projects.map((p) => p.project);
     setProjectList(allProjects);
@@ -380,13 +380,9 @@ export function MyTasks({
    * shown, so there is nothing honest to paint before the answer comes back.
    */
   const setBoardScope = useCallback(async (nextScope: string) => {
+    // The scope change itself re-reads `board:tasks(nextScope)` (`useTaskSummaries`).
     setScope(nextScope);
-    const [board, gone] = await Promise.all([
-      window.api.invoke('board:tasks', nextScope),
-      window.api.invoke('board:archived', nextScope),
-    ]);
-    setTasks(board);
-    setArchived(gone);
+    setArchived(await window.api.invoke('board:archived', nextScope));
     setSettings((prev) => {
       if (!prev) return prev;
       const next = { ...prev, boardScopeId: nextScope };
@@ -395,52 +391,40 @@ export function MyTasks({
     });
   }, []);
 
-  /** Put a removed card back, and take it out of the list it came from. */
+  /** Put a removed card back, and take it out of the list it came from. The answer is the
+   *  Personal board's whole list, merged as the delta it amounts to — on All it must not
+   *  replace the other boards' cards. */
   const restoreCard = useCallback(
     async (taskId: string) => {
-      setTasks(await window.api.invoke('task:restore', taskId));
+      const personal = await window.api.invoke('task:restore', taskId);
+      setTasks((prev) =>
+        prev
+          ? applyTaskDelta(
+              prev,
+              deltaFromBoardList(prev, PERSONAL_PROJECT_ID, personal),
+              scopeRef.current,
+            )
+          : prev,
+      );
       await refreshArchived();
     },
-    [refreshArchived],
+    [refreshArchived, setTasks],
   );
 
   const initial = useInitialLoad(seed);
 
-  const patchTask = useCallback((task: Task) => {
-    // "Is this project in scope" — reads `scopeRef`/`scopeIdsRef`, not `scope`/`scopeIds`
-    // directly, so this callback's identity (and the effect below that depends on it)
-    // never changes when the scope does. See the refs' own comments.
-    const inScope =
-      scopeRef.current === 'all'
-        ? scopeIdsRef.current.has(task.projectId)
-        : task.projectId === scopeRef.current;
-    if (!inScope) return;
-    setTasks((prev) => (prev ? prev.map((t) => (t.id === task.id ? task : t)) : prev));
-  }, []);
+  /** Patch one card the board holds with an answer an action returned (a move, a stop) — a
+   *  card it does not hold is ignored, which is also what keeps another board's card out. */
+  const patchTask = useCallback(
+    (task: TaskSummary) => setTasks((prev) => (prev ? patchTaskSummary(prev, task) : prev)),
+    [setTasks],
+  );
 
-  // Live updates: single-task changes, and whole-board replacement after a sync/add.
-  // Plus the settings the ENGINE writes: dragging a card teaches it what a JIRA status
+  // Live updates — the cards themselves arrive through `useTaskSummaries` above. These are
+  // the settings the ENGINE writes: dragging a card teaches it what a JIRA status
   // means, and this screen saves the whole settings blob (the two switches above), so
   // the learned map has to come back or the next toggle would write over it.
   useEffect(() => {
-    const offTask = window.api.on('task:changed', ({ task }) => patchTask(task));
-    const offTasks = window.api.on('project:tasksChanged', ({ projectId, tasks: next }) => {
-      const inScope =
-        scopeRef.current === 'all'
-          ? scopeIdsRef.current.has(projectId)
-          : projectId === scopeRef.current;
-      if (!inScope) return;
-      // `next` is one project's WHOLE list. A single-board scope replaces `tasks` with
-      // it, same as before; the All scope has other boards' cards in `tasks` too, so it
-      // can only replace that project's own slice and must keep the rest.
-      setTasks((prev) =>
-        scopeRef.current === 'all' ? replaceProjectSlice(prev, projectId, next) : next,
-      );
-      // A card leaving the board is a whole-board change and nothing else — there is no
-      // per-card event for it, because from the card's own point of view nothing happened.
-      // So the removed list is re-read alongside: it is the one moment it can have changed.
-      void refreshArchived();
-    });
     const offSettings = window.api.on('settings:changed', (next) => {
       setSettings((prev) =>
         prev
@@ -479,8 +463,6 @@ export function MyTasks({
     // does not outlive the condition that raised it.
     const offNotice = window.api.on('board:notice', (n) => setNotice(n.text ? n : null));
     return () => {
-      offTask();
-      offTasks();
       offSettings();
       offMrs();
       offMilestones();
@@ -488,7 +470,7 @@ export function MyTasks({
       offAttachments();
       offNotice();
     };
-  }, [patchTask, refreshArchived]);
+  }, []);
 
   const selectedTask = useMemo(
     () => tasks?.find((t) => t.id === selectedTaskId) ?? null,
@@ -884,11 +866,13 @@ export function MyTasks({
       if (jira.status === 'fulfilled' && jira.value) {
         const jiraTasks = jira.value;
         setTasks((prev) =>
-          scopeRef.current === 'all'
-            ? replaceProjectSlice(prev, PERSONAL_PROJECT_ID, jiraTasks)
-            : scopeRef.current === PERSONAL_PROJECT_ID
-              ? jiraTasks
-              : prev,
+          prev
+            ? applyTaskDelta(
+                prev,
+                deltaFromBoardList(prev, PERSONAL_PROJECT_ID, jiraTasks),
+                scopeRef.current,
+              )
+            : prev,
         );
       }
       // Both forges return the WHOLE list, so the later one wins and neither can lose the
@@ -937,7 +921,7 @@ export function MyTasks({
    * same gap `archiveHandlers.ts`'s own docstring calls out.
    */
   const liftHiddenFilter = useCallback(
-    async (notice: { taskId: string; filter: BoardFilter | null; card: Task | null }) => {
+    async (notice: { taskId: string; filter: BoardFilter | null; card: TaskSummary | null }) => {
       const filter = notice.filter;
       if (!filter) return;
       switch (filter.kind) {
@@ -1232,7 +1216,9 @@ export function MyTasks({
   // Off draws no arrow at all, so each card says what it would have said in words instead
   // (`linkChips.ts`) — absent every other mode, which is what leaves `chainChip` alone there.
   const linkChipsOf =
-    boardLinks === 'off' ? (t: Task) => linkChips(t.id, links, tasksById, liveRuns) : undefined;
+    boardLinks === 'off'
+      ? (t: TaskSummary) => linkChips(t.id, links, tasksById, liveRuns)
+      : undefined;
 
   // Delete or Backspace erases the selected arrow, Escape lets it go. On the window rather
   // than on the path, because an SVG `<path>` cannot hold focus — and never while the caret
@@ -1272,9 +1258,10 @@ export function MyTasks({
     return (
       <PaneLoading
         label="Loading tasks…"
-        error={initial.error ?? registries.error}
+        error={initial.error ?? board.error ?? registries.error}
         onRetry={() => {
           initial.retry();
+          board.retry();
           registries.retry();
         }}
         shape="board"
@@ -1599,12 +1586,11 @@ export function MyTasks({
       {showDetail && selectedTask && (
         <GlassPane className={layout.right}>
           <TaskDetailHost
+            // No `task`/`subtasks`/`parentTask`: the board holds card summaries (F29.2), and
+            // the pane reads the card's heavy half itself through `task:get`.
             taskId={selectedTaskId}
-            task={selectedTask}
             agentProjects={agentProjects}
             boards={scopes}
-            subtasks={chain}
-            parentTask={parentOfSelected}
             mergeRequests={selectedTask ? (mrsByTask.get(selectedTask.id) ?? []) : []}
             // The ticket registries, scoped to the selected card's own project — see
             // `registries` above. Passing `ticketLinks` through means `useTicketLinks`

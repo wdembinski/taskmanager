@@ -70,6 +70,19 @@ describe('TaskDetailHost', () => {
     expect(host).toContain('Ship the thing');
   });
 
+  it('never draws a summary row as the open card — it waits for task:get (F29.2)', () => {
+    // A board's chain index holds summaries; the row for the open card is in it, but the
+    // pane must not render it as the card while `task:get` (which this stub never answers)
+    // is still out.
+    const summary = task({ id: 'main', title: 'Ship the thing' });
+    const html = render(
+      <TaskDetailHost taskId={summary.id} chainTasksById={new Map([[summary.id, summary]])} />,
+    );
+
+    expect(html).toBe(render(<TaskDetail task={null} />));
+    expect(html).not.toContain('Ship the thing');
+  });
+
   it('renders the empty state for no selection without touching the transport', () => {
     const html = render(<TaskDetailHost taskId={null} />);
 

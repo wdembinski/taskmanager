@@ -9,48 +9,19 @@
  * `projectId` change, otherwise the freshly remounted table would flash the OUTGOING
  * project's tickets until this hook's own seed for the new one resolves.
  */
-import { useCallback, useEffect, useState } from 'react';
-import type { Task } from '@tm/shared/model';
-import { useTransport } from '../transport';
-import { useInitialLoad, type InitialLoad } from '../useInitialLoad';
+import type { TaskSummary } from '@tm/shared/taskSummary';
+import type { InitialLoad } from '../useInitialLoad';
+import { useTaskSummaries } from '../useTaskSummaries';
 
 export interface ProjectTickets extends Pick<InitialLoad, 'error' | 'retry'> {
   /** This project's tickets, or `null` before the first load (or a project switch) has
-   *  resolved. */
-  tickets: Task[] | null;
+   *  resolved. Card summaries (F29.2): the open ticket reads its heavy half itself. */
+  tickets: TaskSummary[] | null;
 }
 
+/** Seeded and kept current by `useTaskSummaries` — a ticket leaving the project (deleted)
+ *  arrives as a delta's `removed`, which no per-task patch would ever say. */
 export function useProjectTickets(projectId: string | null): ProjectTickets {
-  const transport = useTransport();
-  const [tickets, setTickets] = useState<Task[] | null>(null);
-
-  const seed = useCallback(async () => {
-    if (!projectId) return;
-    setTickets(await transport.invoke('board:tasks', projectId));
-  }, [transport, projectId]);
-  const initial = useInitialLoad(seed);
-
-  useEffect(() => {
-    setTickets(null);
-  }, [projectId]);
-
-  useEffect(() => {
-    if (!projectId) return;
-    const offTask = transport.on('task:changed', ({ task }) => {
-      if (task.projectId !== projectId) return;
-      setTickets((prev) => (prev ? prev.map((t) => (t.id === task.id ? task : t)) : prev));
-    });
-    // The whole list, replaced — a ticket can also leave this way (deleted), which no
-    // per-task patch would ever say.
-    const offTasks = transport.on('project:tasksChanged', ({ projectId: changed, tasks }) => {
-      if (changed !== projectId) return;
-      setTickets(tasks);
-    });
-    return () => {
-      offTask();
-      offTasks();
-    };
-  }, [transport, projectId]);
-
-  return { tickets, error: initial.error, retry: initial.retry };
+  const { tasks, error, retry } = useTaskSummaries(projectId, { clearOnScopeChange: true });
+  return { tickets: tasks, error, retry };
 }

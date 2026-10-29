@@ -25,7 +25,7 @@
  * are tested, rather than simulating the click or transport round trip that would produce
  * them — this package has no DOM testing library to fire either through.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Body1,
   Button,
@@ -46,11 +46,12 @@ import {
   FolderRegular,
   InfoRegular,
 } from '@fluentui/react-icons';
-import type { ArchiveResult, ArchiveTarget } from '@tm/shared/trackerArchive';
+import type { ArchivedListing, ArchiveResult, ArchiveTarget } from '@tm/shared/trackerArchive';
 import { IssueRow } from '../issues/IssueRow';
 import { PaneLoading } from '../PaneLoading';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
+import { useTaskSummaries } from '../useTaskSummaries';
 import {
   archivedTicketSummary,
   archivedViewModel,
@@ -203,28 +204,35 @@ export function ArchivedPane({
   const styles = useStyles();
   const transport = useTransport();
   const [tab, setTab] = useState<ArchivedTab>('milestone');
-  const [model, setModel] = useState<ArchivedViewModel | null>(null);
+  const [listing, setListing] = useState<ArchivedListing | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<{ id: string; message: string } | null>(null);
 
   const seed = useCallback(async () => {
-    const [listing, tickets] = await Promise.all([
-      transport.invoke('archive:list'),
-      transport.invoke('board:tasks', 'all'),
-    ]);
-    setModel(archivedViewModel(listing, tickets, projectId));
-  }, [transport, projectId]);
-  const initial = useInitialLoad(seed);
+    setListing(await transport.invoke('archive:list'));
+  }, [transport]);
+  const listingLoad = useInitialLoad(seed);
+  // Every board's card summaries (F29.2), merged from deltas; a delta re-reads only the
+  // archive listing — never the whole board — since a card archived or restored is a change.
+  const summaries = useTaskSummaries('all', { onDelta: () => listingLoad.retry() });
+  const initial = {
+    error: listingLoad.error ?? summaries.error,
+    retry: () => {
+      listingLoad.retry();
+      summaries.retry();
+    },
+  };
+  const model = useMemo<ArchivedViewModel | null>(
+    () =>
+      listing && summaries.tasks ? archivedViewModel(listing, summaries.tasks, projectId) : null,
+    [listing, summaries.tasks, projectId],
+  );
 
-  useEffect(() => {
-    const offMilestones = transport.on('milestone:changed', () => void initial.retry());
-    const offTasks = transport.on('project:tasksChanged', () => void initial.retry());
-    return () => {
-      offMilestones();
-      offTasks();
-    };
-  }, [transport, initial.retry]);
+  useEffect(
+    () => transport.on('milestone:changed', () => listingLoad.retry()),
+    [transport, listingLoad.retry],
+  );
 
   const toggleExpand = useCallback((id: string) => {
     setExpanded((prev) => {

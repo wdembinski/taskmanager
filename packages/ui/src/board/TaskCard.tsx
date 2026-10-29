@@ -51,7 +51,8 @@ import {
   SparkleRegular,
   TaskListSquareLtrRegular,
 } from '@fluentui/react-icons';
-import type { Person, Task } from '@tm/shared/model';
+import type { Person } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import {
   canResumeWork,
   canStopWork,
@@ -482,7 +483,7 @@ const useStyles = makeStyles({
 });
 
 export interface TaskCardProps {
-  task: Task;
+  task: TaskSummary;
   /**
    * The parent epic's name, for the footer chip — a native ticket (Phase 24) carries only
    * `epicTaskId`, a reference to another card, so the name is resolved by whoever holds the
@@ -502,7 +503,7 @@ export interface TaskCardProps {
   originAutomation?: AutomationOrigin;
   /** This card's steps in execution order — not rendered, but read for its run state,
    *  progress fraction and the ring's `chainNeedsAttention`. */
-  subtasks?: Task[];
+  subtasks?: TaskSummary[];
   /** The merge requests filed under this card — read for the status line's verdict, the
    *  footer's MR ref, and the ring. */
   mergeRequests?: MergeRequest[];
@@ -548,10 +549,10 @@ export interface TaskCardProps {
   /** Enter/Space on the handle — arm a link from this card, for anyone not using a mouse. */
   onLinkArm?: () => void;
   /** The predecessors this card is still waiting on (`blockedBy`), for its chip. */
-  waitingOn?: readonly Task[];
+  waitingOn?: readonly TaskSummary[];
   /** The subset of {@link waitingOn} that is waiting on nothing but a **human** pressing
    *  Merge (`awaitingMerge`), so the chip can say so. */
-  mergeHeld?: readonly Task[];
+  mergeHeld?: readonly TaskSummary[];
   /** Why each arrow still holds this card, one line each (`waitReason`, via `chainStates`)
    *  — the waiting chip's tooltip. Absent, the chip falls back to naming the cards. */
   waitReasons?: readonly string[];
@@ -602,7 +603,7 @@ export interface TaskCardProps {
  * card no longer draws a type glyph of its own (the mockup leaves type unmarked, matching
  * the board's colour budget: type is a standing fact that never changes).
  */
-export function typeIcon(task: Task): JSX.Element {
+export function typeIcon(task: TaskSummary): JSX.Element {
   if (task.externalSource == null) {
     if (task.type === 'bug') return <BugRegular />;
     if (task.type === 'feature') return <BeakerRegular />;
