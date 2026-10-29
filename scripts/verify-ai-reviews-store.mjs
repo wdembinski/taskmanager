@@ -523,6 +523,32 @@ let task;
     isDeepStrictEqual(added[0], a) && isDeepStrictEqual(added[1], b),
   );
   check('addAiDrafts of nothing inserts nothing', store.addAiDrafts([], at).length === 0);
+
+  // updateReviewComment round-trips the decision stamps: set, leave alone, clear.
+  const id = added[0]?.id;
+  const reread = () => store.listReviewComments(task.id).find((c) => c.id === id);
+  const accepted = store.updateReviewComment(id, { acceptedAt: 111, dismissedAt: null });
+  check(
+    'updateReviewComment stores acceptedAt and returns it',
+    accepted?.acceptedAt === 111 && reread()?.acceptedAt === 111 && !('dismissedAt' in reread()),
+  );
+  store.updateReviewComment(id, { body: 'reworded' });
+  check(
+    'a patch without the stamps leaves acceptedAt alone',
+    reread()?.acceptedAt === 111 && reread()?.body === 'reworded',
+  );
+  store.updateReviewComment(id, { acceptedAt: null, dismissedAt: 222 });
+  check(
+    'updateReviewComment clears acceptedAt and stores dismissedAt',
+    !('acceptedAt' in reread()) && reread()?.dismissedAt === 222,
+  );
+  check(
+    'the stamps reached the columns themselves',
+    isDeepStrictEqual(
+      { ...rawGet(dbPath, 'SELECT acceptedAt, dismissedAt FROM review_drafts WHERE id = ?', id) },
+      { acceptedAt: null, dismissedAt: 222 },
+    ),
+  );
   store.close();
 }
 

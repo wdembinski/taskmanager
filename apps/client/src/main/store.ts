@@ -1126,11 +1126,14 @@ export interface Store {
    * `start` is omitted to leave the existing anchor's range alone; `'start' in patch` is
    * what "set" means, so `null` clears both columns back to a single-line anchor and an
    * object replaces them — a re-anchor always redefines side/line/start together.
+   * `acceptedAt`/`dismissedAt` follow the same rule: omitted leaves them, `null` clears them.
    */
   updateReviewComment(
     id: string,
     patch: Partial<Pick<ReviewComment, 'body' | 'diffId' | 'side' | 'line' | 'excerpt'>> & {
       start?: ReviewComment['start'] | null;
+      acceptedAt?: number | null;
+      dismissedAt?: number | null;
     },
   ): ReviewComment | undefined;
   /**
@@ -4240,7 +4243,8 @@ export function createStore(dbPath: string): Store {
   const updateReviewCommentStmt = db.prepare(
     `UPDATE review_drafts
        SET diffId = @diffId, side = @side, line = @line, startSide = @startSide,
-           startLine = @startLine, body = @body, excerpt = @excerpt, updatedAt = @updatedAt
+           startLine = @startLine, body = @body, excerpt = @excerpt, updatedAt = @updatedAt,
+           acceptedAt = @acceptedAt, dismissedAt = @dismissedAt
      WHERE id = @id AND sentAt IS NULL`,
   );
   const deleteReviewCommentStmt = db.prepare(
@@ -7224,6 +7228,8 @@ export function createStore(dbPath: string): Store {
         startLine: startSet ? (patch.start?.line ?? null) : existing.startLine,
         body: patch.body !== undefined ? patch.body : existing.body,
         excerpt: patch.excerpt !== undefined ? patch.excerpt : existing.excerpt,
+        acceptedAt: patch.acceptedAt !== undefined ? patch.acceptedAt : existing.acceptedAt,
+        dismissedAt: patch.dismissedAt !== undefined ? patch.dismissedAt : existing.dismissedAt,
         updatedAt: Date.now(),
       };
       if (updateReviewCommentStmt.run(next).changes === 0) return undefined;

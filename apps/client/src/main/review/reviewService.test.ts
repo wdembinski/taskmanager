@@ -90,6 +90,8 @@ function fakeStore(seed: ReviewComment[] = [], knownTasks: Set<string> = new Set
         start: startSet ? (patch.start ?? undefined) : existing.start,
         body: patch.body !== undefined ? patch.body : existing.body,
         excerpt: patch.excerpt !== undefined ? patch.excerpt : existing.excerpt,
+        acceptedAt: patch.acceptedAt !== undefined ? patch.acceptedAt : existing.acceptedAt,
+        dismissedAt: patch.dismissedAt !== undefined ? patch.dismissedAt : existing.dismissedAt,
         updatedAt: Date.now(),
       };
       rows[idx] = next;
@@ -420,6 +422,77 @@ describe('review:update', () => {
   });
 });
 
+describe("an AI draft is the human's only once accepted", () => {
+  function aiDraft(overrides: Partial<ReviewComment> = {}): ReviewComment {
+    return seedComment({
+      origin: 'ai',
+      aiReviewId: 'air-1',
+      severity: 'major',
+      suggestion: null,
+      acceptedAt: null,
+      dismissedAt: null,
+      ...overrides,
+    });
+  }
+
+  async function decide(seed: ReviewComment, patch: Parameters<ReviewService['update']>[2]) {
+    const diffs = fakeDiffs(null);
+    const { svc, store } = makeService({ comments: [seed], diffs });
+    const result = await svc.update('t1', seed.id, patch);
+    expect(diffs.calls).toEqual([]);
+    return { result, stored: store.listReviewComments('t1')[0] };
+  }
+
+  it('accept stamps acceptedAt and clears a dismissal', async () => {
+    const { result, stored } = await decide(aiDraft({ dismissedAt: 7 }), { decision: 'accept' });
+
+    expect(result).toMatchObject({ status: 'ok' });
+    expect(stored.acceptedAt).toEqual(expect.any(Number));
+    expect(stored.dismissedAt).toBeNull();
+    expect(stored.body).toBe('note');
+  });
+
+  it('dismiss stamps dismissedAt and clears an acceptance', async () => {
+    const { result, stored } = await decide(aiDraft({ acceptedAt: 7 }), { decision: 'dismiss' });
+
+    expect(result).toMatchObject({ status: 'ok' });
+    expect(stored.dismissedAt).toEqual(expect.any(Number));
+    expect(stored.acceptedAt).toBeNull();
+  });
+
+  it('restore clears dismissedAt and leaves the draft unaccepted', async () => {
+    const { result, stored } = await decide(aiDraft({ dismissedAt: 7 }), { decision: 'restore' });
+
+    expect(result).toMatchObject({ status: 'ok' });
+    expect(stored.dismissedAt).toBeNull();
+    expect(stored.acceptedAt).toBeNull();
+  });
+
+  it('a body edit on an AI draft accepts it and clears a dismissal', async () => {
+    const { result, stored } = await decide(aiDraft({ dismissedAt: 7 }), { body: 'reworded' });
+
+    expect(result).toMatchObject({ status: 'ok' });
+    expect(stored.body).toBe('reworded');
+    expect(stored.acceptedAt).toEqual(expect.any(Number));
+    expect(stored.dismissedAt).toBeNull();
+  });
+
+  it('a decision on a human draft is a harmless no-op that still answers ok', async () => {
+    const seed = seedComment();
+    const { result, stored } = await decide(seed, { decision: 'dismiss' });
+
+    expect(result).toEqual({ status: 'ok', comment: seed });
+    expect(stored).toEqual(seed);
+  });
+
+  it('a decision on a sent comment answers sent and stamps nothing', async () => {
+    const { result, stored } = await decide(aiDraft({ sentAt: 500 }), { decision: 'accept' });
+
+    expect(result).toEqual({ status: 'sent', sentAt: 500 });
+    expect(stored.acceptedAt).toBeNull();
+  });
+});
+
 describe('review:list', () => {
   it('makes no filesFor call when there are no comments to recompute', async () => {
     const diffs = fakeDiffs(null);
@@ -724,6 +797,70 @@ describe('review:send', () => {
     expect(chatResult.calls[0].message).toEqual(
       formatReviewMessage([{ ...seed, outdated: true }], summaryFixture(), undefined),
     );
+  });
+
+  it('sends human and accepted AI drafts only, and stamps only those', async () => {
+    const human = seedComment({ id: 'c1', body: 'human note' });
+    const unaccepted = seedComment({
+      id: 'c2',
+      body: 'unaccepted AI note',
+      origin: 'ai',
+      severity: 'minor',
+      acceptedAt: null,
+      dismissedAt: null,
+    });
+    const accepted = seedComment({
+      id: 'c3',
+      body: 'accepted AI note',
+      origin: 'ai',
+      severity: 'blocker',
+      acceptedAt: 50,
+      dismissedAt: null,
+    });
+    const dismissed = seedComment({ id: 'c4', body: 'dismissed note', dismissedAt: 60 });
+    const diffs = matchingDiffs();
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-8' });
+    const { svc, store } = makeService({
+      comments: [human, unaccepted, accepted, dismissed],
+      diffs,
+      chat: chatResult.chat,
+    });
+
+    const result = await svc.send('t1');
+
+    expect(chatResult.calls).toHaveLength(1);
+    expect(chatResult.calls[0].message).toBe(
+      formatReviewMessage(
+        [
+          { ...human, outdated: false },
+          { ...accepted, outdated: false },
+        ],
+        summaryFixture(),
+        undefined,
+      ),
+    );
+    if (result.status !== 'sent') throw new Error(result.status);
+    expect(result.comments.map((c) => c.id)).toEqual(['c1', 'c3']);
+    const sentIds = store
+      .listReviewComments('t1')
+      .filter((c) => c.sentAt !== null)
+      .map((c) => c.id);
+    expect(sentIds).toEqual(['c1', 'c3']);
+  });
+
+  it('refuses nothing-to-send when the only draft is an unaccepted AI one', async () => {
+    const seed = seedComment({ origin: 'ai', severity: 'nit', acceptedAt: null });
+    const diffs = matchingDiffs();
+    diffs.state.summary = okSummary();
+    const chatResult = fakeChat({ status: 'sent', taskId: 't1', runId: 'run-9' });
+    const { svc, store } = makeService({ comments: [seed], diffs, chat: chatResult.chat });
+
+    const result = await svc.send('t1');
+
+    expect(result).toEqual({ status: 'refused', taskId: 't1', reason: 'nothing-to-send' });
+    expect(chatResult.calls).toHaveLength(0);
+    expect(store.listReviewComments('t1')[0].sentAt).toBeNull();
   });
 
   it('refuses landed without calling chat', async () => {
