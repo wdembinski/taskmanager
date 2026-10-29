@@ -8,6 +8,7 @@
 import { BOOT_CHANNELS } from '../../fixtures/uiShotsFixture.mjs';
 import {
   START_CARD,
+  START_MODEL_CATALOG,
   START_ROLES_PROJECTS,
   START_RUN_STATS,
   START_STEPS,
@@ -17,6 +18,7 @@ const channelOverrides = {
   'board:tasks': [...BOOT_CHANNELS['board:tasks'], START_CARD, ...START_STEPS],
   'project:list': START_ROLES_PROJECTS,
   'project:runStats': START_RUN_STATS,
+  'model:catalog': START_MODEL_CATALOG,
 };
 
 const row = (scheme) => ({

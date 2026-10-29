@@ -3,6 +3,7 @@
  * `ui-shots.mjs`'s header doc for the row shape.
  */
 import { PROJECTS } from '../../fixtures/boardShotsFixture.mjs';
+import { START_MODEL_CATALOG } from '../../fixtures/shots/97-start-roles.mjs';
 
 /**
  * The fixture's projects with the first one — the one "Edit" opens — set to Merge on green
@@ -101,7 +102,7 @@ const rolesRow = (scheme) => ({
     selector: '[data-project-roles]',
     mockup: { x: 330, y: 252, width: 780, height: 274 },
   },
-  channelOverrides: { 'project:list': ROLES_PROJECTS },
+  channelOverrides: { 'project:list': ROLES_PROJECTS, 'model:catalog': START_MODEL_CATALOG },
 });
 
 export default [

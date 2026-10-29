@@ -56,7 +56,29 @@ const useStyles = makeStyles({
   },
   caption: { fontSize: '11.5px', color: tokens.colorNeutralForeground3 },
   /** Fluent's Dropdown hard-codes a 250px minimum — the 170px the mockup draws needs it gone. */
-  model: { width: '170px', minWidth: 0 },
+  /** v11-4's 170×28 box: radius 6, the pill's own thin stroke and 12.5px muted text — not
+   *  Fluent's 32px outline with its darker underline. */
+  model: {
+    width: '170px',
+    minWidth: 0,
+    height: '28px',
+    boxSizing: 'border-box',
+    borderRadius: '6px',
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    ':hover': {
+      border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke1}`,
+    },
+    '& .fui-Dropdown__button': {
+      minHeight: 0,
+      height: '26px',
+      paddingTop: 0,
+      paddingBottom: 0,
+      fontSize: '12.5px',
+      color: tokens.colorNeutralForeground2,
+    },
+    /** v11-4's chevron is a small 10px mark, not Fluent's 20px glyph. */
+    '& .fui-Dropdown__expandIcon': { fontSize: '16px' },
+  },
   /** The 350×26 pill, five equal segments. */
   effort: {
     display: 'flex',
@@ -149,6 +171,7 @@ export function RolesTable({
                     : { value: ROLE_DEFAULT, label: row.sentinelLabel }
                 }
                 allowCustom={false}
+                labelOnly
                 title={`${name} model`}
               />
             </div>

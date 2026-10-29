@@ -14,7 +14,11 @@
 import { PROJECTS, PROJECT_ID } from '../boardShotsFixture.mjs';
 import { sidebarTicket } from '../shotsFixtureHelpers.mjs';
 
-/** `project:list` with the fixture's project planning on opus and every role field unset. */
+/**
+ * `project:list` with the fixture's project planning on opus, its role models unset and its
+ * efforts the ones v11-4 picks: the lead on the app default (`high`), the planner at `max`,
+ * the workers at `medium` and the reviewer at `xhigh`.
+ */
 export const START_ROLES_PROJECTS = PROJECTS.map((entry, i) =>
   i === 0
     ? {
@@ -25,9 +29,9 @@ export const START_ROLES_PROJECTS = PROJECTS.map((entry, i) =>
           reviewModel: null,
           leadModel: null,
           leadEffort: null,
-          planningEffort: null,
-          workerEffort: null,
-          reviewEffort: null,
+          planningEffort: 'max',
+          workerEffort: 'medium',
+          reviewEffort: 'xhigh',
         },
       }
     : entry,
@@ -60,5 +64,16 @@ export const START_RUN_STATS = {
   costPerSessionUsd: { low: 0.9, high: 1.3 },
   minutesPerSession: 5.7,
 };
+
+/**
+ * `model:catalog` as the CLI answers it, so a roles row reads the display name v11-4 draws
+ * ("Opus 5.5") rather than the bare alias the picker falls back to without a probe.
+ */
+export const START_MODEL_CATALOG = [
+  { id: 'haiku', label: 'Haiku 5.5', known: true, family: 'haiku', kind: 'alias' },
+  { id: 'sonnet', label: 'Sonnet 5.5', known: true, family: 'sonnet', kind: 'alias' },
+  { id: 'opus', label: 'Opus 5.5', known: true, family: 'opus', kind: 'alias' },
+  { id: 'fable', label: 'Fable 5.1', known: true, family: 'fable', kind: 'alias' },
+];
 
 export const CHANNELS = {};
