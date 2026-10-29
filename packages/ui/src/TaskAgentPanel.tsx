@@ -1580,6 +1580,7 @@ export function TaskAgentPanel({
         task={task}
         agentProjects={agentProjects}
         filingProjects={filingProjects}
+        stepCount={ownSteps.length}
         onClose={() => setAssignOpen(false)}
         onAssigned={onTaskChanged}
       />
