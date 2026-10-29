@@ -59,6 +59,8 @@ import {
   isUsableModel,
   ownsTickets,
   PERSONAL_PROJECT_ID,
+  resolveRoleEffort,
+  resolveRoleModel,
   type AssignAgentInput,
   type BoardColumn,
   type DiscoveredModel,
@@ -1082,7 +1084,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   handle('exec:readiness', (target) => readinessFor(target));
   handle('exec:targetsInUse', async () => targetsInUse());
 
-  handle('session:start', async (request) => sessions.start(request));
+  handle('session:start', async (request) => {
+    // `--effort` takes exactly one of five words; anything else would fail the CLI at spawn.
+    if (!isEffort(request.effort)) throw new Error(`Not a usable effort: ${request.effort}`);
+    return sessions.start(request);
+  });
   handle('session:stop', async (runId) => sessions.stop(runId));
   handle('session:answer', async (runId, message) => sessions.send(runId, message));
 
@@ -1300,13 +1306,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     // Stop — scheduler:stop — actually terminates it. Ungated and in acceptEdits so it
     // can write the file; the plan watcher re-syncs on the change.
     //
-    // Rewriting the plan IS planning, so it takes the planning model — falling back to
-    // the execution one, which is what NULL means there. No card is involved, so there is
-    // no per-card override to out-rank it and no `resolveRunModel` call to make.
+    // Rewriting the plan IS planning, so it takes the planner role's model and effort. No
+    // card is involved, so the ladder reads the project's rungs alone (`task = null`).
     const { runId } = scheduler.startAuxiliarySession(project.id, {
       prompt: buildAlignPrompt(project.planPath, project.path),
       cwd: project.path,
-      model: project.planningModel ?? project.defaultModel,
+      model: resolveRoleModel('planner', null, project),
+      effort: resolveRoleEffort('planner', null, project, store.getSettings()),
       permissionMode: 'acceptEdits',
     });
     return { runId, contractPhases: phases };
@@ -2774,6 +2780,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   const reviewer = createAiVisualReviewer({
     getTask: (id) => store.getTask(id),
     getProject: (id) => store.getProject(id),
+    getSettings: () => store.getSettings(),
     listSubtasks: (ownerId) => store.getSubtasks(ownerId),
     listAttachments: (taskId) => store.attachmentsForTask(taskId),
     listActivity: (taskId) => store.getTaskActivity(taskId),

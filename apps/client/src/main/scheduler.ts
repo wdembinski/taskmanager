@@ -42,7 +42,7 @@ import {
   releasedVersionFrom,
 } from './activityRecorder';
 import { logMain } from './log';
-import { hasRepo, resolveRunModel } from '@shared/model';
+import { hasRepo, resolveRoleEffort, resolveRunModel, type Effort } from '@shared/model';
 import { chainInFlight, chatTarget, hasAgentWorked, parkedStep } from '@shared/board';
 import { DEFAULT_READY_LANES, openPrTaskIds } from '@shared/readyLanes';
 import { fileHolds } from '@shared/fileOverlap';
@@ -156,6 +156,7 @@ import {
 import { tickPlanCheckbox } from './planParser';
 import { buildReleasePrompt } from './releasePrompt';
 import { autoIntegrateOn } from '@shared/integrate';
+import { coerceDefaultEfforts } from '@shared/settings';
 import { autoReleaseOn, RELEASE_DOC } from '@shared/release';
 import { autoCreatePrOn } from '@shared/pullRequest';
 import {
@@ -938,6 +939,8 @@ interface Run {
    */
   permissionMode?: PermissionMode;
   model?: ClaudeModel;
+  /** Resolved with {@link model}, for the same role — see `startTask`. */
+  effort?: Effort;
   /**
    * (Phase 12) The human's chat message, when this run exists only to carry it into a
    * resumed conversation. It becomes the session's prompt in place of the resume nudge
@@ -4507,6 +4510,7 @@ export class Scheduler {
     const expectsPlan =
       opts.permissionMode === 'plan' ||
       !(opts.chatPrompt !== undefined || reviewSeed || opts.releaseSeed || fixingConflict);
+    const planning = expectsPlan && permissionMode === 'plan';
     const run: Run = {
       taskId: task.id,
       projectId: project.id,
@@ -4527,7 +4531,11 @@ export class Scheduler {
       // or a review that merely inherited `plan` from its card keeps the execution model.
       // Resolved once, here: the run captures its model so an edit of the card's (or the
       // project's) model decides the NEXT run and can never change this one mid-flight.
-      model: resolveRunModel(task, project, expectsPlan && permissionMode === 'plan'),
+      model: resolveRunModel(task, project, planning),
+      // The same role as the model, so a planning run thinks as hard as the planner is set to.
+      effort: resolveRoleEffort(planning ? 'planner' : 'workers', task, project, {
+        defaultEfforts: coerceDefaultEfforts(this.store.getSettings().defaultEfforts),
+      }),
       expectsPlan,
       replan: opts.replan,
       replaceRound: opts.replaceRound,
@@ -5019,13 +5027,16 @@ export class Scheduler {
     // Read fresh on every launch, not cached on the scheduler, so a change on the
     // Settings screen takes effect on the very next run rather than whichever one
     // happened to be in flight when it was saved.
-    const { autoCompactPercent, subagentModel } = this.store.getSettings();
+    const settings = this.store.getSettings();
+    const { autoCompactPercent, subagentModel } = settings;
     const request: StartSessionRequest = {
       prompt,
       cwd: prep.cwd,
       // The run carries the per-assignment overrides (falling back to the project
       // defaults when the task has none); older runs without them use the project's.
       model: run.model ?? project.defaultModel,
+      // A run object from before efforts existed has none: it was a workers run.
+      effort: run.effort ?? coerceDefaultEfforts(settings.defaultEfforts).workers,
       permissionMode: run.permissionMode ?? project.defaultPermissionMode,
       autoCompactPercent,
       subagentModel,

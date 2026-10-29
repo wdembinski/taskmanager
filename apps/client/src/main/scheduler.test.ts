@@ -31,7 +31,8 @@ import type { AttentionItem } from '@shared/attention';
 import { MAX_PLAN_STEPS } from '@shared/board';
 import type { TaskAttachment } from '@shared/attachments';
 import type { PlanVerdict } from '@shared/planCheck';
-import type { PermissionMode } from '@shared/session';
+import type { PermissionMode, StartSessionRequest } from '@shared/session';
+import type { AppSettings } from '@shared/settings';
 import type { Project, Task, TaskActivityEntry } from '@shared/model';
 import type { LimitState } from '@shared/limit';
 import type { MergeRequest } from '@shared/mergeRequest';
@@ -1136,6 +1137,7 @@ describe('Scheduler — a card delegated to an agent project', () => {
   function makeAgentScheduler(
     overrides: Partial<Task> = {},
     projectOverrides: Partial<Project> = {},
+    settingsOverrides: Partial<AppSettings> = {},
   ) {
     const personal = { id: 'personal', name: 'Personal', path: '', planPath: '', kind: 'plan' };
     const agentProject = {
@@ -1179,7 +1181,7 @@ describe('Scheduler — a card delegated to an agent project', () => {
         { kind: 'comment', id: 1, body: 'Start with the file-picker path.', createdAt: 1 },
       ],
       updateTask: (_id: string, patch: Partial<Task>) => Object.assign(task, patch),
-      getSettings: () => ({ limitJitterMs: 0, concurrency: 1 }),
+      getSettings: () => ({ limitJitterMs: 0, concurrency: 1, ...settingsOverrides }),
       appendTaskEvent: vi.fn(),
       getSubtasks: () => [], // an ordinary card: no plan-driven steps
       // …and no arrows either. The limit-resume case below ends by re-asking the chain,
@@ -1274,6 +1276,71 @@ describe('Scheduler — a card delegated to an agent project', () => {
     );
     scheduler.runTask('t1');
     expect(start.mock.calls[0][0]).toMatchObject({ model: 'sonnet' });
+  });
+
+  describe('--effort (F28.1)', () => {
+    const efforts: Partial<AppSettings> = {
+      defaultEfforts: { lead: 'high', planner: 'max', workers: 'low', reviewer: 'xhigh' },
+    };
+    const effortOf = (start: ReturnType<typeof makeAgentScheduler>['start']) =>
+      (start.mock.calls[0][0] as StartSessionRequest).effort;
+
+    it('plans at the planner effort: card, else project, else the app default', () => {
+      const app = makeAgentScheduler({ agentModel: null }, {}, efforts);
+      app.scheduler.runTask('t1');
+      expect(effortOf(app.start)).toBe('max');
+
+      const project = makeAgentScheduler(
+        { agentModel: null },
+        { planningEffort: 'medium', workerEffort: 'high' },
+        efforts,
+      );
+      project.scheduler.runTask('t1');
+      expect(effortOf(project.start)).toBe('medium');
+
+      const card = makeAgentScheduler(
+        { agentModel: null, agentPlanningEffort: 'low', agentEffort: 'xhigh' },
+        { planningEffort: 'medium' },
+        efforts,
+      );
+      card.scheduler.runTask('t1');
+      expect(effortOf(card.start)).toBe('low');
+    });
+
+    it('works at the workers effort: card, else project, else the app default', () => {
+      const work = { agentModel: null, agentMode: 'bypassPermissions' } as const;
+      const app = makeAgentScheduler(work, { planningEffort: 'medium' }, efforts);
+      app.scheduler.runTask('t1');
+      expect(effortOf(app.start)).toBe('low');
+
+      const project = makeAgentScheduler(work, { workerEffort: 'xhigh' }, efforts);
+      project.scheduler.runTask('t1');
+      expect(effortOf(project.start)).toBe('xhigh');
+
+      const card = makeAgentScheduler(
+        { ...work, agentEffort: 'medium', agentPlanningEffort: 'max' },
+        { workerEffort: 'xhigh' },
+        efforts,
+      );
+      card.scheduler.runTask('t1');
+      expect(effortOf(card.start)).toBe('medium');
+    });
+
+    it('runs a step at the workers effort', () => {
+      const { scheduler, start } = makeAgentScheduler(
+        { agentModel: null, agentMode: 'bypassPermissions', parentTaskId: 'card-1' },
+        { workerEffort: 'medium', planningEffort: 'max' },
+        efforts,
+      );
+      scheduler.runTask('t1');
+      expect(effortOf(start)).toBe('medium');
+    });
+
+    it('sends high when no settings blob carries defaultEfforts', () => {
+      const { scheduler, start } = makeAgentScheduler({ agentModel: null });
+      scheduler.runTask('t1');
+      expect(effortOf(start)).toBe('high');
+    });
   });
 
   it('resumes an agent task in the agent project after a usage limit clears', () => {
@@ -7033,11 +7100,16 @@ describe('Scheduler — which runs owe a plan', () => {
       },
       appendTaskEvent: vi.fn(),
       appendTokenUsage: vi.fn(),
-      getSettings: () => ({ maxAutoRetries: 0, limitJitterMs: 0, concurrency: 1 }),
+      getSettings: () => ({
+        maxAutoRetries: 0,
+        limitJitterMs: 0,
+        concurrency: 1,
+        defaultEfforts: { lead: 'high', planner: 'max', workers: 'low', reviewer: 'xhigh' },
+      }),
       ...INERT_ATTENTION_STORE,
     } as unknown as Store;
     const sessions = {
-      start: vi.fn(() => ({ runId: 'r-new' })),
+      start: vi.fn((_req: StartSessionRequest, _opts: unknown) => ({ runId: 'r-new' })),
       stop: vi.fn(),
       send: vi.fn(),
     } as unknown as SessionManager;
@@ -7049,8 +7121,20 @@ describe('Scheduler — which runs owe a plan', () => {
           runs: Map<string, { permissionMode?: string; expectsPlan?: boolean; model?: string }>;
         }
       ).runs.get(runId);
-    return { scheduler, card, runFor };
+    return { scheduler, card, runFor, sessions };
   }
+
+  it('starts a chat reply at the workers effort and a re-plan at the planner one', () => {
+    const chat = setup();
+    const sent = chat.scheduler.chatWithAgent('t1', 'how did the branch turn out?');
+    if (sent.status === 'refused') throw new Error(sent.reason);
+    expect(vi.mocked(chat.sessions.start).mock.calls[0][0].effort).toBe('low');
+
+    const replan = setup();
+    const again = replan.scheduler.replanCard('t1', 'plan me another round');
+    if (again.status === 'refused') throw new Error(again.reason);
+    expect(vi.mocked(replan.sessions.start).mock.calls[0][0].effort).toBe('max');
+  });
 
   it('does not make a chat reply owe a plan, though it inherits plan mode', () => {
     const { scheduler, runFor } = setup();

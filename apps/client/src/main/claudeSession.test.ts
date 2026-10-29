@@ -19,6 +19,7 @@ import {
 } from './claudeSession';
 import type { ExecHost } from './exec';
 import type { StartSessionRequest } from '@shared/session';
+import { EFFORTS, type Effort } from '@shared/model';
 
 describe('mapRawEvent', () => {
   it('maps the init system event to a started event with the session id', () => {
@@ -256,7 +257,13 @@ describe('mapRawEvent', () => {
 describe('buildClaudeArgs', () => {
   it('builds print + stream-json args and never includes the prompt', () => {
     const args = buildClaudeArgs(
-      { prompt: 'do the thing', cwd: 'C:\\work', model: 'haiku', permissionMode: 'acceptEdits' },
+      {
+        prompt: 'do the thing',
+        cwd: 'C:\\work',
+        model: 'haiku',
+        effort: 'high',
+        permissionMode: 'acceptEdits',
+      },
       'session-123',
     );
     expect(args).toEqual([
@@ -270,6 +277,8 @@ describe('buildClaudeArgs', () => {
       'haiku',
       '--permission-mode',
       'acceptEdits',
+      '--effort',
+      'high',
       '--session-id',
       'session-123',
     ]);
@@ -279,7 +288,13 @@ describe('buildClaudeArgs', () => {
 
   it('resumes an existing conversation with --resume instead of --session-id', () => {
     const args = buildClaudeArgs(
-      { prompt: 'continue', cwd: 'C:\\work', model: 'haiku', permissionMode: 'acceptEdits' },
+      {
+        prompt: 'continue',
+        cwd: 'C:\\work',
+        model: 'haiku',
+        effort: 'high',
+        permissionMode: 'acceptEdits',
+      },
       'session-123',
       undefined,
       true,
@@ -293,7 +308,13 @@ describe('buildClaudeArgs', () => {
 
   it('adds the permission gate flags and forces default mode when gated', () => {
     const args = buildClaudeArgs(
-      { prompt: 'x', cwd: 'C:\\work', model: 'haiku', permissionMode: 'acceptEdits' },
+      {
+        prompt: 'x',
+        cwd: 'C:\\work',
+        model: 'haiku',
+        effort: 'high',
+        permissionMode: 'acceptEdits',
+      },
       'session-123',
       { configPath: 'C:\\tmp\\mcp-1.json' },
     );
@@ -308,7 +329,7 @@ describe('buildClaudeArgs', () => {
 
   it('keeps plan mode even when gated, and still gates it (Phase 11)', () => {
     const args = buildClaudeArgs(
-      { prompt: 'x', cwd: 'C:\\work', model: 'haiku', permissionMode: 'plan' },
+      { prompt: 'x', cwd: 'C:\\work', model: 'haiku', effort: 'high', permissionMode: 'plan' },
       'session-123',
       { configPath: 'C:\\tmp\\mcp-1.json' },
     );
@@ -325,6 +346,7 @@ describe('buildClaudeArgs', () => {
         prompt: 'x',
         cwd: 'C:\\work',
         model: 'haiku',
+        effort: 'high',
         permissionMode: 'plan',
         disallowedTools: ['Edit', 'Write', 'Bash'],
       },
@@ -338,7 +360,14 @@ describe('buildClaudeArgs', () => {
   it('adds no --disallowedTools flag when the list is absent or empty', () => {
     for (const disallowedTools of [undefined, []]) {
       const args = buildClaudeArgs(
-        { prompt: 'x', cwd: 'C:\\work', model: 'haiku', permissionMode: 'plan', disallowedTools },
+        {
+          prompt: 'x',
+          cwd: 'C:\\work',
+          model: 'haiku',
+          effort: 'high',
+          permissionMode: 'plan',
+          disallowedTools,
+        },
         'session-123',
       );
       expect(args).not.toContain('--disallowedTools');
@@ -346,11 +375,92 @@ describe('buildClaudeArgs', () => {
   });
 });
 
+describe('buildClaudeArgs — --effort on every spawn (F28.1)', () => {
+  const gate = { configPath: 'C:\tmp\mcp-1.json' };
+  const variants: {
+    name: string;
+    build: (effort: Effort) => string[];
+  }[] = [
+    {
+      name: 'fresh',
+      build: (effort) =>
+        buildClaudeArgs(
+          { prompt: 'x', cwd: 'C:\work', model: 'haiku', effort, permissionMode: 'acceptEdits' },
+          'session-123',
+        ),
+    },
+    {
+      name: 'resume',
+      build: (effort) =>
+        buildClaudeArgs(
+          { prompt: 'x', cwd: 'C:\work', model: 'haiku', effort, permissionMode: 'acceptEdits' },
+          'session-123',
+          undefined,
+          true,
+        ),
+    },
+    {
+      name: 'gated',
+      build: (effort) =>
+        buildClaudeArgs(
+          { prompt: 'x', cwd: 'C:\work', model: 'haiku', effort, permissionMode: 'acceptEdits' },
+          'session-123',
+          gate,
+          false,
+          'C:\tmp\contract.md',
+        ),
+    },
+    {
+      name: 'read-only review',
+      build: (effort) =>
+        buildClaudeArgs(
+          {
+            prompt: 'x',
+            cwd: 'C:\work',
+            model: 'haiku',
+            effort,
+            permissionMode: 'manual',
+            allowedTools: ['Read', 'Bash(git log:*)'],
+            disallowedTools: ['Edit', 'Write'],
+            settingSources: ['user'],
+            strictMcpConfig: true,
+          },
+          'session-123',
+          gate,
+        ),
+    },
+  ];
+
+  for (const { name, build } of variants) {
+    for (const effort of EFFORTS) {
+      it(`${name}: sends --effort ${effort} right after the permission mode`, () => {
+        const args = build(effort);
+        expect(args.filter((a) => a === '--effort')).toHaveLength(1);
+        const at = args.indexOf('--permission-mode');
+        expect(args.slice(at + 2, at + 4)).toEqual(['--effort', effort]);
+      });
+    }
+
+    it(`${name}: leaves every other flag where it was`, () => {
+      // The only difference between two efforts is the effort's own value.
+      const low = build('low');
+      const max = build('max');
+      const at = low.indexOf('--effort');
+      expect(max.indexOf('--effort')).toBe(at);
+      expect([...low.slice(0, at), ...low.slice(at + 2)]).toEqual([
+        ...max.slice(0, at),
+        ...max.slice(at + 2),
+      ]);
+    });
+  }
+});
+
 describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', () => {
   const base: StartSessionRequest = {
     prompt: 'x',
     cwd: 'C:\\work',
     model: 'haiku',
+    effort: 'high',
     permissionMode: 'acceptEdits',
   };
   const gate = { configPath: 'C:\\tmp\\mcp-1.json' };
@@ -395,6 +505,8 @@ describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', 
         'haiku',
         '--permission-mode',
         'acceptEdits',
+        '--effort',
+        'high',
         '--session-id',
         'session-123',
       ],
@@ -414,6 +526,8 @@ describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', 
         'haiku',
         '--permission-mode',
         'default',
+        '--effort',
+        'high',
         '--session-id',
         'session-123',
         '--mcp-config',
@@ -436,6 +550,8 @@ describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', 
         'haiku',
         '--permission-mode',
         'acceptEdits',
+        '--effort',
+        'high',
         '--session-id',
         'session-123',
         '--disallowedTools',
@@ -446,13 +562,30 @@ describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', 
       name: 'resume',
       req: base,
       resume: true,
-      expected: [...head, '--permission-mode', 'acceptEdits', '--resume', 'session-123'],
+      expected: [
+        ...head,
+        '--permission-mode',
+        'acceptEdits',
+        '--effort',
+        'high',
+        '--resume',
+        'session-123',
+      ],
     },
     {
       name: 'plan + gated',
       req: { ...base, permissionMode: 'plan' },
       gate,
-      expected: [...head, '--permission-mode', 'plan', '--session-id', 'session-123', ...gateTail],
+      expected: [
+        ...head,
+        '--permission-mode',
+        'plan',
+        '--effort',
+        'high',
+        '--session-id',
+        'session-123',
+        ...gateTail,
+      ],
     },
     {
       name: 'with a contract path',
@@ -462,6 +595,8 @@ describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', 
         ...head,
         '--permission-mode',
         'acceptEdits',
+        '--effort',
+        'high',
         '--session-id',
         'session-123',
         '--append-system-prompt-file',
@@ -482,6 +617,8 @@ describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', 
         ...head,
         '--permission-mode',
         'plan',
+        '--effort',
+        'high',
         '--session-id',
         'session-123',
         '--append-system-prompt-file',
@@ -568,6 +705,8 @@ describe('buildClaudeArgs — tool restriction and settings isolation (F16.4)', 
       ...head,
       '--permission-mode',
       'plan',
+      '--effort',
+      'high',
       '--session-id',
       'session-123',
       '--append-system-prompt-file',
@@ -680,6 +819,7 @@ describe('session isolation', () => {
     prompt: 'do the thing',
     cwd: '/tmp',
     model: 'haiku',
+    effort: 'high',
     permissionMode: 'acceptEdits',
   };
 
@@ -802,6 +942,7 @@ describe('buildSessionEnv', () => {
     prompt: 'x',
     cwd: '/tmp',
     model: 'haiku' as const,
+    effort: 'high' as const,
     permissionMode: 'acceptEdits' as const,
   };
 
@@ -838,6 +979,7 @@ describe('buildClaudeArgs — the headless contract (Phase 18)', () => {
     prompt: 'x',
     cwd: 'C:\work',
     model: 'haiku' as const,
+    effort: 'high' as const,
     permissionMode: 'acceptEdits' as const,
   };
 

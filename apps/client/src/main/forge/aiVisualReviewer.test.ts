@@ -46,7 +46,15 @@ interface Session {
   exit(): void;
 }
 
-function harness(opts: { enabled?: boolean; maxRounds?: number; uiVerifyCommand?: string } = {}) {
+function harness(
+  opts: {
+    enabled?: boolean;
+    maxRounds?: number;
+    uiVerifyCommand?: string;
+    project?: Partial<Project>;
+    owner?: Partial<Task>;
+  } = {},
+) {
   let clock = 1_000;
   const activity: TaskActivityEntry[] = [];
   const comment = (body: string) => {
@@ -64,6 +72,7 @@ function harness(opts: { enabled?: boolean; maxRounds?: number; uiVerifyCommand?
     autoVisualSignOff: opts.enabled ?? true,
     autoVisualSignOffMaxRounds: opts.maxRounds ?? 2,
     uiVerifyCommand: opts.uiVerifyCommand ?? '',
+    ...opts.project,
   } as unknown as Project;
   const owner = {
     id: OWNER,
@@ -72,6 +81,7 @@ function harness(opts: { enabled?: boolean; maxRounds?: number; uiVerifyCommand?
     description: 'local text',
     externalDescription: 'Show a switch on the board.',
     agentBranch: 'feat/x',
+    ...opts.owner,
   } as unknown as Task;
 
   const sessions: Session[] = [];
@@ -85,6 +95,9 @@ function harness(opts: { enabled?: boolean; maxRounds?: number; uiVerifyCommand?
   const deps: AiVisualReviewerDeps = {
     getTask: (id) => (id === OWNER ? owner : undefined),
     getProject: (id) => (id === PROJECT ? project : undefined),
+    getSettings: () => ({
+      defaultEfforts: { lead: 'high', planner: 'high', workers: 'low', reviewer: 'xhigh' },
+    }),
     listSubtasks: () => [{ title: 'Build the switch' } as Task],
     listAttachments: () => [attachment('board-light.png'), attachment('board-light-mockup.png')],
     listActivity: () => [...activity],
@@ -153,6 +166,23 @@ describe('createAiVisualReviewer', () => {
     await h.push();
     expect(h.sessions).toHaveLength(0);
     expect(h.bodies().some((b) => b.startsWith(AI_REVIEW_STARTED_PREFIX))).toBe(false);
+  });
+
+  it('runs on the reviewer role: card, else project, else the app default', async () => {
+    const app = harness();
+    await app.push();
+    expect(app.sessions[0].request.effort).toBe('xhigh');
+
+    const project = harness({ project: { reviewModel: 'haiku', reviewEffort: 'medium' } });
+    await project.push();
+    expect(project.sessions[0].request).toMatchObject({ model: 'haiku', effort: 'medium' });
+
+    const card = harness({
+      project: { reviewModel: 'haiku', reviewEffort: 'medium' },
+      owner: { agentReviewModel: 'fable', agentReviewEffort: 'max' },
+    });
+    await card.push();
+    expect(card.sessions[0].request).toMatchObject({ model: 'fable', effort: 'max' });
   });
 
   it('starts a fresh, read-only plan-mode session with every shot as an absolute path', async () => {

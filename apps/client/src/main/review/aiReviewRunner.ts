@@ -39,7 +39,7 @@ import {
   type AiReviewTokens,
   type FindingsValidation,
 } from '@shared/aiReview';
-import type { Project } from '@shared/model';
+import { resolveRoleEffort, resolveRoleModel, type Effort, type Project } from '@shared/model';
 import type {
   ClaudeModel,
   SessionEvent,
@@ -87,12 +87,13 @@ export const REVIEW_SETTING_SOURCES: readonly SettingSource[] = ['user'];
 
 /**
  * The model a review runs on: the project's own `reviewModel`, else its planning model
- * (reviewing is the same kind of reading-and-judging turn), else its execution model.
+ * (reviewing is the same kind of reading-and-judging turn), else its execution model —
+ * the reviewer rung of `resolveRoleModel` with no card.
  */
 export function reviewModelFor(
   project: Pick<Project, 'reviewModel' | 'planningModel' | 'defaultModel'>,
 ): ClaudeModel {
-  return project.reviewModel ?? project.planningModel ?? project.defaultModel;
+  return resolveRoleModel('reviewer', null, { ...project, leadModel: null });
 }
 
 /** The launch request for one review: read-only by construction, not by request. */
@@ -100,11 +101,13 @@ export function reviewLaunchRequest(
   cwd: string,
   prompt: string,
   model: ClaudeModel,
+  effort: Effort,
 ): StartSessionRequest {
   return {
     prompt,
     cwd,
     model,
+    effort,
     // Gated, so `buildClaudeArgs` sends `--permission-mode default` and every tool use not
     // pre-allowed reaches the deny-only review policy.
     permissionMode: 'manual',
@@ -138,6 +141,7 @@ export interface AiReviewRunnerDeps {
     | 'updateAiReview'
     | 'addAiDrafts'
     | 'getTask'
+    | 'getSettings'
   >;
   scheduler: Pick<
     Scheduler,
@@ -169,6 +173,8 @@ interface Live {
   subjectId: string;
   target: ReviewTarget;
   model: ClaudeModel;
+  /** Resolved with {@link model}, from the same card and project. */
+  effort: Effort;
   runId: string | null;
   /** The outcome is decided — anything that arrives after this is ignored. */
   settled: boolean;
@@ -390,7 +396,12 @@ export class AiReviewRunner {
         return;
       }
       live.worktree = true;
-      const request = reviewLaunchRequest(made.path, buildReviewPrompt(prompt), live.model);
+      const request = reviewLaunchRequest(
+        made.path,
+        buildReviewPrompt(prompt),
+        live.model,
+        live.effort,
+      );
       const { runId } = this.deps.scheduler.startReviewSession(project.id, live.id, request, {
         taskId,
         onDenied: (denial) => live.denials.push(denial),
@@ -606,11 +617,18 @@ export class AiReviewRunner {
     target: ReviewTarget,
     costBase: Live['costBase'],
   ): Live {
+    // The reviewer role, from the card behind the subject when there is one (a card's own
+    // review, or a PR the card opened) — a PR nobody's card owns reads the project alone.
+    // A step carries no role fields of its own, so a step's review reads its owner card.
+    const subject = target.taskId ? this.deps.store.getTask(target.taskId) : undefined;
+    const card =
+      (subject?.parentTaskId ? this.deps.store.getTask(subject.parentTaskId) : subject) ?? null;
     return {
       id,
       subjectId,
       target,
-      model: reviewModelFor(target.project),
+      model: resolveRoleModel('reviewer', card, target.project),
+      effort: resolveRoleEffort('reviewer', card, target.project, this.deps.store.getSettings()),
       runId: null,
       settled: false,
       repaired: false,

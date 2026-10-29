@@ -7,6 +7,8 @@
  * here; the UI only ever sees these tidy events.
  */
 
+import type { Effort } from './model';
+
 /** The friendly aliases the CLI understands, cheapest first. */
 export type ModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable';
 
@@ -49,6 +51,12 @@ export interface StartSessionRequest {
   cwd: string;
   model: ClaudeModel;
   permissionMode: PermissionMode;
+  /**
+   * How hard the session thinks, sent as `--effort` on every spawn. Required so each launch
+   * site resolves its role's rung (`resolveRoleEffort`) instead of inheriting the CLI's own
+   * default by omission.
+   */
+  effort: Effort;
   /**
    * `AppSettings.autoCompactPercent`, read fresh by the launch site. `null`/`undefined`
    * leaves the CLI's own compaction default untouched — see `claudeSession.ts`.

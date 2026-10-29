@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardReviewRecord } from '@shared/boardReview';
 import type { Milestone, Project, Task, TicketLink } from '@shared/model';
+import type { AppSettings } from '@shared/settings';
 import type { StartSessionRequest } from '@shared/session';
 import type { TaskLink } from '@shared/taskChain';
 import {
@@ -98,6 +99,10 @@ function harness(opts: { project?: Partial<Project> | null; runId?: string } = {
   let nextId = 0;
   const store: BoardReviewerStore = {
     getProject: (id) => (id === PROJECT ? project : undefined),
+    getSettings: () =>
+      ({
+        defaultEfforts: { lead: 'high', planner: 'high', workers: 'low', reviewer: 'xhigh' },
+      }) as AppSettings,
     getBoardTasks: () => tasks,
     listMilestones: () => milestones,
     listTaskLinks: () => taskLinks,
@@ -190,6 +195,22 @@ describe('start', () => {
     await reviewer.start(PROJECT);
     expect(sessions[0].request.model).toBe('sonnet');
     expect(sessions[0].request.prompt).toContain('no cap');
+  });
+
+  it('runs at the reviewer effort: the app default, else the project override', async () => {
+    const app = harness();
+    await app.reviewer.start(PROJECT);
+    expect(app.sessions[0].request.effort).toBe('xhigh');
+
+    const project = harness({ project: { reviewEffort: 'medium' } });
+    await project.reviewer.start(PROJECT);
+    expect(project.sessions[0].request.effort).toBe('medium');
+  });
+
+  it("takes the project's review model over its planning model", async () => {
+    const { reviewer, sessions } = harness({ project: { reviewModel: 'haiku' } });
+    await reviewer.start(PROJECT);
+    expect(sessions[0].request.model).toBe('haiku');
   });
 
   it('reuses the running review on a second start', async () => {
