@@ -162,7 +162,7 @@ const useStyles = makeStyles({
   key: {
     flexShrink: 0,
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
-    fontSize: tokens.fontSizeBase200,
+    fontSize: '11px',
     color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
     textDecoration: 'none',
   },
@@ -214,8 +214,11 @@ const useStyles = makeStyles({
    *  grows to fit a whole sentence; the full title is in the tooltip and the peek.
    *  `overflowWrap: 'anywhere'` so a long key-like token with no spaces (a ticket id pasted
    *  into the title) breaks instead of overflowing a crushed column. */
+  // 13px regular on an 18px step (v9-7) — a bare `<Text>` would take Fluent's 14px base.
   title: {
     minWidth: 0,
+    fontSize: '13px',
+    fontWeight: 400,
     lineHeight: '18px',
     display: '-webkit-box',
     WebkitLineClamp: 2,
@@ -300,13 +303,19 @@ const useStyles = makeStyles({
   },
   runText: {
     color: FLUO_VAR.cyan,
+    fontSize: '11.5px',
     flex: 1,
     minWidth: 0,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  elapsed: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`, flexShrink: 0 },
+  elapsed: {
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
+    fontSize: '11px',
+    flexShrink: 0,
+  },
   /** The run row's progress track — 3px, `FLUO_VAR.cyan` fill over a faint rest. */
   progressTrack: {
     height: '3px',
@@ -318,6 +327,7 @@ const useStyles = makeStyles({
   /** A non-running status line — one line, clipped; the ink comes from `INK_COLOR` inline,
    *  since it varies per state rather than per class. */
   statusText: {
+    fontSize: '11.5px',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -392,22 +402,22 @@ const useStyles = makeStyles({
     alignItems: 'center',
     gap: '4px',
     minWidth: 0,
-    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
-    fontSize: tokens.fontSizeBase200,
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
+    fontSize: '11.5px',
   },
   epicIcon: { fontSize: '12px', flexShrink: 0, display: 'flex' },
   epicText: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   trailingMr: {
     flexShrink: 0,
     fontFamily: `var(--tm-mono, ${tokens.fontFamilyMonospace})`,
-    fontSize: tokens.fontSizeBase200,
-    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontSize: '11px',
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
     textDecoration: 'none',
   },
   trailingDue: {
     flexShrink: 0,
-    fontSize: tokens.fontSizeBase200,
-    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontSize: '11.5px',
+    color: `var(--tm-text-muted, ${tokens.colorNeutralForeground3})`,
   },
   trailingDueFlagged: {
     fontWeight: tokens.fontWeightSemibold,

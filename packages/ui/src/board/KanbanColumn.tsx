@@ -74,8 +74,18 @@ const useStyles = makeStyles({
     fontSize: '14px',
     color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
   },
-  headerLabel: { color: tokens.colorNeutralForeground1, fontSize: '13px' },
-  count: { color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})` },
+  // The mockup's header type (v9-7, v10-7e): the name 12.5px semibold, the count 12px
+  // regular in faint ink.
+  headerLabel: {
+    color: tokens.colorNeutralForeground1,
+    fontSize: '12.5px',
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  count: {
+    color: `var(--tm-text-faint, ${tokens.colorNeutralForeground3})`,
+    fontSize: '12px',
+    fontWeight: 400,
+  },
   addButton: { marginLeft: 'auto', color: tokens.colorNeutralForeground3 },
   // No scroll of its own — the board's column container owns that. `flex: 1` keeps the
   // empty space below the last card inside the drop zone.

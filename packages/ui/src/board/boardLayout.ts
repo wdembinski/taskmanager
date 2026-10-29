@@ -15,10 +15,11 @@
  */
 import { makeStyles, tokens } from '@fluentui/react-components';
 
-/** A column's floor — below it a card's header has nowhere left to give, and its title
- *  wraps one word per line instead of two. Shared with `PaneLoading`'s skeleton track so
- *  the loading state does not promise a width the real board would refuse to hold. */
-export const BOARD_COLUMN_MIN_WIDTH = '260px';
+/** A column's width — fixed, the mockup's 259.6px lane (v9-7, v10-7e) rounded. Columns
+ *  never stretch to fill a wide window: the spare width stays empty canvas, and a window too
+ *  narrow for every column scrolls sideways. Shared with `PaneLoading`'s skeleton track so
+ *  the loading state draws the same width the real board will. */
+export const BOARD_COLUMN_WIDTH = '260px';
 
 export const useBoardLayoutStyles = makeStyles({
   /**
@@ -164,10 +165,11 @@ export const useBoardLayoutStyles = makeStyles({
   columns: {
     display: 'grid',
     gridAutoFlow: 'column',
-    // A floor on each track, not `minmax(0, 1fr)`: with enough columns to crush a track
-    // below ~160px a card's header has nowhere left to give and its title wraps one word
-    // per line — the grid should scroll sideways before it does that to a column.
-    gridAutoColumns: `minmax(${BOARD_COLUMN_MIN_WIDTH}, 1fr)`,
+    // A fixed track, packed to the start (v9-7, v10-7e): `minmax(260px, 1fr)` stretched each
+    // column to ~550px on a 2500px window, and a track that shrinks crushes a card's header
+    // until its title wraps one word per line. The grid scrolls sideways instead.
+    gridAutoColumns: BOARD_COLUMN_WIDTH,
+    justifyContent: 'start',
     gap: '12px',
     flex: 1,
     minHeight: 0,
