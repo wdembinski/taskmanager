@@ -303,6 +303,9 @@ import { WorktreeManager } from './worktreeManager';
 import { createDiffGit, createReviewRefGit, DiffService } from './review/diffService';
 import { ForgeDiffSource } from './review/forgeDiffSource';
 import { hostOf, ReviewQueueService } from './review/queueService';
+import { newPrSubjects, prSubjectIds } from './review/backgroundReview';
+import { isAiReviewRefusal } from '@tm/shared/aiReview';
+import type { ReviewQueuesSnapshot } from '@tm/shared/review';
 import { createReviewHandlers } from './review/reviewHandlers';
 import { ReviewService } from './review/reviewService';
 import { ReviewSubjectService } from './review/subjectService';
@@ -2432,12 +2435,37 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   // picked up on the very next refresh — exactly how every other forge call in this file
   // already works. Assigning the forward-declared `let` from up near `send` rather than
   // redeclaring it keeps that hook live.
+  //
+  // F16.13: every PR subject the queues have shown this session, seeded by the first
+  // snapshot whether or not `features.aiReviewOnOpen` is on — so turning the switch on, or
+  // launching with it on, never reviews the backlog that was already there. Cumulative, so
+  // a PR that drops out of a partial refresh and comes back is not "new" a second time.
+  let seenPrSubjects: Set<string> | null = null;
+  const reviewNewPrs = (snapshot: ReviewQueuesSnapshot): void => {
+    const fresh = newPrSubjects(seenPrSubjects, snapshot);
+    seenPrSubjects = new Set([...(seenPrSubjects ?? []), ...prSubjectIds(snapshot)]);
+    if (fresh.length === 0 || !store.getSettings().features.aiReviewOnOpen) return;
+    for (const id of fresh) {
+      // A refusal (too large, no local repo, one already running) is the runner's own
+      // verdict on this PR — skipped, exactly as the human's button would be disabled.
+      void aiReviews.start(id, 'automation').then(
+        (answer) => {
+          if (isAiReviewRefusal(answer))
+            logMain(`background AI review of ${id} skipped: ${answer.reason}`);
+        },
+        (e) => logMain(`background AI review of ${id} failed to start: ${String(e)}`),
+      );
+    }
+  };
   reviewQueueService = new ReviewQueueService({
     store,
     diffs,
     github: buildGitHubClient,
     gitlab: buildGitLabClient,
-    emit: (snapshot) => send('review:queues:changed', snapshot),
+    emit: (snapshot) => {
+      send('review:queues:changed', snapshot);
+      reviewNewPrs(snapshot);
+    },
   });
 
   // --- A review subject's diff, over any of the three sources (F15.10) -------

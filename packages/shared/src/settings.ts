@@ -517,8 +517,8 @@ export function withColumnHidden(
  *
  * All default to `true` — none of these is a beta anybody opts into, so the shipped
  * behaviour is "the feature exists" and this group is only ever used to turn one back OFF —
- * **except `prAutoResolve`**, which reaches into the agent on its own and so is the one
- * switch this group is used to turn ON.
+ * **except `prAutoResolve` and `aiReviewOnOpen`**, which reach into the agent (and spend
+ * money) on their own and so are the switches this group is used to turn ON.
  */
 export interface FeatureSettings {
   /** Auto-fold a card's Steps section once it reaches Review or Done. */
@@ -576,9 +576,23 @@ export interface FeatureSettings {
    * click away on the card's red blocked icon.
    */
   prAutoResolve: boolean;
+  /**
+   * Start an AI review (F16) on its own whenever a new pull request subject appears in the
+   * review queues — `requestedBy: 'automation'`, through the same runner and the same caps
+   * as the human's "Ask AI to review", so a refusal (too large, no local repo, one already
+   * running) is simply skipped.
+   *
+   * Only a PR that is **new** to the queues counts: the first snapshot after launch seeds
+   * what is already there without reviewing any of it, and a card's own Changes subject
+   * never triggers one.
+   *
+   * **Off by default**, like `prAutoResolve` — each review spends money on the human's
+   * account without being asked, and that is not a thing to opt a user into silently.
+   */
+  aiReviewOnOpen: boolean;
 }
 
-/** Every feature on, except `prAutoResolve` — see {@link FeatureSettings}. */
+/** Every feature on, except `prAutoResolve` and `aiReviewOnOpen` — see {@link FeatureSettings}. */
 export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   autoFoldReviewDone: true,
   shelf: true,
@@ -588,6 +602,7 @@ export const DEFAULT_FEATURE_SETTINGS: FeatureSettings = {
   quietAgentProgress: true,
   ticketsToOwnBoard: true,
   prAutoResolve: false,
+  aiReviewOnOpen: false,
 };
 
 /**

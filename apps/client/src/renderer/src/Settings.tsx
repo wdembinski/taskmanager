@@ -204,7 +204,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 ) as Record<BoardColumn, string>;
 
 /**
- * The eight feature switches, in the order the Features tab lists them — keyed by the
+ * The nine feature switches, in the order the Features tab lists them — keyed by the
  * `FeatureSettings` field so the switch and its label can never drift apart.
  */
 const FEATURE_SWITCHES: ReadonlyArray<{
@@ -252,6 +252,11 @@ const FEATURE_SWITCHES: ReadonlyArray<{
     label:
       'Watch the PRs/MRs I open and rebase past conflicts automatically — when off, click the red blocked icon to do it',
     hint: 'Fetches the target, rebases the branch onto it and force-pushes the result back — only for an MR/PR with a live worktree behind it; one opened by hand with no worktree gets a card note instead. Falls back to the agent only when a conflict cannot be resolved mechanically. Also asks the provider to rebase a stale branch, asks the card’s agent to fix a failed pipeline, and notes when one turns green.',
+  },
+  {
+    key: 'aiReviewOnOpen',
+    label: 'Review in the background when I open a PR',
+    hint: 'Starts a paid AI review on its own whenever a new pull request arrives in the review queues. Each review costs money on your account; a PR that is too large or has no local repo is skipped.',
   },
 ];
 

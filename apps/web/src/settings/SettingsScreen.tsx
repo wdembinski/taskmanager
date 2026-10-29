@@ -167,7 +167,7 @@ const COLUMN_LABEL: Record<BoardColumn, string> = Object.fromEntries(
 ) as Record<BoardColumn, string>;
 
 /**
- * The seven feature switches, in the order the Features tab lists them — keyed by the
+ * The eight feature switches, in the order the Features tab lists them — keyed by the
  * `FeatureSettings` field so the switch and its label can never drift apart. Mirrors the
  * desktop's own `FEATURE_SWITCHES` in `apps/client/src/renderer/src/Settings.tsx`.
  */
@@ -210,6 +210,11 @@ const FEATURE_SWITCHES: ReadonlyArray<{
     key: 'ticketsToOwnBoard',
     label: 'Tickets to their own board',
     hint: 'Tracker tickets are assigned to their own board rather than sharing one with everything else.',
+  },
+  {
+    key: 'aiReviewOnOpen',
+    label: 'Review in the background when I open a PR',
+    hint: 'Starts a paid AI review on its own whenever a new pull request arrives in the review queues. Each review costs money on your account; a PR that is too large or has no local repo is skipped.',
   },
 ];
 

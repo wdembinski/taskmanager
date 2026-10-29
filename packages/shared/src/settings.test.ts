@@ -246,7 +246,7 @@ const LOCAL_SETTINGS_KEYS: ReadonlyArray<keyof AppSettings> = [
 // The Features group — every later phase reads its own switch out of here, and a blob
 // written before this existed has no `features` field at all: this is what fills it in as.
 describe('DEFAULT_SETTINGS.features', () => {
-  it('ships every feature on, except prAutoResolve', () => {
+  it('ships every feature on, except prAutoResolve and aiReviewOnOpen', () => {
     expect(DEFAULT_FEATURE_SETTINGS).toEqual({
       autoFoldReviewDone: true,
       shelf: true,
@@ -256,7 +256,13 @@ describe('DEFAULT_SETTINGS.features', () => {
       quietAgentProgress: true,
       ticketsToOwnBoard: true,
       prAutoResolve: false,
+      aiReviewOnOpen: false,
     });
+  });
+
+  // A paid review must never start on its own unless the human turned this on.
+  it('keeps the background AI review off out of the box', () => {
+    expect(DEFAULT_SETTINGS.features.aiReviewOnOpen).toBe(false);
   });
 
   it('keeps the shelf empty and unfolded out of the box', () => {
