@@ -34,6 +34,7 @@ import {
   type DiffStale,
   type ReviewComment,
   type ReviewCommentInput,
+  type ReviewCommentPatch,
   type ReviewCommentSent,
 } from '@tm/shared/review';
 import { useTransport } from '../transport';
@@ -46,6 +47,7 @@ import {
   commentSaved,
   commentsArrived,
   commentsLoadStarted,
+  draftDecided,
   editDraft,
   editNote,
   EMPTY_REVIEW,
@@ -63,6 +65,7 @@ import {
   summaryLoadStarted,
   tapLine,
   toggleExpanded,
+  toggleShowDismissed,
   type ReviewState,
 } from './reviewState';
 import { defaultExpanded, fetchablePaths } from './reviewView';
@@ -239,6 +242,20 @@ export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JS
     });
   }
 
+  /** Keep/Dismiss/Restore on an AI draft: stamped locally first, then reconciled with the
+   * server's answer — or, when it refuses or fails, with a fresh read of the comments. */
+  function onDecide(id: string, decision: NonNullable<ReviewCommentPatch['decision']>): void {
+    if (unreachable !== undefined) return;
+    setState((s) => draftDecided(s, taskId, id, decision, Date.now()));
+    void transport.invoke('review:update', taskId, id, { decision }).then(
+      (result) => {
+        if (result.status === 'ok') setState((s) => commentSaved(s, taskId, result.comment));
+        else void loadComments();
+      },
+      () => void loadComments(),
+    );
+  }
+
   function onSave(): void {
     const editor = state.editor;
     if (editor === null) return;
@@ -321,6 +338,10 @@ export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JS
       onCancel={onCancel}
       onEdit={onEdit}
       onDelete={onDelete}
+      onAccept={(id) => onDecide(id, 'accept')}
+      onDismiss={(id) => onDecide(id, 'dismiss')}
+      onRestore={(id) => onDecide(id, 'restore')}
+      onToggleShowDismissed={() => setState((s) => toggleShowDismissed(s))}
       onEditNote={onEditNote}
       onSend={onSend}
     />

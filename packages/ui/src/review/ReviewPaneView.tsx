@@ -58,14 +58,16 @@ import {
 } from '@fluentui/react-icons';
 import type { DiffLine, DiffSide, ReviewComment, ReviewSendRefusal } from '@tm/shared/review';
 import { MONO } from '../theme';
-import { CommentEditorCard } from './CommentThread';
+import { CommentEditorCard, DismissedToggle } from './CommentThread';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
 import {
   canComment,
   canSend,
+  dismissedCount,
   rangeLines,
   unsentCount,
+  visibleComments,
   type CommentEditor,
   type FileLoad,
   type ReviewState,
@@ -175,6 +177,12 @@ export interface ReviewPaneViewProps {
   onCancel: () => void;
   onEdit: (comment: ReviewComment) => void;
   onDelete: (id: string) => void;
+  /** Keep · Dismiss · Restore on an AI draft (Edit is `onEdit`). */
+  onAccept?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onRestore?: (id: string) => void;
+  /** Flips "show dismissed (N)" beside the unsent count. */
+  onToggleShowDismissed?: () => void;
   onEditNote: (text: string) => void;
   onSend: () => void;
 }
@@ -257,6 +265,10 @@ export function ReviewPaneView({
   onCancel,
   onEdit,
   onDelete,
+  onAccept,
+  onDismiss,
+  onRestore,
+  onToggleShowDismissed,
   onEditNote,
   onSend,
 }: ReviewPaneViewProps): JSX.Element {
@@ -311,7 +323,7 @@ export function ReviewPaneView({
         files={state.files}
         expanded={state.expanded}
         selectedPath={state.selectedPath}
-        comments={state.comments}
+        comments={visibleComments(state)}
         editor={state.editor}
         canComment={canComment(state, readOnly)}
         touch
@@ -326,6 +338,9 @@ export function ReviewPaneView({
         onCancel={onCancel}
         onEdit={onEdit}
         onDelete={onDelete}
+        onAccept={onAccept}
+        onDismiss={onDismiss}
+        onRestore={onRestore}
       />
     ) : (
       <div ref={diffContainerRef} className={styles.diffContainer}>
@@ -336,7 +351,7 @@ export function ReviewPaneView({
           files={state.files}
           expanded={state.expanded}
           selectedPath={state.selectedPath}
-          comments={state.comments}
+          comments={visibleComments(state)}
           editor={state.editor}
           canComment={canComment(state, readOnly)}
           layout={effectiveDiffLayout(preferredDiffLayout, diffWidthPx, compact)}
@@ -348,6 +363,9 @@ export function ReviewPaneView({
           onCancel={onCancel}
           onEdit={onEdit}
           onDelete={onDelete}
+          onAccept={onAccept}
+          onDismiss={onDismiss}
+          onRestore={onRestore}
         />
       </div>
     );
@@ -441,6 +459,13 @@ export function ReviewPaneView({
               Note
             </Button>
             <Caption1 className={styles.unsent}>{unsentCount(state)} unsent</Caption1>
+            {onToggleShowDismissed && (
+              <DismissedToggle
+                count={dismissedCount(state)}
+                shown={state.showDismissed}
+                onToggle={onToggleShowDismissed}
+              />
+            )}
             <span className={styles.spacer} />
             <Button
               className={styles.footerButton}
@@ -506,6 +531,13 @@ export function ReviewPaneView({
           </div>
           <span className={styles.spacer} />
           <Caption1 className={styles.unsent}>{unsentCount(state)} unsent</Caption1>
+          {onToggleShowDismissed && (
+            <DismissedToggle
+              count={dismissedCount(state)}
+              shown={state.showDismissed}
+              onToggle={onToggleShowDismissed}
+            />
+          )}
           <Popover trapFocus positioning="below-end">
             <PopoverTrigger disableButtonEnhancement>
               <Button
