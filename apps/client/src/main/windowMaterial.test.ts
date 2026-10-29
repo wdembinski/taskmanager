@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { isRemoteSession, windowMaterialFor, windowsBuildOf } from './windowMaterial';
+import { WINDOW_CANVAS } from '@shared/canvas';
+import {
+  isRemoteSession,
+  windowBackdropFor,
+  windowMaterialFor,
+  windowsBuildOf,
+} from './windowMaterial';
 
-const noEnv = { remoteSession: false, reducedTransparency: false };
+const noEnv = { remoteSession: false, reducedTransparency: false, highContrast: false };
 
 describe('windowMaterialFor', () => {
   it('gives mica on win32 at build 22621 and above', () => {
@@ -34,7 +40,7 @@ describe('windowMaterialFor', () => {
     ).toBe('none');
   });
 
-  it('allows mica under full even when the OS reports reduced transparency', () => {
+  it('refuses under full too when the OS reports reduced transparency — full no longer overrides it', () => {
     expect(
       windowMaterialFor(
         'win32',
@@ -42,7 +48,13 @@ describe('windowMaterialFor', () => {
         { transparency: 'full' },
         { ...noEnv, reducedTransparency: true },
       ),
-    ).toBe('mica');
+    ).toBe('none');
+  });
+
+  it('refuses under high contrast, even under full', () => {
+    expect(
+      windowMaterialFor('win32', 26200, { transparency: 'full' }, { ...noEnv, highContrast: true }),
+    ).toBe('none');
   });
 
   it('refuses over a remote session, even under full', () => {
@@ -66,6 +78,90 @@ describe('windowMaterialFor', () => {
         { ...noEnv, reducedTransparency: true },
       ),
     ).toBe('none');
+  });
+});
+
+describe('windowBackdropFor', () => {
+  // scheme (light / dark / system × OS dark) × OS transparency × setting × high contrast.
+  const schemes = [
+    { appearance: 'light', prefersDark: false, scheme: 'light' },
+    { appearance: 'light', prefersDark: true, scheme: 'light' },
+    { appearance: 'dark', prefersDark: false, scheme: 'dark' },
+    { appearance: 'dark', prefersDark: true, scheme: 'dark' },
+    { appearance: 'system', prefersDark: false, scheme: 'light' },
+    { appearance: 'system', prefersDark: true, scheme: 'dark' },
+  ] as const;
+  const settings: { transparency: unknown; refuses: boolean }[] = [
+    { transparency: 'system', refuses: false },
+    { transparency: 'full', refuses: false },
+    { transparency: 'reduced', refuses: true },
+    { transparency: 'neon', refuses: false },
+  ];
+
+  const cases = schemes.flatMap((s) =>
+    [false, true].flatMap((osTransparencyOff) =>
+      settings.flatMap((setting) =>
+        [false, true].map((highContrast) => {
+          const granted = !osTransparencyOff && !setting.refuses && !highContrast;
+          return {
+            name:
+              `${s.appearance}${s.appearance === 'system' ? ` (OS ${s.prefersDark ? 'dark' : 'light'})` : ''}` +
+              `, OS transparency ${osTransparencyOff ? 'off' : 'on'}` +
+              `, setting ${String(setting.transparency)}` +
+              `${highContrast ? ', high contrast' : ''}`,
+            appearance: s.appearance,
+            transparency: setting.transparency,
+            env: {
+              remoteSession: false,
+              reducedTransparency: osTransparencyOff,
+              highContrast,
+              prefersDark: s.prefersDark,
+            },
+            expected: granted
+              ? { material: 'mica', backgroundColor: '#00000000' }
+              : { material: 'none', backgroundColor: WINDOW_CANVAS[s.scheme] },
+          };
+        }),
+      ),
+    ),
+  );
+
+  it.each(cases)('$name', ({ appearance, transparency, env, expected }) => {
+    expect(windowBackdropFor('win32', 26200, { appearance, transparency }, env)).toEqual(expected);
+  });
+
+  it('paints the dark canvas, not the light fallback, for Dark + Full with OS transparency off', () => {
+    expect(
+      windowBackdropFor(
+        'win32',
+        26200,
+        { appearance: 'dark', transparency: 'full' },
+        { remoteSession: false, reducedTransparency: true, highContrast: false, prefersDark: true },
+      ),
+    ).toEqual({ material: 'none', backgroundColor: WINDOW_CANVAS.dark });
+  });
+
+  it('paints the scheme canvas wherever the platform refuses the material', () => {
+    const env = {
+      remoteSession: false,
+      reducedTransparency: false,
+      highContrast: false,
+      prefersDark: true,
+    };
+    expect(
+      windowBackdropFor('linux', 26200, { appearance: 'system', transparency: 'full' }, env),
+    ).toEqual({ material: 'none', backgroundColor: WINDOW_CANVAS.dark });
+    expect(
+      windowBackdropFor('win32', 19045, { appearance: 'light', transparency: 'full' }, env),
+    ).toEqual({ material: 'none', backgroundColor: WINDOW_CANVAS.light });
+    expect(
+      windowBackdropFor(
+        'win32',
+        26200,
+        { appearance: 'dark', transparency: 'full' },
+        { ...env, remoteSession: true },
+      ),
+    ).toEqual({ material: 'none', backgroundColor: WINDOW_CANVAS.dark });
   });
 });
 

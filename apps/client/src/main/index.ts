@@ -23,7 +23,6 @@ import {
   shell,
 } from 'electron';
 import { ATTACHMENT_SCHEME } from '@shared/attachments';
-import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
 import { PRODUCT_NAME } from '@shared/product';
 import { DEFAULT_SETTINGS } from '@shared/settings';
 import { AppTray } from './appTray';
@@ -38,8 +37,9 @@ import { readSavedWindowSettings } from './store';
 import { themeSourceFor } from './themeSource';
 import {
   isRemoteSession,
-  windowMaterialFor,
+  windowBackdropFor,
   windowsBuildOf,
+  type WindowBackdrop,
   type WindowMaterial,
 } from './windowMaterial';
 
@@ -232,29 +232,25 @@ function createWindow({
  * helper so the two creation sites can never resolve a scheme (or a material) two different
  * ways.
  *
- * When `windowMaterialFor` grants a native material, `backgroundColor` is fully transparent
- * (`'#00000000'`) instead of the resolved scheme colour — the material paints the chrome
- * itself, and leaving an opaque colour behind it would defeat the material entirely (F13.6's
- * spike finding).
+ * `windowBackdropFor` picks both: a fully transparent `backgroundColor` (`'#00000000'`) when
+ * it grants a native material, the resolved scheme colour when it refuses one.
  */
-function windowAppearance(): { backgroundColor: string; material: WindowMaterial } {
+function windowAppearance(): WindowBackdrop {
   const { appearance, transparency } = readSavedWindowSettings(app.getPath('userData'));
   // Before any window exists, so Windows paints the material in the app's Theme rather than
   // the OS's — and so the `shouldUseDarkColors` read below already agrees with it.
   nativeTheme.themeSource = themeSourceFor(appearance);
-  const material = windowMaterialFor(
+  const { backgroundColor, material } = windowBackdropFor(
     process.platform,
     windowsBuildOf(osRelease()),
-    { transparency },
+    { appearance, transparency },
     {
       remoteSession: isRemoteSession(process.env),
       reducedTransparency: nativeTheme.prefersReducedTransparency,
+      highContrast: nativeTheme.shouldUseHighContrastColors,
+      prefersDark: nativeTheme.shouldUseDarkColors,
     },
   );
-  const backgroundColor =
-    material === 'none'
-      ? WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)]
-      : '#00000000';
   currentMaterial = material;
   return { backgroundColor, material };
 }

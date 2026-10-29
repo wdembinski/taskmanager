@@ -167,10 +167,16 @@ the panes keep their own CSS glass on top (`glass: 'native'`).
 before any window exists, and refuses it — `'none'`, back to the CSS path — unless all of these
 hold: the platform is Windows at build **22621** or later (Electron's `backgroundMaterial` is a
 no-op below it); the process is **not in a Remote Desktop session** (`SESSIONNAME` starting
-`RDP-`, where the material is dropped); and transparency is not off — `'reduced'` always
-refuses, and `'system'` refuses when the OS "Transparency effects" switch is off, because DWM
-does not withhold the material on its own. Windows 10, Linux (WSL included) and the web always
-take the CSS path.
+`RDP-`, where the material is dropped); the setting is not `'reduced'`; the OS "Transparency
+effects" switch is **on**; and high contrast is **off** (Electron skips the window's dark mode
+under it). DWM does not withhold the material on its own: with the switch off it paints a flat,
+light fallback whatever the app's Theme, so a dark renderer over it shows white text on a light
+sidebar. **`'full'` does not override the OS switch** for the native material — it only keeps
+the CSS glass on (`resolveAppearance` resolves Full over an OS that reduces transparency to
+`glass: 'css'`). When the material is refused the window's `backgroundColor` is the scheme's
+opaque canvas; with it, fully transparent. The scheme never refuses the material itself:
+Electron keeps the window's DWM dark mode in step with `nativeTheme.themeSource`. Windows 10,
+Linux (WSL included) and the web always take the CSS path.
 
 **Chrome on glass, content flat.** Glass is for _panes_ — the list, the detail, the peek, board
 cards, the mobile tab bar — always at `paneGlass`'s near-opaque level. Never on rows, chips,
