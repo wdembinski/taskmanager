@@ -77,7 +77,7 @@ describe('IssueFullPage', () => {
   it('renders the breadcrumb segments in order', () => {
     const html = renderToStaticMarkup(
       <IssueFullPage
-        breadcrumb={['Task Manager', 'M4 Reach', 'F4 Linear integration']}
+        breadcrumb={['Task Manager', 'M4 Reach', 'F14 Milestone archiving']}
         onBack={() => {}}
       >
         <div>detail</div>
@@ -86,7 +86,7 @@ describe('IssueFullPage', () => {
 
     const manager = html.indexOf('Task Manager');
     const milestone = html.indexOf('M4 Reach');
-    const epic = html.indexOf('F4 Linear integration');
+    const epic = html.indexOf('F14 Milestone archiving');
 
     expect(manager).toBeGreaterThanOrEqual(0);
     expect(milestone).toBeGreaterThan(manager);
@@ -124,7 +124,7 @@ describe('IssuePeek', () => {
     const html = renderToStaticMarkup(
       <IssuePeek
         ticketKey="TM-71"
-        epic="F4 Linear integration"
+        epic="F14 Milestone archiving"
         onExpand={() => {}}
         onClose={() => {}}
       >
@@ -134,7 +134,7 @@ describe('IssuePeek', () => {
 
     const crumb = html.indexOf('data-issue-peek-crumb');
     const key = html.indexOf('TM-71');
-    const epic = html.indexOf('F4 Linear integration');
+    const epic = html.indexOf('F14 Milestone archiving');
 
     expect(crumb).toBeGreaterThanOrEqual(0);
     expect(key).toBeGreaterThan(crumb);
@@ -173,7 +173,7 @@ describe('IssuePeek', () => {
     const peek = renderToStaticMarkup(
       <IssuePeek
         ticketKey="TM-71"
-        epic="F4 Linear integration"
+        epic="F14 Milestone archiving"
         onExpand={() => {}}
         onClose={() => {}}
       >

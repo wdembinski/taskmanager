@@ -116,7 +116,7 @@ export const PEOPLE = [
 
 /** The two epics the board's footers name: `epicCard` below (a native epic, resolved through
  *  `epicTaskId`), and a mirrored tracker epic carried by name alone (`externalEpicName`). */
-const EPIC_TRACKER = 'Linear sync';
+const EPIC_TRACKER = 'Milestone archive';
 
 // --- Backlog ---------------------------------------------------------------------------
 const plainBacklog = task({
@@ -143,7 +143,7 @@ const dueFuture = task({
 });
 const trackerUnread = task({
   id: '12',
-  title: 'Reconcile Linear identifiers on sync',
+  title: 'Reconcile archived ticket keys on sync',
   order: 3,
   source: 'jira',
   ticketKey: undefined,
@@ -235,14 +235,14 @@ const variantRowB = task({
 // --- In Progress ---------------------------------------------------------------------------
 const agentRunningParent = task({
   id: '3',
-  title: 'Show Linear identifiers and comments on cards',
+  title: 'Show archived tickets and comments on milestones',
   order: 0,
   status: 'in-progress',
   agentProjectId: PROJECT_ID,
   workedAt: now - 5 * 60_000,
   // The status bar's branch segment (mockup v9-7): with nothing selected it names the
   // most recently started running task's card — `3-s2` below, newer than `sb-4`.
-  agentBranch: 'tm-71-linear-identifiers',
+  agentBranch: 'tm-71-milestone-archiving',
   externalEpicName: EPIC_TRACKER,
 });
 const agentRunningSteps = [
@@ -250,7 +250,7 @@ const agentRunningSteps = [
     id: '3-s1',
     parentTaskId: '3',
     order: 0,
-    title: 'Read the Linear API docs',
+    title: 'Read the archive store docs',
     status: 'done',
   }),
   task({
@@ -314,7 +314,7 @@ const mrApprovedCard = task({
 // --- Done ------------------------------------------------------------------------------------
 const mrMergedCard = task({
   id: '8',
-  title: 'Reconcile Linear issues onto the board',
+  title: 'Reconcile archived tickets onto the board',
   order: 0,
   assigneeId: 'person-human',
   externalEpicName: EPIC_TRACKER,
@@ -407,7 +407,7 @@ export const MERGE_REQUESTS = [
     id: 'mr-8',
     taskId: mrMergedCard.id,
     number: 124,
-    title: 'Reconcile Linear issues onto the board',
+    title: 'Reconcile archived tickets onto the board',
     state: 'merged',
   }),
 ];

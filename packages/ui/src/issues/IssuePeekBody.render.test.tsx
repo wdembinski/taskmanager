@@ -31,7 +31,7 @@ function task(overrides: Partial<Task> = {}): Task {
     id: 'card-71',
     projectId: 'proj-1',
     phase: '',
-    title: 'Sync Linear issues both ways',
+    title: 'Archive a finished milestone',
     status: 'running',
     sessionId: null,
     order: 0,
@@ -41,7 +41,7 @@ function task(overrides: Partial<Task> = {}): Task {
     isScaffold: false,
     type: 'feature',
     ticketKey: 'TM-71',
-    externalDescription: 'Mirror **every** Linear issue into the board.',
+    externalDescription: 'Move **every** finished ticket into the archive.',
     milestoneId: 'm4',
     epicTaskId: 'epic-4',
     assigneeId: 'person-1',
@@ -50,7 +50,7 @@ function task(overrides: Partial<Task> = {}): Task {
   };
 }
 
-const epic = task({ id: 'epic-4', title: 'F4 Linear integration', ticketKey: 'TM-4' });
+const epic = task({ id: 'epic-4', title: 'F14 Milestone archiving', ticketKey: 'TM-4' });
 const people: Person[] = [{ id: 'person-1', name: 'Wojciech' } as Person];
 const milestones: Milestone[] = [{ id: 'm4', name: 'M4 · Reach' } as Milestone];
 const agentProject = { id: 'agent-1', name: 'Fixture' } as Project;
@@ -97,8 +97,8 @@ describe('IssuePeekBody, through TaskDetail layout="peek"', () => {
 
   it('reads top to bottom: title, description, rows, steps', () => {
     const order = [
-      'Sync Linear issues both ways',
-      'Linear issue into the board',
+      'Archive a finished milestone',
+      'finished ticket into the archive',
       'Status',
       'Assignee',
       'Milestone',
@@ -168,12 +168,12 @@ describe('IssuePeekBody, through TaskDetail layout="peek"', () => {
   });
 
   it('shows the decision banner only when a decision is open', () => {
-    expect(html).not.toContain('Which Linear workspace do we sync?');
+    expect(html).not.toContain('Which milestones do we archive?');
     const asked = peek({
-      decisionQuestion: 'Which Linear workspace do we sync?',
+      decisionQuestion: 'Which milestones do we archive?',
       decisionAskedAt: Date.now(),
     });
-    expect(asked).toContain('Which Linear workspace do we sync?');
+    expect(asked).toContain('Which milestones do we archive?');
   });
 });
 

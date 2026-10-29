@@ -15,7 +15,7 @@ export const TASK_ACTIVITY = {
     {
       kind: 'chat',
       id: 1,
-      body: 'Use the existing Linear client, not a new fetch.',
+      body: 'Use the existing archive query, not a new fetch.',
       createdAt: now - 4 * 60_000,
     },
     { kind: 'status', id: 2, from: 'pending', to: 'in-progress', createdAt: now - 5 * 60_000 },

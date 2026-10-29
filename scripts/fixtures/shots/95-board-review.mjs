@@ -53,18 +53,18 @@ const TICKETS = [
     'SPLIT',
     'Two unrelated changes: measuring the reads, then batching them behind a flag.',
     [
-      'apps/client/src/main/linear/client.ts:212 — one request per issue field',
+      'apps/client/src/main/jira/jiraClient.ts:212 — one request per issue field',
       'apps/client/src/main/scheduler.ts:1840 — the sync loop that would batch them',
     ],
     {
       parts: [
         {
-          title: 'Measure the per-field Linear reads',
+          title: 'Measure the per-field tracker reads',
           description: 'Log request counts per sync.',
         },
         {
-          title: 'Batch Linear field reads behind a flag',
-          description: 'One GraphQL query per page.',
+          title: 'Batch tracker field reads behind a flag',
+          description: 'One search query per page.',
         },
       ],
     },

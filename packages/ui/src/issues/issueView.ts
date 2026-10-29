@@ -126,7 +126,7 @@ export function issueViewReduce(state: IssueViewState, action: IssueViewAction):
  * The full-screen breadcrumb: project name, then the milestone name when `task.milestoneId`
  * resolves, then the epic title when `task.epicTaskId` resolves. A link that does not resolve
  * is dropped from the array, never rendered as a placeholder like "None" — matches the
- * full-screen mockup's `Task Manager › M4 Reach › F4 Linear integration` row.
+ * full-screen mockup's `Task Manager › M4 Reach › F14 Milestone archiving` row.
  */
 export function issueBreadcrumb(
   task: Pick<Task, 'milestoneId' | 'epicTaskId'>,
@@ -151,7 +151,7 @@ export function issueBreadcrumb(
 }
 
 /**
- * The peek header's epic, after v9-1's `TM-71   F4 Linear integration`: the linked epic's own
+ * The peek header's epic, after v9-1's `TM-71   F14 Milestone archiving`: the linked epic's own
  * title when `task.epicTaskId` resolves, else a mirrored card's tracker epic by name
  * (`externalEpicName`) — the same fallback the board's epic chip uses (`cardParts.ts`).
  */

@@ -219,7 +219,7 @@ describe('issueViewReduce', () => {
 describe('issueBreadcrumb', () => {
   const project = { name: 'Task Manager' };
   const milestones = [{ id: 'm4', name: 'M4 Reach' }];
-  const ticketsById = new Map([['e4', { title: 'F4 Linear integration' }]]);
+  const ticketsById = new Map([['e4', { title: 'F14 Milestone archiving' }]]);
 
   it('includes the project, milestone and epic when every link resolves', () => {
     const crumbs = issueBreadcrumb(
@@ -228,7 +228,7 @@ describe('issueBreadcrumb', () => {
       milestones,
       ticketsById,
     );
-    expect(crumbs).toEqual(['Task Manager', 'M4 Reach', 'F4 Linear integration']);
+    expect(crumbs).toEqual(['Task Manager', 'M4 Reach', 'F14 Milestone archiving']);
   });
 
   it('drops a missing milestone', () => {
@@ -238,7 +238,7 @@ describe('issueBreadcrumb', () => {
       milestones,
       ticketsById,
     );
-    expect(crumbs).toEqual(['Task Manager', 'F4 Linear integration']);
+    expect(crumbs).toEqual(['Task Manager', 'F14 Milestone archiving']);
   });
 
   it('drops a missing epic', () => {
@@ -263,21 +263,21 @@ describe('issueBreadcrumb', () => {
 });
 
 describe('peekEpic', () => {
-  const ticketsById = new Map([['e4', { title: 'F4 Linear integration' }]]);
+  const ticketsById = new Map([['e4', { title: 'F14 Milestone archiving' }]]);
 
   it('prefers the linked epic title', () => {
-    expect(peekEpic({ epicTaskId: 'e4', externalEpicName: 'Linear sync' }, ticketsById)).toBe(
-      'F4 Linear integration',
+    expect(peekEpic({ epicTaskId: 'e4', externalEpicName: 'Milestone archive' }, ticketsById)).toBe(
+      'F14 Milestone archiving',
     );
   });
 
   it("falls back to a mirrored card's tracker epic by name", () => {
-    expect(peekEpic({ epicTaskId: null, externalEpicName: 'Linear sync' }, ticketsById)).toBe(
-      'Linear sync',
+    expect(peekEpic({ epicTaskId: null, externalEpicName: 'Milestone archive' }, ticketsById)).toBe(
+      'Milestone archive',
     );
-    expect(peekEpic({ epicTaskId: 'unknown', externalEpicName: 'Linear sync' }, ticketsById)).toBe(
-      'Linear sync',
-    );
+    expect(
+      peekEpic({ epicTaskId: 'unknown', externalEpicName: 'Milestone archive' }, ticketsById),
+    ).toBe('Milestone archive');
   });
 
   it('is undefined when neither is set', () => {

@@ -517,7 +517,7 @@ export function App(): JSX.Element {
   };
 
   /** Which sidebar row reads as selected — the ticket open on the board outranks the plain
-   *  "My issues" row once one actually is open, same precedence a Linear-style sidebar gives
+   *  "My issues" row once one actually is open, same precedence a tracker sidebar gives
    *  the open item over the list it came from. */
   const sidebarSelectedView: SidebarSelection | null =
     tab === 'attention'

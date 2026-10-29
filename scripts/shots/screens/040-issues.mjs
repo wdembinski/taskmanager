@@ -157,7 +157,7 @@ const LIST_TASKS = BOOT_CHANNELS['board:tasks'].map((t) =>
         dueAt: Date.now() + 3 * 86_400_000,
         milestoneId: 'ms-mixed',
         externalDescription:
-          'A Linear-backed card shows its identifier chip linking to Linear; Linear comments ' +
+          'A JIRA-backed card shows its key chip linking to JIRA; JIRA comments ' +
           'interleave in the timeline with an add-comment box.',
       }
     : t.id === '4'
