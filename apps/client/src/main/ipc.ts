@@ -3016,7 +3016,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     jira: { lastSyncAt: null, syncing: false, error: null },
     gitlab: { lastSyncAt: null, syncing: false, error: null },
     github: { lastSyncAt: null, syncing: false, error: null },
-    linear: { lastSyncAt: null, syncing: false, error: null },
     cloud: { lastSyncAt: null, syncing: false, error: null },
   };
 
@@ -3026,7 +3025,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
       { id: 'jira', label: 'JIRA', enabled: settings.jira.enabled, ...syncClock.jira },
       { id: 'gitlab', label: 'GitLab', enabled: settings.gitlab.enabled, ...syncClock.gitlab },
       { id: 'github', label: 'GitHub', enabled: settings.github.enabled, ...syncClock.github },
-      { id: 'linear', label: 'Linear', enabled: settings.linear.enabled, ...syncClock.linear },
       { id: 'cloud', label: 'Cloud', enabled: settings.cloud.enabled, ...syncClock.cloud },
     ];
     // The NEWEST of the services' clocks, so a sweep in which one tracker failed still

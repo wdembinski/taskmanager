@@ -90,7 +90,7 @@ import type {
 } from './review';
 import type { LinkGate, LinkResult, TaskLink } from './taskChain';
 import type { TicketLinkResult } from './ticketLinks';
-import type { AppSettings, LinearStateType } from './settings';
+import type { AppSettings } from './settings';
 import type { SyncState } from './sync';
 import type { UpdateState } from './update';
 import type { Automation, AutomationRun } from './automation';
@@ -262,49 +262,13 @@ export interface JiraTestResult {
   /**
    * What `@shared/autoMerge`'s `autoMergePrerequisites` found missing for each project with
    * "Merge on green" switched on whose `origin` belongs to this forge — GitHub's and
-   * GitLab's own `testConnection` handlers fill this in, never JIRA's or Linear's. Absent
+   * GitLab's own `testConnection` handlers fill this in, never JIRA's. Absent
    * (not just empty) when nothing was checked, so Settings can tell "no projects to check"
    * apart from "checked, nothing missing" without a third state on `missing`. Deliberately
    * independent of {@link ok}: a missing prerequisite is never a reason to fail the token
    * check that is the rest of this result.
    */
   prerequisites?: { project: string; missing: string[] }[];
-}
-
-/** One Linear team the Settings UI can offer for `teamKeys` — `key` appears nowhere else. */
-export interface LinearTeamOption {
-  id: string;
-  key: string;
-  name: string;
-}
-
-/**
- * The team list plus why it might be empty — the same `error` contract as `JiraStatusList`:
- * null on success (including a genuine empty workspace), the reason otherwise.
- */
-export interface LinearTeamList {
-  teams: LinearTeamOption[];
-  error: string | null;
-}
-
-/**
- * One workflow state a Linear team defines, for the Settings status-map viewer — the
- * `JiraStatusOption` idea, one tracker over. `column` is what the state would map to
- * WITHOUT an override (`resolveLinearColumn`'s own verdict), exactly as `category` is for
- * `JiraStatusOption`. `position` is Linear's own ordering within the team's workflow.
- */
-export interface LinearStateOption {
-  id: string;
-  name: string;
-  type: LinearStateType;
-  position: number;
-  column: BoardColumn;
-}
-
-/** The state list plus why it might be empty — the same `error` contract as `LinearTeamList`. */
-export interface LinearStateList {
-  states: LinearStateOption[];
-  error: string | null;
 }
 
 /**

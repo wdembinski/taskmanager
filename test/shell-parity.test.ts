@@ -1232,27 +1232,3 @@ describe('agent projects: the web configures a project’s identity, never its r
     }
   });
 });
-
-describe('Linear: the chip is shared, never a local copy', () => {
-  const WEB_TREE = 'apps/web/src';
-
-  it('draws the Linear chip and tracker derivation from @tm/ui on both hosts, never a local copy', () => {
-    const chipCopies = HOST_TREES.flatMap((tree) => filesUnder(tree, /^LinearMark\.tsx?$/));
-    expect(
-      chipCopies,
-      `${chipCopies.join(', ')} re-implements the Linear chip that lives at ` +
-        'packages/ui/src/LinearMark.tsx. A host-local copy only diverges from the shared one.',
-    ).toEqual([]);
-
-    const trackerSwitches = [WEB_TREE, 'apps/client/src/renderer/src']
-      .flatMap((tree) => filesUnder(tree, /\.tsx?$/))
-      .filter((path) => !/\.test\.tsx?$/.test(path))
-      .filter((path) => /case 'linear':/.test(read(path)));
-    expect(
-      trackerSwitches,
-      `${trackerSwitches.join(', ')} switches on a tracker case itself. Tracker derivation — ` +
-        'which chip, which short key, which link title — lives once in ' +
-        "packages/ui/src/tracker.tsx's own externalSource switch.",
-    ).toEqual([]);
-  });
-});

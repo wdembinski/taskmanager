@@ -45,7 +45,7 @@ export function trackerName(task: Pick<Task, 'externalSource'>): string | null {
 /**
  * The card's key as a **tight** surface should print it, or null when it has none.
  *
- * JIRA's `PROJ-123` and Linear's `ENG-12` are already as short as they get. GitHub's is
+ * JIRA's `PROJ-123` is already as short as it gets. GitHub's is
  * `owner/repo#123` — repo-scoped on purpose, because issue 123 exists in every repository
  * there has ever been (see `Task.externalKey`) — and that is three quarters of a card's width
  * spent on a fact the human already knows: they picked the repository. So the badge prints
@@ -137,7 +137,7 @@ export function ticketChannels(tracker: Tracker): TicketChannels {
 }
 
 /**
- * The tooltip/title for a card's "open in the tracker" link — `"Open ENG-12 in Linear"` — or
+ * The tooltip/title for a card's "open in the tracker" link — `"Open PROJ-12 in JIRA"` — or
  * null for a card with no external key to link. The one place this string is built; `TaskDetail`
  * used to inline it.
  */

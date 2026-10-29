@@ -114,7 +114,6 @@ import {
   DEFAULT_GITHUB_SETTINGS,
   DEFAULT_GITLAB_SETTINGS,
   DEFAULT_JIRA_SETTINGS,
-  DEFAULT_LINEAR_SETTINGS,
   DEFAULT_SETTINGS,
   DEFAULT_UPDATE_SETTINGS,
   coerceBoardLinksMode,
@@ -1732,6 +1731,13 @@ export function readSavedWindowSettings(userData: string): {
     return { appearance: 'dark', transparency: 'system', fontSizePx };
   }
 }
+
+/**
+ * The tracker integration this app used to ship and no longer does. What it left behind is
+ * read back as if it had never been there: its `app_state` rows are deleted on open, its
+ * settings group is dropped from the blob, and a card it filed reads as a plain card.
+ */
+const RETIRED_SOURCE = 'linear';
 
 /**
  * Open (or create) the database at `dbPath` and return the store API.
@@ -3533,7 +3539,7 @@ export function createStore(dbPath: string): Store {
   // Rows an integration that no longer exists left behind — a credential among them, which
   // should not sit encrypted on disk with nothing left to read it. Dropped on every open;
   // a no-op once they are gone.
-  const RETIRED_STATE_KEYS = ['linear.apiKey', 'linear.lastFilter'];
+  const RETIRED_STATE_KEYS = [`${RETIRED_SOURCE}.apiKey`, `${RETIRED_SOURCE}.lastFilter`];
   for (const key of RETIRED_STATE_KEYS) deleteState.run(key);
   // task_events references the PROJECT (not the task) so a plan re-sync — which
   // deletes and re-inserts task rows — never cascades away a task's history.
@@ -4593,7 +4599,11 @@ export function createStore(dbPath: string): Store {
     const row = selectState.get(SETTINGS_KEY) as { value: string } | undefined;
     if (!row) return { ...DEFAULT_SETTINGS };
     try {
-      const parsed = JSON.parse(row.value) as Partial<AppSettings>;
+      // The retired tracker's group is stripped here rather than migrated away, so it is
+      // gone from the stored blob after the next `saveSettings`.
+      const { [RETIRED_SOURCE]: _retired, ...parsed } = JSON.parse(
+        row.value,
+      ) as Partial<AppSettings> & Record<string, unknown>;
       // Deep-merge EVERY nested block so a stored blob missing newer fields (or lacking
       // the block entirely) still fills them from the defaults. `gitlab` matters as much
       // as `jira` here: without it every existing user would load `gitlab: undefined`
@@ -4607,7 +4617,6 @@ export function createStore(dbPath: string): Store {
         jira: { ...DEFAULT_JIRA_SETTINGS, ...(parsed.jira ?? {}) },
         gitlab: { ...DEFAULT_GITLAB_SETTINGS, ...(parsed.gitlab ?? {}) },
         github: { ...DEFAULT_GITHUB_SETTINGS, ...(parsed.github ?? {}) },
-        linear: { ...DEFAULT_LINEAR_SETTINGS, ...(parsed.linear ?? {}) },
         cloud: { ...DEFAULT_CLOUD_SETTINGS, ...(parsed.cloud ?? {}) },
         board: { ...DEFAULT_BOARD_DISPLAY, ...(parsed.board ?? {}) },
         features: { ...DEFAULT_FEATURE_SETTINGS, ...(parsed.features ?? {}) },
@@ -4965,7 +4974,7 @@ export function createStore(dbPath: string): Store {
       status: r.status as Task['status'],
       sessionId: r.sessionId,
       order: r.order,
-      source: (r.source as Task['source']) ?? 'plan',
+      source: r.source === RETIRED_SOURCE ? 'adhoc' : ((r.source as Task['source']) ?? 'plan'),
       dependsOn: parseStringArray(r.dependsOn),
       isContract: r.isContract !== 0,
       isScaffold: r.isScaffold !== 0,
@@ -4974,7 +4983,10 @@ export function createStore(dbPath: string): Store {
       description: r.description,
       statusNote: r.statusNote,
       statusNoteAt: r.statusNoteAt,
-      externalSource: (r.externalSource as Task['externalSource']) ?? null,
+      externalSource:
+        r.externalSource === RETIRED_SOURCE
+          ? null
+          : ((r.externalSource as Task['externalSource']) ?? null),
       externalKey: r.externalKey,
       externalId: r.externalId,
       externalUrl: r.externalUrl,

@@ -995,13 +995,8 @@ export interface Task {
    * on `source === 'jira'`, so it can never adopt, rewrite or archive a GitHub card;
    * `reconcileGitHubIssues` filters on `source === 'github'` and cannot touch a JIRA one.
    * Neither of them has to know the other exists.
-   *
-   * `linear` extends the same guarantee to a third, independent reconciler: whatever syncs
-   * Linear issues filters on `source === 'linear'` and is invisible to the JIRA and GitHub
-   * reconcilers in turn, so any number of trackers can share one board without ever having
-   * to coordinate over which of them owns a given card.
    */
-  source: 'plan' | 'adhoc' | 'jira' | 'github' | 'linear' | 'ticket';
+  source: 'plan' | 'adhoc' | 'jira' | 'github' | 'ticket';
   /**
    * True when this task authors the milestone's shared `CONTRACT.md` (team
    * orchestration, Phase C) — declared with a trailing `@contract` marker in the
@@ -1115,18 +1110,18 @@ export interface Task {
   /** Epoch ms the current `statusNote` was posted; null when there is none. */
   statusNoteAt?: number | null;
 
-  // --- External tracker linkage (JIRA, GitHub and Linear). All null for internal tasks. ---
+  // --- External tracker linkage (JIRA and GitHub). All null for internal tasks. ---
   /**
    * The external tracker this task mirrors, or null for an internal task.
    *
-   * Three values, and the difference between them is a *decision* at every site that reads
+   * Two values, and the difference between them is a *decision* at every site that reads
    * this field rather than a synonym for "external". Most questions — does this card carry
    * a tracker key, may it be deleted here, does its type icon come from `externalType` —
    * are about any tracker. A few are about JIRA in particular, and they are all the ones
    * that WRITE BACK: `task:setPriority` PUTs a JIRA priority, `transitionIssue` POSTs a
-   * JIRA transition, and neither means anything on a GitHub or Linear issue (see `github/`).
+   * JIRA transition, and neither means anything on a GitHub issue (see `github/`).
    */
-  externalSource?: 'jira' | 'github' | 'linear' | null;
+  externalSource?: 'jira' | 'github' | null;
   /**
    * The issue key shown to the user — `PROJ-123` on JIRA, `owner/repo#123` on GitHub.
    *
@@ -1921,20 +1916,5 @@ export type TaskActivityEntry =
       body: string;
       createdAt: number;
       /** Whether *you* wrote it — decided in main against the cached `GET /user`. */
-      mine: boolean;
-    }
-  /**
-   * A comment fetched live from the linked Linear issue — the third tracker's version of
-   * `jira-comment`/`github-comment`, not persisted, same shape. `id` is Linear's comment
-   * UUID. No `rich`/`attachments` for the same reason `github-comment` has neither: a
-   * Linear comment's body is Markdown, so `body` IS the comment.
-   */
-  | {
-      kind: 'linear-comment';
-      id: string;
-      author: string;
-      body: string;
-      createdAt: number;
-      /** Whether *you* wrote it — decided in main against the cached Linear viewer identity. */
       mine: boolean;
     };

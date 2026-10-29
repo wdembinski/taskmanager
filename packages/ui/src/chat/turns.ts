@@ -28,11 +28,11 @@ const SUBAGENT_TOOLS = new Set(['task', 'agent']);
 
 /**
  * Which tracker a ticket comment left the app for — the word on its badge, and the reason
- * `github-comment`/`linear-comment` are each a kind of their own (`@tm/shared/model`). A
+ * `github-comment` is a kind of its own (`@tm/shared/model`). A
  * bubble tagged JIRA over a comment that lives on GitHub sends the human to the wrong place
  * to answer it.
  */
-export type TurnTracker = 'jira' | 'github' | 'linear';
+export type TurnTracker = 'jira' | 'github';
 
 /**
  * What each tracker is called wherever the pane names one — the badge on a comment you
@@ -43,7 +43,6 @@ export type TurnTracker = 'jira' | 'github' | 'linear';
 export const TRACKER_NAME: Record<TurnTracker, string> = {
   jira: 'JIRA',
   github: 'GitHub',
-  linear: 'Linear',
 };
 
 export type Turn =
@@ -261,30 +260,6 @@ export function foldTurns(
                 body: entry.body,
                 createdAt: entry.createdAt,
                 tracker: 'github',
-              },
-        );
-        continue;
-      // Same shape as `github-comment` — no `rich`/`attachments`, a Linear comment's body
-      // is Markdown too.
-      case 'linear-comment':
-        turns.push(
-          entry.mine
-            ? {
-                key: `lin-${entry.id}`,
-                kind: 'you',
-                variant: 'ticket',
-                tracker: 'linear',
-                body: entry.body,
-                createdAt: entry.createdAt,
-                commentId: null,
-              }
-            : {
-                key: `lin-${entry.id}`,
-                kind: 'them',
-                author: entry.author,
-                body: entry.body,
-                createdAt: entry.createdAt,
-                tracker: 'linear',
               },
         );
         continue;

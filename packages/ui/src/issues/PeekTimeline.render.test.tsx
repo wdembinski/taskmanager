@@ -16,9 +16,9 @@ const them: Turn = {
   key: 'c1',
   kind: 'them',
   author: 'Marta Nowak',
-  body: 'Can we keep the Linear labels too?',
+  body: 'Can we keep the JIRA labels too?',
   createdAt: NOW - 12 * MINUTE,
-  tracker: 'linear',
+  tracker: 'jira',
 };
 
 const agent: Turn = {
@@ -37,7 +37,7 @@ describe('PeekTimeline', () => {
   it("draws someone's comment as initials, name, age and the body underneath", () => {
     const html = renderToStaticMarkup(<PeekTimeline turns={[them]} now={NOW} />);
     const words = text(html);
-    const order = ['MN', 'Marta Nowak', '12m', 'Can we keep the Linear labels too?'].map((s) =>
+    const order = ['MN', 'Marta Nowak', '12m', 'Can we keep the JIRA labels too?'].map((s) =>
       words.indexOf(s),
     );
     for (const at of order) expect(at).toBeGreaterThan(-1);

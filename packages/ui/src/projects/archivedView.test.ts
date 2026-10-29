@@ -156,7 +156,7 @@ describe('archivedViewModel', () => {
 
   it('names an epic row "KEY · title", and a milestone/project row by its own name', () => {
     const m = milestone({ id: 'm1', name: 'M2 · Review' });
-    const e = epic({ id: 'e1', ticketKey: 'TM-9', title: 'Linear integration' });
+    const e = epic({ id: 'e1', ticketKey: 'TM-9', title: 'Tracker integration' });
     const p = project({ id: 'p1', name: 'Task Manager' });
     const model = archivedViewModel(
       listing({ milestones: [m], epics: [e], projects: [p] }),
@@ -164,14 +164,14 @@ describe('archivedViewModel', () => {
       'p1',
     );
     expect(model.milestones[0].name).toBe('M2 · Review');
-    expect(model.epics[0].name).toBe('TM-9 · Linear integration');
+    expect(model.epics[0].name).toBe('TM-9 · Tracker integration');
     expect(model.projects[0].name).toBe('Task Manager');
   });
 
   it('falls back to the plain title when an epic has no key', () => {
-    const e = epic({ id: 'e1', ticketKey: null, title: 'Linear integration' });
+    const e = epic({ id: 'e1', ticketKey: null, title: 'Tracker integration' });
     const model = archivedViewModel(listing({ epics: [e] }), [], 'p1');
-    expect(model.epics[0].name).toBe('Linear integration');
+    expect(model.epics[0].name).toBe('Tracker integration');
   });
 
   it("scopes milestones and epics to projectId, dropping another project's row", () => {

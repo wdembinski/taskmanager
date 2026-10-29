@@ -716,14 +716,14 @@ export function TaskDetail({
    */
   const tracker = task ? trackerOf(task) : null;
   /**
-   * JIRA in particular: files. Uploading one is a JIRA-only route — neither GitHub nor Linear
-   * has a REST endpoint for attaching a file to an issue at all — so the attach button belongs
+   * JIRA in particular: files. Uploading one is a JIRA-only route — GitHub has no REST
+   * endpoint for attaching a file to an issue at all — so the attach button belongs
    * to one tracker rather than to any ticket.
    */
   const isJira = tracker === 'jira';
   /**
    * The @mention picker's search channel, or null for a tracker with nowhere to search from
-   * (Linear's) — which is also why this, not `tracker` alone, is what `Composer` gets: passing
+   * — which is also why this, not `tracker` alone, is what `Composer` gets: passing
    * a function it would call into nothing is a worse lie than not passing one at all.
    */
   const searchUsersChannel = tracker ? ticketChannels(tracker).searchUsers : null;
@@ -1195,7 +1195,7 @@ export function TaskDetail({
           displayName: m.displayName,
         })),
         // Only ever non-empty on a JIRA card — the attach button is offered nowhere else, and
-        // neither GitHub's nor Linear's `addComment` accepts a path; both refuse rather than
+        // GitHub's `addComment` accepts no path; it refuses rather than
         // posting the words without the file.
         attachmentPaths: comment.attachments,
       });
@@ -1812,8 +1812,8 @@ export function TaskDetail({
         onSearchPeople={
           searchUsersChannel ? (q) => transport.invoke(searchUsersChannel, task.id, q) : undefined
         }
-        // JIRA only, and the prop's absence is what hides the attach button: neither GitHub
-        // nor Linear has an API for putting a file on an issue, so offering the picker would
+        // JIRA only, and the prop's absence is what hides the attach button: GitHub has no
+        // API for putting a file on an issue, so offering the picker would
         // collect paths nothing could ever upload.
         onPickAttachments={isJira ? () => transport.invoke('jira:pickAttachments') : undefined}
         dictation={dictation}

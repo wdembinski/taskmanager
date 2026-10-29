@@ -4,9 +4,7 @@ import {
   firstUnmappedLabel,
   isBlockedishStatus,
   isReviewishStatus,
-  linearCategory,
   resolveGitHubColumn,
-  resolveLinearColumn,
   resolveStatusColumn,
 } from './statusResolve';
 
@@ -308,101 +306,5 @@ describe('firstUnmappedLabel', () => {
   it('skips a learned label too, and answers null when nothing is left', () => {
     expect(firstUnmappedLabel(['wip'], undefined, { wip: 'in-progress' })).toBeNull();
     expect(firstUnmappedLabel([])).toBeNull();
-  });
-});
-
-describe('linearCategory', () => {
-  it.each([
-    ['triage', 'To Do'],
-    ['backlog', 'To Do'],
-    ['unstarted', 'To Do'],
-    ['started', 'In Progress'],
-    ['completed', 'Done'],
-    ['canceled', 'Done'],
-  ] as const)('folds %s onto %s', (type, category) => {
-    expect(linearCategory(type)).toBe(category);
-  });
-});
-
-describe('resolveLinearColumn', () => {
-  it('resolves every state type by category when the name says nothing special', () => {
-    expect(resolveLinearColumn('Triage', 'triage')).toEqual({ column: 'todo', reason: 'category' });
-    expect(resolveLinearColumn('Backlog', 'backlog')).toEqual({
-      column: 'todo',
-      reason: 'category',
-    });
-    expect(resolveLinearColumn('Todo', 'unstarted')).toEqual({
-      column: 'todo',
-      reason: 'category',
-    });
-    expect(resolveLinearColumn('In Progress', 'started')).toEqual({
-      column: 'in-progress',
-      reason: 'category',
-    });
-    expect(resolveLinearColumn('Done', 'completed')).toEqual({
-      column: 'done',
-      reason: 'category',
-    });
-    expect(resolveLinearColumn('Canceled', 'canceled')).toEqual({
-      column: 'done',
-      reason: 'category',
-    });
-  });
-
-  // Acceptance: canceled lands on DONE, same as JIRA's Cancelled.
-  it('resolves canceled to DONE explicitly', () => {
-    expect(resolveLinearColumn('Canceled', 'canceled').column).toBe('done');
-  });
-
-  it('reaches IN REVIEW by name for a started state, but not for unstarted or completed', () => {
-    expect(resolveLinearColumn('In Review', 'started')).toEqual({
-      column: 'in-review',
-      reason: 'heuristic',
-    });
-    expect(resolveLinearColumn('Ready for review', 'unstarted')).toEqual({
-      column: 'todo',
-      reason: 'category',
-    });
-    expect(resolveLinearColumn('Reviewed', 'completed')).toEqual({
-      column: 'done',
-      reason: 'category',
-    });
-  });
-
-  it('reaches BLOCKED by name for a started state', () => {
-    expect(resolveLinearColumn('Blocked', 'started')).toEqual({
-      column: 'blocked',
-      reason: 'heuristic',
-    });
-  });
-
-  it('keeps the same precedence as resolveStatusColumn: explicit beats learned beats heuristic beats category', () => {
-    expect(
-      resolveLinearColumn(
-        'In Review',
-        'started',
-        { 'In Review': 'in-progress' },
-        { 'In Review': 'done' },
-      ),
-    ).toEqual({ column: 'in-progress', reason: 'explicit' });
-    expect(resolveLinearColumn('In Review', 'started', undefined, { 'In Review': 'done' })).toEqual(
-      { column: 'done', reason: 'learned' },
-    );
-    expect(resolveLinearColumn('In Review', 'started')).toEqual({
-      column: 'in-review',
-      reason: 'heuristic',
-    });
-  });
-
-  // Proves the delegation to resolveStatusColumn keeps its refusal: the learned map never
-  // speaks for a blocked-ish name, but the user's own map always may.
-  it('inherits the learned-map refusal for a blocked-ish name from resolveStatusColumn', () => {
-    expect(
-      resolveLinearColumn('Blocked', 'started', undefined, { Blocked: 'in-progress' }),
-    ).toEqual({ column: 'blocked', reason: 'heuristic' });
-    expect(resolveLinearColumn('Blocked', 'started', { Blocked: 'in-progress' })).toEqual({
-      column: 'in-progress',
-      reason: 'explicit',
-    });
   });
 });

@@ -575,19 +575,16 @@ export function TaskDetailsCell({
               value={priority ?? NO_PRIORITY}
               selectedOptions={[priority ?? NO_PRIORITY]}
               disabled={busy}
-              // Four different promises, and the card has to make the right one: JIRA's is
+              // Three different promises, and the card has to make the right one: JIRA's is
               // written back, GitHub's cannot be (an issue has no priority field at all, so the
-              // value is this app's own and its sync is written to preserve it), Linear's is
-              // read but never written (`linearSync.ts`), and an ad-hoc card's was never
-              // anything else.
+              // value is this app's own and its sync is written to preserve it), and an ad-hoc
+              // card's was never anything else.
               title={
                 isJira
                   ? 'Also updates the linked JIRA issue'
                   : task.externalSource === 'github'
                     ? 'Kept in this app — a GitHub issue has no priority to write to'
-                    : task.externalSource === 'linear'
-                      ? 'Read from the linked Linear issue — not written back'
-                      : 'Priority'
+                    : 'Priority'
               }
               onOptionSelect={(_e, d) => {
                 if (d.optionValue)
