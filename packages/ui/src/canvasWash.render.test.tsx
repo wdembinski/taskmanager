@@ -211,7 +211,7 @@ function render(scheme: ColorScheme, glass: string): { rules: Rule[]; chain: El[
 
 describe('the canvas wash shows behind the panes', () => {
   for (const scheme of ['light', 'dark'] as const) {
-    for (const glass of ['css', 'opaque'] as const) {
+    for (const glass of ['css', 'opaque', 'native'] as const) {
       it(`nothing between #root and a screen paints over it (${scheme}, ${glass})`, () => {
         const { rules, chain } = render(scheme, glass);
         const provider = chain.findIndex((el) => el.classes.includes('fui-FluentProvider'));
@@ -232,11 +232,48 @@ describe('the canvas wash shows behind the panes', () => {
         );
       });
     }
+
+    // Native glass: the OS material is the canvas, so only the translucent wash is laid over
+    // it — once, on #root, with no canvas colour anywhere beneath it.
+    it(`paints no canvas colour under native glass, and the wash once (${scheme})`, () => {
+      const { rules, chain } = render(scheme, 'native');
+      expect(winningBackground(rules, chain, 0)).toBe('transparent'); // html
+      expect(winningBackground(rules, chain, 1)).toBe('transparent'); // body
+      expect(winningBackground(rules, chain, 0, /(background)\s*:\s*([^;]+)/g)).toBe('transparent');
+      expect(winningBackground(rules, chain, 1, /(background)\s*:\s*([^;]+)/g)).toBe('transparent');
+      expect(winningBackground(rules, chain, 2, /(background-color)\s*:\s*([^;]+)/g)).toBe(
+        'transparent',
+      );
+      expect(winningBackground(rules, chain, 2, /(background)\s*:\s*([^;]+)/g)).toBe(
+        'var(--tm-page-wash)',
+      );
+    });
   }
 
-  it('drops the wash image in forced colours', () => {
-    const { rules } = render('dark', 'css');
-    const forced = rules.find((r) => r.css.startsWith('@media (forced-colors: active)'));
-    expect(forced?.css).toMatch(/html,\s*body,\s*#root\s*\{\s*background-image\s*:\s*none/);
-  });
+  for (const glass of ['css', 'opaque', 'native'] as const) {
+    it(`drops the wash image in forced colours (${glass})`, () => {
+      const { rules, chain } = render('dark', glass);
+      const forced = rules.find((r) => r.css.startsWith('@media (forced-colors: active)'));
+      const inner = /\{\s*([^{}]+)\{\s*background-image\s*:\s*none\s*;?\s*\}\s*\}$/.exec(
+        forced?.css.trim() ?? '',
+      );
+      expect(inner).not.toBeNull();
+      // The forced rule comes after the wash rules, so it wins #root as long as one of its
+      // selectors is at least as specific as the one painting the wash in this mode.
+      const forcedSpec = Math.max(
+        ...inner![1].split(',').map((s) => selectorSpecificityIfMatches(s, chain, 2) ?? -1),
+      );
+      const washSpecs = rules
+        .filter((r) => !r.css.startsWith('@') && r.css.includes('var(--tm-page-wash)'))
+        .flatMap((r) => /^([^{]+)\{/.exec(r.css.trim())![1].split(','))
+        .map((s) => selectorSpecificityIfMatches(s, chain, 2))
+        .filter((s): s is number => s !== null);
+      expect(washSpecs.length).toBeGreaterThan(0);
+      expect(forcedSpec).toBeGreaterThanOrEqual(Math.max(...washSpecs));
+      const forcedIndex = rules.indexOf(forced!);
+      for (const r of rules.filter((r) => r.css.includes('var(--tm-page-wash)'))) {
+        expect(rules.indexOf(r)).toBeLessThan(forcedIndex);
+      }
+    });
+  }
 });

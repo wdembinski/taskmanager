@@ -26,7 +26,8 @@
  *
  * `'native'` glass (F13.7, Windows Mica/Acrylic) deliberately keeps this same CSS pane — the
  * native material paints behind the window, not inside this div — so there is no selector for
- * it here; F13.7 owns whatever makes the backdrop transparent enough for it to show through.
+ * it here; F13.7 owns whatever makes the backdrop transparent enough for it to show through
+ * (`useGlobalStyles` in `theme.ts`: no canvas colour, the translucent wash once on `#root`).
  */
 import { makeStyles, mergeClasses } from '@fluentui/react-components';
 import { forwardRef, type HTMLAttributes } from 'react';

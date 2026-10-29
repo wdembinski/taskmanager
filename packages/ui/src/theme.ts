@@ -324,19 +324,22 @@ export const useGlobalStyles = makeStaticStyles([
     },
 
     /**
-     * `glass: 'native'` (F13.7): the OS material — Mica or Acrylic — is already painting
-     * behind the window (`main/index.ts`'s transparent `backgroundColor` is what lets it
-     * through), so the wash and the canvas colour would just cover it back up. Dropping both
-     * here, rather than teaching `html, body, #root` above to read `data-glass`, keeps that
-     * rule's own job — paint the one thing every OTHER mode needs — undisturbed; this is the
-     * one mode that wants nothing painted at all.
-     *
+     * `glass: 'native'` (F13.7): the OS material — Mica or Acrylic — paints the canvas
+     * (`main/index.ts`'s transparent `backgroundColor` is what lets it through), so no canvas
+     * COLOUR is painted anywhere: `html` and `body` go fully transparent. The wash still
+     * belongs on top of it — the v9/v10 mockups draw the haze over Mica too — and it is
+     * already translucent, so it is laid over the material exactly once, as an image only, on
+     * `#root`. Painting it on all three (as the rule above does for the other modes, where
+     * the opaque canvas underneath hides the stacking) would triple it over the material.
      */
-    ':root[data-glass="native"], :root[data-glass="native"] body, :root[data-glass="native"] #root':
-      {
-        background: 'transparent',
-        backgroundColor: 'transparent',
-      },
+    ':root[data-glass="native"], :root[data-glass="native"] body': {
+      background: 'transparent',
+      backgroundColor: 'transparent',
+    },
+    ':root[data-glass="native"] #root': {
+      background: 'var(--tm-page-wash)',
+      backgroundColor: 'transparent',
+    },
     /**
      * The provider root, in EVERY mode. Fluent's own `useFluentProviderStyles` paints
      * `colorNeutralBackground1` as an opaque fill on it, right on top of `#root` — under
@@ -432,8 +435,9 @@ export const useGlobalStyles = makeStaticStyles([
   },
   /* High contrast paints the system canvas only: drop the wash outright rather than trust
      the UA to discard a gradient image. (A string because Griffel's object form for static
-     styles cannot nest a selector inside an at-rule.) */
-  '@media (forced-colors: active) { html, body, #root { background-image: none; } }',
+     styles cannot nest a selector inside an at-rule.) The native `#root` selector is repeated
+     so this rule matches the native wash rule's specificity and, coming later, beats it. */
+  '@media (forced-colors: active) { html, body, #root, :root[data-glass="native"] #root { background-image: none; } }',
 ]);
 
 /** The single `<Toaster>`'s id. Shared so any screen can dispatch into the same surface. */
