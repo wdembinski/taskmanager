@@ -29,7 +29,7 @@ F26 adds five things:
 - **auto-close / auto-archive rules**, built on F14's archive;
 - **git automation**: branch names from ticket keys, and PR/MR events that move tickets.
 
-It also adds a **one-time import** from JIRA, GitHub, Linear and Asana into native tickets,
+It also adds a **one-time import** from JIRA, GitHub and Asana into native tickets,
 so a team can move its history in.
 
 ## What we have today
@@ -37,7 +37,7 @@ so a team can move its history in.
 Verified on `docs/roadmap-f13-f27` (tip `95d3bcf`).
 
 - **Native tickets (Phase 24).**
-  - `Task.source` is `'plan'|'adhoc'|'jira'|'github'|'linear'|'ticket'`
+  - `Task.source` is `'plan'|'adhoc'|'jira'|'github'|'ticket'`
     (`packages/shared/src/model.ts:816`).
   - `isNativeTicket` is `source === 'ticket'` (`packages/shared/src/tickets.ts:44`).
   - Fields (`model.ts:1175-1239`): `ticketKey`, `ticketNumber`, `issueType`, `epicTaskId`,
@@ -79,7 +79,7 @@ Verified on `docs/roadmap-f13-f27` (tip `95d3bcf`).
   - `landedTaskIds` (`gitlabSync.ts:276`) → `scheduler.noteWorkLanded` (`ipc.ts:2912`,
     `:3089`) only stamps `landedAt` and releases chains. **Nothing moves a ticket when a
     PR opens, merges or closes.**
-  - Tracker write-back, `writeMoveToForge` (`ipc.ts:5151`: JIRA transition, Linear move,
+  - Tracker write-back, `writeMoveToForge` (`ipc.ts:5151`: JIRA transition,
     GitHub label/close), runs only on human moves: `task:move` (`:5174`), the status dropdown
     (`:1706`) and assign+start (`:1248`).
 - **Archive.**
@@ -108,8 +108,6 @@ Verified on `docs/roadmap-f13-f27` (tip `95d3bcf`).
     `listPriorities` `:488`.
   - **GitHub** (`github/githubClient.ts`): `searchIssues` `:606`, `searchIssuesPage` `:635`,
     `getIssue` `:670`, `listRepoLabels` `:655`, `listAssignableUsers` `:778`.
-  - **Linear** (`linear/linearClient.ts`): `fetchIssues` `:247`, `fetchComments` `:294`,
-    `listTeams` `:352`, `listTeamStates` `:361`.
   - **Asana:** no client exists.
   - The F5 import (`issues/importIssue.ts`, `ISSUE_PROVIDERS = jira|github|gitlab` in
     `packages/shared/src/issues.ts:11`) creates a pinned **mirror** card, not a native
@@ -164,8 +162,8 @@ Verified on `docs/roadmap-f13-f27` (tip `95d3bcf`).
   - The branch name is offered on the ticket as **Copy branch name**, for humans who work
     without an agent.
 - **Import** (`packages/shared/src/import.ts`):
-  - `ImportSource = 'jira' | 'github' | 'linear' | 'asana'`;
-  - `ImportPlan { source, scope (JQL / repo+query / Linear team+filter / Asana project), mapping: { states, types, priorities, labels, people }, includeComments, includeClosed }`;
+  - `ImportSource = 'jira' | 'github' | 'asana'`;
+  - `ImportPlan { source, scope (JQL / repo+query / Asana project), mapping: { states, types, priorities, labels, people }, includeComments, includeClosed }`;
   - `ImportReport { created, skipped, errors[], keyMap: { externalKey, ticketKey }[] }`.
 
   Imported tickets are **native** (`source: 'ticket'`) with server-assigned keys. They keep
@@ -197,7 +195,7 @@ Verified on `docs/roadmap-f13-f27` (tip `95d3bcf`).
   ticket writes, so every replica sees them.
   - Only the desktop that observed the PR sends the move. To avoid duplicates across
     desktops, the server de-duplicates by `(ticketId, mrId, transition)`.
-  - JIRA/Linear/GitHub-sourced cards keep today's tracker sync; these rules apply to native
+  - JIRA/GitHub-sourced cards keep today's tracker sync; these rules apply to native
     tickets only.
 - **Import runs on the desktop** that holds the source credentials (tokens never leave the
   machine). It uses the existing clients, plus a new minimal `asana/asanaClient.ts`
@@ -284,7 +282,7 @@ Verified on `docs/roadmap-f13-f27` (tip `95d3bcf`).
   syncs stay what they are.
 - AI triage that applies its own suggestion without a human.
 - Copying attachments' bytes during import.
-- Moving JIRA/GitHub/Linear-sourced cards by PR rules. Those trackers own their state.
+- Moving JIRA/GitHub-sourced cards by PR rules. Those trackers own their state.
 
 ## Open questions
 
@@ -363,7 +361,7 @@ Verified on `docs/roadmap-f13-f27` (tip `95d3bcf`).
   - Acceptance: client tests against recorded payloads; `test/ipc-relay-coverage.test.ts` passes.
 - [ ] F26.13 Build the importer with mapping, dry run and resumable batches @needs: F26.12 Add a minimal Asana client with stored token
 
-  - Source adapters over the JIRA, GitHub, Linear and Asana clients; `ImportPlan` mapping with auto-matches; dry-run preview; batches of 200 through the ticket-create path; persisted `keyMap`; comments as F22 comments; `importedFrom` on each ticket; 5,000 cap per run.
+  - Source adapters over the JIRA, GitHub and Asana clients; `ImportPlan` mapping with auto-matches; dry-run preview; batches of 200 through the ticket-create path; persisted `keyMap`; comments as F22 comments; `importedFrom` on each ticket; 5,000 cap per run.
   - Acceptance: adapter tests per source with fixtures; a resume test that a rerun creates nothing twice; a cap test that the report names what remains.
 - [ ] F26.14 Build the import wizard @needs: F26.13 Build the importer with mapping, dry run and resumable batches
 

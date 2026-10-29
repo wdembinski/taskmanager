@@ -35,7 +35,7 @@ rather than replacing it.
   `kind: 'comment' | 'status'` with `body`, `fromStatus`, `toStatus`, and an `INTEGER
   AUTOINCREMENT` id. No author, no parent, no edit time. `TaskActivityEntry`
   (`packages/shared/src/model.ts:1631`) has `comment`, `chat`, `status-note`, `status`, `event`,
-  and the read-only tracker kinds `jira-comment` / `github-comment` / `linear-comment`, which are
+  and the read-only tracker kinds `jira-comment` / `github-comment`, which are
   fetched live and never stored. Channels: `task:activity`, `task:addComment`,
   `task:deleteComment` (`packages/shared/src/ipc.ts:764-768`).
 - **The timeline merge** is `activityMerge.ts` (`apps/client/src/main/activityMerge.ts`), a pure
@@ -238,7 +238,7 @@ and docs from the server directly, so a teammate with no desktop can comment and
 - Inbound email (reply to comment by email).
 - Push delivery itself (F23 implements the `push` channel).
 - Custom emoji, reaction on history entries, comment threads deeper than one level.
-- Writing app comments back to JIRA/GitHub/Linear; tracker comments stay read-only, as today.
+- Writing app comments back to JIRA/GitHub; tracker comments stay read-only, as today.
 - Slack/Teams delivery (out of the roadmap entirely).
 
 ## Open questions

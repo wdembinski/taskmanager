@@ -40,7 +40,7 @@ Every phase ends green: `pnpm typecheck`, `pnpm test`, `pnpm build`.
 | F7 | Skills library + prompt templates | client · server | — | [F7](F7-skills-and-prompt-templates.md) |
 | F8 | Visual workflow builder: skills and gates as one declarative chain | client | F7 | [F8](F8-workflow-builder.md) |
 | F9 | Command palette (Ctrl+K) + voice dictation | client · web | — | [F9](F9-command-palette-and-dictation.md) |
-| F4 | Linear integration: a fourth tracker | client · server | — | [F4](F4-linear-integration.md) |
+| F4 | ~~Linear integration: a fourth tracker~~ — **withdrawn** 2026-10-15, replaced by the built-in tracker (F19–F27) | client · server | — | [F4](F4-linear-integration.md) |
 | F5 | Task composer + issue browser with one-click hand-to-agent | client · web | F7 (soft) | [F5](F5-composer-and-hand-to-agent.md) |
 | F10 | Variants: run a card N times, compare, keep one | client | F6 | [F10](F10-variants.md) |
 | F11 | Sprints: native sprints, sprint planning in the Backlog, "Current sprint" for native tickets, milestone and sprint date ranges with a "Current milestone" view | client · server · web | — | [F11](F11-sprints.md) |
