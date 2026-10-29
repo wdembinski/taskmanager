@@ -1741,6 +1741,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     await deleteTaskAttachments(userData, [taskId, ...steps.map((s) => s.id)]);
   });
   handle('task:subtasks', async (parentTaskId) => store.getSubtasks(parentTaskId));
+  handle('task:get', async (id) => {
+    const task = store.getTask(id);
+    if (!task) return null;
+    const parent = task.parentTaskId ? (store.getTask(task.parentTaskId) ?? null) : null;
+    return { task, parent, steps: store.getSubtasks(id) };
+  });
   handle('task:addSubtask', async (parentTaskId, input) => {
     const parent = store.getTask(parentTaskId);
     if (!parent) throw new Error('Task not found.');

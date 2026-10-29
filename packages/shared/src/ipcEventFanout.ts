@@ -149,6 +149,10 @@ export const EVENT_FANOUT = {
     kind: 'drop',
     reason: 'those rows already reach the browser through the mirror',
   },
+  'tasks:changed': {
+    kind: 'drop',
+    reason: 'those rows already reach the browser through the mirror',
+  },
   'activity:appended': {
     kind: 'drop',
     reason:

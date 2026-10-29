@@ -132,6 +132,7 @@ import type {
   WorkflowSaveResult,
 } from './workflow';
 import type { BoardReviewRecord } from './boardReview';
+import type { TaskBundle, TaskDelta } from './taskSummary';
 import type {
   ArchivedListing,
   ArchiveResult,
@@ -683,6 +684,12 @@ export interface IpcApi {
    * A card's steps, in execution order (Phase 11). Empty for a card that has none.
    */
   'task:subtasks': (parentTaskId: string) => Promise<Task[]>;
+  /**
+   * One card in full (F29.2) — the heavy text a list's card summary leaves out, read when the
+   * card opens: the card, its parent when it is a step, and its own steps in execution order.
+   * Null when no such card exists.
+   */
+  'task:get': (id: string) => Promise<TaskBundle | null>;
   /**
    * Append a step to a card — either from an approved plan or written by hand. The
    * step inherits the parent's agent project and model and runs in
@@ -1990,6 +1997,12 @@ export interface IpcEvents {
    * deleted. Carries the project's full, current task list so the UI can replace it.
    */
   'project:tasksChanged': { projectId: string; tasks: Task[] };
+  /**
+   * Only the cards of one board that changed (F29.2), as summaries: the ones to insert or
+   * replace, and the ids that left it. A list merges it with `applyTaskDelta`
+   * (`@tm/ui/taskSummaryStore`); an open card re-reads its heavy half through `task:get`.
+   */
+  'tasks:changed': TaskDelta;
   /** A project's ticket review started, finished or failed — the row as it now stands. */
   'project:boardReviewChanged': { projectId: string; review: BoardReviewRecord };
   /**

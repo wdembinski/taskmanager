@@ -153,7 +153,17 @@ describe('the event fanout policy', () => {
   // a row and push it. F2.6, which wires the recorder's emit through `ipc.ts`'s `send` (the
   // same choke point `usage:sample` already uses, at `ipc.ts:556`), must remove this entry
   // once it does.
-  const CLASSIFIED_BUT_NEVER_PUSHED = ['session:gap', 'automations:changed', 'activity:appended'];
+  //
+  // `tasks:changed` is the same shape once more: F29.2's first step only adds the CONTRACT
+  // (the delta event, its fanout classification, and the `task:get` handler). Its third
+  // step makes main send only the cards that changed, through `send('tasks:changed', …)`,
+  // and must remove this entry when it does.
+  const CLASSIFIED_BUT_NEVER_PUSHED = [
+    'session:gap',
+    'automations:changed',
+    'activity:appended',
+    'tasks:changed',
+  ];
 
   it('found the pushes to check', () => {
     // Same guard as the handler side, for the same reason: `send` is a local helper and a
