@@ -2746,8 +2746,9 @@ export class Scheduler {
    *    with {@link stopReviewSession} once it has settled.
    *
    * Registered in `auxRuns`, so `stop(projectId)` and `dispose()` reach it. Usage and cost
-   * are recorded as `'orchestrator'` against the subject's card, when it has one (F16.10
-   * gives reviews a source of their own). Answers `{ runId: '' }` once disposed.
+   * are recorded under the `'review'` source (F16.10), against the subject's card when it
+   * has one — the rollup keeps that apart from the card's own task spend. Answers
+   * `{ runId: '' }` once disposed.
    *
    * A blocking `rate-limit` event parks the review (F16.9): the limit gate is raised with
    * the review in it, every task run is parked beside it — the wall is the account's — and
@@ -2776,7 +2777,7 @@ export class Scheduler {
       runId,
       onEvent: (event) => {
         if (event.kind === 'usage') {
-          this.recordUsage('orchestrator', projectId, taskId, runId, event);
+          this.recordUsage('review', projectId, taskId, runId, event);
         } else if (event.kind === 'rate-limit') {
           // Recorded whatever its status, as the task path does, so the dashboard's pressure
           // read and the next text-only limit's reset fallback both see it.
@@ -2790,7 +2791,7 @@ export class Scheduler {
           parked = true;
           handlers.onParked?.(this.parkReview(reviewId, { gate: 'limit', signal }));
         } else if (event.kind === 'result') {
-          this.recordCost('orchestrator', projectId, taskId, runId, event.costUsd);
+          this.recordCost('review', projectId, taskId, runId, event.costUsd);
           handlers.onResult(event);
         } else if (event.kind === 'exited') {
           this.auxRuns.delete(runId);

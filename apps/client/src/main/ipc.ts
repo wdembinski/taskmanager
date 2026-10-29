@@ -1076,6 +1076,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     ) {
       throw new Error(`Not a usable model: ${input.planningModel}`);
     }
+    if (
+      input.reviewModel !== undefined &&
+      input.reviewModel !== null &&
+      !isUsableModel(input.reviewModel)
+    ) {
+      throw new Error(`Not a usable model: ${input.reviewModel}`);
+    }
     const project = store.addProject(input);
     refreshProjectRepoSkillsIfCloudEnabled(project);
     // Only a project with a plan file has anything to parse or watch. Asked as `hasPlan`
@@ -1134,6 +1141,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       !isUsableModel(patch.planningModel)
     ) {
       throw new Error(`Not a usable model: ${patch.planningModel}`);
+    }
+    if (
+      patch.reviewModel !== undefined &&
+      patch.reviewModel !== null &&
+      !isUsableModel(patch.reviewModel)
+    ) {
+      throw new Error(`Not a usable model: ${patch.reviewModel}`);
     }
     // Same relayed-write guard as the model checks above: a browser can name any string.
     if (patch.autoMergeMethod !== undefined && !isAutoMergeMethod(patch.autoMergeMethod)) {

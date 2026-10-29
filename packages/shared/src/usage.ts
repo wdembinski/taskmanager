@@ -2,7 +2,7 @@
  * Shared token-usage vocabulary (Performance dashboard).
  *
  * The app tracks EVERYTHING that consumes the account's token quota — every task
- * agent session and the orchestrator's own "Align plan" run — by reading the token
+ * agent session, the orchestrator's own "Align plan" run and every AI review — by reading the token
  * counts the `claude` CLI already reports on each turn (see the `usage` SessionEvent).
  * These numbers are computed and aggregated BY THE APP, never by an AI agent.
  *
@@ -13,8 +13,12 @@
  * series behind the trend chart.
  */
 
-/** Which part of the app spent the tokens. */
-export type UsageSource = 'task' | 'orchestrator';
+/**
+ * Which part of the app spent the tokens: a task agent, the orchestrator's own Align
+ * run, or the AI reviewer. A `'review'` sample carries its subject card's `taskId` when
+ * it has one, but it is review spend, never counted again as that card's task spend.
+ */
+export type UsageSource = 'task' | 'orchestrator' | 'review';
 
 /** One recorded model call's token consumption, with attribution. */
 export interface UsageSample {
@@ -65,9 +69,9 @@ export interface BurnRate {
 }
 
 /**
- * One project's usage, broken down for the drill-down tree: its own task spend and
- * its orchestrator ("Align") spend kept separate, plus a per-task list. `tokens` is
- * the project's grand total (tasks + orchestrator).
+ * One project's usage, broken down for the drill-down tree: its own task spend, its
+ * orchestrator ("Align") spend and its AI review spend kept separate, plus a per-task
+ * list. `tokens` is the project's grand total (tasks + orchestrator + reviews).
  */
 export interface UsageProjectBreakdown {
   projectId: string | null;
@@ -79,6 +83,8 @@ export interface UsageProjectBreakdown {
   taskTokens: number;
   /** Tokens spent by the orchestrator on this project's behalf (the Align run). */
   orchestratorTokens: number;
+  /** Tokens spent by the AI reviewer on this project's behalf. */
+  reviewTokens: number;
   /** Per-task rows within this project (task agent spend only), tokens desc. */
   tasks: UsageSlice[];
 }
@@ -99,12 +105,17 @@ export interface UsageSummary {
   byProject: UsageSlice[];
   byTask: UsageSlice[];
   bySource: UsageSlice[];
-  /** Hierarchical drill-down: each project with its task + orchestrator split. */
+  /** Hierarchical drill-down: each project with its task / orchestrator / review split. */
   projects: UsageProjectBreakdown[];
   /** Total tokens spent by task agents across all projects, in the range. */
   taskTotal: number;
   /** Total tokens the orchestrator itself spent across all projects, in the range. */
   orchestratorTotal: number;
+  /**
+   * Total tokens the AI reviewer spent across all projects, in the range — kept apart
+   * from tasks and Align.
+   */
+  reviewTotal: number;
   burn: BurnRate;
   /** Last rate-limit status the CLI reported (e.g. 'allowed', 'allowed_warning'), or null. */
   limitStatus: string | null;

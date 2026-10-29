@@ -268,6 +268,13 @@ export interface Project {
    * planning run; see {@link resolveRunModel}.
    */
   planningModel: ClaudeModel | null;
+  /**
+   * Which model this project's **AI review** runs use. Reviewing is reading and judging —
+   * the same kind of turn as planning — so `null`, the default and every project that
+   * predates the field, means "same as planning": the ladder is
+   * `reviewModel ?? planningModel ?? defaultModel`. See {@link Project.planningModel}.
+   */
+  reviewModel: ClaudeModel | null;
   /** Permission mode this project's tasks run with unless overridden. */
   defaultPermissionMode: PermissionMode;
   /**
@@ -531,6 +538,9 @@ export interface AddProjectInput {
   /** Model for planning runs; omitted (or `null`) = the app-wide seed, and then "same as
    *  execution". See {@link Project.planningModel}. */
   planningModel?: ClaudeModel | null;
+  /** Model for AI review runs; omitted (or `null`) = "same as planning". See
+   *  {@link Project.reviewModel}. */
+  reviewModel?: ClaudeModel | null;
   defaultPermissionMode?: PermissionMode;
   concurrency?: number;
   useWorktrees?: boolean;
@@ -595,6 +605,7 @@ export type ProjectPatch = Partial<
     | 'planPath'
     | 'defaultModel'
     | 'planningModel'
+    | 'reviewModel'
     | 'defaultPermissionMode'
     | 'concurrency'
     | 'useWorktrees'

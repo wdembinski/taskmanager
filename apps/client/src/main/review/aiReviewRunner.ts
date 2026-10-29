@@ -84,11 +84,14 @@ export const REVIEW_DISALLOWED_TOOLS: readonly string[] = [
 /** A PR is untrusted input: its `.claude/settings.json` (and the hooks it adds) never loads. */
 export const REVIEW_SETTING_SOURCES: readonly SettingSource[] = ['user'];
 
-/** The model a review runs on. F16.10 adds the `reviewModel` rung in front. */
+/**
+ * The model a review runs on: the project's own `reviewModel`, else its planning model
+ * (reviewing is the same kind of reading-and-judging turn), else its execution model.
+ */
 export function reviewModelFor(
-  project: Pick<Project, 'planningModel' | 'defaultModel'>,
+  project: Pick<Project, 'reviewModel' | 'planningModel' | 'defaultModel'>,
 ): ClaudeModel {
-  return project.planningModel ?? project.defaultModel;
+  return project.reviewModel ?? project.planningModel ?? project.defaultModel;
 }
 
 /** The launch request for one review: read-only by construction, not by request. */
