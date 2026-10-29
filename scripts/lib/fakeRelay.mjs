@@ -17,6 +17,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { serveStatic } from './cdp.mjs';
+import { taskBundle } from './taskBundle.mjs';
 
 const CADENCE = { tier: 'active', intervalMs: 500, reason: 'ui-shots' };
 const DESKTOP_CLIENT_ID = 'fake-desktop-1';
@@ -196,6 +197,13 @@ export function handleIpcInvoke(state, fixture, channel, args) {
       if (!task) return { ok: false, error: `fake relay: unknown task ${taskId}` };
       task.status = toColumn === 'todo' ? 'pending' : toColumn;
       return { ok: true, value: task };
+    }
+    case 'task:get': {
+      const rows = state.channelOverrides?.['board:tasks'];
+      return {
+        ok: true,
+        value: taskBundle(Array.isArray(rows) ? rows : [...state.tasks.values()], args[0]),
+      };
     }
     default: {
       const fromFixture = answerFromBootChannels(fixture.BOOT_CHANNELS, channel, args);
