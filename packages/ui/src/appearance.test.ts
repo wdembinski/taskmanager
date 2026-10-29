@@ -47,6 +47,22 @@ describe('resolveAppearance — scheme', () => {
     ).toMatchObject({ scheme: 'dark' });
   });
 
+  it('keeps an explicit setting over a native material, whatever the OS reports', () => {
+    // The window-glass ticket's case: Theme Light, Transparency Full, Windows in dark mode.
+    expect(
+      resolveAppearance(
+        { appearance: 'light', transparency: 'full' },
+        env({ prefersDark: true, nativeMaterial: 'mica' }),
+      ),
+    ).toMatchObject({ scheme: 'light', glass: 'native' });
+    expect(
+      resolveAppearance(
+        { appearance: 'dark', transparency: 'full' },
+        env({ prefersDark: false, nativeMaterial: 'mica' }),
+      ),
+    ).toMatchObject({ scheme: 'dark', glass: 'native' });
+  });
+
   it('falls back to system for a junk or missing value', () => {
     expect(
       resolveAppearance(
