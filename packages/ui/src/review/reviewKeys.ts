@@ -1,6 +1,6 @@
 /**
- * The review workspace's own bare-letter keyboard shortcuts — `n`/`p`/`j`/`k`/`v`/`s`/`e`/`c`/`?`
- * plus `Escape` — kept as a pure function the same reason `reviewState.ts`'s own transitions are:
+ * The review workspace's own bare-letter keyboard shortcuts — `n`/`p`/`j`/`k`/`v`/`s`/`e`/`c`/`a`/
+ * `?` plus `Escape` — kept as a pure function the same reason `reviewState.ts`'s own transitions are:
  * no DOM test harness here, so a key map worth trusting has to be provable as a plain function
  * from an event-like object to an action, not a `keydown` handler buried in a component.
  *
@@ -16,9 +16,10 @@
  * is already the shifted character by the time it reaches here.
  *
  * `applyReviewKey` only handles the five actions a pure state machine can: `'toggleLayout'`,
- * `'expandContext'`, `'comment'` and `'showKeys'` each need something only the host component
- * has (a per-viewer layout setting, a specific gap/anchor, a focused textarea, a dialog) — F15.14
- * reads `reviewKeyAction`'s result directly for those instead of calling this.
+ * `'expandContext'`, `'comment'`, `'askAi'` and `'showKeys'` each need something only the host
+ * component has (a per-viewer layout setting, a specific gap/anchor, a focused textarea, the
+ * transport, a dialog) — F15.14 reads `reviewKeyAction`'s result directly for those instead of
+ * calling this.
  */
 import {
   isEditableTarget,
@@ -58,6 +59,7 @@ export type ReviewKeyAction =
   | 'toggleLayout'
   | 'expandContext'
   | 'comment'
+  | 'askAi'
   | 'showKeys'
   | 'escape';
 
@@ -70,6 +72,7 @@ const LETTER_ACTIONS: ReadonlyArray<readonly [string, ReviewKeyAction]> = [
   ['s', 'toggleLayout'],
   ['e', 'expandContext'],
   ['c', 'comment'],
+  ['a', 'askAi'],
 ];
 
 /** The action `evt` names under `ctx`, or `null` when it names none. See the header comment for
@@ -91,8 +94,8 @@ export function reviewKeyAction(
 }
 
 /**
- * Applies `action` to `s`. `'toggleLayout'`, `'expandContext'`, `'comment'` and `'showKeys'`
- * always return `s` unchanged — see the header comment for why this function has no business
+ * Applies `action` to `s`. `'toggleLayout'`, `'expandContext'`, `'comment'`, `'askAi'` and
+ * `'showKeys'` always return `s` unchanged — see the header comment for why this function has no business
  * handling them.
  */
 export function applyReviewKey(s: ReviewState, action: ReviewKeyAction, now: number): ReviewState {
@@ -112,6 +115,7 @@ export function applyReviewKey(s: ReviewState, action: ReviewKeyAction, now: num
     case 'toggleLayout':
     case 'expandContext':
     case 'comment':
+    case 'askAi':
     case 'showKeys':
       return s;
   }
@@ -132,5 +136,6 @@ export const REVIEW_KEYS: readonly KeyboardShortcutItem[] = [
   { id: 'toggleLayout', label: 'Toggle layout', spec: 's' },
   { id: 'expandContext', label: 'Expand context', spec: 'e' },
   { id: 'comment', label: 'Comment', spec: 'c' },
+  { id: 'askAi', label: 'Ask AI to review', spec: 'a' },
   { id: 'showKeys', label: 'Show keyboard shortcuts', spec: '?' },
 ];

@@ -535,7 +535,7 @@ describe('reviewWorkspaceCommands', () => {
       title: 'Review: Next file',
       shortcut: 'n',
     });
-    expect(keys).toHaveLength(9);
+    expect(keys).toHaveLength(10);
   });
 
   it("runs each row by calling onAction with that row's id", () => {

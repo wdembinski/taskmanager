@@ -57,6 +57,7 @@ describe('reviewKeyAction', () => {
     expect(reviewKeyAction(key({ key: 's' }), closedEditor)).toBe('toggleLayout');
     expect(reviewKeyAction(key({ key: 'e' }), closedEditor)).toBe('expandContext');
     expect(reviewKeyAction(key({ key: 'c' }), closedEditor)).toBe('comment');
+    expect(reviewKeyAction(key({ key: 'a' }), closedEditor)).toBe('askAi');
   });
 
   it('refuses a letter chorded with Shift, unlike "?"', () => {
@@ -149,9 +150,15 @@ describe('applyReviewKey', () => {
     expect(applyReviewKey(withEditor, 'escape', 0).editor).toBeNull();
   });
 
-  it('leaves the state untouched for the four host-only actions', () => {
+  it('leaves the state untouched for the five host-only actions', () => {
     const state = loaded();
-    for (const action of ['toggleLayout', 'expandContext', 'comment', 'showKeys'] as const) {
+    for (const action of [
+      'toggleLayout',
+      'expandContext',
+      'comment',
+      'askAi',
+      'showKeys',
+    ] as const) {
       expect(applyReviewKey(state, action, 0)).toBe(state);
     }
   });
@@ -169,6 +176,7 @@ describe('REVIEW_KEYS', () => {
       'toggleLayout',
       'expandContext',
       'comment',
+      'askAi',
       'showKeys',
     ]);
     expect(ids).not.toContain('escape');

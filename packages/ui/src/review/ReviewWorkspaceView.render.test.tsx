@@ -26,8 +26,13 @@ import {
   viewedLoadStarted,
   type ReviewState,
 } from './reviewState';
+import type { AiReview } from '@tm/shared/aiReview';
 import { GlassPane } from '../shell/GlassPane';
-import { ReviewWorkspaceView, type ReviewWorkspaceViewProps } from './ReviewWorkspaceView';
+import {
+  ReviewWorkspaceView,
+  type ReviewWorkspaceAi,
+  type ReviewWorkspaceViewProps,
+} from './ReviewWorkspaceView';
 
 function item(over: Partial<ReviewQueueItem> & { subjectId: string }): ReviewQueueItem {
   return {
@@ -136,6 +141,43 @@ function draft(id: string, over: Partial<ReviewComment> = {}): ReviewComment {
     createdAt: 1,
     updatedAt: 1,
     sentAt: null,
+    ...over,
+  };
+}
+
+/** A settled AI review of the task subject. */
+function aiReview(over: Partial<AiReview> = {}): AiReview {
+  return {
+    id: 'ai1',
+    subjectId: 'task:t1',
+    diffId: 'd1',
+    headSha: 'abc1234def',
+    status: 'done',
+    parkReason: null,
+    model: 'claude-sonnet-5',
+    startedAt: 1,
+    finishedAt: 2,
+    costUsd: 1.84,
+    tokens: null,
+    summary: 'The retry loop swallows its last error.',
+    verdict: 'request-changes',
+    findingCount: 2,
+    droppedCount: 0,
+    error: null,
+    requestedBy: 'human',
+    reviewDoc: 'default',
+    ...over,
+  };
+}
+
+/** `useAiReview`'s answer as the view receives it. */
+function ai(over: Partial<ReviewWorkspaceAi> = {}): ReviewWorkspaceAi {
+  return {
+    control: { kind: 'ask', label: 'Ask AI to review', reason: null },
+    review: null,
+    modelLabel: 'Sonnet 5',
+    onAsk: () => {},
+    onCancel: () => {},
     ...over,
   };
 }
@@ -326,10 +368,45 @@ describe('ReviewWorkspaceView', () => {
       expect(taskHtml).not.toContain('Open on forge');
     });
 
-    it('keeps the AI slot present and empty', () => {
+    it('keeps the AI slot empty without an AI control', () => {
       for (const html of [prHtml, taskHtml]) {
         expect(html).toMatch(/<span[^>]*data-slot="ai-review"[^>]*><\/span>/);
       }
+    });
+
+    it('fills the AI slot with Ask AI to review (F16.13)', () => {
+      for (const selected of [pr, task]) {
+        const state = loaded(selected.subjectId, 'worktree');
+        const html = render({ selected, state, ai: ai() });
+        const header = region(html, 'data-region="header"', 'data-column="files"');
+        const slot = region(header, 'data-slot="ai-review"', 'data-drafts');
+        expect(slot).toMatch(/<button[^>]*data-ai-review="ask"[^>]*>.*Ask AI to review/);
+        // Between the Unified|Split pill and the drafts, as v9-6 draws it.
+        expect(header.indexOf('Split')).toBeLessThan(header.indexOf('data-slot="ai-review"'));
+      }
+    });
+
+    it('draws the summary card at the top of the file list once a review is done', () => {
+      const state = loaded(task.subjectId, 'worktree');
+      const control = { kind: 'done', label: 'AI: 2 findings', reason: null } as const;
+      const html = render({ selected: task, state, ai: ai({ control, review: aiReview() }) });
+      const files = html.slice(
+        html.indexOf('data-column="files"'),
+        html.indexOf('data-column="diff"'),
+      );
+      expect(files).toContain('data-ai-summary="done"');
+      expect(files).toContain('2 findings · 0 dropped · $1.84 · Sonnet 5');
+      expect(files.indexOf('data-viewed-count')).toBeLessThan(files.indexOf('data-ai-summary'));
+      expect(files.indexOf('data-ai-summary')).toBeLessThan(files.indexOf('retry.ts'));
+      expect(html).toMatch(/data-ai-review="done"[^>]*>.*AI: 2 findings/);
+
+      const running = ai({
+        control: { kind: 'running', chip: 'AI reviewing… 4s' },
+        review: aiReview({ status: 'running' }),
+      });
+      const live = render({ selected: task, state, ai: running });
+      expect(live).not.toContain('data-ai-summary');
+      expect(live).toContain('data-running');
     });
 
     it('paints no glass into the markup itself', () => {
@@ -373,12 +450,18 @@ describe('ReviewWorkspaceView', () => {
         draft('ai-kept', { origin: 'ai', severity: 'minor', acceptedAt: 3 }),
         draft('ai-dismissed', { origin: 'ai', severity: 'nit', dismissedAt: 3 }),
       ]);
-      const html = render({ selected: task, state: s, onToggleShowDismissed: () => {} });
+      const html = render({
+        selected: task,
+        state: s,
+        onToggleShowDismissed: () => {},
+        ai: ai(),
+      });
       const header = region(html, 'data-region="header"', 'data-column="files"');
       expect(header).toMatch(/data-drafts="2"[^>]*>2 drafts</);
       expect(header).toMatch(/data-dismissed-toggle="hidden"[^>]*>.*show dismissed \(1\)/);
-      // The AI slot stays F16.13's, and the toggle sits after the draft count.
-      expect(header).toMatch(/<span[^>]*data-slot="ai-review"[^>]*><\/span>/);
+      // The AI slot holds F16.13's control, and the toggle sits after the draft count.
+      expect(header).toMatch(/data-slot="ai-review"[^>]*><button[^>]*data-ai-review="ask"/);
+      expect(header.indexOf('data-slot="ai-review"')).toBeLessThan(header.indexOf('data-drafts'));
       expect(header.indexOf('data-drafts')).toBeLessThan(header.indexOf('data-dismissed-toggle'));
       expect(html).toContain('data-severity="major"');
       expect(html).not.toContain('data-severity="nit"');
