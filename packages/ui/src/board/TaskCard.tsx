@@ -685,7 +685,16 @@ export function TaskCard({
     runPurposes,
     epicName,
   });
-  const elapsed = parts.statusLine?.kind === 'running' ? runStartedAt?.get(task.id) : undefined;
+  // A card whose step is the one running ("Step 2 of 4") times that step's run — the card
+  // itself has none of its own.
+  const elapsed =
+    parts.statusLine?.kind === 'running'
+      ? (runStartedAt?.get(task.id) ??
+        subtasks
+          .filter((s) => s.status === 'running' || liveRunTaskIds?.has(s.id) === true)
+          .map((s) => runStartedAt?.get(s.id))
+          .find((at) => at != null))
+      : undefined;
   const elapsedLabel = elapsed != null ? formatElapsed(now - elapsed) : undefined;
   /**
    * Whether this card is a MIRROR of something in a tracker — the key stays plain text for a
