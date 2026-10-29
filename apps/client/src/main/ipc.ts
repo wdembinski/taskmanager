@@ -276,6 +276,7 @@ import {
   type RunRefusal,
 } from '@shared/scheduler';
 import { logMain } from './log';
+import { logEvent, perfLogEnabled, timeHandler } from './perfLog';
 import { parsePlan } from './planParser';
 import { planHasAlignmentMarkers, validatePlan } from './planValidate';
 import { buildContractScaffold, CONTRACT_DOC, insertContractTasks } from './planAlign';
@@ -325,13 +326,22 @@ import {
  * cloud-flavoured copy of it. See `ipcRegistry.ts`. Registering unconditionally rather than
  * only for relayable channels is deliberate — the registry does the classifying, and a
  * `handle()` call that also had to remember to opt in would be the thing everyone forgets.
+ *
+ * With `VIPPER_PERF_LOG=1` (F29.1) the handler is wrapped ONCE in `timeHandler` and that one
+ * wrapper goes to both paths, so a relayed call is timed exactly like a local one. Off, the
+ * handler is passed through untouched.
  */
+let perfLog = false;
+
 function handle<K extends keyof IpcApi>(
   channel: K,
   handler: (...args: Parameters<IpcApi[K]>) => ReturnType<IpcApi[K]>,
 ): void {
-  ipcMain.handle(channel, (_event, ...args) => handler(...(args as Parameters<IpcApi[K]>)));
-  relayRegistry.register(channel, handler as (...args: never[]) => unknown);
+  const run = perfLog
+    ? (timeHandler(channel, handler, logMain) as unknown as typeof handler)
+    : handler;
+  ipcMain.handle(channel, (_event, ...args) => run(...(args as Parameters<IpcApi[K]>)));
+  relayRegistry.register(channel, run as (...args: never[]) => unknown);
 }
 
 /**
@@ -488,6 +498,10 @@ export interface LiveBackdrop {
 }
 
 export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBackdrop): Engine {
+  // Read once: every `handle()` below and every `send` follow it for the app's lifetime.
+  const perf = perfLogEnabled();
+  perfLog = perf;
+
   // The cloud's copy of everything `send` pushes. Constructed INERT here, at the top of the
   // function, because `send` is defined on the next line and everything it needs to actually
   // send — the store, the access token — is declared hundreds of lines below;
@@ -540,6 +554,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   // Outside the `isDestroyed` guard on purpose: a closed desktop window says nothing about
   // whether somebody has the web app open.
   const send = <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]): void => {
+    if (perf) logEvent(channel, payload, logMain);
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
     cloudEvents.publish(channel, payload);
     // Steer the theme Electron reports with the Theme setting, unconditionally: Windows paints
