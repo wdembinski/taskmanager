@@ -346,6 +346,9 @@ function clientInitScript(settingsOverrides, localStorageSeed) {
       on() {
         return () => undefined;
       },
+      onNativeMaterialChanged() {
+        return () => undefined;
+      },
       pathForFile() {
         return '';
       },

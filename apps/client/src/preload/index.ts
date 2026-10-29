@@ -23,7 +23,7 @@
  * autocomplete and type-checking on every call.
  */
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { BootAppearance } from '@shared/canvas';
+import type { BootAppearance, NativeMaterial } from '@shared/canvas';
 import type { IpcApi, IpcEvents } from '@shared/ipc';
 import { ipcErrorMessage } from '@shared/ipcError';
 
@@ -81,6 +81,18 @@ const api = {
     const listener = (_event: unknown, payload: IpcEvents[K]): void => callback(payload);
     ipcRenderer.on(channel, listener as Parameters<typeof ipcRenderer.on>[1]);
     return () => ipcRenderer.removeListener(channel, listener as never);
+  },
+
+  /**
+   * The window's native material changed after boot — the OS "Transparency effects" switch
+   * or high contrast flipped, or the Transparency setting now grants or refuses it. `null`
+   * means no native material. Its own channel rather than an `IpcEvents` one: it is about
+   * this window alone, so it is never mirrored to the cloud. Returns an unsubscribe function.
+   */
+  onNativeMaterialChanged(callback: (material: NativeMaterial | null) => void): () => void {
+    const listener = (_event: unknown, material: NativeMaterial | null): void => callback(material);
+    ipcRenderer.on('window:nativeMaterialChanged', listener);
+    return () => ipcRenderer.removeListener('window:nativeMaterialChanged', listener);
   },
 
   /**

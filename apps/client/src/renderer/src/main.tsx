@@ -16,6 +16,7 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { FluentProvider, Toaster } from '@fluentui/react-components';
+import type { NativeMaterial } from '@shared/canvas';
 import type { AppSettings } from '@shared/settings';
 import { App } from './App';
 import { isFileDrag } from '@ui/AttachmentStrip';
@@ -71,7 +72,9 @@ for (const type of ['dragover', 'drop'] as const) {
  * not answer) the old defaults stand in — `'dark'`/`'system'`, matching the window's own
  * `backgroundColor` for an existing install — until the first `settings:get` lands.
  *
- * `nativeMaterial` is never re-read: main chose it (if at all) before this window existed.
+ * `nativeMaterial` follows `window.api.onNativeMaterialChanged`: main re-applies the window's
+ * material when the OS transparency or contrast changes, or when the Transparency setting now
+ * grants or refuses it, and `data-glass` moves between `native` and `css` with it.
  * Everything else is re-read on `settings:changed`, so a change takes effect as you pick it
  * rather than on next launch; `useResolvedAppearance` re-resolves on top of that and keeps
  * `document.documentElement` in step with it.
@@ -86,7 +89,11 @@ function ThemedApp(): JSX.Element {
   const [transparency, setTransparency] = useState<AppSettings['transparency']>(
     boot?.transparency ?? 'system',
   );
-  const nativeMaterial = boot?.nativeMaterial ?? null;
+  const [nativeMaterial, setNativeMaterial] = useState<NativeMaterial | null>(
+    boot?.nativeMaterial ?? null,
+  );
+
+  useEffect(() => window.api.onNativeMaterialChanged(setNativeMaterial), []);
 
   useEffect(() => {
     const read = (): void => {

@@ -95,6 +95,42 @@ export function windowBackdropFor(
 }
 
 /**
+ * What re-applying a backdrop to a live window has to do — each `null` is a call to skip.
+ * `nativeMaterial` is what `window:nativeMaterialChanged` carries; it is only sent when
+ * `notify` is set, because `null` is itself a meaningful payload ("no native glass").
+ */
+export interface BackdropChange {
+  /** Pass to `setBackgroundMaterial`, or `null` when the material is unchanged. */
+  material: WindowMaterial | null;
+  /** Pass to `setBackgroundColor` (after the material), or `null` when it is unchanged. */
+  backgroundColor: string | null;
+  notify: boolean;
+  nativeMaterial: NativeMaterial | null;
+}
+
+/**
+ * The difference between the backdrop a window has now and the one {@link windowBackdropFor}
+ * just resolved — called when the OS transparency/contrast or the Theme/Transparency setting
+ * changes under an open window. The material comes first and the colour after it: a material
+ * switched on needs the transparent colour behind it, and one switched off needs the scheme
+ * canvas. A colour alone still changes when the scheme does with no material, so a later
+ * restore from the tray repaints in the current scheme. The renderer is told only when the
+ * material changed — that is what moves `data-glass` between `native` and `css`.
+ */
+export function backdropChangeFor(current: WindowBackdrop, next: WindowBackdrop): BackdropChange {
+  const materialChanged = current.material !== next.material;
+  return {
+    material: materialChanged ? next.material : null,
+    backgroundColor:
+      materialChanged || current.backgroundColor !== next.backgroundColor
+        ? next.backgroundColor
+        : null,
+    notify: materialChanged,
+    nativeMaterial: next.material === 'none' ? null : next.material,
+  };
+}
+
+/**
  * Whether `SESSIONNAME` marks this process as running inside a Remote Desktop session — the
  * only signal available before a window is created, and the one F13.6's spike could not reach
  * a real RDP session to confirm directly. Unset (a normal console session on most machines) or

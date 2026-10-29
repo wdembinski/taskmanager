@@ -36,7 +36,6 @@ import {
   type BrowserWindow,
   type Rectangle,
 } from 'electron';
-import { WINDOW_CANVAS, windowSchemeFor } from '@shared/canvas';
 import { themeSourceFor } from './themeSource';
 import type { WindowMaterial } from './windowMaterial';
 import type {
@@ -478,7 +477,17 @@ export interface Engine {
  * with the main window (needed so the engine can push events to the UI). Returns
  * the engine so the caller can stop sessions and close the DB on quit.
  */
-export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowMaterial): Engine {
+/**
+ * The window's live backdrop, owned by `main/index.ts` (which created the window with it):
+ * `material()` is what the window has right now, and `reapply` re-resolves it for these
+ * settings and applies whatever changed — see `reapplyBackdrop` there.
+ */
+export interface LiveBackdrop {
+  material(): WindowMaterial;
+  reapply(settings: Pick<AppSettings, 'appearance' | 'transparency'>): void;
+}
+
+export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBackdrop): Engine {
   // The cloud's copy of everything `send` pushes. Constructed INERT here, at the top of the
   // function, because `send` is defined on the next line and everything it needs to actually
   // send — the store, the access token — is declared hundreds of lines below;
@@ -539,21 +548,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
     if (channel === 'settings:changed') {
       nativeTheme.themeSource = themeSourceFor((payload as AppSettings).appearance);
     }
-    // Resync the WINDOW's own background the moment `appearance` changes, so a later
-    // restore from hidden/minimized (the tray path above) repaints with the CURRENT
-    // scheme rather than whatever colour `createWindow` picked at boot — see
-    // `readSavedWindowSettings` (store.ts), which supplies that boot-time colour.
-    //
-    // Skipped while a native material is active: this window's `backgroundColor` is
-    // `'#00000000'` (see `windowAppearance`, main/index.ts), and painting an opaque colour
-    // over it would switch the material off (F13.6's spike finding) — a transparent window
-    // never shows the white/wrong-scheme flash on restore that this exists to fix, so there
-    // is no colour to resync; the material's own theme follows `themeSource` above.
-    if (channel === 'settings:changed' && !mainWindow.isDestroyed() && material === 'none') {
-      const { appearance } = payload as AppSettings;
-      mainWindow.setBackgroundColor(
-        WINDOW_CANVAS[windowSchemeFor(appearance, nativeTheme.shouldUseDarkColors)],
-      );
+    // Re-resolve the window's backdrop the moment Theme or Transparency changes, after
+    // `themeSource` above so the scheme read agrees. Without a material this resyncs the
+    // WINDOW's own background, so a later restore from hidden/minimized (the tray path above)
+    // repaints with the CURRENT scheme rather than whatever colour `createWindow` picked at
+    // boot. With one it leaves the transparent colour alone — an opaque colour over it would
+    // switch the material off (F13.6's spike finding) — unless the setting itself now refuses
+    // or grants the material, which `reapply` switches together with the colour.
+    if (channel === 'settings:changed') {
+      backdrop.reapply(payload as AppSettings);
     }
     // A merge-request sync landing, or any card edit (including a status change that could
     // move a card into or out of `in-review`) — either is worth a `mine`/`agent` reread
@@ -5721,10 +5724,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, material: WindowM
   });
   handle('window:close', async () => mainWindow.close());
   handle('window:isMaximized', async () => isMaximized());
-  // What this window was actually created with — `'none'` (refused by `windowMaterialFor`)
-  // reports as null, so the renderer's own glass pane knows whether it's the one drawing
-  // the chrome or the OS already did.
-  handle('window:nativeMaterial', async () => (material === 'none' ? null : material));
+  // What this window has right now — `'none'` (refused by `windowMaterialFor`) reports as
+  // null, so the renderer's own glass pane knows whether it's the one drawing the chrome or
+  // the OS already did. Live: a change after boot also arrives on
+  // `window:nativeMaterialChanged`.
+  handle('window:nativeMaterial', async () => {
+    const material = backdrop.material();
+    return material === 'none' ? null : material;
+  });
 
   // Auto-update. The updater is constructed near the top (it is inert until `start()`);
   // these three are the whole surface the UI gets — the rest arrives on `update:changed`.

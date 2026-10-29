@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { WINDOW_CANVAS } from '@shared/canvas';
 import {
+  backdropChangeFor,
   isRemoteSession,
   windowBackdropFor,
   windowMaterialFor,
@@ -162,6 +163,67 @@ describe('windowBackdropFor', () => {
         { ...env, remoteSession: true },
       ),
     ).toEqual({ material: 'none', backgroundColor: WINDOW_CANVAS.dark });
+  });
+});
+
+describe('backdropChangeFor', () => {
+  const mica = { material: 'mica', backgroundColor: '#00000000' } as const;
+  const darkCanvas = { material: 'none', backgroundColor: WINDOW_CANVAS.dark } as const;
+  const lightCanvas = { material: 'none', backgroundColor: WINDOW_CANVAS.light } as const;
+
+  it('does nothing when the backdrop is unchanged', () => {
+    expect(backdropChangeFor(mica, mica)).toEqual({
+      material: null,
+      backgroundColor: null,
+      notify: false,
+      nativeMaterial: 'mica',
+    });
+    expect(backdropChangeFor(darkCanvas, darkCanvas)).toEqual({
+      material: null,
+      backgroundColor: null,
+      notify: false,
+      nativeMaterial: null,
+    });
+  });
+
+  it('switches mica off with the scheme canvas and tells the renderer null', () => {
+    // The OS "Transparency effects" switch turned off under an open Mica window.
+    expect(backdropChangeFor(mica, darkCanvas)).toEqual({
+      material: 'none',
+      backgroundColor: WINDOW_CANVAS.dark,
+      notify: true,
+      nativeMaterial: null,
+    });
+  });
+
+  it('switches mica on with a transparent colour and tells the renderer mica', () => {
+    expect(backdropChangeFor(lightCanvas, mica)).toEqual({
+      material: 'mica',
+      backgroundColor: '#00000000',
+      notify: true,
+      nativeMaterial: 'mica',
+    });
+  });
+
+  it('repaints only the colour when the scheme changes with no material', () => {
+    expect(backdropChangeFor(darkCanvas, lightCanvas)).toEqual({
+      material: null,
+      backgroundColor: WINDOW_CANVAS.light,
+      notify: false,
+      nativeMaterial: null,
+    });
+  });
+
+  it('follows the resolver through a live OS transparency change', () => {
+    const settings = { appearance: 'dark', transparency: 'full' };
+    const env = { ...noEnv, prefersDark: true };
+    const before = windowBackdropFor('win32', 26200, settings, env);
+    const after = windowBackdropFor('win32', 26200, settings, {
+      ...env,
+      reducedTransparency: true,
+    });
+    expect(backdropChangeFor(before, after)).toMatchObject({ material: 'none', notify: true });
+    expect(backdropChangeFor(after, before)).toMatchObject({ material: 'mica', notify: true });
   });
 });
 

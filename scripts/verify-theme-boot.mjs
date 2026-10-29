@@ -210,6 +210,9 @@ function clientInitScript(settingsOverrides) {
       on() {
         return () => undefined;
       },
+      onNativeMaterialChanged() {
+        return () => undefined;
+      },
       pathForFile() {
         return '';
       },
