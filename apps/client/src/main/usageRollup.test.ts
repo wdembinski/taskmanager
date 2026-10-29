@@ -155,6 +155,61 @@ describe('rollupWindow', () => {
     expect(summary.projects.map((p) => p.projectId)).toEqual(['p1', 'p2']);
   });
 
+  /** Task, Align and review spend for one project; the review is tagged with card t1. */
+  const threeSources = (): UsageSample[] => [
+    sample({ projectId: 'p1', taskId: 't1', inputTokens: 50_000, createdAt: now - MIN }),
+    sample({
+      projectId: 'p1',
+      taskId: null,
+      source: 'orchestrator',
+      inputTokens: 20_000,
+      createdAt: now - MIN,
+    }),
+    sample({
+      projectId: 'p1',
+      taskId: 't1',
+      source: 'review',
+      inputTokens: 30_000,
+      createdAt: now - MIN,
+    }),
+  ];
+
+  it('counts review spend once, under its own source, never as the card it reviewed', () => {
+    const summary = rollupWindow(threeSources(), { now, taskTitles: new Map([['t1', 'Card']]) });
+
+    expect(summary.windowTotal).toBe(100_000);
+    expect(summary.taskTotal).toBe(50_000);
+    expect(summary.orchestratorTotal).toBe(20_000);
+    expect(summary.reviewTotal).toBe(30_000);
+    expect(summary.bySource).toContainEqual({
+      id: 'review',
+      label: 'Reviews',
+      tokens: 30_000,
+      pct: 30,
+    });
+    expect(summary.byTask).toEqual([{ id: 't1', label: 'Card', tokens: 50_000, pct: 50 }]);
+    // The project still owns the review: it is that project's spend.
+    expect(summary.byProject).toEqual([
+      { id: 'p1', label: 'Unknown project', tokens: 100_000, pct: 100 },
+    ]);
+  });
+
+  it('keeps review spend apart in the project drill-down', () => {
+    const summary = rollupWindow(threeSources(), { now, taskTitles: new Map([['t1', 'Card']]) });
+
+    expect(summary.projects).toHaveLength(1);
+    expect(summary.projects[0]).toMatchObject({
+      projectId: 'p1',
+      tokens: 100_000,
+      taskTokens: 50_000,
+      orchestratorTokens: 20_000,
+      reviewTokens: 30_000,
+    });
+    expect(summary.projects[0]?.tasks).toEqual([
+      { id: 't1', label: 'Card', tokens: 50_000, pct: 50 },
+    ]);
+  });
+
   it('respects an explicit windowStart (e.g. all-time = 0)', () => {
     const realNow = 1_700_000_000_000; // a real epoch so a 10h-old sample stays positive
     const samples = [

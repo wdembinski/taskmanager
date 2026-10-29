@@ -1766,7 +1766,7 @@ describe('Scheduler.startReviewSession (the AI reviewer, F16.8)', () => {
     expect(h.handlers.onResult).toHaveBeenCalledTimes(1);
     expect(h.stop).not.toHaveBeenCalled();
     expect(h.store.appendTokenUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ source: 'orchestrator', projectId: 'p', taskId: 'card' }),
+      expect.objectContaining({ source: 'review', projectId: 'p', taskId: 'card' }),
     );
   });
 

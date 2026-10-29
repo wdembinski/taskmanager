@@ -1935,7 +1935,7 @@ export function createStore(dbPath: string): Store {
     -- a task. projectId/taskId are plain nullable TEXT for that reason.
     CREATE TABLE IF NOT EXISTS token_usage (
       id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-      source              TEXT NOT NULL,          -- 'task' | 'orchestrator'
+      source              TEXT NOT NULL,          -- 'task' | 'orchestrator' | 'review'
       projectId           TEXT,                   -- null only if the project is unknown
       taskId              TEXT,                   -- null for orchestrator/aux runs
       runId               TEXT NOT NULL,
