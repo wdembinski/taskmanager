@@ -16,11 +16,28 @@ import type { TaskStatus } from '@tm/shared/model';
 
 export type ColorScheme = 'light' | 'dark';
 
+/**
+ * Where one haze sits and how big it is, read off the mockup's `<g id="wash">` circle on its
+ * 1440×900 artboard. Numbers, not CSS, so `tokenCssVars` skips them.
+ */
+export interface HazeShape {
+  /** Centre, in % of the box's width. */
+  x: number;
+  /** Centre, in % of the box's height. */
+  y: number;
+  /** The circle's radius before the blur, in % of the width (`vw`). */
+  r: number;
+}
+
 export interface WashTokens {
-  /** The top-left haze. */
+  /** The top-left haze's colour and peak alpha. */
   a: string;
-  /** The bottom-right haze. */
+  /** The bottom-right haze's colour and peak alpha. */
   b: string;
+  /** Each haze's centre and radius. They differ per scheme in the mockups. */
+  shape: { a: HazeShape; b: HazeShape };
+  /** The Gaussian blur's σ, in % of the width: the mockups' `stdDeviation="90"` on 1440. */
+  blur: number;
 }
 
 export interface PaneRimTokens {
@@ -305,6 +322,12 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     wash: {
       a: 'rgba(212, 228, 245, 0.45)',
       b: 'rgba(226, 224, 244, 0.35)',
+      // v9-7's circles: (115.2, 90) r 345.6 and (1368, 828) r 374.4 on 1440×900.
+      shape: {
+        a: { x: 8, y: 10, r: 24 },
+        b: { x: 95, y: 92, r: 26 },
+      },
+      blur: 6.25,
     },
     paneGlass: 'rgba(255, 255, 255, 0.86)',
     paneOpaque: '#FFFFFF',
@@ -355,6 +378,12 @@ export const SEMANTIC: Record<ColorScheme, SemanticTokens> = {
     wash: {
       a: 'rgba(18, 58, 99, 0.45)',
       b: 'rgba(43, 37, 89, 0.4)',
+      // v9-7b's circles: (144, 108) r 374.4 and (1324.8, 810) r 432 on 1440×900.
+      shape: {
+        a: { x: 10, y: 12, r: 26 },
+        b: { x: 92, y: 90, r: 30 },
+      },
+      blur: 6.25,
     },
     paneGlass: 'rgba(26, 28, 32, 0.86)',
     paneOpaque: '#1A1C1F',
