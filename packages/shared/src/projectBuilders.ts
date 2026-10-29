@@ -110,6 +110,13 @@ export function buildProject(
         : (defaults.defaultPlanningModel ?? null),
     // No app-wide seed: null is "same as planning", so a new project reviews on what it plans on.
     reviewModel: input.reviewModel ?? null,
+    // The F28 role fields: null all the way down is "same as planning" for the lead's model
+    // and "the app default for that role" for every effort, so a new project changes nothing.
+    leadModel: input.leadModel ?? null,
+    leadEffort: input.leadEffort ?? null,
+    planningEffort: input.planningEffort ?? null,
+    workerEffort: input.workerEffort ?? null,
+    reviewEffort: input.reviewEffort ?? null,
     defaultPermissionMode: input.defaultPermissionMode ?? defaults.defaultPermissionMode,
     concurrency: Math.max(1, Math.round(input.concurrency ?? defaults.concurrency)),
     useWorktrees: input.useWorktrees ?? true,

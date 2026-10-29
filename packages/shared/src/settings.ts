@@ -10,8 +10,8 @@
  */
 import { LOCAL_TARGET, type ExecTarget } from './execTarget';
 import type { ClaudeModel, PermissionMode } from './session';
-import { BOARD_COLUMNS } from './model';
-import type { BoardColumn, ManualStatus } from './model';
+import { AGENT_ROLES, BOARD_COLUMNS, isEffort } from './model';
+import type { AgentRole, BoardColumn, Effort, ManualStatus } from './model';
 import { DEFAULT_PROMPT_TEMPLATES, type PromptTemplate } from './promptTemplates';
 import type { StatusKeyword } from './statusKeywords';
 import { DEFAULT_SESSION_TOKEN_BUDGET, DEFAULT_WEEKLY_TOKEN_BUDGET } from './usage';
@@ -30,6 +30,33 @@ export type BoardLinksMode = (typeof BOARD_LINKS_MODES)[number];
  */
 export function coerceBoardLinksMode(value: unknown): BoardLinksMode {
   return value === 'off' || value === 'focus' || value === 'all' ? value : 'all';
+}
+
+/** `high` for every role — the out-of-the-box {@link AppSettings.defaultEfforts}. */
+export const DEFAULT_EFFORTS: Readonly<Record<AgentRole, Effort>> = {
+  lead: 'high',
+  planner: 'high',
+  workers: 'high',
+  reviewer: 'high',
+};
+
+/**
+ * Reads a stored `defaultEfforts` back role by role: a blob saved before the setting
+ * existed, a missing role, or a value this build does not know (a hand-edited row, a newer
+ * version's effort) each read back as `high` — the CLI's own default — rather than failing
+ * the whole settings blob or reaching `--effort` unvalidated.
+ */
+export function coerceDefaultEfforts(value: unknown): Record<AgentRole, Effort> {
+  const stored =
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const out = { ...DEFAULT_EFFORTS };
+  for (const role of AGENT_ROLES) {
+    const effort = stored[role];
+    if (isEffort(effort)) out[role] = effort;
+  }
+  return out;
 }
 
 /**
@@ -677,6 +704,14 @@ export interface AppSettings {
    * the box nothing about any run changes. See `Project.planningModel`.
    */
   defaultPlanningModel: ClaudeModel | null;
+  /**
+   * The effort each role runs at when neither the card nor its project names one — the
+   * bottom rung of `resolveRoleEffort`. Unlike the model seeds this is read at run time, not
+   * copied onto a new project: a project's `null` keeps following it. `high` for every role
+   * out of the box, and any value a stored blob holds that is not an `Effort` reads back as
+   * `high` (see {@link coerceDefaultEfforts}).
+   */
+  defaultEfforts: Record<AgentRole, Effort>;
   /** Permission mode applied to a newly added project. */
   defaultPermissionMode: PermissionMode;
   /** Max tasks a single project runs at once (scheduler concurrency; 1 = sequential). */
@@ -936,6 +971,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // No planning model out of the box: a fresh install plans on what it executes on, which
   // is what every install did before there were two.
   defaultPlanningModel: null,
+  defaultEfforts: { ...DEFAULT_EFFORTS },
   defaultPermissionMode: 'acceptEdits',
   concurrency: 1,
   // 0 = unlimited: a fresh install imposes no scheduler-wide cap until a human sets one.
@@ -1072,6 +1108,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export const GLOBAL_SETTINGS_KEYS = [
   'defaultModel',
   'defaultPlanningModel',
+  'defaultEfforts',
   'defaultPermissionMode',
   'concurrency',
   'maxParallelSessions',

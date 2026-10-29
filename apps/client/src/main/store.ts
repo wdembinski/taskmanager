@@ -117,6 +117,7 @@ import {
   DEFAULT_SETTINGS,
   DEFAULT_UPDATE_SETTINGS,
   coerceBoardLinksMode,
+  coerceDefaultEfforts,
   resolveSyncInterval,
   withExistingInstallAppearance,
 } from '@shared/settings';
@@ -4652,6 +4653,8 @@ export function createStore(dbPath: string): Store {
         // (an older build, a hand-edited row), so it is coerced the same way the model
         // fields below are validated on the way IN at `settings:save`.
         boardLinks: coerceBoardLinksMode(parsed.boardLinks),
+        // Each role's effort reaches `--effort`, so an unknown value reads back as `high`.
+        defaultEfforts: coerceDefaultEfforts(parsed.defaultEfforts),
       };
     } catch {
       return { ...DEFAULT_SETTINGS };
@@ -4672,6 +4675,12 @@ export function createStore(dbPath: string): Store {
       planningModel: (r.planningModel as Project['planningModel']) ?? null,
       // NULL stays null too: "review on whatever you plan on".
       reviewModel: (r.reviewModel as Project['reviewModel']) ?? null,
+      // The F28 role fields have no columns yet; null is "next rung" for every one of them.
+      leadModel: null,
+      leadEffort: null,
+      planningEffort: null,
+      workerEffort: null,
+      reviewEffort: null,
       defaultPermissionMode: r.defaultPermissionMode as Project['defaultPermissionMode'],
       concurrency: r.concurrency,
       useWorktrees: r.useWorktrees !== 0,

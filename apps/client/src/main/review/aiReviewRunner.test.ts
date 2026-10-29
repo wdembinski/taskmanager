@@ -37,6 +37,11 @@ const PROJECT = {
   path: '/repo',
   planningModel: null,
   reviewModel: null,
+  leadModel: null,
+  leadEffort: null,
+  planningEffort: null,
+  workerEffort: null,
+  reviewEffort: null,
   defaultModel: 'sonnet',
 } as unknown as Project;
 

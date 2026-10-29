@@ -1,13 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_ROLES,
+  EFFORTS,
   familyOfAlias,
+  isEffort,
   isFilingProject,
   isUsableModel,
   MODEL_CATALOG,
   MODELS,
   ownsBoard,
+  resolveRoleEffort,
+  resolveRoleModel,
   resolveRunModel,
+  ROLE_CAPTIONS,
+  type AgentRole,
+  type Effort,
   type Project,
+  type Task,
 } from './model';
 import type { ClaudeModel } from './session';
 
@@ -204,5 +213,139 @@ describe('isFilingProject', () => {
 
   it('rejects a plan-driven project, repo or not', () => {
     expect(isFilingProject(proj({ planPath: '/repo/plan.md', path: '/repo' }))).toBe(false);
+  });
+});
+
+describe('EFFORTS / isEffort', () => {
+  it('lists the CLI --effort values, lowest first', () => {
+    expect([...EFFORTS]).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+  });
+
+  it('accepts only those values', () => {
+    for (const effort of EFFORTS) expect(isEffort(effort)).toBe(true);
+    expect(isEffort('HIGH')).toBe(false);
+    expect(isEffort('')).toBe(false);
+    expect(isEffort(null)).toBe(false);
+    expect(isEffort(3)).toBe(false);
+  });
+});
+
+describe('AGENT_ROLES / ROLE_CAPTIONS', () => {
+  it('lists the four roles in the order the Start dialog shows them, each captioned', () => {
+    expect([...AGENT_ROLES]).toEqual(['lead', 'planner', 'workers', 'reviewer']);
+    expect(ROLE_CAPTIONS).toEqual({
+      lead: 'orchestrates and reviews',
+      planner: 'writes the plan',
+      workers: 'build the parts',
+      reviewer: 'final code review',
+    });
+  });
+});
+
+/** The card field, and the project field, each role's model ladder reads first. */
+const MODEL_FIELDS: Record<AgentRole, [keyof Task, keyof Project | null]> = {
+  lead: ['agentLeadModel', 'leadModel'],
+  planner: ['agentPlanningModel', 'planningModel'],
+  workers: ['agentModel', null],
+  reviewer: ['agentReviewModel', 'reviewModel'],
+};
+
+/** A project with every model rung empty but the execution model. */
+const bareProject = {
+  defaultModel: 'haiku' as ClaudeModel,
+  planningModel: null,
+  reviewModel: null,
+  leadModel: null,
+};
+
+describe('resolveRoleModel', () => {
+  for (const role of AGENT_ROLES) {
+    const [taskField, projectField] = MODEL_FIELDS[role];
+
+    it(`${role}: the card's choice wins over the project's`, () => {
+      const project = projectField ? { ...bareProject, [projectField]: 'sonnet' } : bareProject;
+      expect(resolveRoleModel(role, { [taskField]: 'opus' }, project)).toBe('opus');
+    });
+
+    it(`${role}: the project's choice wins when the card says nothing`, () => {
+      const project = projectField
+        ? { ...bareProject, [projectField]: 'sonnet' }
+        : { ...bareProject, defaultModel: 'sonnet' };
+      expect(resolveRoleModel(role, { [taskField]: null }, project)).toBe('sonnet');
+      expect(resolveRoleModel(role, null, project)).toBe('sonnet');
+    });
+
+    it(`${role}: falls to the execution model when nothing else is set`, () => {
+      expect(resolveRoleModel(role, {}, bareProject)).toBe('haiku');
+      expect(resolveRoleModel(role, null, bareProject)).toBe('haiku');
+    });
+  }
+
+  it('lead and reviewer fall to the planning model before the execution model', () => {
+    const project = { ...bareProject, planningModel: 'opus' };
+    expect(resolveRoleModel('lead', null, project)).toBe('opus');
+    expect(resolveRoleModel('reviewer', null, project)).toBe('opus');
+    expect(resolveRoleModel('workers', null, project)).toBe('haiku');
+  });
+
+  it("the planner falls to the card's own execution model before the project's planning one", () => {
+    const project = { ...bareProject, planningModel: 'opus' };
+    expect(resolveRoleModel('planner', { agentModel: 'sonnet' }, project)).toBe('sonnet');
+    // …but the lead and the reviewer never read the card's execution model.
+    expect(resolveRoleModel('lead', { agentModel: 'sonnet' }, project)).toBe('opus');
+    expect(resolveRoleModel('reviewer', { agentModel: 'sonnet' }, project)).toBe('opus');
+  });
+
+  it('matches resolveRunModel for planning and steps', () => {
+    const project = { ...bareProject, planningModel: 'opus' };
+    const task = { agentModel: 'sonnet', agentPlanningModel: null };
+    expect(resolveRoleModel('planner', task, project)).toBe(resolveRunModel(task, project, true));
+    expect(resolveRoleModel('workers', task, project)).toBe(resolveRunModel(task, project, false));
+  });
+});
+
+/** The card field, and the project field, each role's effort ladder reads. */
+const EFFORT_FIELDS: Record<AgentRole, [keyof Task, keyof Project]> = {
+  lead: ['agentLeadEffort', 'leadEffort'],
+  planner: ['agentPlanningEffort', 'planningEffort'],
+  workers: ['agentEffort', 'workerEffort'],
+  reviewer: ['agentReviewEffort', 'reviewEffort'],
+};
+
+const settings: { defaultEfforts: Record<AgentRole, Effort> } = {
+  defaultEfforts: { lead: 'max', planner: 'xhigh', workers: 'medium', reviewer: 'low' },
+};
+
+describe('resolveRoleEffort', () => {
+  for (const role of AGENT_ROLES) {
+    const [taskField, projectField] = EFFORT_FIELDS[role];
+
+    it(`${role}: the card's effort wins over the project's`, () => {
+      expect(
+        resolveRoleEffort(role, { [taskField]: 'high' }, { [projectField]: 'low' }, settings),
+      ).toBe('high');
+    });
+
+    it(`${role}: the project's effort wins when the card says nothing`, () => {
+      expect(
+        resolveRoleEffort(role, { [taskField]: null }, { [projectField]: 'high' }, settings),
+      ).toBe('high');
+      expect(resolveRoleEffort(role, null, { [projectField]: 'high' }, settings)).toBe('high');
+    });
+
+    it(`${role}: falls to the app default for that role`, () => {
+      expect(resolveRoleEffort(role, {}, { [projectField]: null }, settings)).toBe(
+        settings.defaultEfforts[role],
+      );
+      expect(resolveRoleEffort(role, null, {}, settings)).toBe(settings.defaultEfforts[role]);
+    });
+  }
+
+  it("never reads another role's rung", () => {
+    const task = { agentEffort: 'high' as Effort };
+    const project = { workerEffort: 'high' as Effort };
+    expect(resolveRoleEffort('planner', task, project, settings)).toBe('xhigh');
+    expect(resolveRoleEffort('lead', task, project, settings)).toBe('max');
+    expect(resolveRoleEffort('reviewer', task, project, settings)).toBe('low');
   });
 });
