@@ -7136,6 +7136,39 @@ describe('Scheduler — which runs owe a plan', () => {
     expect(vi.mocked(replan.sessions.start).mock.calls[0][0].effort).toBe('max');
   });
 
+  // On a plan-mode card, so a review, release or conflict fix that wrongly read the planner
+  // rung would send `max` instead of the workers `low`.
+  it('starts a review seed, a release seed and a conflict fix at the workers effort', () => {
+    type StartTask = (p: Project, t: Task, o: { releaseSeed?: boolean }) => void;
+    const startTask = (h: ReturnType<typeof setup>, o: { releaseSeed?: boolean }) =>
+      (h.scheduler as unknown as { startTask: StartTask }).startTask.call(
+        h.scheduler,
+        h.scheduler['store'].getProject('agent-1') as Project,
+        h.card,
+        o,
+      );
+    const effortOf = (h: ReturnType<typeof setup>) =>
+      vi.mocked(h.sessions.start).mock.calls[0][0].effort;
+
+    const review = setup();
+    review.card.sessionId = null as unknown as string;
+    (review.card as unknown as { chainLandedAt: number }).chainLandedAt = 1700000000000;
+    const sent = review.scheduler.chatWithAgent('t1', 'how did it go?');
+    if (sent.status === 'refused') throw new Error(sent.reason);
+    expect(effortOf(review)).toBe('low');
+
+    const release = setup();
+    startTask(release, { releaseSeed: true });
+    expect(effortOf(release)).toBe('low');
+
+    const fix = setup();
+    (
+      fix.scheduler as unknown as { pendingConflictFix: Map<string, unknown> }
+    ).pendingConflictFix.set('t1', { projectId: 'agent-1', taskId: 't1' });
+    startTask(fix, {});
+    expect(effortOf(fix)).toBe('low');
+  });
+
   it('does not make a chat reply owe a plan, though it inherits plan mode', () => {
     const { scheduler, runFor } = setup();
 
