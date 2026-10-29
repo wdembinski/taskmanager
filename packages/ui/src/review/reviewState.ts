@@ -38,6 +38,16 @@
  *    with no fetch behind them either. `setViewed`'s own write to `viewedMarks` is the same kind
  *    of thing: an optimistic local edit the human's `v` keypress makes directly, never going
  *    through `viewedSeq` — only the *load* of `viewedMarks` is race-guarded, not every write to it.
+ *  - `draftDecided` is the same kind of optimistic local edit again: Keep/Dismiss/Restore on an
+ *    AI draft stamps `acceptedAt`/`dismissedAt` with the server's own rules the moment the
+ *    human clicks, and the server's answer is reconciled through `commentSaved`'s upsert like
+ *    any other save. `showDismissed` is the human's own choice, like `expanded` — but it
+ *    belongs to one subject, so a new subject resets it with everything else.
+ *
+ * AI drafts (`origin: 'ai'`) are only the human's once accepted (editing accepts too, on the
+ * server). Every count and send reads {@link sendableDrafts} — the shared `isSendableDraft`
+ * predicate — so an unaccepted or dismissed AI draft never counts as unsent and never enables
+ * Send; {@link visibleComments} hides dismissed ones unless `showDismissed` is on.
  */
 import type {
   DiffContextResult,
@@ -49,6 +59,7 @@ import type {
   DiffStale,
   DiffSummaryResult,
   ReviewComment,
+  ReviewCommentPatch,
   ReviewCommentSent,
   ReviewSendResult,
   ReviewViewedMark,
@@ -60,6 +71,7 @@ import {
   endLine,
   expandContext,
   firstLine,
+  isSendableDraft,
   taskSubjectId,
   viewedState,
 } from '@tm/shared/review';
@@ -249,6 +261,8 @@ export interface ReviewState {
   note: string;
   sending: boolean;
   sendError: string | null;
+  /** Whether dismissed AI drafts are shown (dimmed, with Restore) — "show dismissed (N)". */
+  showDismissed: boolean;
 }
 
 export const EMPTY_REVIEW: ReviewState = {
@@ -273,6 +287,7 @@ export const EMPTY_REVIEW: ReviewState = {
   note: '',
   sending: false,
   sendError: null,
+  showDismissed: false,
 };
 
 /** Whether an answer carrying `(taskId, seq)` is still the frontier `state` accepts. */
@@ -611,7 +626,8 @@ export function editDraft(s: ReviewState, text: string): ReviewState {
 /**
  * Opens the editor on an existing comment, to edit it. `outdated` reflects `s.diffId` now.
  * Refused (same object) for a comment that has already gone out in a review message — it is no
- * longer a draft to edit.
+ * longer a draft to edit. An AI draft opens like any other (its Edit action): saving it sends a
+ * `body` through `review:update`, which the server turns into acceptance.
  */
 export function openExistingDraft(s: ReviewState, comment: ReviewComment): ReviewState {
   if (comment.sentAt !== null) return s;
@@ -767,9 +783,67 @@ export function reviewSent(
   return { ...s, comments, note: '', sending: false, sendError: null };
 }
 
-/** How many drafts have not gone out yet — what the Send review button's badge counts. */
+/**
+ * The human's verdict on an AI draft, stamped locally before `review:update` answers — the
+ * same rules the server applies: `accept` sets `acceptedAt` and clears `dismissedAt`;
+ * `dismiss` sets `dismissedAt` and clears `acceptedAt`; `restore` clears `dismissedAt`.
+ * Refused (same object) for a foreign `taskId`, an unknown id, a comment that has already gone
+ * out, or a human draft. The server's answer lands through {@link commentSaved}'s upsert.
+ */
+export function draftDecided(
+  s: ReviewState,
+  taskId: string | null,
+  id: string,
+  decision: NonNullable<ReviewCommentPatch['decision']>,
+  now: number,
+): ReviewState {
+  if (taskId !== s.taskId) return s;
+  const existing = s.comments.find((c) => c.id === id);
+  if (existing === undefined || existing.sentAt !== null || !isAiDraft(existing)) return s;
+  const stamps =
+    decision === 'accept'
+      ? { acceptedAt: now, dismissedAt: null }
+      : decision === 'dismiss'
+        ? { acceptedAt: null, dismissedAt: now }
+        : { dismissedAt: null };
+  return { ...s, comments: upsertComment(s.comments, { ...existing, ...stamps }) };
+}
+
+/** Flips "show dismissed (N)". */
+export function toggleShowDismissed(s: ReviewState): ReviewState {
+  return { ...s, showDismissed: !s.showDismissed };
+}
+
+/** Whether `c` was written by the AI reviewer rather than the human. */
+export function isAiDraft(c: ReviewComment): boolean {
+  return c.origin === 'ai';
+}
+
+/** An AI draft still waiting on Keep/Edit/Dismiss: unsent, neither accepted nor dismissed. */
+export function isAwaitingDecision(c: ReviewComment): boolean {
+  return isAiDraft(c) && c.sentAt === null && c.acceptedAt == null && c.dismissedAt == null;
+}
+
+/** How many drafts are dismissed — the N in "show dismissed (N)". */
+export function dismissedCount(s: ReviewState): number {
+  return s.comments.filter((c) => c.dismissedAt != null).length;
+}
+
+/** The comments the diff renders: every one, minus dismissed drafts unless `showDismissed`. */
+export function visibleComments(s: ReviewState): readonly ReviewComment[] {
+  if (s.showDismissed) return s.comments;
+  return s.comments.filter((c) => c.dismissedAt == null);
+}
+
+/** The drafts the next review message carries — human drafts and accepted AI drafts. */
+export function sendableDrafts(s: ReviewState): readonly ReviewComment[] {
+  return s.comments.filter(isSendableDraft);
+}
+
+/** How many drafts will go out — what the Send review button's badge and every header count
+ * show. Unaccepted and dismissed AI drafts are not counted. */
 export function unsentCount(s: ReviewState): number {
-  return s.comments.filter((c) => c.sentAt === null).length;
+  return sendableDrafts(s).length;
 }
 
 /** The comments whose END anchor is `(path, side, line)` — where `ReviewPane` renders each one,
@@ -780,11 +854,11 @@ export function commentsAt(
   side: DiffSide,
   line: number,
 ): readonly ReviewComment[] {
-  return s.comments.filter((c) => c.path === path && c.side === side && c.line === line);
+  return visibleComments(s).filter((c) => c.path === path && c.side === side && c.line === line);
 }
 
 /**
- * Whether Send review can run: at least one unsent draft, not already sending, and the host
+ * Whether Send review can run: at least one sendable draft, not already sending, and the host
  * is reachable. A note alone never enables it — `reviewService.send` refuses a note-only send
  * as `nothing-to-send`. `readOnly` is `TaskDetail`'s `hostUnreachable` carried down as a plain
  * boolean — the pane cannot send a review the desktop that owns it cannot hear (F6.13).
