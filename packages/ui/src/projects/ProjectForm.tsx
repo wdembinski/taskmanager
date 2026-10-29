@@ -886,13 +886,15 @@ export function ProjectForm({
           {/* AI review (F16) reads and judges a diff — the same kind of turn as planning — so
               its empty choice defers to the planning model, and through it to execution. */}
           {path && (
-            <ReviewModelField
-              label="Review model"
-              hint="The model an AI review of this repo’s pull requests runs on."
-              value={reviewModel}
-              planningModel={planningModel ?? model}
-              onChange={setReviewModel}
-            />
+            <div data-review-model>
+              <ReviewModelField
+                label="Review model"
+                hint="The model an AI review of this repo’s pull requests runs on."
+                value={reviewModel}
+                planningModel={planningModel ?? model}
+                onChange={setReviewModel}
+              />
+            </div>
           )}
 
           {path && (

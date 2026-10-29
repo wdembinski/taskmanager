@@ -788,13 +788,13 @@ export function SettingsScreen({
         <div className={styles.pane}>
           <Subtitle2>Features</Subtitle2>
           <Body1 className={styles.hint}>
-            Switches for a handful of independent behaviours. All on out of the box — turn one off
-            if it gets in your way.
+            Switches for a handful of independent behaviours. Most are on out of the box; the ones
+            that act on their own, unasked, start off.
           </Body1>
 
           <div className={styles.grid}>
             {FEATURE_SWITCHES.map((f) => (
-              <Field key={f.key} label={f.label} hint={f.hint}>
+              <Field key={f.key} label={f.label} hint={f.hint} data-feature={f.key}>
                 <Switch
                   checked={settings.features[f.key]}
                   onChange={(_e, d) =>

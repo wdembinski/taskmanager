@@ -75,6 +75,7 @@ export function AiReviewControl({ control, onAsk, onCancel }: AiReviewControlPro
       className={styles.button}
       size="small"
       appearance="outline"
+      shape="circular"
       icon={<BotRegular />}
       disabledFocusable={control.reason !== null}
       onClick={control.reason === null ? onAsk : undefined}

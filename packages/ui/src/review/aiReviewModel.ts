@@ -17,7 +17,6 @@
 import { formatElapsed } from '@tm/shared/elapsed';
 import { aiReviewPrecheck, type AiReview, type AiReviewVerdict } from '@tm/shared/aiReview';
 import type { DiffSummary } from '@tm/shared/review';
-import { formatCost } from '../usageFormat';
 
 /** What the header's AI slot draws. `reason` is a disabled button's tooltip; null = enabled. */
 export type AiReviewControlState =
@@ -69,12 +68,20 @@ export function shortPark(review: Pick<AiReview, 'status' | 'parkReason'>): stri
   return `parked — usage limit, resumes ${at.replace(/^(\d{1,2}:\d{2}):\d{2}/, '$1')}`;
 }
 
+/**
+ * A review's cost in cents: "$0.42", "$1.84", "<$0.01". `formatCost`'s four decimals suit a
+ * usage table of tiny turns; a whole review is read at a glance in a chip.
+ */
+export function reviewCost(usd: number): string {
+  return usd > 0 && usd < 0.005 ? '<$0.01' : `$${usd.toFixed(2)}`;
+}
+
 /** The running chip: elapsed time, then the cost once a turn has reported one. */
 function runningChip(review: AiReview, now: number): string {
   const parts = ['AI reviewing…'];
   if (review.startedAt !== null) parts.push(formatElapsed(now - review.startedAt));
   const text = parts.join(' ');
-  return review.costUsd === null ? text : `${text} · ${formatCost(review.costUsd)}`;
+  return review.costUsd === null ? text : `${text} · ${reviewCost(review.costUsd)}`;
 }
 
 function findings(n: number): string {
@@ -114,7 +121,7 @@ export function aiReviewControlState(input: AiReviewControlInput): AiReviewContr
 /** "3 findings · 1 dropped · $1.84 · Sonnet 5" — the cost left out until one is known. */
 export function summaryLine(review: AiReview, modelLabel: string): string {
   const parts = [findings(review.findingCount), `${review.droppedCount} dropped`];
-  if (review.costUsd !== null) parts.push(formatCost(review.costUsd));
+  if (review.costUsd !== null) parts.push(reviewCost(review.costUsd));
   parts.push(modelLabel);
   return parts.join(' · ');
 }

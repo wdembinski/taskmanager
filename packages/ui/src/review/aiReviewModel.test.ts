@@ -6,6 +6,7 @@ import {
   aiReviewControlState,
   checklistLine,
   latestReview,
+  reviewCost,
   shortPark,
   summaryLine,
   verdictText,
@@ -106,7 +107,7 @@ describe('aiReviewControlState', () => {
     const later = aiReviewControlState(
       input({ review: review({ status: 'running', costUsd: 0.42, startedAt: 1_000 }) }),
     );
-    expect(later).toEqual({ kind: 'running', chip: 'AI reviewing… 1m 12s · $0.4200' });
+    expect(later).toEqual({ kind: 'running', chip: 'AI reviewing… 1m 12s · $0.42' });
   });
 
   it('draws a neutral queued chip', () => {
@@ -233,5 +234,14 @@ describe('verdictText and checklistLine', () => {
     expect(checklistLine({ reviewDoc: 'REVIEW.md' })).toBe('used REVIEW.md');
     expect(checklistLine({ reviewDoc: 'default' })).toBe('used the default checklist');
     expect(checklistLine({ reviewDoc: null })).toBeNull();
+  });
+});
+
+describe('reviewCost', () => {
+  it('reads cents, and a sub-cent cost as under one', () => {
+    expect(reviewCost(0.42)).toBe('$0.42');
+    expect(reviewCost(1.836)).toBe('$1.84');
+    expect(reviewCost(0.003)).toBe('<$0.01');
+    expect(reviewCost(0)).toBe('$0.00');
   });
 });
