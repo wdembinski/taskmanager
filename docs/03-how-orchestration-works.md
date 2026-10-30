@@ -1394,8 +1394,8 @@ What each source can do:
 
 | Source                 | Badge                   | Expand context | Send to agent | AI review | Publish to the forge |
 | ---------------------- | ----------------------- | -------------- | ------------- | --------- | -------------------- |
-| A card's worktree      | `local clone`           | yes            | yes           | not yet   | no                   |
-| A fetched pull request | `local clone`           | yes            | no            | not yet   | not yet              |
+| A card's worktree      | `local clone`           | yes            | yes           | yes       | no                   |
+| A fetched pull request | `local clone`           | yes            | no            | yes       | not yet              |
 | The forge's API        | `forge API · read only` | yes            | no            | no        | not yet              |
 
 ### Reading a diff
@@ -1436,6 +1436,135 @@ review, the same way the card's Changes section does. On a pull request, the dra
 kept on this machine: **Copy review as Markdown** puts them on the clipboard, and **Open on
 forge** opens the pull request so you can paste them there. The app cannot publish a
 review to the forge yet.
+
+### AI review
+
+An AI review is a headless Claude session that reads one subject's diff and answers with
+findings, which land in the workspace as drafts for you to keep or throw away. It costs
+money on your account, so it only starts when you ask — or when you turn on the
+background switch below.
+
+**Asking for one.** **Ask AI to review** is in three places: the workspace header, a queue
+row's context menu (right-click the row), and a card's Changes section. When a review
+cannot start, the button is disabled and its tooltip says why — the same sentence the app
+would refuse with, such as _add the repo as a project to let the AI review it_. The forge
+API source has no AI review: add the repository as a project so the diff comes from a
+local clone. Once a review has finished, the button reads _AI: N findings_, and after a
+failure it offers **Ask AI again**, with the error as its tooltip.
+
+**What it runs in.** The review never touches your worktree or your clone's checkout. It
+gets its own worktree, detached at the subject's head, under `review-worktrees/` in the
+app's data folder, and that worktree is removed as soon as the review settles. The session
+may use only `Read`, `Grep` and `Glob`, and a single `git log`, `git show`, `git diff` or
+`git blame` through the shell; anything else is denied. `Edit`, `Write`, `MultiEdit`,
+`NotebookEdit`, `WebFetch`, `WebSearch` and `Task` are not offered at all. A pull request is
+untrusted input, so the session loads only your user settings: the repository's own
+`.claude/settings.json` and `.mcp.json` are never read. This needs a CLI that knows
+`--allowedTools`, `--disallowedTools`, `--setting-sources` and `--strict-mcp-config`; if
+yours lacks one, the review is refused with _update Claude Code — this CLI lacks …_.
+
+**Caps.** A subject with more than 4,000 changed lines, or more than 150 files, is refused
+before anything is spent. A review keeps at most 50 findings; past that, the least severe
+are cut first.
+
+**While it runs**, the header shows a chip in place of the button — _AI reviewing…_ with
+the time so far and, once a turn has reported one, the cost — and a **Cancel** button
+beside it. A review that is waiting its turn reads _AI review queued_. One review runs at a
+time per desktop.
+
+**Findings become drafts.** Each finding is an AI draft on the line it cites, marked with
+an _AI_ pill and its severity. Under each one:
+
+- **Keep** accepts it as written.
+- **Edit** opens it in the editor; saving the edit accepts it.
+- **Dismiss** hides it. _show dismissed (N)_ beside the draft count brings dismissed ones
+  back into view, each with **Restore**.
+
+Only drafts you kept count as your review, and only those are sent or copied. A finding
+whose lines are not in the diff is kept on the file instead of a line.
+
+**When the reply is unreadable.** The app reads the last ` ```json ` block of the reply. If
+that cannot be read, the session gets one repair turn that names what was wrong. If the
+second reply cannot be read either, the review ends _failed_, and no drafts are added — not
+even the findings that could be read.
+
+**Usage limits and sign-in.** A review that hits a usage limit, or an expired sign-in,
+parks behind the same gate a card does (see
+[Usage limits](#usage-limits--the-respawn-when-reset-feature)). When the gate lifts, the
+review starts again from scratch — a new worktree and a new session — keeping only what it
+had cost so far.
+
+**Cost.** What a review spends is recorded as review spend, and the Performance dashboard
+shows it as its own _AI reviews_ source next to tasks and the orchestrator.
+
+**Which model.** A project's **Review model** decides. Left empty, a review runs on the
+project's planning model, and without that on its default model:
+`reviewModel ?? planningModel ?? defaultModel`.
+
+**In the background.** Settings has _Review in the background when I open a PR_, off by
+default. With it on, a review starts on its own whenever a new pull request arrives in the
+review queues; one that is too large or has no local repository is skipped.
+
+The AI reviewer only writes drafts. It never posts a review, approves or merges anything.
+
+#### REVIEW.md
+
+What a review looks for is the project's business. Put a `REVIEW.md` at the repository's
+root and every review of that project is given it as its checklist.
+
+The file is read from the **base** commit, `git show <baseSha>:REVIEW.md` — not from the
+head. The head is the thing under review, so a pull request that edits `REVIEW.md` cannot
+rewrite the rules its own reviewer follows; the edit takes effect once it has merged.
+
+A project with no `REVIEW.md` gets this default checklist:
+
+```text
+- Correctness: logic errors, off-by-one, wrong conditions, broken edge cases.
+- Missing null, undefined and error handling.
+- Tests that assert nothing, or that cannot fail.
+- Migrations without a down path.
+- Security and injection: unescaped input reaching a shell, SQL, HTML or a path.
+- Magic strings and numbers that should be named constants.
+- Dead code: unreachable branches, unused exports and parameters.
+- Naming that misleads about what a thing is or does.
+```
+
+Either way, the project's standing instructions are appended after it.
+
+A template to start from:
+
+```markdown
+# Review instructions
+
+## What to look for
+
+- Correctness: wrong conditions, off-by-one, edge cases the change does not handle.
+- Errors that are swallowed, or reach the user without saying what to do.
+- Tests that cannot fail, and changed behaviour with no test at all.
+- Anything that writes user data: migrations need a down path.
+
+## What to ignore
+
+- Formatting — the formatter owns it.
+- Generated files: `dist/`, lockfiles, snapshots.
+- Style preferences the house rules below do not name.
+
+## House rules
+
+- Colours come from theme tokens, never literals.
+- Every new setting has a default and is documented.
+- Public functions have a doc comment that says why, not what.
+
+## Severity
+
+- `blocker` — must be fixed before this merges: a bug, data loss, a security hole.
+- `major` — should be fixed in this change: wrong in a way a user or maintainer will hit.
+- `minor` — worth fixing, but the change is acceptable without it.
+- `nit` — style or taste; take it or leave it.
+```
+
+Leave the reply format out of the file. The app adds the output contract — the summary, the
+verdict and the shape of each finding — to every review itself, after your instructions.
 
 ### Limits
 
