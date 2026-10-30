@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { SidebarTreeNode } from './sidebarModel';
-import { flattenVisible, treeKeyReducer, type TreeKeyState } from './sidebarTree';
+import {
+  flattenVisible,
+  focusIndexOf,
+  pinnedTreeRows,
+  treeKeyReducer,
+  type TreeKeyState,
+} from './sidebarTree';
 
 function node(overrides: Partial<SidebarTreeNode> & Pick<SidebarTreeNode, 'id'>): SidebarTreeNode {
   return {
@@ -275,5 +281,35 @@ describe('treeKeyReducer — type-ahead', () => {
     const rows = flattenVisible(sampleTree(), new Set());
     const result = treeKeyReducer({ focusId: 't1', typeahead: { buffer: 'a' } }, 'ArrowDown', rows);
     expect(result.typeahead.buffer).toBe('');
+  });
+});
+
+describe('focusIndexOf', () => {
+  const rows = flattenVisible(sampleTree(), new Set(['e2']));
+
+  it("finds a visible row's index", () => {
+    expect(focusIndexOf(rows, 't2')).toBe(3);
+  });
+
+  it('is -1 for no id, and for a row a fold hides', () => {
+    expect(focusIndexOf(rows, null)).toBe(-1);
+    expect(focusIndexOf(rows, 't3')).toBe(-1);
+  });
+});
+
+describe('pinnedTreeRows', () => {
+  const rows = flattenVisible(sampleTree(), new Set(['e2']));
+
+  it('pins the focused and the selected row, ascending', () => {
+    expect(pinnedTreeRows(rows, 'm2', 't1')).toEqual([2, 5]);
+  });
+
+  it('pins a row that is both focused and selected once', () => {
+    expect(pinnedTreeRows(rows, 't1', 't1')).toEqual([2]);
+  });
+
+  it('pins nothing for absent or hidden rows', () => {
+    expect(pinnedTreeRows(rows, null, null)).toEqual([]);
+    expect(pinnedTreeRows(rows, 't3', 'gone')).toEqual([]);
   });
 });

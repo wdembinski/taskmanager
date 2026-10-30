@@ -63,9 +63,11 @@ window.__tm = {
 /** `{ click: 'treeitem:N' }` — the Nth visible `[role="treeitem"]` in the sidebar tree (0-based,
  *  document order, folded children excluded because they are never rendered). A tree ticket's
  *  title also appears on the board and in the issue list, so plain text matching lands there
- *  first; see `ui-shots.mjs`'s `SCREENS` doc comment. */
+ *  first; see `ui-shots.mjs`'s `SCREENS` doc comment. The tree is windowed (F29.3), so the
+ *  Nth MOUNTED row is not the Nth row once the top has scrolled away: a row's own
+ *  `data-index` (its place in the fold-aware flat list) is read first. */
 export function treeItemClickExprs(index) {
-  const find = `Array.from(document.querySelectorAll('[role="treeitem"]')).filter((el) => window.__tm.visible(el))[${index}]`;
+  const find = `(document.querySelector('[role="treeitem"][data-index="${index}"]') ?? Array.from(document.querySelectorAll('[role="treeitem"]')).filter((el) => window.__tm.visible(el))[${index}])`;
   return {
     ready: `!!${find}`,
     click: `(() => {

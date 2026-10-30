@@ -17,8 +17,20 @@
  * Issues/Fleet/Projects from the small icon row in the team header (revealed on hover or
  * focus — the v9 header shows only its label at rest), and a `This machine` project row. A
  * ticket node opens through `onOpenTicket` instead — it is a card, not a screen.
+ *
+ * The tree is windowed (F29.3): `SidebarTree` mounts only the rows in view of `styles.scroll`,
+ * plus an overscan, the roving-focus row and the selected one. Its box keeps the height every
+ * row would take, so Archived and "This machine" below it sit where they always did.
  */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import {
   Body1,
   Button,
@@ -60,8 +72,17 @@ import type {
   SidebarView as ViewRow,
   SidebarWorkspace,
 } from './sidebarModel';
-import { flattenVisible, treeKeyReducer, type TreeKeyState } from './sidebarTree';
+import {
+  flattenVisible,
+  focusIndexOf,
+  pinnedTreeRows,
+  treeKeyReducer,
+  type SidebarVisibleRow,
+  type TreeKeyState,
+} from './sidebarTree';
 import type { TrackerProjectOption } from './useTrackerProject';
+import { useStableCallback } from '../useStableCallback';
+import { useWindowedList } from '../virtual/useWindowedList';
 
 /** Everywhere `onNavigate` can send a host — every destination `shellNav.ts`'s now-deleted
  *  `interim` group used to carry a rail tile for, reached from the sidebar instead. */
@@ -252,7 +273,16 @@ const useStyles = makeStyles({
     '& svg': { fontSize: '14px' },
     ':hover': { backgroundColor: 'var(--tm-selected-tint)', color: 'var(--tm-brand)' },
   },
-  tree: { display: 'flex', flexDirection: 'column', outline: 'none' },
+  // Windowed, its rows are out of flow: the box keeps the height they would take, and
+  // `flexShrink: 0` stops the scroller's flex column squashing it to the rows it holds.
+  tree: {
+    position: 'relative',
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    outline: 'none',
+  },
+  windowRow: { position: 'absolute', top: 0, left: 0, right: 0 },
   chevronSlot: { width: '16px', flexShrink: 0, display: 'flex', alignItems: 'center' },
   chevronPlaceholder: { width: '16px', flexShrink: 0 },
   sectionDivider: {
@@ -396,68 +426,19 @@ export function Sidebar({
     return map;
   }, [treeNodes]);
 
-  const [keyState, setKeyState] = useState<TreeKeyState>({
-    focusId: null,
-    typeahead: { buffer: '' },
-  });
-  const typeaheadTimer = useRef<ReturnType<typeof setTimeout>>();
+  // The open ticket's row, unless a fold hides it — drawn selected, and pinned by the tree.
+  const selectedTaskId = selectedView?.kind === 'ticket' ? selectedView.taskId : null;
+  const selectedRowId = useMemo(() => {
+    if (selectedTaskId === null) return null;
+    const row = rows.find((r) => {
+      const node = nodesById.get(r.id);
+      return node?.kind === 'ticket' && node.taskId === selectedTaskId;
+    });
+    return row?.id ?? null;
+  }, [rows, nodesById, selectedTaskId]);
 
-  // Roving tabindex always has a stop once the tree has any rows — picks the first one the
-  // first time there is anything to focus, same as any other roving-tabindex widget.
-  useEffect(() => {
-    if (keyState.focusId !== null) return;
-    if (rows.length === 0) return;
-    setKeyState((state) => ({ ...state, focusId: rows[0].id }));
-  }, [rows, keyState.focusId]);
-
-  useEffect(() => () => clearTimeout(typeaheadTimer.current), []);
-
-  function scheduleTypeaheadReset(buffer: string): void {
-    clearTimeout(typeaheadTimer.current);
-    if (!buffer) return;
-    typeaheadTimer.current = setTimeout(() => {
-      setKeyState((state) => ({ ...state, typeahead: { buffer: '' } }));
-    }, 600);
-  }
-
-  function activate(id: string): void {
-    const node = nodesById.get(id);
-    if (!node) return;
-    if (node.kind === 'ticket') {
-      if (node.taskId) onOpenTicket(node.taskId);
-      return;
-    }
-    onToggleFold(node.id, node.defaultFolded ?? false);
-  }
-
-  function onTreeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    const isPrintable = event.key.length === 1 && event.key !== ' ';
-    const isNavKey = [
-      'ArrowDown',
-      'ArrowUp',
-      'ArrowRight',
-      'ArrowLeft',
-      'Home',
-      'End',
-      'Enter',
-      ' ',
-    ].includes(event.key);
-    if (!isPrintable && !isNavKey) return;
-    event.preventDefault();
-
-    const result = treeKeyReducer(keyState, event.key, rows);
-    setKeyState({ focusId: result.focusId, typeahead: result.typeahead });
-    if (result.toggle) {
-      onToggleFold(result.toggle.id, nodesById.get(result.toggle.id)?.defaultFolded ?? false);
-    }
-    if (result.activate) activate(result.activate);
-    scheduleTypeaheadReset(result.typeahead.buffer);
-  }
-
-  function onRowClick(id: string): void {
-    setKeyState((state) => ({ ...state, focusId: id }));
-    activate(id);
-  }
+  // State, not a ref: the tree windows against it, and its arrival switches windowing on.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
 
   return (
     <nav className={styles.root} aria-label="Sidebar">
@@ -469,7 +450,7 @@ export function Sidebar({
         />
       )}
 
-      <div className={styles.scroll}>
+      <div ref={setScrollEl} className={styles.scroll}>
         {views?.kind === 'views' && (
           <div className={styles.section}>
             {views.views.map((view) => {
@@ -568,68 +549,15 @@ export function Sidebar({
                 {team.name ? `${team.name} has no tickets yet` : 'No ticket project yet'}
               </Caption1>
             ) : (
-              <div
-                role="tree"
-                aria-label={team.name ?? 'Team'}
-                className={styles.tree}
-                tabIndex={0}
-                onKeyDown={onTreeKeyDown}
-              >
-                {rows.map((row) => {
-                  const node = nodesById.get(row.id);
-                  if (!node) return null;
-                  const focused = row.id === keyState.focusId;
-                  const selected =
-                    node.kind === 'ticket' &&
-                    node.taskId !== undefined &&
-                    selectedView?.kind === 'ticket' &&
-                    selectedView.taskId === node.taskId;
-                  const done =
-                    node.kind === 'ticket'
-                      ? columnForStatus(node.status ?? 'pending') === 'done'
-                      : !!node.finished;
-                  return (
-                    <div
-                      key={row.id}
-                      role="treeitem"
-                      id={`sidebar-tree-${row.id}`}
-                      aria-level={row.depth + 1}
-                      aria-expanded={row.hasChildren ? row.expanded : undefined}
-                      aria-selected={selected || undefined}
-                      tabIndex={focused ? 0 : -1}
-                      className={mergeClasses(styles.row, selected && styles.rowSelected)}
-                      style={{ paddingLeft: `${8 + row.depth * 16}px` }}
-                      onClick={() => onRowClick(row.id)}
-                    >
-                      {row.hasChildren ? (
-                        <span className={styles.chevronSlot}>
-                          {row.expanded ? <ChevronDownRegular /> : <ChevronRightRegular />}
-                        </span>
-                      ) : (
-                        <span className={styles.chevronPlaceholder} />
-                      )}
-                      {treeIcon(node, styles)}
-                      <span
-                        className={mergeClasses(
-                          styles.rowLabel,
-                          node.kind === 'milestone' && styles.rowLabelMilestone,
-                          done && styles.doneLabel,
-                          selected && styles.rowLabelSelected,
-                        )}
-                      >
-                        {node.label}
-                      </span>
-                      {node.kind !== 'ticket' && (
-                        <Caption1 className={styles.rowCount}>
-                          {node.kind === 'milestone' && node.openCount !== undefined
-                            ? `${node.openCount}/${node.count}`
-                            : node.count}
-                        </Caption1>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              <SidebarTree
+                label={team.name ?? 'Team'}
+                rows={rows}
+                nodesById={nodesById}
+                selectedRowId={selectedRowId}
+                scrollEl={scrollEl}
+                onOpenTicket={onOpenTicket}
+                onToggleFold={onToggleFold}
+              />
             )}
           </div>
         )}
@@ -696,6 +624,234 @@ export function Sidebar({
     </nav>
   );
 }
+
+/** A row's 20px line plus 6px padding above and below — measured once drawn. */
+const ROW_ESTIMATE = 32;
+const ROW_OVERSCAN = 10;
+/** Drawn in flow for the one render before the scroller is known — more than a screenful,
+ *  and gone before the first paint: the scroller's ref re-renders it windowed. */
+const FIRST_RENDER_ROWS = 60;
+
+interface SidebarTreeProps {
+  label: string;
+  rows: SidebarVisibleRow[];
+  nodesById: ReadonlyMap<string, SidebarTreeNode>;
+  /** The open ticket's row — drawn selected, and kept mounted off screen. */
+  selectedRowId: string | null;
+  /** `styles.scroll`, which also holds the views above the tree and the rows below it. */
+  scrollEl: HTMLElement | null;
+  onOpenTicket: (taskId: string) => void;
+  onToggleFold: (id: string, defaultFolded?: boolean) => void;
+}
+
+/**
+ * The `role="tree"`, windowed against the sidebar's scroller (F29.3) — a component of its
+ * own, so a scroll redraws the tree and not the sections around it. It owns the roving
+ * tabindex: the focus row is pinned, and a key that moves it scrolls it into view, so an
+ * arrow key never lands on a row that is not mounted. `scrollMargin` (the tree's offset
+ * inside the scroller, below the views) is `useWindowedList`'s to keep.
+ */
+function SidebarTree({
+  label,
+  rows,
+  nodesById,
+  selectedRowId,
+  scrollEl,
+  onOpenTicket,
+  onToggleFold,
+}: SidebarTreeProps): JSX.Element {
+  const styles = useStyles();
+  const [keyState, setKeyState] = useState<TreeKeyState>({
+    focusId: null,
+    typeahead: { buffer: '' },
+  });
+  const typeaheadTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  // Roving tabindex always has a stop once the tree has any rows — picks the first one the
+  // first time there is anything to focus, same as any other roving-tabindex widget.
+  useEffect(() => {
+    if (keyState.focusId !== null) return;
+    if (rows.length === 0) return;
+    setKeyState((state) => ({ ...state, focusId: rows[0].id }));
+  }, [rows, keyState.focusId]);
+
+  useEffect(() => () => clearTimeout(typeaheadTimer.current), []);
+
+  const pinned = useMemo(
+    () => pinnedTreeRows(rows, keyState.focusId, selectedRowId),
+    [rows, keyState.focusId, selectedRowId],
+  );
+  const win = useWindowedList({
+    count: rows.length,
+    keyOf: (i) => rows[i].id,
+    getScrollElement: () => scrollEl,
+    estimateSize: () => ROW_ESTIMATE,
+    overscan: ROW_OVERSCAN,
+    pinned,
+    enabled: scrollEl !== null,
+  });
+  const drawn = win.windowed ? win.rows : win.rows.slice(0, FIRST_RENDER_ROWS);
+
+  function scheduleTypeaheadReset(buffer: string): void {
+    clearTimeout(typeaheadTimer.current);
+    if (!buffer) return;
+    typeaheadTimer.current = setTimeout(() => {
+      setKeyState((state) => ({ ...state, typeahead: { buffer: '' } }));
+    }, 600);
+  }
+
+  function activate(id: string): void {
+    const node = nodesById.get(id);
+    if (!node) return;
+    if (node.kind === 'ticket') {
+      if (node.taskId) onOpenTicket(node.taskId);
+      return;
+    }
+    onToggleFold(node.id, node.defaultFolded ?? false);
+  }
+
+  function onTreeKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
+    const isPrintable = event.key.length === 1 && event.key !== ' ';
+    const isNavKey = [
+      'ArrowDown',
+      'ArrowUp',
+      'ArrowRight',
+      'ArrowLeft',
+      'Home',
+      'End',
+      'Enter',
+      ' ',
+    ].includes(event.key);
+    if (!isPrintable && !isNavKey) return;
+    event.preventDefault();
+
+    const result = treeKeyReducer(keyState, event.key, rows);
+    setKeyState({ focusId: result.focusId, typeahead: result.typeahead });
+    if (result.focusId !== keyState.focusId) {
+      win.scrollToIndex(focusIndexOf(rows, result.focusId), { align: 'auto' });
+    }
+    if (result.toggle) {
+      onToggleFold(result.toggle.id, nodesById.get(result.toggle.id)?.defaultFolded ?? false);
+    }
+    if (result.activate) activate(result.activate);
+    scheduleTypeaheadReset(result.typeahead.buffer);
+  }
+
+  // Stable, so a memoised row is not redrawn for a fresh closure on every scroll.
+  const onRowClick = useStableCallback((id: string): void => {
+    setKeyState((state) => ({ ...state, focusId: id }));
+    activate(id);
+  });
+
+  return (
+    <div
+      ref={win.listRef}
+      role="tree"
+      aria-label={label}
+      className={styles.tree}
+      // Windowed, the rows are out of flow: the box keeps the height they would take.
+      style={win.windowed ? { height: win.totalSize } : undefined}
+      tabIndex={0}
+      onKeyDown={onTreeKeyDown}
+    >
+      {drawn.map(({ index, key, start }) => {
+        const row = rows[index];
+        const node = nodesById.get(row.id);
+        if (!node) return null;
+        return (
+          <SidebarRow
+            key={key}
+            index={index}
+            row={row}
+            node={node}
+            focused={row.id === keyState.focusId}
+            selected={row.id === selectedRowId}
+            start={win.windowed ? start : null}
+            measureElement={win.measureElement}
+            onRowClick={onRowClick}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+interface SidebarRowProps {
+  index: number;
+  row: SidebarVisibleRow;
+  node: SidebarTreeNode;
+  focused: boolean;
+  selected: boolean;
+  /** Offset from the tree's top when windowed; `null` draws the row in normal flow. */
+  start: number | null;
+  measureElement: (el: Element | null) => void;
+  onRowClick: (id: string) => void;
+}
+
+/** One `treeitem` — memoised, so a scroll redraws only the rows whose own props changed. The
+ *  count stays the last child: `perf-board.mjs`'s expand-group reads it from there. */
+const SidebarRow = memo(function SidebarRow({
+  index,
+  row,
+  node,
+  focused,
+  selected,
+  start,
+  measureElement,
+  onRowClick,
+}: SidebarRowProps): JSX.Element {
+  const styles = useStyles();
+  const done =
+    node.kind === 'ticket' ? columnForStatus(node.status ?? 'pending') === 'done' : !!node.finished;
+  return (
+    <div
+      ref={measureElement}
+      data-index={index}
+      role="treeitem"
+      id={`sidebar-tree-${row.id}`}
+      aria-level={row.depth + 1}
+      aria-expanded={row.hasChildren ? row.expanded : undefined}
+      aria-selected={selected || undefined}
+      tabIndex={focused ? 0 : -1}
+      className={mergeClasses(
+        styles.row,
+        start !== null && styles.windowRow,
+        selected && styles.rowSelected,
+      )}
+      style={{
+        paddingLeft: `${8 + row.depth * 16}px`,
+        ...(start !== null ? { transform: `translateY(${start}px)` } : {}),
+      }}
+      onClick={() => onRowClick(row.id)}
+    >
+      {row.hasChildren ? (
+        <span className={styles.chevronSlot}>
+          {row.expanded ? <ChevronDownRegular /> : <ChevronRightRegular />}
+        </span>
+      ) : (
+        <span className={styles.chevronPlaceholder} />
+      )}
+      {treeIcon(node, styles)}
+      <span
+        className={mergeClasses(
+          styles.rowLabel,
+          node.kind === 'milestone' && styles.rowLabelMilestone,
+          done && styles.doneLabel,
+          selected && styles.rowLabelSelected,
+        )}
+      >
+        {node.label}
+      </span>
+      {node.kind !== 'ticket' && (
+        <Caption1 className={styles.rowCount}>
+          {node.kind === 'milestone' && node.openCount !== undefined
+            ? `${node.openCount}/${node.count}`
+            : node.count}
+        </Caption1>
+      )}
+    </div>
+  );
+});
 
 /** The workspace switcher row (v9-1): an initial tile, the cloud team or "Personal" over its
  *  "Cloud"/"Local" line, and a chevron menu of the workspaces the sidebar data already holds,

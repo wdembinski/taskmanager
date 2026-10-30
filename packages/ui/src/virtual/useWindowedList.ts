@@ -63,6 +63,9 @@ export interface WindowedList {
   measureElement: (el: Element | null) => void;
   /** Every row's offset and size, mounted or not — what the chain overlay builds rects from. */
   layout: () => WindowedRow[];
+  /** Scrolls the scroller until row `index` is in view (`'auto'`: only as far as needed) — a
+   *  no-op when not windowed, where every row is already drawn. */
+  scrollToIndex: (index: number, options?: { align?: 'start' | 'center' | 'end' | 'auto' }) => void;
 }
 
 /** Which row the focused element sits in — the `data-index` the caller put on each row. */
@@ -184,10 +187,25 @@ export function useWindowedList(options: UseWindowedListOptions): WindowedList {
     return out;
   }, [virtualizer, scrollMargin]);
 
+  const scrollToIndex = useCallback(
+    (index: number, opts?: { align?: 'start' | 'center' | 'end' | 'auto' }) => {
+      if (enabled && index >= 0 && index < count) virtualizer.scrollToIndex(index, opts);
+    },
+    [virtualizer, enabled, count],
+  );
+
   if (!enabled) {
     const rows: WindowedRow[] = [];
     for (let i = 0; i < count; i++) rows.push({ index: i, key: keyOf(i), start: 0, size: 0 });
-    return { windowed: false, rows, totalSize: 0, listRef, measureElement, layout };
+    return {
+      windowed: false,
+      rows,
+      totalSize: 0,
+      listRef,
+      measureElement,
+      layout,
+      scrollToIndex,
+    };
   }
 
   const rows = virtualizer.getVirtualItems().map((item) => ({
@@ -204,5 +222,6 @@ export function useWindowedList(options: UseWindowedListOptions): WindowedList {
     listRef,
     measureElement,
     layout,
+    scrollToIndex,
   };
 }
