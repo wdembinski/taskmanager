@@ -15,12 +15,7 @@
  *
  * Never throws: anything that cannot be resolved is a refusal, as data.
  */
-import {
-  AI_REVIEW_MAX_CHANGED_LINES,
-  AI_REVIEW_MAX_FILES,
-  type AiReviewRefusal,
-  type AiReviewRefusalCode,
-} from '@shared/aiReview';
+import { aiReviewPrecheck, type AiReviewRefusal, type AiReviewRefusalCode } from '@shared/aiReview';
 import { hasRepo, type Project, type Task } from '@shared/model';
 import {
   parseSubjectId,
@@ -71,18 +66,6 @@ const refuse = (refused: AiReviewRefusalCode, reason: string): AiReviewRefusal =
 
 export function isRefusal<T extends object>(value: T | AiReviewRefusal): value is AiReviewRefusal {
   return 'refused' in value;
-}
-
-/** The size refusal, or null when the subject is within the caps. */
-export function tooLargeReason(summary: DiffSummary): string | null {
-  const changed = summary.files.reduce((n, f) => n + f.additions + f.deletions, 0);
-  if (changed > AI_REVIEW_MAX_CHANGED_LINES) {
-    return `too large to review — ${changed.toLocaleString('en-US')} changed lines, cap ${AI_REVIEW_MAX_CHANGED_LINES.toLocaleString('en-US')}`;
-  }
-  if (summary.truncated || summary.files.length > AI_REVIEW_MAX_FILES) {
-    return `too large to review — more than ${AI_REVIEW_MAX_FILES} files changed`;
-  }
-  return null;
 }
 
 /** `git status --porcelain` → the paths it names (a rename's new path), unquoted. */
@@ -219,11 +202,9 @@ export class AiReviewSubjects implements AiReviewSubjectSource {
 
   /** The capability and the caps — refused before a single file is read. */
   private gate(summary: DiffSummary): AiReviewRefusal | null {
-    if (!summary.capabilities?.aiReview) {
-      return refuse('no-capability', 'add the repo as a project to let the AI review it');
-    }
-    const large = tooLargeReason(summary);
-    return large ? refuse('too-large', large) : null;
+    const reason = aiReviewPrecheck(summary);
+    if (!reason) return null;
+    return refuse(summary.capabilities?.aiReview ? 'too-large' : 'no-capability', reason);
   }
 
   private revision(

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AiFindingSeverity, ValidatedFinding } from './aiReview';
-import { findingToDraft, parseFindings, validateFindings } from './aiReview';
+import {
+  AI_REVIEW_MAX_CHANGED_LINES,
+  AI_REVIEW_MAX_FILES,
+  aiReviewPrecheck,
+  findingToDraft,
+  parseFindings,
+  validateFindings,
+} from './aiReview';
 import type {
   DiffFile,
   DiffFileEntry,
@@ -9,7 +16,12 @@ import type {
   DiffSummary,
   ReviewComment,
 } from './review';
-import { markOutdated } from './review';
+import {
+  FORGE_API_CAPABILITIES,
+  LOCAL_REF_CAPABILITIES,
+  WORKTREE_CAPABILITIES,
+  markOutdated,
+} from './review';
 
 function line(partial: Partial<DiffLine> & { text: string }): DiffLine {
   return { kind: 'context', ...partial };
@@ -111,6 +123,54 @@ function output(findings: unknown[], overrides: Record<string, unknown> = {}): u
 }
 
 const fence = (body: string, info = 'json') => ['```' + info, body, '```'].join('\n');
+
+describe('aiReviewPrecheck', () => {
+  const NO_AI = 'add the repo as a project to let the AI review it';
+  const MANY_FILES = 'too large to review — more than 150 files changed';
+
+  /** `count` files of `lines` changed lines each (all additions). */
+  function sized(count: number, lines: number, over: Partial<DiffSummary> = {}): DiffSummary {
+    return {
+      ...summary,
+      files: Array.from({ length: count }, (_, i) =>
+        entry(`f${i}.ts`, { additions: lines, deletions: 0 }),
+      ),
+      capabilities: WORKTREE_CAPABILITIES,
+      ...over,
+    };
+  }
+
+  it.each<[string, DiffSummary, string | null]>([
+    ['a small worktree diff', sized(3, 10), null],
+    ['a small local-ref diff', sized(3, 10, { capabilities: LOCAL_REF_CAPABILITIES }), null],
+    ['exactly the file cap', sized(AI_REVIEW_MAX_FILES, 1), null],
+    ['exactly the line cap', sized(4, AI_REVIEW_MAX_CHANGED_LINES / 4), null],
+    ['a forge-api diff', sized(3, 10, { capabilities: FORGE_API_CAPABILITIES }), NO_AI],
+    ['a summary with no capabilities', sized(3, 10, { capabilities: undefined }), NO_AI],
+    ['one file over the cap', sized(AI_REVIEW_MAX_FILES + 1, 1), MANY_FILES],
+    ['a truncated summary', sized(3, 10, { truncated: true }), MANY_FILES],
+    [
+      'one line over the cap',
+      sized(1, AI_REVIEW_MAX_CHANGED_LINES + 1),
+      'too large to review — 4,001 changed lines, cap 4,000',
+    ],
+    [
+      'deletions counted with additions',
+      { ...sized(0, 0), files: [entry('a.ts', { additions: 2500, deletions: 2500 })] },
+      'too large to review — 5,000 changed lines, cap 4,000',
+    ],
+    // The order: capability before any cap, the file count before the changed lines.
+    [
+      'a forge-api diff that is also too large',
+      sized(200, 100, { capabilities: FORGE_API_CAPABILITIES }),
+      NO_AI,
+    ],
+    ['too many files AND too many lines', sized(200, 100), MANY_FILES],
+    ['truncated AND too many lines', sized(2, 5000, { truncated: true }), MANY_FILES],
+  ])('%s', (_name, input, expected) => {
+    expect(aiReviewPrecheck(input)).toBe(expected);
+  });
+});
 
 describe('parseFindings', () => {
   it('parses a single fenced json block', () => {

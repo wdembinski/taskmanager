@@ -30,6 +30,9 @@
  * 5. A `running` review is `failed` with "the app closed during the review" (and a
  *    `finishedAt`) after reopen; a `done` and a `queued` review are untouched.
  * 6. `deleteTask` removes that task subject's `ai_reviews` rows and leaves another's.
+ * 7. F16.13's `reviewDoc` column: a pre-F16.13 `ai_reviews` (the column DROPped, a review
+ *    already in it) gets the column back on reopen; the old row reads `reviewDoc: null` and
+ *    is otherwise unchanged, and a new review round-trips `'REVIEW.md'` and `'default'`.
  *
  * Prove the checks matter yourself with either of these mutations to
  * `apps/client/src/main/store.ts` — both verified to go red while writing this script, then
@@ -44,6 +47,9 @@
  *     and defaults checks, and the script stops there — every later check would reopen the
  *     same database. With the index line skipped too, the reopen still throws, one step
  *     later: `insertReviewComment` is prepared naming `origin`, a column the old table lacks.
+ *   - Delete the `ALTER TABLE ai_reviews ADD COLUMN reviewDoc TEXT` line: check 7's "reopening
+ *     a pre-F16.13 database succeeds" goes red (`insertAiReviewStmt` is prepared naming
+ *     `reviewDoc`, a column the old table lacks), and the script stops there.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, existsSync } from 'node:fs';
@@ -173,6 +179,7 @@ function makeReviewInput(subjectId, overrides = {}) {
     verdict: null,
     error: null,
     requestedBy: 'human',
+    reviewDoc: 'default',
     ...overrides,
   };
 }
@@ -204,6 +211,7 @@ const dbPath = join(work, 'orchestrator.db');
     'droppedCount',
     'error',
     'requestedBy',
+    'reviewDoc',
     'resultText',
     'createdAt',
   ]) {
@@ -608,6 +616,60 @@ let task;
     count(subjectIdFor(survivor.id)) === 1,
   );
   store.close();
+}
+
+// ────────── Check 7: the reviewDoc ALTER on a pre-F16.13 ai_reviews (F16.13) ──────────
+{
+  const before = createStore(dbPath);
+  const subj = subjectIdFor(task.id);
+  const old = before.createAiReview(
+    makeReviewInput(subj, { id: 'review-pre-f16-13', status: 'done', finishedAt: 4321 }),
+  );
+  before.close();
+
+  const raw = new Database(dbPath);
+  raw.exec('ALTER TABLE ai_reviews DROP COLUMN reviewDoc');
+  const stripped = raw
+    .prepare('PRAGMA table_info(ai_reviews)')
+    .all()
+    .map((c) => c.name);
+  check('pre-F16.13: ai_reviews really has no reviewDoc column', !stripped.includes('reviewDoc'));
+  raw.close();
+
+  let after;
+  try {
+    after = createStore(dbPath);
+    check('reopened: reopening a pre-F16.13 database succeeds', true);
+  } catch (err) {
+    check(`reopened: reopening a pre-F16.13 database succeeds (threw: ${err.message})`, false);
+  }
+  check(
+    'reopened: ai_reviews has column reviewDoc again',
+    tableInfo(dbPath, 'ai_reviews').some((c) => c.name === 'reviewDoc'),
+  );
+  if (!after) {
+    console.log(`\n${failures} FAILED (stopped: the database cannot be reopened)`);
+    process.exit(1);
+  }
+  check(
+    'reopened: the older review reads reviewDoc null, every other field as written',
+    isDeepStrictEqual(after.getAiReview('review-pre-f16-13'), { ...old, reviewDoc: null }),
+  );
+
+  for (const reviewDoc of ['REVIEW.md', 'default']) {
+    const id = `review-doc-${reviewDoc}`;
+    const made = after.createAiReview(makeReviewInput(subj, { id, reviewDoc }));
+    check(
+      `a review that used ${reviewDoc} round-trips reviewDoc`,
+      made.reviewDoc === reviewDoc && isDeepStrictEqual(after.getAiReview(id), made),
+    );
+  }
+  after.updateAiReview('review-doc-default', { reviewDoc: 'REVIEW.md' });
+  check(
+    'updateAiReview writes reviewDoc',
+    after.getAiReview('review-doc-default')?.reviewDoc === 'REVIEW.md',
+  );
+  after.close();
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);

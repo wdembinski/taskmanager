@@ -446,6 +446,87 @@ export const TASK87_DRAFTS = [
 ];
 
 /**
+ * The AI review `air-87-1` of `TM-87 Send comments back` (F16.13) — the review the
+ * `TASK87_DRAFTS` AI drafts came from — as `aiReview:get` answers it while it is queued. The
+ * variants below are the four states the workspace header and file list draw.
+ */
+export const TASK87_AI_REVIEW = {
+  id: 'air-87-1',
+  subjectId: TASK87_SUBJECT_ID,
+  diffId: PR_DIFF_ID,
+  headSha: HEAD_SHA,
+  status: 'queued',
+  parkReason: null,
+  model: 'claude-sonnet-5',
+  startedAt: null,
+  finishedAt: null,
+  costUsd: null,
+  tokens: null,
+  summary: null,
+  verdict: null,
+  findingCount: 0,
+  droppedCount: 0,
+  error: null,
+  requestedBy: 'human',
+  reviewDoc: 'REVIEW.md',
+};
+
+/**
+ * `model:catalog`'s answer for the review's model, so `useModelLabels` names it "Sonnet 5" the
+ * way the CLI's probe does in the real app — unanswered, the card would read the raw id.
+ */
+export const TASK87_AI_MODEL_CATALOG = [
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', known: true, family: 'sonnet', kind: 'version' },
+];
+
+/** Under way for 72s with one turn's cost reported: the cyan "AI reviewing…" chip. */
+export const TASK87_AI_RUNNING = {
+  ...TASK87_AI_REVIEW,
+  status: 'running',
+  startedAt: now - 72_000,
+  costUsd: 0.42,
+};
+
+/** Stopped by the usage-limit gate, in the scheduler's own wording: a neutral chip. */
+export const TASK87_AI_PARKED = {
+  ...TASK87_AI_REVIEW,
+  status: 'parked-limit',
+  parkReason: 'usage limit reached — resumes at 14:05:00',
+  startedAt: now - 6 * 60_000,
+  costUsd: 0.42,
+};
+
+/** Failed after its repair turn: *Ask AI again* in the header and the failure card. */
+export const TASK87_AI_FAILED = {
+  ...TASK87_AI_REVIEW,
+  status: 'failed',
+  startedAt: now - 9 * 60_000,
+  finishedAt: now - 7 * 60_000,
+  costUsd: 0.61,
+  error: 'the reply had no valid findings block twice',
+};
+
+/** Settled with a verdict: "AI: 5 findings" in the header and the summary card. */
+export const TASK87_AI_DONE = {
+  ...TASK87_AI_REVIEW,
+  status: 'done',
+  startedAt: now - 14 * 60_000,
+  finishedAt: now - 12 * 60_000,
+  costUsd: 1.84,
+  tokens: {
+    inputTokens: 18_400,
+    outputTokens: 3_150,
+    cacheCreationTokens: 9_200,
+    cacheReadTokens: 41_000,
+  },
+  verdict: 'request-changes',
+  summary:
+    'The retry loop swallows the last error, so a failed upload resolves undefined. Backoff also runs after the final attempt. Fix the rethrow before merging; the rest are small.',
+  findingCount: 5,
+  droppedCount: 1,
+};
+
+/**
  * Only an EMPTY `review:queues` — see the header doc. The shell's Reviews row reads it at boot
  * (`useRequestedReviewCount`) on every screen, and an unanswered channel crashed every row.
  */

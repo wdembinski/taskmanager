@@ -78,6 +78,12 @@ export interface AiReviewTokens {
   cacheReadTokens: number;
 }
 
+/**
+ * Which checklist a review was given: the repo's own `REVIEW.md` (read from the base commit),
+ * or the built-in default when there is none.
+ */
+export type AiReviewDoc = 'REVIEW.md' | 'default';
+
 /** One AI review of one subject at one head. `droppedCount` counts findings on unknown paths. */
 export interface AiReview {
   id: string;
@@ -97,6 +103,8 @@ export interface AiReview {
   droppedCount: number;
   error: string | null;
   requestedBy: AiReviewRequester;
+  /** The checklist the prompt carried; null on a review recorded before this was kept. */
+  reviewDoc: AiReviewDoc | null;
 }
 
 /** Why an AI review was refused before anything was spent. Checked in this order. */
@@ -114,6 +122,24 @@ export type AiReviewRefusalCode =
 export interface AiReviewRefusal {
   refused: AiReviewRefusalCode;
   reason: string;
+}
+
+/**
+ * Why a subject cannot be reviewed, read off its summary alone — or null when nothing it
+ * shows says no. Checked in this order: the capability, then the file count (a `truncated`
+ * summary counts as too many files), then the changed lines. The main process refuses with
+ * exactly these strings, so a UI can disable its button with the same text before asking.
+ */
+export function aiReviewPrecheck(summary: DiffSummary): string | null {
+  if (!summary.capabilities?.aiReview) return 'add the repo as a project to let the AI review it';
+  if (summary.truncated || summary.files.length > AI_REVIEW_MAX_FILES) {
+    return `too large to review — more than ${AI_REVIEW_MAX_FILES} files changed`;
+  }
+  const changed = summary.files.reduce((n, f) => n + f.additions + f.deletions, 0);
+  if (changed > AI_REVIEW_MAX_CHANGED_LINES) {
+    return `too large to review — ${changed.toLocaleString('en-US')} changed lines, cap ${AI_REVIEW_MAX_CHANGED_LINES.toLocaleString('en-US')}`;
+  }
+  return null;
 }
 
 /** Whether `aiReview:start`'s answer is a refusal rather than the review row it started. */

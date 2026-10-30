@@ -100,6 +100,35 @@ export default [
     mockup: 'v10-19-settings-light.svg',
   },
   {
+    // The Features pane, scrolled to F16.13's "Review in the background when I open a PR"
+    // switch — the last of the list, and off by default: each review costs money.
+    name: 'settings-features-ai-review',
+    app: 'client',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [
+      { click: 'Settings' },
+      { click: 'tab:Features' },
+      { scrollToSelector: '[data-feature="aiReviewOnOpen"]' },
+    ],
+    expect: '[data-feature="aiReviewOnOpen"] input[role="switch"]:not(:checked)',
+    mockup: 'v10-19-settings-light.svg',
+  },
+  {
+    // The same switch on the web's Features pane, which mirrors the desktop's list.
+    name: 'web-settings-features-ai-review-light',
+    app: 'web',
+    viewport: { width: 1440, height: 900 },
+    scheme: 'light',
+    setup: [
+      { click: 'Settings' },
+      { click: 'tab:Features' },
+      { scrollToSelector: '[data-feature="aiReviewOnOpen"]' },
+    ],
+    expect: '[data-feature="aiReviewOnOpen"] input[role="switch"]:not(:checked)',
+    mockup: 'v10-19-settings-light.svg',
+  },
+  {
     // The web's grouped Settings page — the same shared page as the desktop's, with the web's
     // own items (Projects, Tokens, Desktop only).
     name: 'web-settings-light',

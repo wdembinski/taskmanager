@@ -26,6 +26,7 @@ function minimalReview(overrides: Partial<AiReview> = {}): AiReview {
     droppedCount: 0,
     error: null,
     requestedBy: 'human',
+    reviewDoc: 'default',
     ...overrides,
   };
 }
@@ -43,6 +44,7 @@ const fullReview = minimalReview({
   droppedCount: 1,
   error: 'repair turn used',
   requestedBy: 'automation',
+  reviewDoc: 'REVIEW.md',
 });
 
 describe('aiReviewToRow / rowToAiReview', () => {
@@ -89,6 +91,23 @@ describe('aiReviewToRow / rowToAiReview', () => {
   it('coerces an unknown requestedBy to human', () => {
     const row: AiReviewRow = { ...aiReviewToRow(minimalReview(), 1), requestedBy: 'cron' };
     expect(rowToAiReview(row).requestedBy).toBe('human');
+  });
+
+  it.each(['REVIEW.md', 'default'] as const)('round-trips reviewDoc %j', (reviewDoc) => {
+    const row = aiReviewToRow(minimalReview({ reviewDoc }), 1);
+    expect(row.reviewDoc).toBe(reviewDoc);
+    expect(rowToAiReview(row).reviewDoc).toBe(reviewDoc);
+  });
+
+  it('reads a review from before the column (NULL) as not recorded', () => {
+    const row = aiReviewToRow(minimalReview({ reviewDoc: null }), 1);
+    expect(row.reviewDoc).toBeNull();
+    expect(rowToAiReview(row).reviewDoc).toBeNull();
+  });
+
+  it('coerces an unknown reviewDoc to null', () => {
+    const row: AiReviewRow = { ...aiReviewToRow(minimalReview(), 1), reviewDoc: 'CHECKLIST.md' };
+    expect(rowToAiReview(row).reviewDoc).toBeNull();
   });
 
   it.each(['not json', '[1,2]', '{"inputTokens":1}', 'null', '"x"'])(

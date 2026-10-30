@@ -25,6 +25,10 @@
  * very first thing this effect does for a path is flip it to `loading` — so a path already
  * in flight drops out of the next render's list on its own, the same self-limiting shape
  * `filesToLoad` was built for.
+ *
+ * **Ask AI to review** (F16.13) is `useAiReview(taskSubjectId(taskId))`. Its pre-check reads
+ * this pane's own summary: `task:diffSummary` is the subject's `review:subjectSummary`, so it
+ * already carries `capabilities` and no second read is needed.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -70,6 +74,7 @@ import {
 } from './reviewState';
 import { defaultExpanded, fetchablePaths } from './reviewView';
 import { ReviewPaneView } from './ReviewPaneView';
+import { useAiReview } from './useAiReview';
 import { useReviewWorkspaceOpener } from './reviewWorkspaceOpener';
 
 export interface ReviewPaneProps {
@@ -317,6 +322,12 @@ export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JS
     );
   }
 
+  const ai = useAiReview(
+    taskSubjectId(taskId),
+    state.taskId === taskId && state.summary?.status === 'ok' ? state.summary.summary : null,
+    unreachable !== undefined,
+  );
+
   return (
     <ReviewPaneView
       taskId={taskId}
@@ -327,6 +338,7 @@ export function ReviewPane({ taskId, unreachable, layout }: ReviewPaneProps): JS
       monochrome={monochrome}
       onReload={() => void loadSummary()}
       onOpenInWorkspace={opener ? () => opener.open(taskSubjectId(taskId)) : undefined}
+      ai={{ control: ai.control, onAsk: ai.ask, onCancel: ai.cancel }}
       onSelectFile={(path) => setState((s) => selectFile(s, path))}
       onToggleExpanded={(path) => setState((s) => toggleExpanded(s, path))}
       onClickLine={onClickLine}

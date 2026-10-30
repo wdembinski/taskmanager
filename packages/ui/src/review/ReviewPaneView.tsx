@@ -26,6 +26,10 @@
  * cramped. The comment editor never renders inline here — `DiffView`'s own `touch` mode
  * suppresses that — it opens in a bottom sheet instead, shared by a brand new comment and an
  * Edit on an existing draft alike (`state.editor !== null` either way).
+ *
+ * **Ask AI to review** (F16.13): the wide toolbar draws `ai` — the same compact
+ * `AiReviewControl` the review workspace's header draws — after the layout pill, as v9-6 orders
+ * them. Omitted, nothing is drawn.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX } from 'react';
@@ -58,6 +62,8 @@ import {
 } from '@fluentui/react-icons';
 import type { DiffLine, DiffSide, ReviewComment, ReviewSendRefusal } from '@tm/shared/review';
 import { MONO } from '../theme';
+import type { AiReviewControlState } from './aiReviewModel';
+import { AiReviewControl } from './AiReviewControl';
 import { CommentEditorCard, DismissedToggle } from './CommentThread';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
@@ -163,6 +169,8 @@ export interface ReviewPaneViewProps {
    * compact pane never draws it either, since the phone keeps its own Changes tab.
    */
   onOpenInWorkspace?: () => void;
+  /** *Ask AI to review* for this card (F16.13) — `useAiReview`'s answer; omitted, none drawn. */
+  ai?: { control: AiReviewControlState; onAsk: () => void; onCancel: () => void };
   onSelectFile: (path: string) => void;
   onToggleExpanded: (path: string) => void;
   onClickLine: (path: string, side: DiffSide, line: number, shift: boolean) => void;
@@ -254,6 +262,7 @@ export function ReviewPaneView({
   monochrome,
   onReload,
   onOpenInWorkspace,
+  ai,
   onSelectFile,
   onToggleExpanded,
   onClickLine,
@@ -529,6 +538,7 @@ export function ReviewPaneView({
               Split
             </Button>
           </div>
+          {ai && <AiReviewControl control={ai.control} onAsk={ai.onAsk} onCancel={ai.onCancel} />}
           <span className={styles.spacer} />
           <Caption1 className={styles.unsent}>{unsentCount(state)} unsent</Caption1>
           {onToggleShowDismissed && (

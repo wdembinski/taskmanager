@@ -374,6 +374,28 @@ describe('AiReviewRunner — a clean run', () => {
   });
 });
 
+describe('AiReviewRunner — the checklist it records (F16.13)', () => {
+  const withDoc = (reviewDoc: string | null) => (subjectId: string) => {
+    const t = target(subjectId);
+    return { ...t, prompt: { ...t.prompt, reviewDoc } };
+  };
+
+  it.each([
+    ['a REVIEW.md', '# Review rules\n- check the tests', 'REVIEW.md'],
+    ['no REVIEW.md', null, 'default'],
+    ['a blank REVIEW.md', ' \n\t', 'default'],
+  ] as const)('records %s as %j on the row it creates', async (_name, doc, expected) => {
+    const h = harness({ resolve: withDoc(doc) });
+    const review = await h.runner.start('task:t1', 'human');
+    if ('refused' in review) throw new Error(`refused: ${review.reason}`);
+    expect(review.reviewDoc).toBe(expected);
+    expect(h.store.createAiReview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewDoc: expected }),
+    );
+    expect(h.reviews.get(review.id)?.reviewDoc).toBe(expected);
+  });
+});
+
 describe('AiReviewRunner — the repair turn', () => {
   it('sends exactly one repair naming the errors, then lands a valid second reply', async () => {
     const h = harness();
@@ -696,6 +718,7 @@ describe('AiReviewRunner — parks (F16.9)', () => {
       droppedCount: 0,
       error: null,
       requestedBy: 'human',
+      reviewDoc: null,
     };
   }
 
@@ -838,6 +861,8 @@ describe('AiReviewRunner — parks (F16.9)', () => {
     expect(h.startedRunIds).toHaveLength(1);
     expect(h.reviews.get('old1')?.status).toBe('running');
     expect(h.reviews.get('old2')?.status).toBe('queued');
+    // Re-resolved, so the checklist is recorded afresh — even on a row from before the column.
+    expect(h.reviews.get('old1')?.reviewDoc).toBe('default');
     h.emit(result(VALID));
     await flush();
     expect(h.startedRunIds).toHaveLength(2);

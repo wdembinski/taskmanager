@@ -63,6 +63,23 @@ const uiVerifyRow = (scheme, mockup) => ({
   channelOverrides: { 'project:list': UI_VERIFY_PROJECTS },
 });
 
+/** The fixture's projects with the first one — the one "Edit" opens — reviewing on Opus. */
+const REVIEW_MODEL_PROJECTS = PROJECTS.map((entry, i) =>
+  i === 0 ? { ...entry, project: { ...entry.project, reviewModel: 'opus' } } : entry,
+);
+
+/** The "Review model" field (F16.13), directly under the planning/execution model row. */
+const reviewModelRow = (scheme, mockup) => ({
+  name: `project-form-review-model-${scheme}`,
+  app: 'client',
+  viewport: { width: 1280, height: 900 },
+  scheme,
+  setup: [{ click: 'Projects' }, { click: 'Edit' }, { scrollToSelector: '[data-review-model]' }],
+  expect: '[data-review-model] [role="combobox"]',
+  mockup,
+  channelOverrides: { 'project:list': REVIEW_MODEL_PROJECTS },
+});
+
 export default [
   {
     // "Projects" is the small icon-row link under the team header (`Sidebar.tsx`), not a
@@ -115,6 +132,9 @@ export default [
   uiVerifyRow('light', 'v10-13-projects-light.svg'),
   // No dark projects mockup exists, so this row has none.
   uiVerifyRow('dark', null),
+  reviewModelRow('light', 'v10-13-projects-light.svg'),
+  // No dark projects mockup exists, so this row has none.
+  reviewModelRow('dark', null),
   {
     // "Who merges on green" only renders once "Merge on green" is ON, in the row beside
     // "Merge method" and "Required checks". Picking "Task Manager" proves the dropdown's

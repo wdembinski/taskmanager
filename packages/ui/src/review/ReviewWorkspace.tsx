@@ -34,6 +34,11 @@
  * **A host can steer a mounted workspace** (F15.14b): a changed `initialSubjectId` selects that
  * row — now when the queues hold it, else as soon as an answer does — and each new
  * `actionRequest.seq` runs one key action exactly as its key would (the palette's commands).
+ *
+ * **Ask AI to review** (F16.13) is `useAiReview`'s, keyed on the selected subject and its loaded
+ * summary; the `a` key asks exactly as the header's button does. A queue row's context menu asks
+ * about any row: its refusal lands in the error bar and stays as that row's menu reason until a
+ * review of the subject arrives.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX, KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -51,6 +56,7 @@ import {
   type ReviewQueuesSnapshot,
   type ReviewViewedMark,
 } from '@tm/shared/review';
+import { isAiReviewRefusal } from '@tm/shared/aiReview';
 import { useTransport } from '../transport';
 import { applyReviewKey, reviewKeyAction, type ReviewKeyAction } from './reviewKeys';
 import {
@@ -92,6 +98,7 @@ import {
 import { defaultExpanded, fetchablePaths } from './reviewView';
 import { forgeUrlFor, QUEUE_ORDER, queuesAsOfNotice } from './reviewWorkspaceModel';
 import { ReviewWorkspaceView } from './ReviewWorkspaceView';
+import { useAiReview } from './useAiReview';
 import { useDiffLayout } from './useDiffLayout';
 
 const useStyles = makeStyles({
@@ -466,6 +473,51 @@ export function ReviewWorkspace({
 
   const forgeHref = selected === null ? null : (forgeUrl ?? forgeUrlFor)(selected);
 
+  // ── Ask AI to review (F16.13) ─────────────────────────────────────────────────────────────
+
+  const ai = useAiReview(subjectId, summary, unreachable !== undefined);
+
+  // A queue row's own refusals, by subject — the menu item's reason until a review arrives.
+  const [rowRefusals, setRowRefusals] = useState<Readonly<Record<string, string>>>({});
+  useEffect(
+    () =>
+      transport.on('aiReview:changed', (review) =>
+        setRowRefusals((r) => {
+          if (!(review.subjectId in r)) return r;
+          const rest = { ...r };
+          delete rest[review.subjectId];
+          return rest;
+        }),
+      ),
+    [transport],
+  );
+
+  /** Why a queue row cannot be asked about: the host, its own refusal, then the header's. */
+  function askAiReason(rowSubjectId: string): string | null {
+    if (unreachable !== undefined) return 'the desktop app is unreachable';
+    const refused = rowRefusals[rowSubjectId];
+    if (refused !== undefined) return refused;
+    if (rowSubjectId !== subjectId) return null;
+    const c = ai.control;
+    if (c.kind === 'running' || c.kind === 'queued' || c.kind === 'parked') {
+      return 'an AI review is already under way';
+    }
+    return c.reason;
+  }
+
+  /** *Ask AI to review* from a queue row's context menu; a refusal shows in the error bar. */
+  function onAskAi(rowSubjectId: string): void {
+    if (askAiReason(rowSubjectId) !== null) return;
+    void transport.invoke('aiReview:start', rowSubjectId).then(
+      (answer) => {
+        if (!isAiReviewRefusal(answer)) return;
+        setRowRefusals((r) => ({ ...r, [rowSubjectId]: answer.reason }));
+        setError(`AI review refused — ${answer.reason}`);
+      },
+      (e: unknown) => setError(message(e)),
+    );
+  }
+
   // ── Viewed ────────────────────────────────────────────────────────────────────────────────
 
   /** Sends one viewed toggle — already applied locally — and reconciles with the answer. */
@@ -545,6 +597,9 @@ export function ReviewWorkspace({
         return;
       case 'comment':
         commentOnCurrentHunk();
+        return;
+      case 'askAi':
+        ai.ask();
         return;
       case 'showKeys':
         setKeysOpen(true);
@@ -637,6 +692,15 @@ export function ReviewWorkspace({
         onDismiss={(id) => onDecide(id, 'dismiss')}
         onRestore={(id) => onDecide(id, 'restore')}
         onToggleShowDismissed={() => setState((s) => toggleShowDismissed(s))}
+        ai={{
+          control: ai.control,
+          review: ai.review,
+          modelLabel: ai.modelLabel,
+          onAsk: ai.ask,
+          onCancel: ai.cancel,
+        }}
+        onAskAi={onAskAi}
+        askAiReason={askAiReason}
       />
     </div>
   );

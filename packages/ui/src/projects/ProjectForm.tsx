@@ -76,6 +76,7 @@ import { BaseBranchField } from '../BaseBranchField';
 import { ColorSwatches } from '../ColorSwatches';
 import { ModelField } from '../ModelField';
 import { PlanningModelField } from '../PlanningModelField';
+import { ReviewModelField } from '../ReviewModelField';
 import { useTransport } from '../transport';
 import { ProjectBasicsFields } from './ProjectBasicsFields';
 import { ticketModeOf, ticketPrefixError, type TicketMode } from './projectBasics';
@@ -196,6 +197,8 @@ export function ProjectForm({
   const [model, setModel] = useState<ClaudeModel>('sonnet');
   /** `null` = plan on the execution model, which is what a repo that never ruled does. */
   const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
+  /** `null` = review on the planning model, which is what a repo that never ruled does. */
+  const [reviewModel, setReviewModel] = useState<ClaudeModel | null>(null);
   const [permMode, setPermMode] = useState<PermissionMode>('acceptEdits');
   const [concurrency, setConcurrency] = useState(1);
   const [writeBackPlan, setWriteBackPlan] = useState(false);
@@ -262,6 +265,7 @@ export function ProjectForm({
       setReadyLanes(project.readyLanes ?? DEFAULT_READY_LANES);
       setModel(project.defaultModel);
       setPlanningModel(project.planningModel);
+      setReviewModel(project.reviewModel);
       setPermMode(project.defaultPermissionMode);
       setConcurrency(project.concurrency);
       setWriteBackPlan(project.writeBackPlan);
@@ -292,6 +296,7 @@ export function ProjectForm({
       setWriteBackPlan(false); // moot here — this dialog always adds plan-less (see save())
       setInstructions('');
       setUiVerifyCommand('');
+      setReviewModel(null); // review on the planning model until this project says otherwise
       void transport.invoke('settings:get').then((s) => {
         setModel(s.defaultModel);
         setPlanningModel(s.defaultPlanningModel);
@@ -363,6 +368,7 @@ export function ProjectForm({
           name: name.trim() || undefined,
           defaultModel: model,
           planningModel,
+          reviewModel,
           defaultPermissionMode: permMode,
           concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
@@ -402,6 +408,7 @@ export function ProjectForm({
           name: name.trim() || undefined,
           defaultModel: model,
           planningModel,
+          reviewModel,
           defaultPermissionMode: permMode,
           concurrency,
           jiraEpicKeys: parseEpicKeys(epics),
@@ -872,6 +879,20 @@ export function ProjectForm({
                 className={styles.grow}
                 value={model}
                 onChange={setModel}
+              />
+            </div>
+          )}
+
+          {/* AI review (F16) reads and judges a diff — the same kind of turn as planning — so
+              its empty choice defers to the planning model, and through it to execution. */}
+          {path && (
+            <div data-review-model>
+              <ReviewModelField
+                label="Review model"
+                hint="The model an AI review of this repo’s pull requests runs on."
+                value={reviewModel}
+                planningModel={planningModel ?? model}
+                onChange={setReviewModel}
               />
             </div>
           )}

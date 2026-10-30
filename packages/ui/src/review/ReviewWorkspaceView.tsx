@@ -22,7 +22,9 @@
  * The header's actions follow the subject's kind: a card (`subject.kind === 'task'`) gets *Send
  * to agent* (the F6 path); a PR gets *Copy review as Markdown* and *Open on forge* — never both.
  * Commenting needs a `taskId` (comments are still task-keyed), so a PR row without one is read
- * only. `data-slot="ai-review"` is the empty slot F16's *Ask AI to review* fills.
+ * only. `data-slot="ai-review"` holds F16.13's *Ask AI to review* (`ai`), and the subject's
+ * settled AI review draws its summary card at the top of the file list; with no `ai`, the slot
+ * stays empty.
  *
  * `unreachable` (the web, with its desktop gone) draws a warning bar above the panel and makes
  * the screen read only — no commenting, no *Send to agent* — exactly as `ReviewPaneView` does.
@@ -63,10 +65,14 @@ import type {
   ReviewQueueItem,
   ReviewQueuesSnapshot,
 } from '@tm/shared/review';
+import type { AiReview } from '@tm/shared/aiReview';
 import { PIPELINE_WORD } from '../issues/IssueBuilt';
 import { GlassPane } from '../shell/GlassPane';
 import { MONO } from '../theme';
 import { PIPELINE_VAR } from '../tokens';
+import type { AiReviewControlState } from './aiReviewModel';
+import { AiReviewControl } from './AiReviewControl';
+import { AiReviewSummaryCard } from './AiReviewSummaryCard';
 import { DismissedToggle } from './CommentThread';
 import { DiffView } from './DiffView';
 import { FileTree } from './FileTree';
@@ -181,6 +187,16 @@ const useStyles = makeStyles({
   queuesTitle: { display: 'flex', flexDirection: 'column', minWidth: 0 },
 });
 
+/** F16.13's *Ask AI to review* for the selected subject — `useAiReview`'s answer. */
+export interface ReviewWorkspaceAi {
+  control: AiReviewControlState;
+  /** The subject's newest review; a settled one draws the summary card. */
+  review: AiReview | null;
+  modelLabel: string;
+  onAsk: () => void;
+  onCancel: () => void;
+}
+
 /** What `data-state` reads; see the module header. */
 export type ReviewWorkspaceState = 'empty' | 'loading' | 'loaded';
 
@@ -234,6 +250,12 @@ export interface ReviewWorkspaceViewProps {
   onRestore?: (id: string) => void;
   /** Flips "show dismissed (N)" beside the draft count. */
   onToggleShowDismissed?: () => void;
+  /** *Ask AI to review* (F16.13); omitted, the `ai-review` slot stays empty. */
+  ai?: ReviewWorkspaceAi;
+  /** *Ask AI to review* from a queue row's context menu; omitted, rows have no menu. */
+  onAskAi?: (subjectId: string) => void;
+  /** Why a queue row's subject cannot be asked about, or null — the menu item's title. */
+  askAiReason?: (subjectId: string) => string | null;
 }
 
 /** See the module header for what each state means. */
@@ -262,6 +284,8 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
     onRefresh,
     onReload,
     onCloseKeys,
+    onAskAi,
+    askAiReason,
   } = props;
   const styles = useStyles();
   const status = workspaceState(queues, selected, state);
@@ -307,6 +331,8 @@ export function ReviewWorkspaceView(props: ReviewWorkspaceViewProps): JSX.Elemen
               collapsed={collapsedGroups}
               onToggleGroup={onToggleGroup}
               onSelect={onSelectSubject}
+              onAskAi={onAskAi}
+              askAiReason={askAiReason}
             />
           )}
         </div>
@@ -420,6 +446,7 @@ function HeaderActions({
   onSend,
   onCopyMarkdown,
   onToggleShowDismissed,
+  ai,
   drafts,
   isTask,
 }: ReviewWorkspaceViewProps & { drafts: number; isTask: boolean }): JSX.Element {
@@ -444,7 +471,9 @@ function HeaderActions({
           Split
         </ToggleButton>
       </div>
-      <span className={styles.aiSlot} data-slot="ai-review" />
+      <span className={styles.aiSlot} data-slot="ai-review">
+        {ai && <AiReviewControl control={ai.control} onAsk={ai.onAsk} onCancel={ai.onCancel} />}
+      </span>
       <Caption1 className={styles.faint} data-drafts={drafts}>
         {drafts} draft{drafts === 1 ? '' : 's'}
       </Caption1>
@@ -506,6 +535,7 @@ function HeaderActions({
 
 function FilesColumn({
   state,
+  ai,
   onSelectFile,
   onToggleViewed,
 }: ReviewWorkspaceViewProps): JSX.Element {
@@ -524,6 +554,14 @@ function FilesColumn({
           </Caption1>
         )}
       </div>
+      {ai?.review && (
+        <AiReviewSummaryCard
+          review={ai.review}
+          modelLabel={ai.modelLabel}
+          onAskAgain={ai.onAsk}
+          askReason={ai.control.kind === 'failed' ? ai.control.reason : null}
+        />
+      )}
       {summary && (
         <FileTree
           nodes={buildDirGroups(summary.files)}
