@@ -16,6 +16,7 @@
  * The only frames are rings painted outside the box: orange for unread ticket comments or an
  * agent waiting on an answer, brand for the selected card, both when both.
  */
+import { memo } from 'react';
 import {
   Button,
   Caption1,
@@ -624,7 +625,12 @@ export function typeIcon(task: TaskSummary): JSX.Element {
   return <CircleRegular />;
 }
 
-export function TaskCard({
+/**
+ * Memoised (F29.3) on a plain shallow compare. The board's columns draw it through
+ * `BoardCardRow`, whose own comparator (`cardMemo.ts`) is the one that looks past the
+ * board-wide sets; this one spares a card whose host re-renders with the very same props.
+ */
+export const TaskCard = memo(function TaskCard({
   task,
   epicName,
   assignee,
@@ -1206,4 +1212,4 @@ export function TaskCard({
       </div>
     </div>
   );
-}
+});

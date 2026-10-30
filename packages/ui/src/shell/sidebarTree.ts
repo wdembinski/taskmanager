@@ -56,6 +56,28 @@ export function flattenVisible(
   return out;
 }
 
+/** Where `id` sits in `rows` — `-1` for no id or a row the folds have hidden. What the
+ *  windowed tree scrolls to after a key moves focus, and pins so it stays mounted. */
+export function focusIndexOf(rows: readonly SidebarVisibleRow[], id: string | null): number {
+  if (id === null) return -1;
+  return rows.findIndex((row) => row.id === id);
+}
+
+/** The rows the windowed tree keeps mounted wherever they are: the roving-focus row and the
+ *  selected one, each only when it is actually in `rows`, ascending and without repeats. */
+export function pinnedTreeRows(
+  rows: readonly SidebarVisibleRow[],
+  focusId: string | null,
+  selectedId: string | null,
+): number[] {
+  const out = new Set<number>();
+  for (const id of [focusId, selectedId]) {
+    const index = focusIndexOf(rows, id);
+    if (index >= 0) out.add(index);
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
 export interface TreeTypeahead {
   buffer: string;
 }

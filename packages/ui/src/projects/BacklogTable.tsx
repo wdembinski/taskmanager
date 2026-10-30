@@ -9,7 +9,8 @@
  * component's job stays what it always was: the list's ONE header row (`BacklogHeader`: the
  * project chip `Projects` hands in as `leading`, the "Issues" title, the Active / Backlog / All
  * tabs, a search icon that opens into the box, the "…" menu and "+"), and rendering
- * `backlogGrouping`'s sections with `IssueRow`. Loading the project's tickets itself moved
+ * `backlogGrouping`'s sections with `IssueRow`. The sections are drawn flat (`flattenBacklog`)
+ * and windowed (F29.3): only the rows in view of the list's scroller are mounted. Loading the project's tickets itself moved
  * to `useProjectTickets` (F13.13), so `Projects.tsx` can feed the same list into the issue
  * view reducer without a second fetch; this component takes the result as a `tickets` prop.
  *
@@ -17,7 +18,14 @@
  * in place: switching the selected project is rare enough that a remount — a fresh search
  * state — is simpler than reconciling this component's state to a new project mid-life.
  */
-import { type CSSProperties, type KeyboardEvent, type ReactNode, useMemo, useState } from 'react';
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+  startTransition,
+  useMemo,
+  useState,
+} from 'react';
 import {
   Button,
   Input,
@@ -42,10 +50,14 @@ import { useIssueRowFeeds } from '../issues/useIssueRowFeeds';
 import { useBoardLayoutStyles } from '../board/boardLayout';
 import { PaneLoading } from '../PaneLoading';
 import { useDeviceFolds } from '../shell/sidebarFolds';
+import { useStableCallback } from '../useStableCallback';
+import { useWindowedList } from '../virtual/useWindowedList';
 import {
   type BacklogGroupMode,
+  type BacklogRow,
   type BacklogSection,
   backlogGroups,
+  flattenBacklog,
   useBacklogGroupMode,
 } from './backlogGrouping';
 import { BACKLOG_TAB_LABEL, type BacklogTab, ticketsForTab, useBacklogTab } from './backlogTabs';
@@ -87,13 +99,13 @@ const useStyles = makeStyles({
     minHeight: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: '12px',
   },
-  group: { display: 'flex', flexDirection: 'column', gap: '2px' },
-  // A milestone's epic sub-headers (and their rows) sit one step in from the milestone's own.
-  // `marginTop` parts a milestone header from its first epic sub-header, and sub-groups from
-  // each other.
-  subGroup: { paddingLeft: '16px', marginTop: '6px' },
+  // The rows' box: windowed, it keeps the height every row would take, so the scroll extent
+  // stays what it was; `flexShrink: 0`, or the scroller's flex column would squash it to the
+  // rows it happens to hold. The gaps between groups and a milestone's inset epic sub-groups
+  // are each row's own padding now (`flattenBacklog`'s `gapBefore` and `indent`).
+  rows: { position: 'relative', flexShrink: 0 },
+  windowRow: { position: 'absolute', top: 0, left: 0, right: 0 },
   groupHeader: { display: 'flex', alignItems: 'center', gap: '4px' },
   // The fold toggle IS the caption: same muted semibold text as the old static caption, now a
   // real `<button>` so it is reachable by Tab and announces `aria-expanded`.
@@ -146,73 +158,157 @@ export function onSectionHeaderKeyDown(
   toggle();
 }
 
-export interface BacklogSectionViewProps {
-  section: BacklogSection;
+type TicketRow = Extract<BacklogRow, { kind: 'ticket' }>;
+
+export interface BacklogRowViewProps {
+  row: BacklogRow;
   /** This device's folded section ids (`useDeviceFolds`) — absent means unfolded. */
   folded: ReadonlySet<string>;
   onToggleFold: (id: string) => void;
   /** A real epic header's "Add child" — opens `NewTicketDialog` filed under that epic. */
   onAddChild: (epicId: string) => void;
-  renderRow: (ticket: Task) => ReactNode;
+  renderTicket: (row: TicketRow) => ReactNode;
 }
 
-/** One header and, unless folded, its rows and sub-sections — hook-free, so it renders
- *  statically under test. */
-export function BacklogSectionView({
-  section,
+/** One line of the flat list: a section's fold header, or a ticket `renderTicket` draws —
+ *  hook-free past its styles, so it renders statically under test. */
+export function BacklogRowView({
+  row,
   folded,
   onToggleFold,
   onAddChild,
-  renderRow,
-}: BacklogSectionViewProps): JSX.Element {
+  renderTicket,
+}: BacklogRowViewProps): JSX.Element {
   const styles = useStyles();
+  if (row.kind === 'ticket') return <>{renderTicket(row)}</>;
+  const { section } = row;
   const isFolded = folded.has(section.id);
   const toggle = (): void => onToggleFold(section.id);
   const addChildEpicId = section.addChildEpicId;
   return (
-    <div
-      className={mergeClasses(styles.group, section.level === 2 && styles.subGroup)}
-      data-backlog-section-level={section.level}
-    >
-      <div className={styles.groupHeader}>
-        <button
-          type="button"
-          className={styles.groupCaption}
-          aria-expanded={!isFolded}
-          onClick={toggle}
-          onKeyDown={(e) => onSectionHeaderKeyDown(e, toggle)}
-        >
-          {isFolded ? <ChevronRightRegular /> : <ChevronDownRegular />}
-          <span>{section.label}</span>
-          <span className={styles.groupCount}>{sectionRowCount(section)}</span>
-        </button>
-        {addChildEpicId && (
-          <Button
-            className={styles.addChild}
-            size="small"
-            appearance="subtle"
-            icon={<AddRegular />}
-            aria-label={`Add child to ${section.label}`}
-            title="Add child"
-            onClick={() => onAddChild(addChildEpicId)}
-          />
-        )}
-      </div>
-      {!isFolded && (
-        <>
-          {section.tickets.map(renderRow)}
-          {section.sections.map((sub) => (
-            <BacklogSectionView
-              key={sub.id}
-              section={sub}
-              folded={folded}
-              onToggleFold={onToggleFold}
-              onAddChild={onAddChild}
-              renderRow={renderRow}
-            />
-          ))}
-        </>
+    <div className={styles.groupHeader} data-backlog-section-level={section.level}>
+      <button
+        type="button"
+        className={styles.groupCaption}
+        aria-expanded={!isFolded}
+        onClick={toggle}
+        onKeyDown={(e) => onSectionHeaderKeyDown(e, toggle)}
+      >
+        {isFolded ? <ChevronRightRegular /> : <ChevronDownRegular />}
+        <span>{section.label}</span>
+        <span className={styles.groupCount}>{sectionRowCount(section)}</span>
+      </button>
+      {addChildEpicId && (
+        <Button
+          className={styles.addChild}
+          size="small"
+          appearance="subtle"
+          icon={<AddRegular />}
+          aria-label={`Add child to ${section.label}`}
+          title="Add child"
+          onClick={() => onAddChild(addChildEpicId)}
+        />
       )}
+    </div>
+  );
+}
+
+/** A ticket row's 34px plus the 2px above it, and a header's — both measured once drawn. */
+const TICKET_ESTIMATE = 36;
+const HEADER_ESTIMATE = 30;
+const ROW_OVERSCAN = 10;
+/** Drawn in flow for the one render before the scroller is known — more than a screenful,
+ *  and gone before the first paint: the scroller's ref re-renders it windowed. */
+const FIRST_RENDER_ROWS = 60;
+const NO_PINS: readonly number[] = [];
+const MINUTE = 60_000;
+
+interface BacklogListProps {
+  rows: BacklogRow[];
+  groupMode: BacklogGroupMode;
+  keyWidth: CSSProperties;
+  folded: ReadonlySet<string>;
+  onToggleFold: (id: string) => void;
+  onAddChild: (epicId: string) => void;
+  selectedTicketId?: string | null;
+  renderTicket: (row: TicketRow, setSize: number) => ReactNode;
+}
+
+/**
+ * The listbox, windowed against its own scroller (F29.3) — a component of its own, so a
+ * scroll redraws the list and not the header row above it. The selected row stays mounted
+ * wherever it is, and `useWindowedList` keeps the focused one mounted too.
+ */
+function BacklogList({
+  rows,
+  groupMode,
+  keyWidth,
+  folded,
+  onToggleFold,
+  onAddChild,
+  selectedTicketId,
+  renderTicket,
+}: BacklogListProps): JSX.Element {
+  const styles = useStyles();
+  // State, not a ref: `useWindowedList` reads it during render, and its arrival is what
+  // switches windowing on.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const setSize = useMemo(() => rows.filter((r) => r.kind === 'ticket').length, [rows]);
+  const pinned = useMemo(() => {
+    if (!selectedTicketId) return NO_PINS;
+    const i = rows.findIndex((r) => r.kind === 'ticket' && r.task.id === selectedTicketId);
+    return i < 0 ? NO_PINS : [i];
+  }, [rows, selectedTicketId]);
+  const win = useWindowedList({
+    count: rows.length,
+    keyOf: (i) => rows[i].key,
+    getScrollElement: () => scrollEl,
+    estimateSize: (i) => (rows[i].kind === 'header' ? HEADER_ESTIMATE : TICKET_ESTIMATE),
+    overscan: ROW_OVERSCAN,
+    pinned,
+    enabled: scrollEl !== null,
+  });
+  const drawn = win.windowed ? win.rows : win.rows.slice(0, FIRST_RENDER_ROWS);
+
+  return (
+    <div
+      ref={setScrollEl}
+      className={styles.scroll}
+      style={keyWidth}
+      role="listbox"
+      data-backlog-group-mode={groupMode}
+    >
+      <div
+        ref={win.listRef}
+        className={styles.rows}
+        // Windowed, the rows are out of flow: the box keeps the height they would take.
+        style={win.windowed ? { height: win.totalSize } : undefined}
+      >
+        {drawn.map(({ index, key, start }) => {
+          const row = rows[index];
+          return (
+            <div
+              key={key}
+              data-index={index}
+              ref={win.measureElement}
+              className={win.windowed ? styles.windowRow : undefined}
+              style={{
+                paddingTop: row.gapBefore,
+                paddingLeft: row.indent,
+                ...(win.windowed ? { transform: `translateY(${start}px)` } : {}),
+              }}
+            >
+              <BacklogRowView
+                row={row}
+                folded={folded}
+                onToggleFold={onToggleFold}
+                onAddChild={onAddChild}
+                renderTicket={(r) => renderTicket(r, setSize)}
+              />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -439,6 +535,37 @@ export function BacklogTable({
     () => ({ '--tm-key-width': keyColumnWidth(sectionKeys(sections)) }) as CSSProperties,
     [sections],
   );
+  const rows = useMemo(() => flattenBacklog(sections, foldedSet), [sections, foldedSet]);
+
+  // `IssueRow` is memoised, so a row redraws only when its own props change: each ticket's
+  // `ctx` is built once and handed back until something it reads changes — the clock
+  // included, held to the minute, the finest a due date reads.
+  const now = Math.floor(Date.now() / MINUTE) * MINUTE;
+  const ctxOf = useMemo(() => {
+    const cache = new WeakMap<Task, IssueRowContext>();
+    return (ticket: Task): IssueRowContext => {
+      let ctx = cache.get(ticket);
+      if (!ctx) {
+        ctx = {
+          now,
+          assignee: ticket.assigneeId ? people.find((p) => p.id === ticket.assigneeId) : undefined,
+          agentName: agentNameOf(agentProjects, ticket),
+          subtasks: rowIndex.subtasksByParent.get(ticket.id),
+          mergeRequests: rowIndex.mergeRequestsByTask.get(ticket.id),
+          liveRunTaskIds,
+          mergingTaskIds,
+        };
+        cache.set(ticket, ctx);
+      }
+      return ctx;
+    };
+  }, [now, people, agentProjects, rowIndex, liveRunTaskIds, mergingTaskIds]);
+  const onSelect = useStableCallback(onSelectTicket);
+  const onOpen = useStableCallback(onOpenTicket);
+  // Regrouping or switching tab redraws the whole list: a keypress may cut in on it.
+  const onTabChange = (next: BacklogTab): void => startTransition(() => setTab(next));
+  const onGroupModeChange = (next: BacklogGroupMode): void =>
+    startTransition(() => setGroupMode(next));
 
   // Drawn while the seed loads too: the chip and the view switch live in this row now, so a
   // slow load must not take the way to another project or view away with it.
@@ -446,13 +573,13 @@ export function BacklogTable({
     <BacklogHeader
       leading={leading}
       tab={tab}
-      onTabChange={setTab}
+      onTabChange={onTabChange}
       query={query}
       onQueryChange={setQuery}
       searchOpen={searchOpen}
       onSearchOpenChange={setSearchOpen}
       groupMode={groupMode}
-      onGroupModeChange={setGroupMode}
+      onGroupModeChange={onGroupModeChange}
       includeArchived={includeArchived}
       onIncludeArchivedChange={onIncludeArchivedChange}
       viewMenu={viewMenu}
@@ -469,26 +596,18 @@ export function BacklogTable({
     );
   }
 
-  const renderRow = (ticket: Task): JSX.Element => {
-    const assignee = ticket.assigneeId ? people.find((p) => p.id === ticket.assigneeId) : undefined;
-    const ctx: IssueRowContext = {
-      now: Date.now(),
-      assignee,
-      agentName: agentNameOf(agentProjects, ticket),
-      subtasks: rowIndex.subtasksByParent.get(ticket.id),
-      mergeRequests: rowIndex.mergeRequestsByTask.get(ticket.id),
-      liveRunTaskIds,
-      mergingTaskIds,
-    };
+  const renderTicket = (row: TicketRow, setSize: number): JSX.Element => {
+    const ticket = row.task;
     return (
       <IssueRow
-        key={ticket.id}
         task={ticket}
-        ctx={ctx}
+        ctx={ctxOf(ticket)}
         selected={ticket.id === selectedTicketId}
         archived={includeArchived && archivedBy(ticket, archiveIndex) !== null}
-        onSelect={onSelectTicket}
-        onOpen={onOpenTicket}
+        onSelect={onSelect}
+        onOpen={onOpen}
+        setSize={setSize}
+        posInSet={row.posInSet}
       />
     );
   };
@@ -502,23 +621,16 @@ export function BacklogTable({
           {tickets.length === 0 ? 'No tickets in this project yet.' : 'No tickets here.'}
         </Body1>
       ) : (
-        <div
-          className={styles.scroll}
-          style={keyWidth}
-          role="listbox"
-          data-backlog-group-mode={groupMode}
-        >
-          {sections.map((section) => (
-            <BacklogSectionView
-              key={section.id}
-              section={section}
-              folded={foldedSet}
-              onToggleFold={toggleFold}
-              onAddChild={(epicId) => setNewTicketDialog({ epicTaskId: epicId })}
-              renderRow={renderRow}
-            />
-          ))}
-        </div>
+        <BacklogList
+          rows={rows}
+          groupMode={groupMode}
+          keyWidth={keyWidth}
+          folded={foldedSet}
+          onToggleFold={toggleFold}
+          onAddChild={(epicId) => setNewTicketDialog({ epicTaskId: epicId })}
+          selectedTicketId={selectedTicketId}
+          renderTicket={renderTicket}
+        />
       )}
 
       <NewTicketDialog

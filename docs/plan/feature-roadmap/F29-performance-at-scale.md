@@ -134,6 +134,48 @@ Open-card reads more (7.9 → 16.9 KB) because the opened card's plan and ticket
 arrive through `task:get` instead of riding along in every board row. The long tasks are
 drawing, which F29.3 (windowing) targets.
 
+## After F29.3 (2026-10-31)
+
+Windowed board columns, issue list and sidebar tree, memoised cards and transitions (F29.3).
+Same command, same fixture and machine as the baseline; medians of 3 runs.
+
+| Interaction   | longest task (ms) | longest frame gap (ms) | long tasks (count) | IPC in (KB) | events (KB) | budget (ms) | verdict |
+| ------------- | ----------------: | ---------------------: | -----------------: | ----------: | ----------: | ----------: | ------- |
+| open-card     |              66.7 |                   66.7 |                  1 |        17.2 |         0.0 |          16 | over    |
+| approve       |              17.2 |                   17.2 |                  0 |        10.8 |         1.7 |          16 | ok      |
+| drag-card     |             116.7 |                  116.7 |                  0 |         2.4 |         0.4 |          16 | over    |
+| scroll-column |             116.7 |                  116.7 |                  0 |         0.0 |         0.0 |          16 | over    |
+| scroll-issues |              33.7 |                   33.7 |                  0 |         0.0 |         0.0 |          16 | over    |
+| expand-group  |              17.2 |                   17.2 |                  0 |         0.3 |         0.0 |          16 | ok      |
+
+The board now mounts about 66 cards instead of 5,000, so the long tasks are gone almost
+everywhere: summed over the six interactions, the median long-task count falls from 57
+after F29.2 to 1. Approve and expand-group are
+within budget. Before the last fix, scroll-column still had 5 long tasks of about 105 ms. They
+were not React: after each scroll, Chrome's hover update hit-tested every chain arrow, and
+Blink hit-tests a dashed stroke by dashing the whole path first. Arrows now take pointer
+events only on their invisible 14 px hit band (`ChainOverlay.tsx`'s `drawn`). An
+`elementFromPoint` over the board dropped from 19.3 ms to 0.1 ms.
+
+`--enforce` still fails, for three reasons:
+
+- **The frame gaps on scroll-column and drag-card are the GPU process, not the page.** A
+  trace (`Tracing.start` with `devtools.timeline`) shows no renderer task over 30 ms during
+  the scroll. Meanwhile `CrGpuMain` spends 36–45 ms on every frame, which is headless
+  Chrome's software compositor, and up to 80–90 ms when frames queue up. The same floor is
+  why scroll-issues has read 33.4 ms since the baseline with no long task at all. On this
+  harness no interaction that draws frames can get under 20 ms.
+- **open-card's one long task (57 ms) is the issue detail pane's first mount.** It is
+  `TaskDetail` with its popovers, tabs and Griffel's first style insertion, and most of it is
+  the commit. The board's own share of it is a virtualizer re-measure of under 10 ms.
+- **drag-card's renderer work is two tasks under 50 ms.** One is about 27 ms: `MyTasks`
+  re-deriving `chainStates`, `readyLanesByProject` and `bucketBoardCards` over 5,000 cards for
+  the optimistic move. The other is the sidebar's `buildSidebar` plus a garbage collection.
+  Neither is a long task; both are what F29.4 and later can trim.
+
+`node scripts/perf-board.mjs --profile <dir>` writes a CPU profile of each interaction, which
+is how these were found.
+
 ## Out of scope
 
 - Server-side pagination for cloud workspaces (F19 owns the cloud read path).

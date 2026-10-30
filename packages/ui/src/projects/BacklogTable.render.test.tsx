@@ -1,7 +1,8 @@
 /**
  * Static-markup coverage for the Backlog's foldable group headers (TM-450). `BacklogTable`
  * itself needs a transport for its live-run pill, so — like `ArchivedPane.render.test.tsx`'s
- * `ArchivedRowView` — this goes straight at the hook-free `BacklogSectionView`, driving its
+ * `ArchivedRowView` — this goes straight at the hook-free `BacklogRowView` over the rows
+ * `flattenBacklog` makes (F29.3 draws the list flat, for windowing), driving its
  * `folded` set directly rather than clicking (no DOM testing library in this package), and at
  * `onSectionHeaderKeyDown` with a fake event for the Space-never-reaches-the-pane rule.
  */
@@ -13,11 +14,11 @@ import { IssueRow } from '../issues/IssueRow';
 import {
   BacklogHeader,
   type BacklogHeaderProps,
-  BacklogSectionView,
-  type BacklogSectionViewProps,
+  BacklogRowView,
+  type BacklogRowViewProps,
   onSectionHeaderKeyDown,
 } from './BacklogTable';
-import type { BacklogSection } from './backlogGrouping';
+import { type BacklogSection, flattenBacklog } from './backlogGrouping';
 
 function ticket(id: string, title: string): Task {
   return {
@@ -55,20 +56,27 @@ function section(overrides: Partial<BacklogSection> = {}): BacklogSection {
   };
 }
 
-function render(overrides: Partial<BacklogSectionViewProps> = {}): string {
+/** The section as the list draws it: flattened, then one `BacklogRowView` per row. */
+function render(overrides: Partial<BacklogRowViewProps> = {}): string {
+  const folded = overrides.folded ?? new Set<string>();
   return renderToStaticMarkup(
-    <BacklogSectionView
-      section={section()}
-      folded={new Set()}
-      onToggleFold={() => {}}
-      onAddChild={() => {}}
-      renderRow={(t) => <div key={t.id}>{t.title}</div>}
-      {...overrides}
-    />,
+    <>
+      {flattenBacklog([section()], folded).map((row) => (
+        <BacklogRowView
+          key={row.key}
+          row={row}
+          folded={folded}
+          onToggleFold={() => {}}
+          onAddChild={() => {}}
+          renderTicket={(r) => <div>{r.task.title}</div>}
+          {...overrides}
+        />
+      ))}
+    </>,
   );
 }
 
-describe('BacklogSectionView', () => {
+describe('BacklogRowView', () => {
   it('shows its rows, its sub-headers and the total count while unfolded', () => {
     const html = render();
     expect(html).toContain('M1 · Launch');

@@ -6,8 +6,10 @@ import {
   backlogEpicGroups,
   backlogGroups,
   type BacklogGroupMode,
+  type BacklogRow,
   backlogMilestoneGroups,
   type BacklogSection,
+  flattenBacklog,
   parseGroupMode,
 } from './backlogGrouping';
 import { backlogStatusGroups } from './backlogStatus';
@@ -290,5 +292,107 @@ describe('backlogGroups — every mode', () => {
       });
       expect(allRows(sections), mode).toEqual([parent]);
     }
+  });
+});
+
+/** A row as `[kind, what it names, level, gapBefore, indent]` — the shape the list draws. */
+function shape(rows: BacklogRow[]): [string, string, number, number, number][] {
+  return rows.map((r) => [
+    r.kind,
+    r.kind === 'header' ? r.section.id : r.task.id,
+    r.level,
+    r.gapBefore,
+    r.indent,
+  ]);
+}
+
+describe('flattenBacklog', () => {
+  it('lists status groups as header then rows, 12px between groups and 2px between rows', () => {
+    const a = ticket({ ticketKey: 'TM-1', status: 'pending' });
+    const b = ticket({ ticketKey: 'TM-2', status: 'pending' });
+    const c = ticket({ ticketKey: 'TM-3', status: 'done' });
+    const sections = backlogGroups('status', { ...base, tickets: [a, b, c], milestones: [] });
+    const [todo, done] = sections.map((s) => s.id);
+    expect(shape(flattenBacklog(sections, new Set()))).toEqual([
+      ['header', todo, 1, 0, 0],
+      ['ticket', a.id, 1, 2, 0],
+      ['ticket', b.id, 1, 2, 0],
+      ['header', done, 1, 12, 0],
+      ['ticket', c.id, 1, 2, 0],
+    ]);
+  });
+
+  it('keeps an empty epic group as a header alone', () => {
+    const epic = ticket({ issueType: 'epic', title: 'Payments' });
+    const empty = ticket({ issueType: 'epic', title: 'Empty' });
+    const child = ticket({ epicTaskId: epic.id });
+    const sections = backlogEpicGroups({ ...base, tickets: [epic, empty, child], milestones: [] });
+    expect(shape(flattenBacklog(sections, new Set()))).toEqual([
+      ['header', `epic:${epic.id}`, 1, 0, 0],
+      ['ticket', child.id, 1, 2, 0],
+      ['header', `epic:${empty.id}`, 1, 12, 0],
+    ]);
+  });
+
+  it('insets a milestone’s epic sub-headers and their rows, 8px below what precedes them', () => {
+    const epic = ticket({ issueType: 'epic', milestoneId: 'm1', title: 'Checkout' });
+    const child = ticket({ milestoneId: 'm1', epicTaskId: epic.id });
+    const loose = ticket({ milestoneId: 'm1' });
+    const flat = ticket({ milestoneId: 'm2' });
+    const sections = backlogMilestoneGroups({
+      ...base,
+      tickets: [epic, child, loose, flat],
+      milestones: [milestone({ id: 'm1', dueAt: 1 }), milestone({ id: 'm2', dueAt: 2 })],
+    });
+    expect(shape(flattenBacklog(sections, new Set()))).toEqual([
+      ['header', 'milestone:m1', 1, 0, 0],
+      ['header', `milestone:m1/epic:${epic.id}`, 2, 8, 16],
+      ['ticket', child.id, 2, 2, 16],
+      ['header', 'milestone:m1/epic:none', 2, 8, 16],
+      ['ticket', loose.id, 2, 2, 16],
+      ['header', 'milestone:m2', 1, 12, 0],
+      ['ticket', flat.id, 1, 2, 0],
+    ]);
+  });
+
+  it('emits only the header of a folded group, sub-headers included', () => {
+    const epic = ticket({ issueType: 'epic', milestoneId: 'm1', title: 'Checkout' });
+    const child = ticket({ milestoneId: 'm1', epicTaskId: epic.id });
+    const loose = ticket({ milestoneId: 'm1' });
+    const flat = ticket({ milestoneId: 'm2' });
+    const sections = backlogMilestoneGroups({
+      ...base,
+      tickets: [epic, child, loose, flat],
+      milestones: [milestone({ id: 'm1', dueAt: 1 }), milestone({ id: 'm2', dueAt: 2 })],
+    });
+    expect(shape(flattenBacklog(sections, new Set(['milestone:m1'])))).toEqual([
+      ['header', 'milestone:m1', 1, 0, 0],
+      ['header', 'milestone:m2', 1, 12, 0],
+      ['ticket', flat.id, 1, 2, 0],
+    ]);
+    expect(
+      shape(flattenBacklog(sections, new Set([`milestone:m1/epic:${epic.id}`]))).map((r) => r[1]),
+    ).toEqual([
+      'milestone:m1',
+      `milestone:m1/epic:${epic.id}`,
+      'milestone:m1/epic:none',
+      loose.id,
+      'milestone:m2',
+      flat.id,
+    ]);
+  });
+
+  it('numbers the options from 1 across groups, skipping headers and folded rows', () => {
+    const a = ticket({ status: 'pending' });
+    const b = ticket({ status: 'in-progress' });
+    const c = ticket({ status: 'done' });
+    const sections = backlogGroups('status', { ...base, tickets: [a, b, c], milestones: [] });
+    const foldedId = sections.find((s) => s.tickets.includes(b))!.id;
+    const rows = flattenBacklog(sections, new Set([foldedId]));
+    const options = rows.flatMap((r) => (r.kind === 'ticket' ? [[r.task.id, r.posInSet]] : []));
+    const shown = sections.filter((s) => s.id !== foldedId).flatMap((s) => s.tickets);
+    expect(shown).toHaveLength(2);
+    expect(options).toEqual(shown.map((t, i) => [t.id, i + 1]));
+    expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
   });
 });
