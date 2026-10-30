@@ -1480,6 +1480,8 @@ export function MyTasks({
               runStartedAt={runStartedAt}
               mergingTaskIds={merging}
               anchorRef={anchors.anchorRef}
+              scrollElement={anchors.container}
+              registerColumn={anchors.registerColumn}
               linksDrawn={linksDrawn}
               dimmedTaskIds={linkState.dimmedTaskIds}
               linkDrag={linkDrag}

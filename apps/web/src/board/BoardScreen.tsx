@@ -412,6 +412,9 @@ export function BoardScreen({
 
   /** Where every card is, for the arrows — see `useCardAnchors`. */
   const anchors = useCardAnchors(cardsByColumn);
+  /** The wide grid's scroller, which its columns window against (F29.3). In state, not a
+   *  ref, so the columns re-render and switch windowing on once it mounts. */
+  const [gridScroller, setGridScroller] = useState<HTMLDivElement | null>(null);
 
   /**
    * Where each chained card stands. `MyTasks`'s own `chainStates`, over the mirrored rows
@@ -927,6 +930,7 @@ export function BoardScreen({
           )
         ) : (
           <div
+            ref={setGridScroller}
             className={mergeClasses(layout.columns, linksDrawn && layout.columnsLinked)}
             onClick={() => setSelectedLinkId(null)}
           >
@@ -949,6 +953,8 @@ export function BoardScreen({
                 runStartedAt={extras.runStartedAt}
                 mergingTaskIds={extras.mergingTaskIds}
                 anchorRef={anchors.anchorRef}
+                scrollElement={gridScroller}
+                registerColumn={anchors.registerColumn}
                 linksDrawn={linksDrawn}
                 dimmedTaskIds={linkState.dimmedTaskIds}
                 linkDrag={linkDrag}

@@ -28,10 +28,34 @@
  * its nearest `[data-board-column]` ancestor rather than passed in, since the column already
  * has to carry that marker for its own extent to be measured — asking the DOM once is cheaper
  * than threading a second index through `KanbanColumn`/`TaskCard` alongside `anchorRef`.
+ *
+ * A windowed column (F29.3) mounts only the cards in view, so the DOM alone no longer knows
+ * where every card is — and a card with no rect is drawn as a hidden-card stub. Such a column
+ * registers a layout provider (`registerColumn`): its list element and every card's offset
+ * and height down that list. `measure()` keeps DOM rects for the mounted cards and builds a
+ * synthetic one (`syntheticRect`) for each of the rest; the provider, not `closest()`, says
+ * which column every one of its cards is in. Hover stays on mounted cards only.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { syntheticRect, type ListBox } from '../virtual/windowing';
 import type { AnchorRect } from './chainArrows';
 import type { ColumnBand, RouteLayout } from './chainRoute';
+
+/** One card of a windowed column: its offset from the top of the list element, and height. */
+export interface ColumnLayoutItem {
+  id: string;
+  start: number;
+  size: number;
+}
+
+/** What a windowed column reports: the list its cards sit in, and every card's place in it. */
+export interface ColumnLayout {
+  listEl: HTMLElement | null;
+  items: readonly ColumnLayoutItem[];
+}
+
+/** Asked at every measure — cheap, it only reads what the column's virtualizer holds. */
+export type ColumnLayoutProvider = () => ColumnLayout;
 
 /** The overlay's own box: the board's visible width, and everything down to the last card. */
 export interface AnchorBounds {
@@ -67,22 +91,81 @@ export interface CardAnchors {
    * Null before the container mounts.
    */
   toContentPoint: (clientX: number, clientY: number) => { x: number; y: number } | null;
+  /** The element `containerRef` was set on — the board's scroller, which windowed columns
+   *  window against. Null before it mounts. */
+  container: HTMLDivElement | null;
+  /**
+   * A windowed column's layout, so cards it has not mounted still get a rect and a column.
+   * Calling it again for the same key replaces the provider and re-measures — which is how a
+   * column reports that its cards moved or changed size. Returns the unregister.
+   */
+  registerColumn: (columnKey: string, provider: ColumnLayoutProvider) => () => void;
 }
 
-/** Whether two measurements say the same thing, so an idle re-measure re-renders nothing. */
+/** One registered column, already in content space: its list's box and its column index. */
+export interface ColumnPlacement {
+  /** The column's index among the `[data-board-column]` elements; absent when not found. */
+  index: number | undefined;
+  box: ListBox;
+  items: readonly ColumnLayoutItem[];
+}
+
+export interface MergedAnchors {
+  rects: Map<string, AnchorRect>;
+  cardColumns: Map<string, number>;
+  /** The lowest card bottom, mounted or not — the overlay's height. */
+  lowest: number;
+  /** The highest card top, mounted or not — the bus band's floor; Infinity with no cards. */
+  highest: number;
+}
+
+/**
+ * Every card's rect and column: the DOM's rect for a mounted card, the column's synthetic
+ * one for a card it has not mounted. A registered column decides its cards' column index;
+ * `domColumns` (read off `closest()`) only covers mounted cards no column claims.
+ */
+export function mergeAnchorRects(
+  domRects: ReadonlyMap<string, AnchorRect>,
+  domColumns: ReadonlyMap<string, number>,
+  columns: readonly ColumnPlacement[],
+): MergedAnchors {
+  const rects = new Map(domRects);
+  const cardColumns = new Map(domColumns);
+  for (const column of columns) {
+    for (const item of column.items) {
+      if (!rects.has(item.id)) rects.set(item.id, syntheticRect(column.box, item));
+      if (column.index !== undefined) cardColumns.set(item.id, column.index);
+    }
+  }
+  let lowest = 0;
+  let highest = Infinity;
+  for (const r of rects.values()) {
+    lowest = Math.max(lowest, r.bottom);
+    highest = Math.min(highest, r.top);
+  }
+  return { rects, cardColumns, lowest, highest };
+}
+
+/**
+ * Whether two measurements say the same thing, so an idle re-measure re-renders nothing.
+ * Within half a pixel: a synthetic rect is a sum of measured heights and gaps, and the DOM
+ * rect that replaces it when the card mounts can differ from it by a rounding error — which
+ * must not re-render the board on every scroll frame.
+ */
 function sameRects(
   a: ReadonlyMap<string, AnchorRect>,
   b: ReadonlyMap<string, AnchorRect>,
 ): boolean {
   if (a.size !== b.size) return false;
+  const near = (x: number, y: number): boolean => Math.abs(x - y) < 0.5;
   for (const [id, ra] of a) {
     const rb = b.get(id);
     if (!rb) return false;
     if (
-      ra.left !== rb.left ||
-      ra.top !== rb.top ||
-      ra.width !== rb.width ||
-      ra.height !== rb.height
+      !near(ra.left, rb.left) ||
+      !near(ra.top, rb.top) ||
+      !near(ra.width, rb.width) ||
+      !near(ra.height, rb.height)
     )
       return false;
   }
@@ -136,6 +219,8 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
   const frame = useRef<number | null>(null);
   const containerEl = useRef<HTMLDivElement | null>(null);
   containerEl.current = container;
+  /** The windowed columns' layouts, by column key — see `registerColumn`. */
+  const providers = useRef(new Map<string, ColumnLayoutProvider>());
 
   const measure = useCallback(() => {
     const root = containerEl.current;
@@ -143,15 +228,14 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
     const base = root.getBoundingClientRect();
     const sx = root.scrollLeft;
     const sy = root.scrollTop;
-    const next = new Map<string, AnchorRect>();
-    let lowest = 0;
+    const domRects = new Map<string, AnchorRect>();
     for (const [id, el] of elements.current) {
       // A card React has already detached still sits in the map until its ref fires.
       if (!el.isConnected) continue;
       const b = el.getBoundingClientRect();
       const left = b.left - base.left + sx;
       const top = b.top - base.top + sy;
-      next.set(id, {
+      domRects.set(id, {
         left,
         top,
         right: left + b.width,
@@ -159,17 +243,7 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
         width: b.width,
         height: b.height,
       });
-      lowest = Math.max(lowest, top + b.height);
     }
-    setRects((prev) => (sameRects(prev, next) ? prev : next));
-    setBounds((prev) => {
-      // Height comes from the CARDS, never from `scrollHeight`: the overlay is a child of
-      // the scroll container, so sizing it from the extent it is itself part of would let
-      // it hold the board's scroll height up and never shrink back.
-      const width = root.clientWidth;
-      const height = Math.max(root.clientHeight, Math.ceil(lowest) + 8);
-      return prev.width === width && prev.height === height ? prev : { width, height };
-    });
 
     // The columns' own extent, in the same content space — left to right in document order,
     // which is also the board's left-to-right order (`gridAutoFlow: 'column'` never reorders).
@@ -188,18 +262,42 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
       busTop = Math.max(busTop, b.bottom - base.top + sy);
     }
 
-    const nextColumns = new Map<string, number>();
-    let busBottom = Infinity;
+    const domColumns = new Map<string, number>();
     for (const [id, el] of elements.current) {
       if (!el.isConnected) continue;
       const columnEl = el.closest('[data-board-column]');
       const index = columnEl ? columnIndexOf.get(columnEl) : undefined;
-      if (index !== undefined) nextColumns.set(id, index);
-      const top = next.get(id)?.top;
-      if (top !== undefined) busBottom = Math.min(busBottom, top);
+      if (index !== undefined) domColumns.set(id, index);
     }
-    if (!Number.isFinite(busBottom)) busBottom = busTop;
 
+    const placements: ColumnPlacement[] = [];
+    for (const provider of providers.current.values()) {
+      const { listEl, items } = provider();
+      if (!listEl?.isConnected) continue;
+      const b = listEl.getBoundingClientRect();
+      const columnEl = listEl.closest('[data-board-column]');
+      placements.push({
+        index: columnEl ? columnIndexOf.get(columnEl) : undefined,
+        box: { left: b.left - base.left + sx, top: b.top - base.top + sy, width: b.width },
+        items,
+      });
+    }
+
+    const merged = mergeAnchorRects(domRects, domColumns, placements);
+    const next = merged.rects;
+    setRects((prev) => (sameRects(prev, next) ? prev : next));
+    setBounds((prev) => {
+      // Height comes from the CARDS, never from `scrollHeight`: the overlay is a child of
+      // the scroll container, so sizing it from the extent it is itself part of would let
+      // it hold the board's scroll height up and never shrink back. Every card, mounted or
+      // not — a windowed column's last card is rarely in the DOM.
+      const width = root.clientWidth;
+      const height = Math.max(root.clientHeight, Math.ceil(merged.lowest) + 8);
+      return prev.width === width && prev.height === height ? prev : { width, height };
+    });
+
+    const busBottom = Number.isFinite(merged.highest) ? merged.highest : busTop;
+    const nextColumns = merged.cardColumns;
     setCardColumns((prev) => (sameColumns(prev, nextColumns) ? prev : nextColumns));
     setLayout((prev) => {
       const next: RouteLayout = { columns, busTop, busBottom, boardWidth: root.clientWidth };
@@ -279,8 +377,23 @@ export function useCardAnchors(revision?: unknown): CardAnchors {
   // The cards changed, or were re-ordered — see `revision`.
   useEffect(schedule, [schedule, revision]);
 
+  const registerColumn = useCallback(
+    (columnKey: string, provider: ColumnLayoutProvider) => {
+      providers.current.set(columnKey, provider);
+      schedule();
+      return () => {
+        // A later registration for the same key has already replaced this one.
+        if (providers.current.get(columnKey) === provider) providers.current.delete(columnKey);
+        schedule();
+      };
+    },
+    [schedule],
+  );
+
   return {
     containerRef: setContainer,
+    container,
+    registerColumn,
     anchorRef,
     rects,
     bounds,
