@@ -9,6 +9,7 @@ import type { AiDraftInput, AiReview, AiReviewStatus } from '@shared/aiReview';
 import type { AuthState } from '@shared/auth';
 import type { LimitState } from '@shared/limit';
 import type { Project, Task } from '@shared/model';
+import type { AppSettings } from '@shared/settings';
 import {
   markOutdated,
   WORKTREE_CAPABILITIES,
@@ -37,6 +38,11 @@ const PROJECT = {
   path: '/repo',
   planningModel: null,
   reviewModel: null,
+  leadModel: null,
+  leadEffort: null,
+  planningEffort: null,
+  workerEffort: null,
+  reviewEffort: null,
   defaultModel: 'sonnet',
 } as unknown as Project;
 
@@ -252,6 +258,10 @@ function harness(
       return [];
     }),
     getTask: (id) => tasks.get(id),
+    getSettings: () =>
+      ({
+        defaultEfforts: { lead: 'high', planner: 'high', workers: 'low', reviewer: 'xhigh' },
+      }) as AppSettings,
   };
 
   const worktrees = {
@@ -353,6 +363,35 @@ describe('AiReviewRunner — a clean run', () => {
     expect(h.sessions.stop).toHaveBeenCalledWith(runId);
     expect(h.worktrees.remove).toHaveBeenCalledWith(PROJECT, review.id);
     expect(h.emitted.at(-1)?.status).toBe('done');
+  });
+
+  it('runs at the app reviewer effort when neither card nor project sets one', async () => {
+    const h = harness();
+    await started(h, 'pr:github:1');
+    expect(h.requests[0]).toMatchObject({ model: 'sonnet', effort: 'xhigh' });
+  });
+
+  it("takes the project's reviewer model and effort over the app default", async () => {
+    const project = { ...PROJECT, reviewModel: 'haiku', reviewEffort: 'medium' } as Project;
+    const h = harness({ resolve: (id) => ({ ...target(id), project }) });
+    await started(h);
+    expect(h.requests[0]).toMatchObject({ model: 'haiku', effort: 'medium' });
+  });
+
+  it("takes the card's reviewer model and effort over the project's — a step reads its owner", async () => {
+    const project = { ...PROJECT, reviewModel: 'haiku', reviewEffort: 'medium' } as Project;
+    const card = { id: 't1', agentReviewModel: 'fable', agentReviewEffort: 'max' } as Task;
+    const step = { id: 's1', parentTaskId: 't1' } as Task;
+    const h = harness({ tasks: [card, step], resolve: (id) => ({ ...target(id), project }) });
+    await started(h);
+    expect(h.requests[0]).toMatchObject({ model: 'fable', effort: 'max' });
+
+    const viaStep = harness({
+      tasks: [card, step],
+      resolve: (id) => ({ ...target(id), project }),
+    });
+    await started(viaStep, 'task:s1');
+    expect(viaStep.requests[0]).toMatchObject({ model: 'fable', effort: 'max' });
   });
 
   it('launches with the review flags, in the worktree, on the planning ladder', async () => {

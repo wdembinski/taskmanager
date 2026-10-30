@@ -33,8 +33,15 @@ import {
   parseAiReviewVerdict,
   type AiReviewVerdict,
 } from '@shared/aiVisualReview';
-import type { Project, Task, TaskActivityEntry } from '@shared/model';
+import {
+  resolveRoleEffort,
+  resolveRoleModel,
+  type Project,
+  type Task,
+  type TaskActivityEntry,
+} from '@shared/model';
 import type { StartSessionRequest } from '@shared/session';
+import type { AppSettings } from '@shared/settings';
 import { latestVisualState, shotPairs } from '@shared/visualSignOff';
 import { buildAiReviewPrompt } from '../aiReviewPrompt';
 
@@ -59,6 +66,8 @@ export function isAiReviewDecision(question: string | null | undefined): boolean
 export interface AiVisualReviewerDeps {
   getTask(taskId: string): Task | undefined;
   getProject(projectId: string): Project | undefined;
+  /** Read on every review, so a changed default effort applies to the next one. */
+  getSettings(): Pick<AppSettings, 'defaultEfforts'>;
   /** The card's steps, in order. */
   listSubtasks(ownerId: string): Task[];
   listAttachments(taskId: string): TaskAttachment[];
@@ -230,7 +239,9 @@ export function createAiVisualReviewer(deps: AiVisualReviewerDeps): AiVisualRevi
       {
         prompt,
         cwd,
-        model: project.planningModel ?? project.defaultModel,
+        // The reviewer role, rung by rung from the card whose screens are being judged.
+        model: resolveRoleModel('reviewer', owner, project),
+        effort: resolveRoleEffort('reviewer', owner, project, deps.getSettings()),
         permissionMode: 'plan',
         disallowedTools: AI_REVIEW_DISALLOWED_TOOLS,
       },

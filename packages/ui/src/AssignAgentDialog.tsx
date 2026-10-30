@@ -44,13 +44,25 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { PERMISSION_MODE_LABELS } from '@tm/shared/session';
-import type { ClaudeModel, PermissionMode } from '@tm/shared/session';
+import type { PermissionMode } from '@tm/shared/session';
 import type { BoardScope } from '@tm/shared/ipc';
-import { resolveRunModel } from '@tm/shared/model';
+import { AGENT_ROLES } from '@tm/shared/model';
 import type { Project, Task } from '@tm/shared/model';
-import { cardModelFromOption, projectDefaultLabel, PROJECT_DEFAULT } from './modelChoice';
-import { ModelField } from './ModelField';
-import { PlanningModelField } from './PlanningModelField';
+import { estimateRun, type RunEstimate } from '@tm/shared/runEstimate';
+import { DEFAULT_EFFORTS } from '@tm/shared/settings';
+import { useModelLabels } from './ModelField';
+import { RolesTable, type RoleRow } from './RolesTable';
+import {
+  emptyRoles,
+  fallbackModel,
+  roleWrites,
+  seedRoles,
+  setRoleEffort,
+  setRoleModel,
+  shownEffort,
+  type RoleWrites,
+  type RolesState,
+} from './rolesTableModel';
 import { variantCountNote, type AssignCount } from './variantCount';
 import {
   BRANCH_TYPES,
@@ -98,8 +110,12 @@ const useStyles = makeStyles({
    * hints and a paragraph do not fit a short window, and a dialog whose Assign button is
    * below the fold is a dialog you cannot use.
    */
-  surface: { maxWidth: 'min(720px, calc(100vw - 48px))', width: '100%' },
-  body: { maxHeight: 'calc(100vh - 160px)' },
+  surface: { maxWidth: 'min(780px, calc(100vw - 48px))', width: '100%' },
+  /**
+   * Capped near v11-4's 650px frame too: the roles section and the footer stay in view and
+   * the fields below the roles scroll, rather than the dialog growing past the window.
+   */
+  body: { maxHeight: 'min(590px, calc(100vh - 160px))' },
   /**
    * `minWidth: 0` and not a fixed one: the surface owns the width now, and a min-width here
    * would put it straight back to overflowing the moment the window got narrow.
@@ -131,7 +147,27 @@ const useStyles = makeStyles({
    */
   dropdown: { minWidth: 0, width: '100%' },
   hint: { color: tokens.colorNeutralForeground3 },
-  ticket: { color: tokens.colorNeutralForeground2 },
+  /** The card's key ahead of the title, mono and muted (v11-4). */
+  key: {
+    fontFamily: tokens.fontFamilyMonospace,
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightRegular,
+    color: tokens.colorNeutralForeground4,
+    marginRight: '12px',
+  },
+  /** The hairlines framing the roles section. */
+  divider: {
+    height: 0,
+    borderTop: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+  },
+  estimate: { alignItems: 'center', gap: '12px' },
+  estimateLabel: { fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 },
+  estimateValue: {
+    fontFamily: tokens.fontFamilyMonospace,
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+    whiteSpace: 'pre',
+  },
   /** The Instructions textarea plus its template menu, side by side. */
   notesRow: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
   notesArea: { flex: 1, minWidth: 0 },
@@ -151,6 +187,8 @@ export interface AssignAgentDialogProps {
    * project may have no repo at all, which is exactly the case that hint explains.
    */
   filingProjects?: BoardScope[];
+  /** How many steps the card already has — the estimate counts a session per step. */
+  stepCount?: number;
   onClose: () => void;
   /** The updated task, so the board can patch the card without a refresh. */
   onAssigned: (task: Task) => void;
@@ -161,17 +199,21 @@ export function AssignAgentDialog({
   task,
   agentProjects,
   filingProjects = [],
+  stepCount = 0,
   onClose,
   onAssigned,
 }: AssignAgentDialogProps): JSX.Element {
   const transport = useTransport();
   const styles = useStyles();
   const [projectId, setProjectId] = useState<string>('');
-  // Null = "follow the agent project", and the dialog's default. See the seeding below.
-  const [model, setModel] = useState<ClaudeModel | null>(null);
-  // Same story as `model`, one level down: this card's OWN planning override, not the
-  // project's. See the seeding below.
-  const [planningModel, setPlanningModel] = useState<ClaudeModel | null>(null);
+  // The card's OWN model and effort per role (F28.1); null = "follow the next rung", and
+  // the dialog's default. See the seeding below and `rolesTableModel.ts`.
+  const [roles, setRoles] = useState<RolesState>(emptyRoles);
+  // The app's effort per role — the last rung the effort controls show. Read from settings
+  // on open; the out-of-the-box value until that answers.
+  const [defaultEfforts, setDefaultEfforts] = useState(DEFAULT_EFFORTS);
+  // What this project's past sessions cost, for the estimate line. Null = no line.
+  const [estimate, setEstimate] = useState<RunEstimate | null>(null);
   const [mode, setMode] = useState<PermissionMode>('acceptEdits');
   // ×1 is Assign agent as it always was; ×2/×3 start a variant group instead — see
   // `variantCountNote`. Reset on open, same as every other field below.
@@ -215,8 +257,10 @@ export function AssignAgentDialog({
     //
     // The one-shot in `store.ts` let go of the overrides this dialog had already written;
     // this line is what stops it writing them again.
-    setModel(card.agentModel ?? null);
-    setPlanningModel(card.agentPlanningModel ?? null);
+    //
+    // The same holds for every role's model and effort: the table SHOWS the resolved value
+    // but seeds only what the card already chose.
+    setRoles(seedRoles(card));
     setMode(seedPermissionMode(card, resolved));
     setBranchTouched(false);
     const type = inferBranchType({
@@ -232,6 +276,7 @@ export function AssignAgentDialog({
       .invoke('settings:get')
       .then((settings) => {
         setPrefix(settings.branchPrefix);
+        setDefaultEfforts(settings.defaultEfforts ?? DEFAULT_EFFORTS);
         setBranch(
           card.agentBranch ??
             buildBranchName({
@@ -297,22 +342,19 @@ export function AssignAgentDialog({
     });
   }
 
-  /** The delegation itself — agent project, model/mode overrides, instructions, branch. */
-  function buildAssignInput(): {
+  /** The delegation itself — agent project, role/mode overrides, instructions, branch. */
+  function buildAssignInput(): RoleWrites & {
     agentProjectId: string;
     mode: PermissionMode;
-    model: ClaudeModel | undefined;
-    planningModel: ClaudeModel | undefined;
     notes: string | undefined;
     branch: string | undefined;
   } {
     return {
       agentProjectId: projectId,
       mode,
-      // Omitted rather than null: `task:assignAgent` maps a missing model to null, which
-      // is the same "follow the project" this dialog means by it.
-      model: model ?? undefined,
-      planningModel: planningModel ?? undefined,
+      // Each role's model and effort, omitted rather than null: `task:assignAgent` maps a
+      // missing field to null, which is the same "follow the next rung" the table means.
+      ...roleWrites(roles),
       notes: notes.trim() || undefined,
       branch: branch.trim() || undefined,
     };
@@ -398,11 +440,37 @@ export function AssignAgentDialog({
     setWorkflowId((id) => reconcileSelection(id, workflowState.workflows));
   }, [workflowState.workflows]);
   const selected = agentProjects.find((p) => p.id === projectId) ?? null;
-  // What this card's steps actually resolve to right now, so the planning field's
-  // "Same as steps execution (…)" sentinel names it accurately rather than a stale guess.
-  const executionModel: ClaudeModel = selected
-    ? resolveRunModel({ agentModel: model }, selected, false)
-    : (model ?? PROJECT_DEFAULT);
+  const labelOf = useModelLabels();
+  // Each role's row: the default option names the model it actually falls back to right
+  // now (other roles' picks included), and the effort shown is the resolved one.
+  const roleRows: RoleRow[] = AGENT_ROLES.map((role) => ({
+    role,
+    model: roles[role].model,
+    sentinelLabel: selected ? labelOf(fallbackModel(role, roles, selected)) : 'Project default',
+    effort: shownEffort(role, roles, selected, defaultEfforts),
+  }));
+
+  // The estimate follows the project picked above: its own run history, never a price list.
+  useEffect(() => {
+    if (!open || !projectId) {
+      setEstimate(null);
+      return;
+    }
+    let live = true;
+    void transport
+      .invoke('project:runStats', projectId)
+      .then((stats) => {
+        // An answer that is not a summary (a host with no history to give) is no line.
+        if (live)
+          setEstimate(
+            typeof stats?.sessionCount === 'number' ? estimateRun(stats, stepCount) : null,
+          );
+      })
+      .catch(() => live && setEstimate(null));
+    return () => {
+      live = false;
+    };
+  }, [open, projectId, stepCount]);
   // Validated on every keystroke with the SAME rules the engine applies before cutting a
   // worktree, so a name that will be rejected is rejected here — where you can still fix
   // it — rather than several seconds later inside git's stderr.
@@ -412,7 +480,8 @@ export function AssignAgentDialog({
     trimmedBranch && branchCheck && !branchCheck.ok
       ? `That won't work: ${branchCheck.reason}.`
       : null;
-  const ticket = task?.externalKey ? `${task.externalKey} — ${task.title}` : (task?.title ?? '');
+  // The mockup's header: the card's key in mono, then what this dialog does to it.
+  const ticketKey = task ? (task.externalKey ?? task.ticketKey ?? null) : null;
   // Names the project in the empty-picker hint below, when that's WHY it's empty: the card
   // is filed somewhere, that project just isn't an agent project (no repo). `filingProjects`
   // rather than `agentProjects` because the project we need to name is exactly the one
@@ -426,11 +495,12 @@ export function AssignAgentDialog({
     <Dialog open={open} onOpenChange={(_e, d) => !d.open && onClose()}>
       <DialogSurface className={styles.surface}>
         <DialogBody className={styles.body}>
-          <DialogTitle>Assign to an agent</DialogTitle>
+          <DialogTitle>
+            {ticketKey && <span className={styles.key}>{ticketKey}</span>}
+            Start: {task?.title ?? ''}
+          </DialogTitle>
           <DialogContent>
             <div className={styles.form}>
-              <Body1 className={styles.ticket}>{ticket}</Body1>
-
               {error && (
                 <MessageBar intent="error">
                   <MessageBarBody>{error}</MessageBarBody>
@@ -471,6 +541,19 @@ export function AssignAgentDialog({
                       ))}
                     </Dropdown>
                   </Field>
+
+                  {/* F28.4/F28.5's "How it runs" and Lead rows go here, above the roles. */}
+
+                  <div className={styles.divider} />
+                  <RolesTable
+                    rows={roleRows}
+                    disabled={busy}
+                    onModelChange={(role, m) => setRoles((r) => setRoleModel(r, role, m))}
+                    onEffortChange={(role, e) => setRoles((r) => setRoleEffort(r, role, e))}
+                  />
+                  <div className={styles.divider} />
+
+                  {/* F28.4/F28.5's Limits and "Ask me when" rows go here, below the roles. */}
 
                   <Field
                     label="Workflow (optional)"
@@ -534,28 +617,6 @@ export function AssignAgentDialog({
                     </div>
                   </Field>
 
-                  {/* Same pair, and the same reason for no hints inside the row, as the
-                      project form: planning is the run that reads the repo and decides what
-                      the work is, execution the one that carries out a brief. Overriding one
-                      no longer necessarily overrides the other. */}
-                  <div className={styles.row}>
-                    <PlanningModelField
-                      label="Planning model"
-                      className={styles.grow}
-                      value={planningModel}
-                      executionModel={executionModel}
-                      onChange={setPlanningModel}
-                    />
-                    <ModelField
-                      label="Steps execution model"
-                      className={styles.grow}
-                      dropdownClassName={styles.dropdown}
-                      hint={model ? 'Overrides the project.' : undefined}
-                      value={model ?? PROJECT_DEFAULT}
-                      onChange={(v) => setModel(cardModelFromOption(v))}
-                      sentinel={{ value: PROJECT_DEFAULT, label: projectDefaultLabel(selected) }}
-                    />
-                  </div>
                   <div className={styles.row}>
                     <Field label="Permission mode" className={styles.grow}>
                       <Dropdown
@@ -645,7 +706,18 @@ export function AssignAgentDialog({
               )}
             </div>
           </DialogContent>
-          <DialogActions>
+          {/* The estimate line, left of the buttons — omitted with no run history to base it on. */}
+          <DialogActions position="start" className={styles.estimate}>
+            {estimate && (
+              <>
+                <span className={styles.estimateLabel}>Estimate</span>
+                <span className={styles.estimateValue} data-run-estimate>
+                  {`${estimate.cost}  ·  ${estimate.sessions}  ·  ${estimate.duration}`}
+                </span>
+              </>
+            )}
+          </DialogActions>
+          <DialogActions position="end">
             <Button appearance="secondary" onClick={onClose} disabled={busy}>
               Cancel
             </Button>
@@ -667,7 +739,7 @@ export function AssignAgentDialog({
               onClick={() => void (count === 1 ? assign(true) : startVariants())}
               disabled={busy || !projectId || branchError !== null}
             >
-              {busy ? 'Starting…' : count === 1 ? 'Assign & start' : `Start ${count} variants`}
+              {busy ? 'Starting…' : count === 1 ? 'Start' : `Start ${count} variants`}
             </Button>
           </DialogActions>
         </DialogBody>

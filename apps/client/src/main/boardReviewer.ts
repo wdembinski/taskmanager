@@ -16,7 +16,7 @@
  */
 import { columnForStatus, isBoardCard } from '@shared/board';
 import { parseBoardReviewReport, type BoardReviewRecord } from '@shared/boardReview';
-import { hasRepo, type Task } from '@shared/model';
+import { hasRepo, resolveRoleEffort, resolveRoleModel, type Task } from '@shared/model';
 import type { StartSessionRequest } from '@shared/session';
 import { buildBoardReviewPrompt, type BoardReviewPromptInput } from './boardReviewPrompt';
 import { AI_REVIEW_DISALLOWED_TOOLS } from './forge/aiVisualReviewer';
@@ -26,6 +26,7 @@ import type { Store } from './store';
 export type BoardReviewerStore = Pick<
   Store,
   | 'getProject'
+  | 'getSettings'
   | 'getBoardTasks'
   | 'listMilestones'
   | 'listTaskLinks'
@@ -144,7 +145,9 @@ export function createBoardReviewer(deps: BoardReviewerDeps): BoardReviewer {
         {
           prompt,
           cwd: project.path,
-          model: project.planningModel ?? project.defaultModel,
+          // The reviewer role with no card: the board is the project's, not one ticket's.
+          model: resolveRoleModel('reviewer', null, project),
+          effort: resolveRoleEffort('reviewer', null, project, store.getSettings()),
           permissionMode: 'plan',
           disallowedTools: AI_REVIEW_DISALLOWED_TOOLS,
         },

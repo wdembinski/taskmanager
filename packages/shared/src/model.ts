@@ -275,6 +275,26 @@ export interface Project {
    * `reviewModel ?? planningModel ?? defaultModel`. See {@link Project.planningModel}.
    */
   reviewModel: ClaudeModel | null;
+  /**
+   * Which model this project's **lead** runs on — the one session that orchestrates a card
+   * and reviews each part (F28). Leading is judgement, like planning, so `null` — the
+   * default, and every project that predates the field — means "same as planning": the
+   * ladder is `leadModel ?? planningModel ?? defaultModel`. See {@link resolveRoleModel}.
+   */
+  leadModel: ClaudeModel | null;
+  /**
+   * The **effort** each role's sessions run at in this project, passed to the CLI as
+   * `--effort`. `null` — the default, and every project that predates the fields — means
+   * "the app default for that role" (`AppSettings.defaultEfforts`). A card's own setting
+   * outranks all four; see {@link resolveRoleEffort}.
+   */
+  leadEffort: Effort | null;
+  /** See {@link Project.leadEffort}. */
+  planningEffort: Effort | null;
+  /** See {@link Project.leadEffort}. Steps and parts — the role the UI calls "workers". */
+  workerEffort: Effort | null;
+  /** See {@link Project.leadEffort}. */
+  reviewEffort: Effort | null;
   /** Permission mode this project's tasks run with unless overridden. */
   defaultPermissionMode: PermissionMode;
   /**
@@ -541,6 +561,15 @@ export interface AddProjectInput {
   /** Model for AI review runs; omitted (or `null`) = "same as planning". See
    *  {@link Project.reviewModel}. */
   reviewModel?: ClaudeModel | null;
+  /** Model for the lead; omitted (or `null`) = "same as planning". See
+   *  {@link Project.leadModel}. */
+  leadModel?: ClaudeModel | null;
+  /** Effort per role; omitted (or `null`) = the app default for that role. See
+   *  {@link Project.leadEffort}. */
+  leadEffort?: Effort | null;
+  planningEffort?: Effort | null;
+  workerEffort?: Effort | null;
+  reviewEffort?: Effort | null;
   defaultPermissionMode?: PermissionMode;
   concurrency?: number;
   useWorktrees?: boolean;
@@ -606,6 +635,11 @@ export type ProjectPatch = Partial<
     | 'defaultModel'
     | 'planningModel'
     | 'reviewModel'
+    | 'leadModel'
+    | 'leadEffort'
+    | 'planningEffort'
+    | 'workerEffort'
+    | 'reviewEffort'
     | 'defaultPermissionMode'
     | 'concurrency'
     | 'useWorktrees'
@@ -768,6 +802,138 @@ export interface DiscoveredModel extends ModelResolution {
 }
 
 /**
+ * How hard a session thinks — the CLI's `--effort` values, lowest first. The one list the
+ * effort control and every validator share.
+ */
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+export type Effort = (typeof EFFORTS)[number];
+
+/** Whether `value` is one of {@link EFFORTS} — for anything read from storage or the wire. */
+export function isEffort(value: unknown): value is Effort {
+  return typeof value === 'string' && (EFFORTS as readonly string[]).includes(value);
+}
+
+/**
+ * The four jobs a card's sessions do (F28), each with its own model and effort:
+ *
+ * - `lead` — orchestrates the card and reviews each part.
+ * - `planner` — writes the plan.
+ * - `workers` — run the steps (or parts).
+ * - `reviewer` — the final AI code review, the AI visual sign-off and the board review.
+ *
+ * In the order the Start dialog lists them.
+ */
+export const AGENT_ROLES = ['lead', 'planner', 'workers', 'reviewer'] as const;
+
+export type AgentRole = (typeof AGENT_ROLES)[number];
+
+/** The one-line caption under each role's name in the roles table (v11-4). */
+export const ROLE_CAPTIONS: Readonly<Record<AgentRole, string>> = {
+  lead: 'orchestrates and reviews',
+  planner: 'writes the plan',
+  workers: 'build the parts',
+  reviewer: 'final code review',
+};
+
+/** The card fields {@link resolveRoleModel} reads. */
+export type RoleModelTask = Pick<
+  Task,
+  'agentModel' | 'agentPlanningModel' | 'agentLeadModel' | 'agentReviewModel'
+>;
+
+/** The project fields {@link resolveRoleModel} reads. */
+export type RoleModelProject = Pick<
+  Project,
+  'defaultModel' | 'planningModel' | 'reviewModel' | 'leadModel'
+>;
+
+/**
+ * Which model a role's session runs on: the card's own choice for that role, else the
+ * project's, else the project's next rung down.
+ *
+ * ```
+ * workers:  task.agentModel ?? project.defaultModel
+ * planner:  task.agentPlanningModel ?? task.agentModel ?? project.planningModel ?? project.defaultModel
+ * reviewer: task.agentReviewModel ?? project.reviewModel ?? project.planningModel ?? project.defaultModel
+ * lead:     task.agentLeadModel ?? project.leadModel ?? project.planningModel ?? project.defaultModel
+ * ```
+ *
+ * `task` is `null` for a run no card owns (Align plan, the board reviewer), which reads the
+ * project's rungs alone. The planner and workers rungs are exactly what
+ * {@link resolveRunModel} always returned, so no existing card or project changes model.
+ * `??` throughout, never `||` — see {@link resolveRunModel}.
+ */
+export function resolveRoleModel(
+  role: AgentRole,
+  task: Partial<RoleModelTask> | null,
+  project: RoleModelProject,
+): ClaudeModel {
+  const judging = project.planningModel ?? project.defaultModel;
+  switch (role) {
+    case 'workers':
+      return task?.agentModel ?? project.defaultModel;
+    case 'planner':
+      return task?.agentPlanningModel ?? task?.agentModel ?? judging;
+    case 'reviewer':
+      return task?.agentReviewModel ?? project.reviewModel ?? judging;
+    case 'lead':
+      return task?.agentLeadModel ?? project.leadModel ?? judging;
+  }
+}
+
+/** The card's effort field for each role. */
+const TASK_EFFORT_FIELD = {
+  lead: 'agentLeadEffort',
+  planner: 'agentPlanningEffort',
+  workers: 'agentEffort',
+  reviewer: 'agentReviewEffort',
+} as const satisfies Record<AgentRole, keyof Task>;
+
+/** The project's effort field for each role. */
+const PROJECT_EFFORT_FIELD = {
+  lead: 'leadEffort',
+  planner: 'planningEffort',
+  workers: 'workerEffort',
+  reviewer: 'reviewEffort',
+} as const satisfies Record<AgentRole, keyof Project>;
+
+/** The card fields {@link resolveRoleEffort} reads. */
+export type RoleEffortTask = Pick<
+  Task,
+  'agentLeadEffort' | 'agentPlanningEffort' | 'agentEffort' | 'agentReviewEffort'
+>;
+
+/** The project fields {@link resolveRoleEffort} reads. */
+export type RoleEffortProject = Pick<
+  Project,
+  'leadEffort' | 'planningEffort' | 'workerEffort' | 'reviewEffort'
+>;
+
+/**
+ * Which effort a role's session runs at — passed to the CLI as `--effort`:
+ *
+ * ```
+ * task.<role effort> ?? project.<role effort> ?? settings.defaultEfforts[role]
+ * ```
+ *
+ * Unlike the model ladder, the rungs never cross roles: a card that set its workers' effort
+ * said nothing about how hard its planner thinks. `task` is `null` for a run no card owns.
+ */
+export function resolveRoleEffort(
+  role: AgentRole,
+  task: Partial<RoleEffortTask> | null,
+  project: Partial<RoleEffortProject>,
+  settings: { defaultEfforts: Readonly<Record<AgentRole, Effort>> },
+): Effort {
+  return (
+    task?.[TASK_EFFORT_FIELD[role]] ??
+    project[PROJECT_EFFORT_FIELD[role]] ??
+    settings.defaultEfforts[role]
+  );
+}
+
+/**
  * Which model a run costs: the card's own choice **for that kind of run**, else the
  * project's model for that kind, else the project's execution model.
  *
@@ -788,18 +954,20 @@ export interface DiscoveredModel extends ModelResolution {
  * Pure, and here rather than in the scheduler, for the same reason `releaseMode` is: a
  * ladder that decides what a run costs should be testable without a CLI. `??` throughout,
  * never `||` — every value here is nullable and this schema treats `''` as a real value.
+ *
+ * A thin wrapper over {@link resolveRoleModel}'s planner and workers rungs.
  */
 export function resolveRunModel(
   task: Pick<Task, 'agentModel' | 'agentPlanningModel'>,
   project: Pick<Project, 'defaultModel' | 'planningModel'>,
   planning: boolean,
 ): ClaudeModel {
-  if (planning) {
-    return (
-      task.agentPlanningModel ?? task.agentModel ?? project.planningModel ?? project.defaultModel
-    );
-  }
-  return task.agentModel ?? project.defaultModel;
+  // The two rungs read neither lead nor review fields, so null fills them harmlessly.
+  return resolveRoleModel(planning ? 'planner' : 'workers', task, {
+    reviewModel: null,
+    leadModel: null,
+    ...project,
+  });
 }
 
 /**
@@ -1344,6 +1512,28 @@ export interface Task {
    */
   agentPlanningModel?: ClaudeModel | null;
   /**
+   * Model chosen for THIS card's lead, overriding {@link Project.leadModel}. `null` — the
+   * default — falls to the project's lead rung. See {@link resolveRoleModel}.
+   */
+  agentLeadModel?: ClaudeModel | null;
+  /**
+   * Model chosen for THIS card's AI review runs, overriding {@link Project.reviewModel}.
+   * `null` — the default — falls to the project's review rung. See {@link resolveRoleModel}.
+   */
+  agentReviewModel?: ClaudeModel | null;
+  /**
+   * Effort chosen for THIS card's lead, overriding {@link Project.leadEffort}. `null` — the
+   * default, and every card that predates the field — falls to the project's setting, then
+   * the app default. See {@link resolveRoleEffort}.
+   */
+  agentLeadEffort?: Effort | null;
+  /** Effort for this card's planning runs. See {@link agentLeadEffort}. */
+  agentPlanningEffort?: Effort | null;
+  /** Effort for this card's steps and parts — the "workers" role. See {@link agentLeadEffort}. */
+  agentEffort?: Effort | null;
+  /** Effort for this card's AI review runs. See {@link agentLeadEffort}. */
+  agentReviewEffort?: Effort | null;
+  /**
    * The plan a `plan`-mode delegated run produced, as markdown (Phase 11) — captured
    * from the agent's `ExitPlanMode` call and kept so it survives a restart, can be
    * re-read in the detail pane, and can be split into subtasks on approval. Null until
@@ -1707,6 +1897,19 @@ export interface AssignAgentInput {
   model?: ClaudeModel;
   /** Model for this card's planning runs; omitted = the project's planning model. */
   planningModel?: ClaudeModel;
+  /** Model for this card's lead (F28); omitted = the project's lead rung. */
+  leadModel?: ClaudeModel;
+  /** Model for this card's AI review runs (F28); omitted = the project's review rung. */
+  reviewModel?: ClaudeModel;
+  /**
+   * Effort per role for this card (F28) — see {@link resolveRoleEffort}. Omitted = the
+   * project's effort for that role, then the app default.
+   */
+  leadEffort?: Effort;
+  planningEffort?: Effort;
+  /** The workers' effort — steps and parts. */
+  effort?: Effort;
+  reviewEffort?: Effort;
   /**
    * Free-text instructions for the agent. Recorded as a comment on the task's
    * timeline (not just passed to the process), so it is visible to the human and

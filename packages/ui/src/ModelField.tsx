@@ -198,6 +198,10 @@ export interface ModelFieldProps {
   /** Forwarded to the underlying `Dropdown` — the property column's editor opens focused. */
   autoFocus?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /** The closed control reads the CLI's display name alone ("Opus 5.5", not
+   *  `opus — Opus 5.5`) once the probe knows it — for a column too narrow for both (the
+   *  roles table, F28.1). The open list still names every id. */
+  labelOnly?: boolean;
 }
 
 const useStyles = makeStyles({
@@ -262,6 +266,7 @@ export function ModelField({
   title,
   autoFocus,
   onOpenChange,
+  labelOnly,
 }: ModelFieldProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
@@ -323,13 +328,16 @@ export function ModelField({
   const caption = customCaption(customResolution);
 
   const selectedOption = customOpen ? CUSTOM_MODEL : value || sentinel?.value || '';
+  const resolution = resolutions?.get(value) ?? undefined;
   const displayValue = customOpen
     ? customText
       ? `Custom: ${customText}`
       : 'Custom…'
     : value === sentinel?.value
       ? (sentinel?.label ?? '')
-      : optionCaption(value, resolutions?.get(value) ?? undefined);
+      : labelOnly && resolution?.known
+        ? resolution.label
+        : optionCaption(value, resolution);
 
   // A value already pinned outside the catalog has to stay visible and selectable even with
   // custom typing turned off — see the file header.

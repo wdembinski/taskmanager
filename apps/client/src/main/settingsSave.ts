@@ -10,7 +10,7 @@
  * carries the normalised URLs, the surviving `apiBaseUrl` and the machine-local trust the
  * argument never had a say in. No listener saves in response, so the broadcast cannot loop.
  */
-import { isUsableModel } from '@shared/model';
+import { AGENT_ROLES, isEffort, isUsableModel } from '@shared/model';
 import { normalizeBaseUrl } from '@shared/jiraUrl';
 import type { AppSettings } from '@shared/settings';
 import { preserveLocalTrust } from './gateTrust';
@@ -34,6 +34,21 @@ export function saveAndBroadcastSettings(deps: SettingsSaveDeps, settings: AppSe
   }
   if (settings.defaultPlanningModel !== null && !isUsableModel(settings.defaultPlanningModel)) {
     throw new Error(`Not a usable model: ${settings.defaultPlanningModel}`);
+  }
+  // `defaultEfforts` is a global key too, and each value reaches a spawned CLI as `--effort`.
+  // A missing blob or role is fine — `getSettings` reads it back as `high` — but a value
+  // that is not an `Effort` is refused rather than stored.
+  const efforts: unknown = (settings as Partial<AppSettings>).defaultEfforts;
+  if (efforts !== undefined) {
+    if (typeof efforts !== 'object' || efforts === null || Array.isArray(efforts)) {
+      throw new Error('Not a usable set of default efforts.');
+    }
+    for (const role of AGENT_ROLES) {
+      const effort = (efforts as Record<string, unknown>)[role];
+      if (effort !== undefined && !isEffort(effort)) {
+        throw new Error(`Not a usable effort for ${role}: ${String(effort)}`);
+      }
+    }
   }
   // Normalize the JIRA URL once, on the way in, so every consumer sees the same
   // origin — the client, the epic-field and identity caches (both keyed by baseUrl),

@@ -818,6 +818,7 @@ describe('HttpTransport: channels that used to be stubbed', () => {
     { channel: 'task:activity', call: (x) => x.invoke('task:activity', 't1') },
     { channel: 'scheduler:activeRuns', call: (x) => x.invoke('scheduler:activeRuns') },
     { channel: 'project:hasReleaseDoc', call: (x) => x.invoke('project:hasReleaseDoc', 'p1') },
+    { channel: 'project:runStats', call: (x) => x.invoke('project:runStats', 'p1') },
     { channel: 'jira:priorities', call: (x) => x.invoke('jira:priorities') },
     { channel: 'jira:fetchComments', call: (x) => x.invoke('jira:fetchComments', 't1') },
     { channel: 'jira:markRead', call: (x) => x.invoke('jira:markRead', 't1') },

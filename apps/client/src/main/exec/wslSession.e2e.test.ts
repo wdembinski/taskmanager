@@ -97,6 +97,7 @@ describe.runIf(ENABLED)('Claude session inside WSL', () => {
           prompt: `Use the Write tool to create a file named ${probeFile} containing the single word ok. Then reply "done".`,
           cwd,
           model: 'haiku',
+          effort: 'high',
           // With a gate present this becomes the CLI's `default` mode (see
           // `buildClaudeArgs`), which is what routes tool use through the relay.
           permissionMode: 'manual',

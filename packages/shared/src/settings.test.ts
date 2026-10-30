@@ -3,6 +3,7 @@ import type { BoardColumn } from './model';
 import {
   clampSyncInterval,
   coerceBoardLinksMode,
+  coerceDefaultEfforts,
   DEFAULT_BOARD_DISPLAY,
   DEFAULT_FEATURE_SETTINGS,
   DEFAULT_GITHUB_SETTINGS,
@@ -274,6 +275,42 @@ describe('DEFAULT_SETTINGS.features', () => {
   // blob saved before the field was added, must see the board exactly as it always looked.
   it('draws every chain link out of the box', () => {
     expect(DEFAULT_SETTINGS.boardLinks).toBe('all');
+  });
+});
+
+describe('defaultEfforts', () => {
+  it('is high for every role out of the box, and syncs as a global key', () => {
+    expect(DEFAULT_SETTINGS.defaultEfforts).toEqual({
+      lead: 'high',
+      planner: 'high',
+      workers: 'high',
+      reviewer: 'high',
+    });
+    expect(GLOBAL_SETTINGS_KEYS).toContain('defaultEfforts');
+  });
+
+  it('keeps every stored effort that is a real one', () => {
+    const stored = { lead: 'max', planner: 'xhigh', workers: 'low', reviewer: 'medium' };
+    expect(coerceDefaultEfforts(stored)).toEqual(stored);
+  });
+
+  // Role by role: one bad value must not throw away the roles a human did set.
+  it('reads an unknown or missing value back as high', () => {
+    expect(coerceDefaultEfforts({ lead: 'max', planner: 'turbo', workers: 7 })).toEqual({
+      lead: 'max',
+      planner: 'high',
+      workers: 'high',
+      reviewer: 'high',
+    });
+    expect(coerceDefaultEfforts(undefined)).toEqual(DEFAULT_SETTINGS.defaultEfforts);
+    expect(coerceDefaultEfforts(null)).toEqual(DEFAULT_SETTINGS.defaultEfforts);
+    expect(coerceDefaultEfforts(['max'])).toEqual(DEFAULT_SETTINGS.defaultEfforts);
+  });
+
+  it('returns a fresh object, never the shared default', () => {
+    const efforts = coerceDefaultEfforts(undefined);
+    efforts.lead = 'low';
+    expect(coerceDefaultEfforts(undefined).lead).toBe('high');
   });
 });
 

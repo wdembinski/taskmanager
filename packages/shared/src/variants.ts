@@ -93,6 +93,12 @@ export type VariantLeader = Pick<
   | 'agentMode'
   | 'agentModel'
   | 'agentPlanningModel'
+  | 'agentLeadModel'
+  | 'agentReviewModel'
+  | 'agentLeadEffort'
+  | 'agentPlanningEffort'
+  | 'agentEffort'
+  | 'agentReviewEffort'
   | 'decisionQuestion'
 > &
   VariantFields;
@@ -133,6 +139,13 @@ export interface VariantRowDraft {
   agentMode: Task['agentMode'];
   agentModel: Task['agentModel'];
   agentPlanningModel: Task['agentPlanningModel'];
+  /** The F28 role settings: the dialog's choice over the leader's own, like the models. */
+  agentLeadModel: Task['agentLeadModel'];
+  agentReviewModel: Task['agentReviewModel'];
+  agentLeadEffort: Task['agentLeadEffort'];
+  agentPlanningEffort: Task['agentPlanningEffort'];
+  agentEffort: Task['agentEffort'];
+  agentReviewEffort: Task['agentReviewEffort'];
   /** The dialog's brief, recorded on each row's timeline as Assign agent does. */
   notes: string | null;
   /** The leader's attachments to copy onto this row (by name — the bytes are the engine's). */
@@ -176,6 +189,12 @@ export function planVariants(
       agentMode: input.mode ?? leader.agentMode ?? null,
       agentModel: input.model ?? leader.agentModel ?? null,
       agentPlanningModel: input.planningModel ?? leader.agentPlanningModel ?? null,
+      agentLeadModel: input.leadModel ?? leader.agentLeadModel ?? null,
+      agentReviewModel: input.reviewModel ?? leader.agentReviewModel ?? null,
+      agentLeadEffort: input.leadEffort ?? leader.agentLeadEffort ?? null,
+      agentPlanningEffort: input.planningEffort ?? leader.agentPlanningEffort ?? null,
+      agentEffort: input.effort ?? leader.agentEffort ?? null,
+      agentReviewEffort: input.reviewEffort ?? leader.agentReviewEffort ?? null,
       notes,
       attachmentNames: attachments.map((a) => a.name),
     };

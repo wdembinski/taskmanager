@@ -291,6 +291,9 @@ export function buildClaudeArgs(
     req.model,
     '--permission-mode',
     gate && req.permissionMode !== 'plan' ? 'default' : req.permissionMode,
+    // Every spawn, fresh or resumed, runs at its role's resolved effort.
+    '--effort',
+    req.effort,
     // Resuming (Phase 5) continues THIS conversation with its full history;
     // otherwise we claim a fresh id we can resume later. Both key off the same id.
     resume ? '--resume' : '--session-id',

@@ -269,10 +269,13 @@ export function SessionRunner(): JSX.Element {
   async function run(): Promise<void> {
     setError(null);
     try {
+      // A scratch run has no card or project: it thinks as hard as the app's workers default.
+      const { defaultEfforts } = await window.api.invoke('settings:get');
       const { runId } = await window.api.invoke('session:start', {
         prompt,
         cwd,
         model,
+        effort: defaultEfforts.workers,
         permissionMode: mode,
       });
       // Newest first, and the only card left open: a new run is the one you are watching,
