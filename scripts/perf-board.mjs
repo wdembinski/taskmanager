@@ -3,6 +3,7 @@
  * F29-performance-at-scale.md` Phase 1) against a 16 ms (one frame) budget:
  *
  *     node scripts/perf-board.mjs [--cards 5000] [--runs 3] [--json out.json] [--enforce]
+ *                                 [--profile dir]
  *
  * Builds `@tm/client`'s renderer (`lib/uiDriver.mjs`'s `buildClientRenderer`), serves it
  * statically, and boots it in headless Chrome at 1440×900 over `scaleFixture.mjs`'s seeded
@@ -40,6 +41,11 @@
  * - IPC in — bytes of every invoke result; events — bytes of every emitted event;
  * - verdict — `over` when a long task was seen or a frame gap passed `SLOW_FRAME_MS` (one
  *   frame plus vsync jitter: an idle page already shows 16.7 ms gaps at 60 Hz).
+ *
+ * `--profile dir` also records a CPU profile of every measured interaction (from the
+ * interaction's start until it settles) as `dir/run<N>-<interaction>.cpuprofile`, which
+ * Chrome DevTools' Performance panel opens. Profiling slows the page, so its numbers are
+ * not the table's: measure without it.
  *
  * Exits 0 even when over budget, unless `--enforce` is passed. Exits 1 on any harness
  * failure — a click that missed, a page exception, an interaction that never settled — since
@@ -82,7 +88,7 @@ const WHEEL_STEP_PX = 100;
 const VIEWPORT = { width: 1440, height: 900 };
 
 function parseArgs(argv) {
-  const opts = { cards: 5000, runs: 3, json: null, enforce: false };
+  const opts = { cards: 5000, runs: 3, json: null, enforce: false, profile: null };
   const positive = (flag, raw) => {
     const n = Number(raw);
     if (!Number.isInteger(n) || n < 1) throw new Error(`${flag} must be a positive integer`);
@@ -94,6 +100,7 @@ function parseArgs(argv) {
     else if (arg === '--runs') opts.runs = positive(arg, argv[++i]);
     else if (arg === '--json') opts.json = argv[++i];
     else if (arg === '--enforce') opts.enforce = true;
+    else if (arg === '--profile') opts.profile = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
   }
   return opts;
@@ -418,6 +425,8 @@ async function main() {
   let cdp;
   const failures = [];
   const perRun = new Map(INTERACTIONS.map((i) => [i.name, []]));
+  const profileDir = opts.profile ? resolve(process.cwd(), opts.profile) : null;
+  if (profileDir) mkdirSync(profileDir, { recursive: true });
   let chromeVersion = '(unknown)';
 
   try {
@@ -474,9 +483,20 @@ async function main() {
           60_000,
         );
         await settleUnarmed(cdp, 'boot');
+        if (profileDir) await cdp.send('Profiler.enable');
         for (const interaction of INTERACTIONS) {
+          // Starts before `act`'s own unmeasured prepare: a profile with a little setup in it
+          // beats one that misses the start of the measured part.
+          if (profileDir) await cdp.send('Profiler.start');
           await interaction.act(cdp);
           await waitForSettled(cdp, interaction.name);
+          if (profileDir) {
+            const { profile } = await cdp.send('Profiler.stop');
+            writeFileSync(
+              join(profileDir, `run${run}-${interaction.name}.cpuprofile`),
+              JSON.stringify(profile),
+            );
+          }
           const measured = await evaluate(cdp, 'window.__perf.read()');
           await interaction.check(cdp, measured);
           if (exceptions.count > 0) {

@@ -166,6 +166,18 @@ const useStyles = makeStyles({
    * wins over theirs — the same ordering `releasing` relies on above.
    */
   inert: { pointerEvents: 'none' },
+  /**
+   * An arrow's VISIBLE stroke takes no pointer events: the 14px `hit` band under it already
+   * covers every pixel it paints, so it adds nothing to hover or click — except cost. Blink
+   * hit-tests a dashed stroke by dashing the whole path first, so with a few hundred long
+   * dashed arrows over a 5,000-card board every hover update after a scroll spent ~100 ms in
+   * `HitTest` (F29.3, `docs/plan/feature-roadmap/F29-performance-at-scale.md`). It also
+   * means a click dead on the hairline now lands on the band, which selects.
+   *
+   * Declared after `path`, for the same ordering reason as `inert` above. Stubs keep `path`'s
+   * own hit-testing: they have no band, and their `<title>` is their only explanation.
+   */
+  drawn: { pointerEvents: 'none' },
   headRest: { fill: tokens.colorNeutralStroke2 },
   headLit: { fill: tokens.colorBrandStroke1 },
   headLive: { fill: FLUO_VAR.cyan },
@@ -320,7 +332,9 @@ export function ChainOverlay(props: ChainOverlayProps): JSX.Element | null {
       a.blocked && styles.blocked,
       // After `blocked`, so its cyan and its longer dash win on a link that is both.
       a.releasing && styles.releasing,
-      dragging && styles.inert,
+      // Always — `drawn` makes the stroke inert for the drag too, and `hit` steps aside
+      // on its own below.
+      styles.drawn,
     );
   const headOf = (a: Pick<ChainArrow, 'lit' | 'releasing'>): string =>
     `url(#${a.releasing ? MARKER.live : a.lit ? MARKER.lit : MARKER.rest})`;
@@ -351,8 +365,9 @@ export function ChainOverlay(props: ChainOverlayProps): JSX.Element | null {
         return (
           <g key={a.linkId} data-link-id={a.linkId} className={faded ? styles.faded : undefined}>
             <title>{a.title}</title>
-            {/* First, so it sits UNDER the visible stroke and cannot be what a click lands
-                on when the pointer is dead on the line — and so the hairline stays crisp.
+            {/* First, so it sits UNDER the visible stroke and the hairline stays crisp. The
+                ONLY part of an arrow that takes pointer events (see `drawn`), so a click
+                anywhere on or near the line lands here.
                 Gone entirely mid-drag: a 14px invisible band across the cards is the worst
                 possible thing to have lying over a drop target. Gone for a faded link too —
                 a line Focus has deliberately receded is not one worth hit-testing either. */}
