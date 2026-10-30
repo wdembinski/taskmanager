@@ -1215,10 +1215,30 @@ export function MyTasks({
 
   // Off draws no arrow at all, so each card says what it would have said in words instead
   // (`linkChips.ts`) — absent every other mode, which is what leaves `chainChip` alone there.
-  const linkChipsOf =
-    boardLinks === 'off'
-      ? (t: TaskSummary) => linkChips(t.id, links, tasksById, liveRuns)
-      : undefined;
+  const linkChipsOf = useMemo(
+    () =>
+      boardLinks === 'off'
+        ? (t: TaskSummary) => linkChips(t.id, links, tasksById, liveRuns)
+        : undefined,
+    [boardLinks, links, tasksById, liveRuns],
+  );
+
+  // What each card asks the board for, held stable (F29.3) so a memoised card is not handed
+  // a new function on every render of the board. A native ticket's parent epic is by NAME
+  // (Phase 24) — `t.epicTaskId` names another card on this same board.
+  const epicNameOf = useCallback(
+    (t: TaskSummary) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined),
+    [tasksById],
+  );
+  const assigneeOf = useCallback(
+    (t: TaskSummary) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined),
+    [peopleById],
+  );
+  const agentNameOf = useCallback(
+    (t: TaskSummary) => agentProjects.find((p) => p.id === t.agentProjectId)?.name,
+    [agentProjects],
+  );
+  const chainStateOf = useCallback((t: TaskSummary) => chainState.get(t.id), [chainState]);
 
   // Delete or Backspace erases the selected arrow, Escape lets it go. On the window rather
   // than on the path, because an SVG `<path>` cannot hold focus — and never while the caret
@@ -1451,11 +1471,9 @@ export function MyTasks({
                 setAddColumn(c);
                 setAddOpen(true);
               }}
-              // A native ticket's parent epic, by NAME (Phase 24) — `t.epicTaskId` names
-              // another card on this same board.
-              epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
-              assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
-              agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
+              epicNameOf={epicNameOf}
+              assigneeOf={assigneeOf}
+              agentNameOf={agentNameOf}
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
               runPurposes={runPurposes}
@@ -1479,7 +1497,7 @@ export function MyTasks({
               onLinkEnd={() => setLinkDrag(null)}
               onLinkTo={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
               onLinkArm={armLink}
-              chainStateOf={(t) => chainState.get(t.id)}
+              chainStateOf={chainStateOf}
               // A file hold's "Make this an arrow" — the same after-merge arrow a drag draws.
               onMakeArrow={(fromTaskId, toTaskId) => void drawLink(fromTaskId, toTaskId)}
               linkChipsOf={linkChipsOf}
@@ -1511,9 +1529,9 @@ export function MyTasks({
               cards={shelvedCards}
               folded={settings?.shelfFolded ?? false}
               onToggleFolded={toggleShelfFolded}
-              epicNameOf={(t) => (t.epicTaskId ? tasksById.get(t.epicTaskId)?.title : undefined)}
-              assigneeOf={(t) => (t.assigneeId ? peopleById.get(t.assigneeId) : undefined)}
-              agentNameOf={(t) => agentProjects.find((p) => p.id === t.agentProjectId)?.name}
+              epicNameOf={epicNameOf}
+              assigneeOf={assigneeOf}
+              agentNameOf={agentNameOf}
               attentionTaskIds={attention.taskIds}
               liveRunTaskIds={liveRuns}
               runPurposes={runPurposes}

@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.24",
     "@tm/protocol": "workspace:*",
     "@tm/shared": "workspace:*",
     "highlight.js": "^11.12.0"
@@ -42,10 +43,10 @@
   "devDependencies": {
     "@fluentui/react-components": "^9.54.0",
     "@fluentui/react-icons": "^2.0.270",
-    "@xyflow/react": "^12.8.0",
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@xyflow/react": "^12.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsup": "^8.0.2",

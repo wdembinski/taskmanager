@@ -8,7 +8,7 @@
  * `DataTransfer`, never by where the pointer is. This column owns the first and must stay
  * completely out of the second's way; see `chainDrag`.
  */
-import { useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import {
   Button,
   Caption1,
@@ -22,8 +22,10 @@ import type { Person } from '@tm/shared/model';
 import type { TaskSummary } from '@tm/shared/taskSummary';
 import type { RunPurpose } from '@tm/shared/scheduler';
 import { STATUS_GLYPH } from '../issues/IssueRow';
+import { useStableCallback } from '../useStableCallback';
 import { TaskCard } from './TaskCard';
 import type { AutomationOrigin } from './automationOrigin';
+import { sameCardRow, type BoardCardRowProps } from './cardMemo';
 import type { BoardCard, BoardColumn } from './boardColumns';
 import { isChainLinkDrag, type LinkDragState } from './chainDrag';
 import type { ChainState } from './chainStates';
@@ -258,6 +260,22 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
 
   const compact = props.layout === 'compact';
 
+  // Wrapped once here, so every card gets the same function on every render whether or not
+  // the host `useCallback`s its own — what lets `BoardCardRow`'s memo hold.
+  const anchorRef = useStableCallback(props.anchorRef);
+  const onLinkStart = useStableCallback(props.onLinkStart);
+  const onLinkEnd = useStableCallback(props.onLinkEnd);
+  const onLinkTo = useStableCallback(props.onLinkTo);
+  const onLinkArm = useStableCallback(props.onLinkArm);
+  const onMakeArrow = useStableCallback(props.onMakeArrow);
+  const onStop = useStableCallback(props.onStopTask);
+  const onResume = useStableCallback(props.onResumeTask);
+  const onToggleShelved = useStableCallback(props.onToggleShelved);
+  const onMoveTo = useStableCallback(props.onMoveTask);
+  const onSelect = useStableCallback(props.onSelectTask);
+  const onDragStart = useStableCallback(props.onDragStartTask);
+  const onDragEnd = useStableCallback(props.onDragEndTask);
+
   return (
     <div
       // The router's own anchor (`useCardAnchors`/`chainRoute`): its content-space left/right
@@ -325,66 +343,136 @@ export function KanbanColumn(props: KanbanColumnProps): JSX.Element {
         {props.cards.length === 0 ? (
           <Caption1 className={styles.empty}>—</Caption1>
         ) : (
-          props.cards.map(({ task, subtasks, mergeRequests, variants }) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              epicName={props.epicNameOf?.(task)}
-              assignee={props.assigneeOf?.(task)}
-              agentName={props.agentNameOf(task)}
-              originAutomation={props.originAutomationOf?.(task)}
-              subtasks={subtasks}
-              variants={variants}
-              mergeRequests={mergeRequests}
-              attentionTaskIds={props.attentionTaskIds}
-              liveRunTaskIds={props.liveRunTaskIds}
-              runPurposes={props.runPurposes}
-              runStartedAt={props.runStartedAt}
-              mergingTaskIds={props.mergingTaskIds}
-              selected={task.id === props.selectedTaskId}
-              dimmed={props.dimmedTaskIds?.has(task.id)}
-              anchorRef={props.anchorRef?.(task.id)}
-              linkState={props.linkDrag?.states.get(task.id)}
-              // Absent when the board is not wired for chains, which is also what decides
-              // whether the card grows a handle at all.
-              onLinkStart={props.onLinkStart && (() => props.onLinkStart?.(task.id))}
-              onLinkEnd={props.onLinkEnd}
-              onLinkTo={(fromTaskId) => props.onLinkTo?.(fromTaskId, task.id)}
-              onLinkArm={() => props.onLinkArm?.(task.id)}
-              onStop={props.onStopTask && (() => props.onStopTask?.(task.id))}
-              onResume={props.onResumeTask && (() => props.onResumeTask?.(task.id))}
-              onToggleShelved={props.onToggleShelved && (() => props.onToggleShelved?.(task.id))}
-              onMoveTo={props.onMoveTask && (() => props.onMoveTask?.(task.id))}
-              waitingOn={props.chainStateOf?.(task)?.waitingOn}
-              mergeHeld={props.chainStateOf?.(task)?.mergeHeld}
-              waitReasons={props.chainStateOf?.(task)?.waitReasons}
-              chainReady={props.chainStateOf?.(task)?.ready}
-              chainQueued={props.chainStateOf?.(task)?.queued}
-              chainBlocked={props.chainStateOf?.(task)?.blocked}
-              fileHold={props.chainStateOf?.(task)?.fileHold}
-              onMakeArrow={
-                props.onMakeArrow && ((fromTaskId) => props.onMakeArrow?.(fromTaskId, task.id))
-              }
-              linkChips={props.linkChipsOf?.(task)}
-              // A chain says what runs after what, never where a card belongs; and a run
-              // only BORROWS the card's status (`cardStatusGuard`), so not even a live agent
-              // or a live step takes a card out of the human's hands — there is no state in
-              // which a card refuses to be filed. Compact is the one exception: touch has no
-              // drag gesture at all, so the card is not draggable there and the "Move to"
-              // sheet (F3.6) is the only way to file it.
-              draggable={!compact}
-              dragging={task.id === props.draggingId}
-              onSelect={() => props.onSelectTask(task.id)}
-              onDragStart={(e) => {
-                e.dataTransfer.setData('text/plain', task.id);
-                e.dataTransfer.effectAllowed = 'move';
-                props.onDragStartTask(task.id);
-              }}
-              onDragEnd={() => props.onDragEndTask()}
-            />
-          ))
+          props.cards.map((card) => {
+            const { task } = card;
+            return (
+              <BoardCardRow
+                key={task.id}
+                card={card}
+                epicName={props.epicNameOf?.(task)}
+                assignee={props.assigneeOf?.(task)}
+                agentName={props.agentNameOf(task)}
+                originAutomation={props.originAutomationOf?.(task)}
+                chain={props.chainStateOf?.(task)}
+                linkChips={props.linkChipsOf?.(task)}
+                attentionTaskIds={props.attentionTaskIds}
+                liveRunTaskIds={props.liveRunTaskIds}
+                runPurposes={props.runPurposes}
+                runStartedAt={props.runStartedAt}
+                mergingTaskIds={props.mergingTaskIds}
+                dimmedTaskIds={props.dimmedTaskIds}
+                linkStates={props.linkDrag?.states}
+                selected={task.id === props.selectedTaskId}
+                dragging={task.id === props.draggingId}
+                // A chain says what runs after what, never where a card belongs; and a run
+                // only BORROWS the card's status (`cardStatusGuard`), so not even a live agent
+                // or a live step takes a card out of the human's hands — there is no state in
+                // which a card refuses to be filed. Compact is the one exception: touch has no
+                // drag gesture at all, so the card is not draggable there and the "Move to"
+                // sheet (F3.6) is the only way to file it.
+                draggable={!compact}
+                anchorRef={props.anchorRef && anchorRef}
+                // Absent when the board is not wired for chains, which is also what decides
+                // whether the card grows a handle at all.
+                onLinkStart={props.onLinkStart && onLinkStart}
+                onLinkEnd={props.onLinkEnd && onLinkEnd}
+                onLinkTo={onLinkTo}
+                onLinkArm={onLinkArm}
+                onMakeArrow={props.onMakeArrow && onMakeArrow}
+                onStop={props.onStopTask && onStop}
+                onResume={props.onResumeTask && onResume}
+                onToggleShelved={props.onToggleShelved && onToggleShelved}
+                onMoveTo={props.onMoveTask && onMoveTo}
+                onSelect={onSelect}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+              />
+            );
+          })
         )}
       </div>
     </div>
   );
 }
+
+/**
+ * One card of the column, memoised on `sameCardRow` (`cardMemo.ts`): a change elsewhere on
+ * the board — another card's run starting, another card selected — redraws nothing here.
+ * Takes the column's id-taking handlers and builds the card's own closures itself, once.
+ */
+const BoardCardRow = memo(function BoardCardRow({
+  card,
+  chain,
+  linkStates,
+  dimmedTaskIds,
+  anchorRef,
+  onLinkStart,
+  onLinkEnd,
+  onLinkTo,
+  onLinkArm,
+  onMakeArrow,
+  onStop,
+  onResume,
+  onToggleShelved,
+  onMoveTo,
+  onSelect,
+  onDragStart,
+  onDragEnd,
+  ...rest
+}: BoardCardRowProps): JSX.Element {
+  const { task, subtasks, mergeRequests, variants } = card;
+  const id = task.id;
+  const linkStart = useCallback(() => onLinkStart?.(id), [onLinkStart, id]);
+  const linkTo = useCallback((fromTaskId: string) => onLinkTo?.(fromTaskId, id), [onLinkTo, id]);
+  const linkArm = useCallback(() => onLinkArm?.(id), [onLinkArm, id]);
+  const makeArrow = useCallback(
+    (fromTaskId: string) => onMakeArrow?.(fromTaskId, id),
+    [onMakeArrow, id],
+  );
+  const stop = useCallback(() => onStop?.(id), [onStop, id]);
+  const resume = useCallback(() => onResume?.(id), [onResume, id]);
+  const toggleShelved = useCallback(() => onToggleShelved?.(id), [onToggleShelved, id]);
+  const moveTo = useCallback(() => onMoveTo?.(id), [onMoveTo, id]);
+  const select = useCallback(() => onSelect(id), [onSelect, id]);
+  const dragStart = useCallback(
+    (e: React.DragEvent) => {
+      e.dataTransfer.setData('text/plain', id);
+      e.dataTransfer.effectAllowed = 'move';
+      onDragStart(id);
+    },
+    [onDragStart, id],
+  );
+  const dragEnd = useCallback(() => onDragEnd(), [onDragEnd]);
+
+  return (
+    <TaskCard
+      {...rest}
+      task={task}
+      subtasks={subtasks}
+      variants={variants}
+      mergeRequests={mergeRequests}
+      dimmed={dimmedTaskIds?.has(id)}
+      anchorRef={anchorRef?.(id)}
+      linkState={linkStates?.get(id)}
+      onLinkStart={onLinkStart && linkStart}
+      onLinkEnd={onLinkEnd}
+      onLinkTo={linkTo}
+      onLinkArm={linkArm}
+      onStop={onStop && stop}
+      onResume={onResume && resume}
+      onToggleShelved={onToggleShelved && toggleShelved}
+      onMoveTo={onMoveTo && moveTo}
+      waitingOn={chain?.waitingOn}
+      mergeHeld={chain?.mergeHeld}
+      waitReasons={chain?.waitReasons}
+      chainReady={chain?.ready}
+      chainQueued={chain?.queued}
+      chainBlocked={chain?.blocked}
+      fileHold={chain?.fileHold}
+      onMakeArrow={onMakeArrow && makeArrow}
+      onSelect={select}
+      onDragStart={dragStart}
+      onDragEnd={dragEnd}
+    />
+  );
+}, sameCardRow);

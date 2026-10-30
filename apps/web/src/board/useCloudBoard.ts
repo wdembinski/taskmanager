@@ -5,7 +5,7 @@
  * locally the instant the drag lands, send the command, and either let the next board poll
  * reconcile it (`applyBoardResponse`) or roll it back if the send itself failed.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CadenceDirective } from '@tm/protocol/cadence';
 import type { ClientPresence } from '@tm/protocol/wire';
 import { statusForColumn } from '@tm/shared/board';
@@ -181,7 +181,9 @@ export function useCloudBoard(auth: CloudAuth, config: WebConfig): CloudBoardApi
       getAccessToken: () => auth.getAccessToken(),
       getCursor: () => stateRef.current.cursor,
       onResponse: (response) => {
-        setState((s) => applyBoardResponse(s, response));
+        // A transition (F29.3): a poll that brings a big board redraws every list on screen,
+        // and the click or keystroke that arrives meanwhile should not wait behind it.
+        startTransition(() => setState((s) => applyBoardResponse(s, response)));
         setLastPolledAt(Date.now());
         setMissingSince((prev) => (response.clients.length > 0 ? null : (prev ?? Date.now())));
         setSyncProgress((p) => ({

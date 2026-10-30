@@ -7,8 +7,13 @@
  * `patchTaskSummary` (`taskSummaryStore.ts`, the pure half, tested there). Each surface
  * still holds its own copy — there is no shared store — but they all take a change the
  * same way now.
+ *
+ * The load and the deltas land in a transition (F29.3): on a 5,000-card board redrawing for
+ * one is long work, and a keystroke or a click arriving meanwhile goes first. A caller's own
+ * `setTasks` — the optimistic move on drop — stays urgent; it answers a gesture.
  */
 import {
+  startTransition,
   useCallback,
   useEffect,
   useRef,
@@ -64,7 +69,7 @@ export function useTaskSummaries(
   const reload = useCallback(async () => {
     if (scope === null) return;
     const next = await transport.invoke('board:tasks', scope);
-    if (scopeRef.current === scope) setTasks(next);
+    if (scopeRef.current === scope) startTransition(() => setTasks(next));
   }, [transport, scope]);
   const initial = useInitialLoad(reload);
 
@@ -82,11 +87,11 @@ export function useTaskSummaries(
     };
     const offDelta = transport.on('tasks:changed', (delta) => {
       if (!inScope(delta.projectId)) return;
-      setTasks((prev) => (prev ? applyTaskDelta(prev, delta, scope) : prev));
+      startTransition(() => setTasks((prev) => (prev ? applyTaskDelta(prev, delta, scope) : prev)));
       optionsRef.current.onDelta?.(delta);
     });
     const offTask = transport.on('task:changed', ({ task }) =>
-      setTasks((prev) => (prev ? patchTaskSummary(prev, task) : prev)),
+      startTransition(() => setTasks((prev) => (prev ? patchTaskSummary(prev, task) : prev))),
     );
     return () => {
       offDelta();
