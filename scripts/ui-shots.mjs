@@ -329,11 +329,23 @@ function issueRowClickExprs(index) {
 
 /** `{ click: 'issue-row:has:TEXT' }` — the first `[role="option"]` row whose text includes
  *  `TEXT` (a ticket key). For a row whose override moves its card to another status group,
- *  where its position in the list is no longer the one `issue-row:N` would name. */
+ *  where its position in the list is no longer the one `issue-row:N` would name.
+ *
+ *  The issue list is windowed (F29.3), so a row far enough down is not in the DOM at all:
+ *  each `ready` poll that misses scrolls the list a page on (back to the top past the end),
+ *  until the row has been drawn. */
 function issueRowHasClickExprs(text) {
   const find = `Array.from(document.querySelectorAll('[role="option"]')).find((el) => window.__tm.visible(el) && window.__tm.textOf(el).includes(${JSON.stringify(text)}))`;
   return {
-    ready: `!!${find}`,
+    ready: `(() => {
+      if (${find}) return true;
+      const list = document.querySelector('[role="listbox"][data-backlog-group-mode]');
+      if (list && list.scrollHeight > list.clientHeight) {
+        const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 1;
+        list.scrollTop = atEnd ? 0 : list.scrollTop + list.clientHeight;
+      }
+      return false;
+    })()`,
     click: `(() => {
       const el = ${find};
       if (!el) return false;

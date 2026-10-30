@@ -161,6 +161,69 @@ export function backlogGroups(mode: BacklogGroupMode, input: BacklogGroupsInput)
   }
 }
 
+/** The space above a top-level group's header — what the list's own `gap` was. */
+export const BACKLOG_GROUP_GAP = 12;
+/** The space between rows inside a group — what a group's own `gap` was. */
+export const BACKLOG_ROW_GAP = 2;
+/** A milestone's epic sub-header sits this much further down than a plain row... */
+export const BACKLOG_SUB_GROUP_MARGIN = 6;
+/** ...and it and its rows this far in. */
+export const BACKLOG_SUB_GROUP_INSET = 16;
+
+interface BacklogRowBase {
+  /** Stable across renders: a header's fold id, a ticket's id under its section's. */
+  key: string;
+  level: 1 | 2;
+  /** Space above the row, in px — the gap the nested layout put there. */
+  gapBefore: number;
+  /** Space to the row's left, in px — a level-2 group's inset. */
+  indent: number;
+}
+
+/**
+ * One line of the windowed issue list (F29.3): a section's header or one of its tickets.
+ * `posInSet` counts tickets only, from 1 — the option's place for `aria-posinset`.
+ */
+export type BacklogRow =
+  | (BacklogRowBase & { kind: 'header'; section: BacklogSection })
+  | (BacklogRowBase & { kind: 'ticket'; task: TaskSummary; posInSet: number });
+
+/**
+ * `sections` as the flat list of rows the windowed list draws, in the order the nested
+ * layout drew them: each header, then (unless folded) its tickets, then its sub-sections.
+ * A folded section emits its header only. Every row carries the gap and inset its place in
+ * the nesting gave it, so positioning rows one after another lands each where it was.
+ */
+export function flattenBacklog(
+  sections: readonly BacklogSection[],
+  folds: ReadonlySet<string>,
+): BacklogRow[] {
+  const rows: BacklogRow[] = [];
+  let posInSet = 0;
+  const emit = (section: BacklogSection, gapBefore: number, indent: number): void => {
+    const { level } = section;
+    rows.push({ kind: 'header', key: `h:${section.id}`, level, gapBefore, indent, section });
+    if (folds.has(section.id)) return;
+    for (const task of section.tickets) {
+      posInSet += 1;
+      rows.push({
+        kind: 'ticket',
+        key: `t:${section.id}:${task.id}`,
+        level,
+        gapBefore: BACKLOG_ROW_GAP,
+        indent,
+        task,
+        posInSet,
+      });
+    }
+    for (const sub of section.sections) {
+      emit(sub, BACKLOG_ROW_GAP + BACKLOG_SUB_GROUP_MARGIN, indent + BACKLOG_SUB_GROUP_INSET);
+    }
+  };
+  sections.forEach((section, i) => emit(section, i === 0 ? 0 : BACKLOG_GROUP_GAP, 0));
+  return rows;
+}
+
 const GROUP_MODE_KEY = 'tm.backlog.groupBy';
 
 /**

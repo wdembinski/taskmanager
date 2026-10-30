@@ -14,7 +14,7 @@
  * follow the resolved scheme.
  */
 import { Link, Text, makeStyles, mergeClasses, tokens } from '@fluentui/react-components';
-import type { KeyboardEvent, MouseEvent } from 'react';
+import { memo, type KeyboardEvent, type MouseEvent } from 'react';
 import {
   CheckmarkCircleFilled,
   CircleHalfFillRegular,
@@ -151,15 +151,25 @@ export interface IssueRowProps {
   archived?: boolean;
   onSelect?: (id: string) => void;
   onOpen?: (id: string) => void;
+  /** A windowed list's option count and this row's place in it, from 1 (F29.3) — most of
+   *  the options are not in the DOM, so a screen reader cannot count them itself. */
+  setSize?: number;
+  posInSet?: number;
 }
 
-export function IssueRow({
+/**
+ * Memoised (F29.3): a list redraws only the rows whose props changed, so the caller keeps
+ * `ctx` and the callbacks stable across renders for a row that did not.
+ */
+export const IssueRow = memo(function IssueRow({
   task,
   ctx,
   selected = false,
   archived = false,
   onSelect,
   onOpen,
+  setSize,
+  posInSet,
 }: IssueRowProps): JSX.Element {
   const styles = useStyles();
   const parts = issueRowParts(task, ctx);
@@ -169,6 +179,8 @@ export function IssueRow({
       className={mergeClasses(styles.row, selected && styles.selected)}
       role="option"
       aria-selected={selected}
+      aria-setsize={setSize}
+      aria-posinset={posInSet}
       tabIndex={selected ? 0 : -1}
       onClick={() => onSelect?.(task.id)}
       onDoubleClick={() => onOpen?.(task.id)}
@@ -218,4 +230,4 @@ export function IssueRow({
       </span>
     </div>
   );
-}
+});
