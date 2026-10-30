@@ -126,7 +126,7 @@ export const UNREPRODUCIBLE_EVENTS: Readonly<Record<string, string>> = {
   'session:gap':
     'a poll has no stream to lose lines from, so it never has a hole to admit to — which is ' +
     'not the same as being complete; see `session:event` above',
-  'project:tasksChanged': 'the board is mirrored directly; this app reads it from the mirror',
+  'tasks:changed': 'the board is mirrored directly; this app reads it from the mirror',
   'scheduler:changed': 'no project queues are shown in the browser',
   'usage:sample': 'a per-second sample cannot survive a 2.5s poll — the chart redraws instead',
   'activity:appended':

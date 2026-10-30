@@ -126,7 +126,7 @@ describe('the relay policy', () => {
 describe('the event fanout policy', () => {
   const IPC = 'apps/client/src/main/ipc.ts';
   // `ticketIpc.ts` is handed `ipc.ts`'s own `send` and makes the native-ticket pushes
-  // (`ticketLink:changed`, a ticket's `project:tasksChanged`) through it — the same choke
+  // (`ticketLink:changed`) through it — the same choke
   // point, written one file over so a test and a headless scenario can run the real bodies.
   const TICKET_IPC = 'apps/client/src/main/ticketIpc.ts';
   const pushed = [...pushedChannels(read(IPC)), ...pushedChannels(read(TICKET_IPC))];
@@ -153,7 +153,11 @@ describe('the event fanout policy', () => {
   // a row and push it. F2.6, which wires the recorder's emit through `ipc.ts`'s `send` (the
   // same choke point `usage:sample` already uses, at `ipc.ts:556`), must remove this entry
   // once it does.
-  const CLASSIFIED_BUT_NEVER_PUSHED = ['session:gap', 'automations:changed', 'activity:appended'];
+  const CLASSIFIED_BUT_NEVER_PUSHED = [
+    'session:gap',
+    'automations:changed',
+    'activity:appended',
+  ];
 
   it('found the pushes to check', () => {
     // Same guard as the handler side, for the same reason: `send` is a local helper and a

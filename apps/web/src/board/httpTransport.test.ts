@@ -516,6 +516,29 @@ describe('HttpTransport: a relayed invoke is a real round trip', () => {
   });
 
   /**
+   * F29.2: the board holds card summaries, so an open card reads its heavy half (plan,
+   * ticket text, step briefs) through `task:get`. The mirror rows are not that answer — the
+   * desktop's own handler is, so it relays like any other read the web has no truth for.
+   */
+  it('relays task:get and resolves with the desktop’s card bundle', async () => {
+    const server = makeServer();
+    const { transport } = makeTransport({
+      fetchImpl: server.fetchImpl as unknown as typeof fetch,
+      newCommandId: () => 'cmd-get',
+    });
+    const bundle = { task: { id: 't1', agentPlan: '# Plan' }, parent: null, steps: [] };
+
+    const call = transport.invoke('task:get', 't1');
+    server.answer('cmd-get', { ok: true, value: bundle });
+
+    await expect(call).resolves.toEqual(bundle);
+    expect(server.queued[0]).toMatchObject({
+      kind: 'ipc-invoke',
+      payload: { channel: 'task:get', args: ['t1'] },
+    });
+  });
+
+  /**
    * The acceptance test for F7.12 step 1: attaching a skill from the web is a relayed
    * `ipc-invoke` the DESKTOP's own `task:setSkillRefs` handler answers, same as any other
    * card edit this app has no local truth for — it lands on the target Client's card, not
@@ -1649,7 +1672,7 @@ describe("HttpTransport: the Projects panel's channels", () => {
    * The pane's own live refresh — `task:changed` (a ticket row), `ticketLink:changed`,
    * `chain:changed`, `person:changed`, `milestone:changed` and `label:changed` (the four
    * native-ticket registries), plus `settings:changed` (the pane's own display/feature
-   * flags) — must all reach the browser. `project:tasksChanged`, which `useProjectTickets.ts`
+   * flags) — must all reach the browser. `tasks:changed`, which `useProjectTickets.ts`
    * and `TimelinePane.tsx`/`GraphPane.tsx` also listen for, is deliberately excluded: it is
    * classified `drop` in `ipcEventFanout.ts` because its rows already reach the browser
    * through the mirror.

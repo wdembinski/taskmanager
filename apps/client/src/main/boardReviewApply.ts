@@ -58,7 +58,7 @@ export interface BoardReviewApplyDeps {
   now(): number;
   /** Push `project:boardReviewChanged`. */
   emitReview(projectId: string, review: BoardReviewRecord): void;
-  /** Push `project:tasksChanged`. */
+  /** `pushTaskDelta(projectId)` — push the board's changed cards as `tasks:changed`. */
   pushTasks(projectId: string): void;
 }
 

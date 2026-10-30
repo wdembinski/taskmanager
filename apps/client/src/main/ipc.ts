@@ -74,6 +74,7 @@ import {
 } from '@shared/model';
 import type { IssueProviderId } from '@shared/issues';
 import type { TicketLinkResult } from '@shared/ticketLinks';
+import { toTaskSummary } from '@shared/taskSummary';
 import {
   ARCHIVE_RETENTION_DAYS,
   canStopWork,
@@ -301,6 +302,7 @@ import { Updater } from './updater';
 import { pickUpdateToken } from './updateFeed';
 import { bucketSeries, rollupQuotas, rollupSessionStats, rollupWindow } from './usageRollup';
 import { WorktreeManager } from './worktreeManager';
+import { createTaskDeltaPusher } from './taskDelta';
 import { createDiffGit, createReviewRefGit, DiffService } from './review/diffService';
 import { ForgeDiffSource } from './review/forgeDiffSource';
 import { hostOf, ReviewQueueService } from './review/queueService';
@@ -557,6 +559,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   // Outside the `isDestroyed` guard on purpose: a closed desktop window says nothing about
   // whether somebody has the web app open.
   const send = <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]): void => {
+    // A changed card goes out as its summary (F29.2): every `task:changed` is built from a
+    // full row, and the heavy half (plan, ticket text, step briefs) is the open card's to
+    // read through `task:get`. Mapped here, the one choke point, so no sender can forget —
+    // the `TaskSummary` type cannot catch a full row (see `taskSummary.ts`). The pusher is
+    // told too, so the next delta does not send the same card again.
+    if (channel === 'task:changed') {
+      const change = payload as IpcEvents['task:changed'];
+      const task = toTaskSummary(change.task);
+      taskDeltas.noteChanged(task);
+      payload = { ...change, task } as IpcEvents[K];
+    }
     if (perf) logEvent(channel, payload, logMain);
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
     cloudEvents.publish(channel, payload);
@@ -592,8 +605,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   // root is hoisted into a name rather than joined inline as it was.
   const userData = app.getPath('userData');
   const store = createStore(join(userData, 'orchestrator.db'));
+  // Only the cards that changed (F29.2, `taskDelta.ts`): every action that changes a board's
+  // list calls `pushTaskDelta`, which re-reads that board and sends the difference from what
+  // it last sent (or `board:tasks` last answered) as one `tasks:changed`.
+  const taskDeltas = createTaskDeltaPusher({
+    readBoard: (projectId) => store.getBoardTasks(projectId),
+    send: (delta) => send('tasks:changed', delta),
+  });
+  const pushTaskDelta = (projectId: string): void => taskDeltas.push(projectId);
   // The native-ticket write path (`ticket:update`, plain ticket links) — see `ticketIpc.ts`.
-  const ticketIpc = createTicketIpc({ store, send });
+  const ticketIpc = createTicketIpc({ store, send, pushTasks: pushTaskDelta });
 
   // One-shot: a database from before this ticket may still carry a vipper.iam refresh token.
   // Nothing mints an access token from it any more, so it is dead weight — a credential
@@ -799,9 +820,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
 
   // Approving an agent's plan creates that card's subtasks (Phase 11) — a change to the
   // task LIST, which `task:changed` can't express, so the scheduler gets a way to say so.
-  scheduler.setTasksChangedNotifier((projectId) =>
-    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) }),
-  );
+  scheduler.setTasksChangedNotifier((projectId) => pushTaskDelta(projectId));
 
   // A merge changes nothing about the task while it runs, so it needs a channel of its own
   // to say it is happening at all — otherwise pressing Merge looks like pressing nothing.
@@ -845,9 +864,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
 
   // Phase 8: watch every project's plan file so edits — including the agent
   // rewriting the plan mid-run — re-sync into the task list live.
-  const watcher = new PlanWatcher(store, (projectId, tasks) =>
-    send('project:tasksChanged', { projectId, tasks }),
-  );
+  const watcher = new PlanWatcher(store, (projectId) => pushTaskDelta(projectId));
   watcher.watchAll();
 
   // The repo-skills half of the project mirror (F7.11, step 3): a plain filesystem sweep,
@@ -1644,10 +1661,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
         throw new Error(RUN_REFUSAL_MESSAGE[outcome.refused]);
       }
     }
-    send('project:tasksChanged', {
-      projectId: leader.projectId,
-      tasks: store.getTasks(leader.projectId),
-    });
+    pushTaskDelta(leader.projectId);
     return {
       leader: store.getTask(leaderId) as Task,
       rows: rowIds.map((id) => store.getTask(id) as Task),
@@ -1682,10 +1696,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       leaderId,
       variantId,
     );
-    send('project:tasksChanged', {
-      projectId: leader.projectId,
-      tasks: store.getTasks(leader.projectId),
-    });
+    pushTaskDelta(leader.projectId);
     return leader;
   });
 
@@ -1704,7 +1715,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     }
     const task = store.createTask(projectId, input);
     if (!task) throw new Error('A task needs a title.');
-    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    pushTaskDelta(projectId);
     return task;
   });
   handle('task:delete', async (taskId) => {
@@ -1721,10 +1732,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       throw new Error('Stop the running step before deleting this task.');
     }
     store.deleteTask(taskId);
-    send('project:tasksChanged', {
-      projectId: task.projectId,
-      tasks: store.getTasks(task.projectId),
-    });
+    pushTaskDelta(task.projectId);
     // The card's chain links cascaded away with it, so the board has to be told — an
     // arrow left drawn to a card that is gone is the exact failure the cascade prevents
     // in the database and this prevents on screen.
@@ -1744,16 +1752,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     await deleteTaskAttachments(userData, [taskId, ...steps.map((s) => s.id)]);
   });
   handle('task:subtasks', async (parentTaskId) => store.getSubtasks(parentTaskId));
+  handle('task:get', async (id) => {
+    const task = store.getTask(id);
+    if (!task) return null;
+    const parent = task.parentTaskId ? (store.getTask(task.parentTaskId) ?? null) : null;
+    return { task, parent, steps: store.getSubtasks(id) };
+  });
   handle('task:addSubtask', async (parentTaskId, input) => {
     const parent = store.getTask(parentTaskId);
     if (!parent) throw new Error('Task not found.');
     if (parent.parentTaskId) throw new Error('A step cannot have steps of its own.');
     const task = store.addSubtask(parentTaskId, input);
     if (!task) throw new Error('A step needs a title.');
-    send('project:tasksChanged', {
-      projectId: parent.projectId,
-      tasks: store.getTasks(parent.projectId),
-    });
+    pushTaskDelta(parent.projectId);
     return task;
   });
   handle('task:updateSubtask', async (taskId, patch) => {
@@ -1772,10 +1783,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
         : {}),
     });
     if (!task) throw new Error('Task not found.');
-    send('project:tasksChanged', {
-      projectId: task.projectId,
-      tasks: store.getTasks(task.projectId),
-    });
+    pushTaskDelta(task.projectId);
     return task;
   });
   handle('task:setDescription', async (taskId, description) => {
@@ -1852,13 +1860,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     if (!task) throw new Error('Task not found.');
     send('task:changed', { task, runId: null });
     // Both boards, so the source drops the card and the destination gains it — the same
-    // reason `task:create`/`task:delete` push `project:tasksChanged` for the one board they
-    // touch, doubled because this move touches two.
-    send('project:tasksChanged', {
-      projectId: existing.projectId,
-      tasks: store.getTasks(existing.projectId),
-    });
-    send('project:tasksChanged', { projectId: boardId, tasks: store.getTasks(boardId) });
+    // reason `task:create`/`task:delete` push a delta for the one board they touch, doubled
+    // because this move touches two.
+    pushTaskDelta(existing.projectId);
+    pushTaskDelta(boardId);
     return task;
   });
 
@@ -2667,7 +2672,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     tokenFor: forgeToken,
     note: (projectId, taskId, body) => {
       store.addComment(projectId, taskId, body);
-      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+      pushTaskDelta(projectId);
     },
     now: () => Date.now(),
     onAwaitSignOff: (projectId, ownerId) => {
@@ -2705,10 +2710,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
         : formatSignOff('needs-changes', screens);
     const entry = store.addComment(task.projectId, taskId, body);
     if (!entry) throw new Error('A comment needs some text.');
-    send('project:tasksChanged', {
-      projectId: task.projectId,
-      tasks: store.getTasks(task.projectId),
-    });
+    pushTaskDelta(task.projectId);
     await applyVisualSignOff({ ...createPrDeps(), appMergeAttempts }, taskId, status);
     return entry;
   };
@@ -2736,7 +2738,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     },
     note: (projectId, taskId, body) => {
       store.addComment(projectId, taskId, body);
-      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+      pushTaskDelta(projectId);
     },
     now: () => Date.now(),
     startSession: (projectId, request, onResult, onExit) =>
@@ -2751,10 +2753,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     addFixStep: (ownerId, title, description) => {
       const owner = store.getTask(ownerId);
       if (!store.addSubtask(ownerId, { title, description }) || !owner) return;
-      send('project:tasksChanged', {
-        projectId: owner.projectId,
-        tasks: store.getTasks(owner.projectId),
-      });
+      pushTaskDelta(owner.projectId);
     },
     runCard: (ownerId) => {
       scheduler.startTaskNow(ownerId);
@@ -2818,7 +2817,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     chatWithAgent: (taskId, message, opts) => scheduler.chatWithAgent(taskId, message, opts),
     note: (projectId, taskId, body) => {
       store.addComment(projectId, taskId, body);
-      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+      pushTaskDelta(projectId);
     },
     markActed: (mrId, headSha, action) => store.markMergeRequestActed(mrId, headSha, action),
     getProject: (id) => store.getProject(id),
@@ -3061,7 +3060,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     tokenFor: forgeToken,
     note: (projectId, taskId, body) => {
       store.addComment(projectId, taskId, body);
-      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+      pushTaskDelta(projectId);
     },
     now: () => Date.now(),
   });
@@ -3839,18 +3838,32 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       send('settings:changed', next);
     }
 
-    send('project:tasksChanged', {
-      projectId: PERSONAL_PROJECT_ID,
-      tasks: store.getPersonalTasks(),
-    });
+    pushTaskDelta(PERSONAL_PROJECT_ID);
     return task;
   });
 
   // What the board asks for when it draws itself — so, by definition, the cards on it.
   // Omitted/'all' unions every board; anything else names one board's own project id.
-  handle('board:tasks', async (scope) =>
-    !scope || scope === 'all' ? store.getAllBoardTasks() : store.getBoardTasks(scope),
-  );
+  // Answered as card summaries (F29.2), and each board's answer seeds the delta pusher's
+  // snapshot, so the next `tasks:changed` is measured against what the renderer now holds.
+  handle('board:tasks', async (scope) => {
+    const all = !scope || scope === 'all';
+    const summaries = (all ? store.getAllBoardTasks() : store.getBoardTasks(scope)).map(
+      toTaskSummary,
+    );
+    if (!all) {
+      taskDeltas.seed(scope, summaries);
+      return summaries;
+    }
+    const byBoard = new Map<string, typeof summaries>();
+    for (const row of summaries) {
+      const board = byBoard.get(row.projectId);
+      if (board) board.push(row);
+      else byBoard.set(row.projectId, [row]);
+    }
+    for (const [projectId, rows] of byBoard) taskDeltas.seed(projectId, rows);
+    return summaries;
+  });
 
   // And the cards that are NOT on it — the same rows, the other side of `archivedAt`.
   handle('board:archived', async (scope) =>
@@ -3894,7 +3907,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     if (task.archivedAt == null) throw new Error('That card is already on the board.');
     store.unarchiveTask(taskId);
     const tasks = store.getPersonalTasks();
-    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    pushTaskDelta(PERSONAL_PROJECT_ID);
     // The rows never went anywhere — a link and an attachment both survive their card being
     // archived, exactly as they survive nothing at all. But the RENDERER's copies were
     // filtered against a board this card was not on: the chain overlay drops an arrow whose
@@ -3942,7 +3955,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     ticketIpc.assertTicketRefs(projectId, null, input.issueType ?? 'task', input);
     const task = store.createTicket(projectId, input);
     if (!task) throw new Error('Could not create that ticket.');
-    send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) });
+    pushTaskDelta(projectId);
     return task;
   });
 
@@ -4097,7 +4110,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   const archiveHandlers = createArchiveHandlers({
     store,
     pushMilestones,
-    pushTasks: (id) => send('project:tasksChanged', { projectId: id, tasks: store.getTasks(id) }),
+    pushTasks: (id) => pushTaskDelta(id),
     now: () => Date.now(),
   });
   // Three literal calls, not a loop over `Object.keys` — `test/ipc-relay-coverage.test.ts` finds
@@ -4124,8 +4137,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
         now: () => Date.now(),
         emitReview: (projectId, review) =>
           send('project:boardReviewChanged', { projectId, review }),
-        pushTasks: (projectId) =>
-          send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) }),
+        pushTasks: (projectId) => pushTaskDelta(projectId),
       },
       reviewId,
       recId,
@@ -4278,8 +4290,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     readText: (path) => readFile(path, 'utf8'),
     writeText: (path, text) => writeFile(path, text, 'utf8'),
     workflowsChanged,
-    tasksChanged: (projectId) =>
-      send('project:tasksChanged', { projectId, tasks: store.getTasks(projectId) }),
+    tasksChanged: (projectId) => pushTaskDelta(projectId),
   });
   // Seven literal calls, not a loop over `Object.keys` — same reason the nine `skill:*`
   // calls above are literal: `test/ipc-relay-coverage.test.ts` finds registrations with a
@@ -4392,10 +4403,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
     });
     // The same push `ticket:create` makes: the board this card lives on just gained (or
     // un-archived) one, and nothing else would tell that project's window so.
-    send('project:tasksChanged', {
-      projectId: task.projectId,
-      tasks: store.getTasks(task.projectId),
-    });
+    pushTaskDelta(task.projectId);
     return task;
   });
 
@@ -4920,7 +4928,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       now,
     });
     const tasks = store.getPersonalTasks();
-    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    pushTaskDelta(PERSONAL_PROJECT_ID);
     // The board just changed shape, so an MR whose ticket has appeared should attach
     // itself and one whose ticket has left should let go rather than point at a card
     // that no longer exists. No GitLab call — this is re-filing what we already hold.
@@ -5112,7 +5120,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       now,
     });
     const tasks = store.getPersonalTasks();
-    send('project:tasksChanged', { projectId: PERSONAL_PROJECT_ID, tasks });
+    pushTaskDelta(PERSONAL_PROJECT_ID);
     return tasks;
   };
 
@@ -5895,7 +5903,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
   //
   // The event fan-out this used to do per outcome is gone, and its absence is the point:
   // every relayed command now runs a REAL handler (`ipc-invoke` → `ipcRegistry`), and those
-  // handlers already push `task:changed` / `project:tasksChanged` themselves — plus the
+  // handlers already push `task:changed` / `tasks:changed` themselves — plus the
   // chain, attachment and merge-request pushes a hand-rolled fan-out never knew about. Left
   // in, every relayed invoke would have pushed twice, which for a whole-list event like
   // `chain:changed` means the board re-renders from two identical payloads for every click
@@ -5912,10 +5920,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow, backdrop: LiveBac
       }
       if (command.kind === 'ipc-invoke') return; // the handler announced itself already
       if (outcome.projectId) {
-        send('project:tasksChanged', {
-          projectId: outcome.projectId,
-          tasks: store.getTasks(outcome.projectId),
-        });
+        pushTaskDelta(outcome.projectId);
       }
       if (!outcome.taskId) return;
       const task = store.getTask(outcome.taskId);

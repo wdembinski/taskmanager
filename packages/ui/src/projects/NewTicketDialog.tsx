@@ -7,7 +7,7 @@
  *
  * Reached two ways from `BacklogTable`: the toolbar's "New ticket" button (no epic preset)
  * and an epic group header's "Add child" button (`defaultEpicTaskId` preset to that epic).
- * Neither caller needs to pass an `onCreated` — `ticket:create`'s `project:tasksChanged`
+ * Neither caller needs to pass an `onCreated` — `ticket:create`'s `tasks:changed`
  * broadcast already refreshes `BacklogTable`'s own list, the same way an edit in the shared
  * ticket panel flows back down without a callback.
  *
@@ -33,7 +33,8 @@ import {
   MessageBarBody,
   Textarea,
 } from '@fluentui/react-components';
-import type { IssueType, Task } from '@tm/shared/model';
+import type { IssueType } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import { isEpic } from '@tm/shared/tickets';
 import { pickableEpics } from '@tm/shared/trackerArchive';
 import { useTransport } from '../transport';
@@ -53,7 +54,7 @@ export interface NewTicketDialogProps {
   /** This project's other tickets — epic candidates, filtered the same way
    *  `TicketFieldsSection` filters its own (there is no ticket yet here to exclude, unlike
    *  editing one). */
-  tickets: Task[];
+  tickets: TaskSummary[];
   /** Preset when opened from an epic's own "Add child" button — that epic, already filed
    *  in. `null`/omitted for the toolbar's plain "New ticket". */
   defaultEpicTaskId?: string | null;

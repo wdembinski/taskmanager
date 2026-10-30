@@ -44,7 +44,7 @@ describe('EventBus', () => {
     const subscription = bus.subscribe('account-a', null);
 
     bus.publish('account-a', [
-      envelope('project:tasksChanged', 1),
+      envelope('tasks:changed', 1),
       envelope('window:maximizedChanged', 2),
       envelope('task:changed', 3),
       envelope('not-a-channel-at-all', 4),

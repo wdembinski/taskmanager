@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PolledEventBus, REPRODUCIBLE_EVENTS, UNREPRODUCIBLE_EVENTS } from './polledEvents';
 import type { IpcApi } from '@tm/shared/ipc';
+import { toTaskSummary, type TaskSummary } from '@tm/shared/taskSummary';
 
 /**
  * A fake engine: each channel returns whatever the test last put in the map, and every call
@@ -175,6 +176,25 @@ describe('PolledEventBus: task:changed from a board diff', () => {
     engine.set('board:tasks', [{ id: 't1' }]);
     await bus.poll();
     expect(seen).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds a summary task:changed from a summary board:tasks (F29.2)', async () => {
+    // The desktop answers `board:tasks` with summaries, so the event rebuilt from it is a
+    // summary too — the same shape main's `send()` gives `task:changed`.
+    const card = (status: string) =>
+      toTaskSummary({ id: 't1', projectId: 'p1', title: 'One', status } as TaskSummary);
+    const engine = fakeEngine({ 'board:tasks': [card('pending')] });
+    const bus = makeBus(engine);
+    const seen = vi.fn();
+    bus.on('task:changed', seen);
+
+    await bus.poll();
+    engine.set('board:tasks', [card('done')]);
+    await bus.poll();
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(seen).toHaveBeenCalledWith({ task: card('done'), runId: null });
+    expect(Object.keys(seen.mock.calls[0][0].task)).toEqual(['id', 'projectId', 'title', 'status']);
   });
 });
 

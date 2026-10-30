@@ -12,6 +12,8 @@
  * everything under `packages/ui/src` that goes through `useTransport()` instead.
  */
 
+import { taskGetSpec } from './taskBundle.mjs';
+
 /**
  * Serializes `BOOT_CHANNELS` (see `uiShotsFixture.mjs`'s own doc) into the three buckets the
  * in-page script actually switches on: a fixed value per channel, a `{ byArgTable, fallback }`
@@ -82,7 +84,13 @@ export function buildApiStub({
     nativeMaterial,
   };
 
-  const { fixed, byArg, listChannels, nullChannels } = partitionChannels(fixture.BOOT_CHANNELS);
+  // `task:get` answers from the same rows `board:tasks` does, unless a row names its own.
+  const boardTasks = fixture.BOOT_CHANNELS['board:tasks'];
+  const bootChannels =
+    fixture.BOOT_CHANNELS['task:get'] === undefined && Array.isArray(boardTasks)
+      ? { ...fixture.BOOT_CHANNELS, 'task:get': taskGetSpec(boardTasks) }
+      : fixture.BOOT_CHANNELS;
+  const { fixed, byArg, listChannels, nullChannels } = partitionChannels(bootChannels);
 
   return `(function(){
     const SETTINGS = ${JSON.stringify(settings)};

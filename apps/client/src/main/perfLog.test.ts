@@ -114,9 +114,9 @@ describe('timeHandler', () => {
 describe('logEvent', () => {
   it('writes the channel and payload bytes', () => {
     const { lines, write } = collector();
-    const payload = { projectId: 'p', tasks: [] };
-    logEvent('project:tasksChanged', payload, write);
-    expect(lines).toEqual([`perf event project:tasksChanged ${payloadBytes(payload)}B`]);
+    const payload = { projectId: 'p', upserted: [], removed: [] };
+    logEvent('tasks:changed', payload, write);
+    expect(lines).toEqual([`perf event tasks:changed ${payloadBytes(payload)}B`]);
   });
 
   it('writes -1 for a circular payload without throwing', () => {

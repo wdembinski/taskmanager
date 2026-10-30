@@ -914,7 +914,7 @@ export interface Store {
    *
    * Explicitly, rather than through an `ON DELETE SET NULL` cascade, because a real cascade
    * would change task rows with no IPC event behind it: this renderer refreshes on
-   * `project:tasksChanged`/`task:changed` and nothing polls, so the tickets would keep
+   * `tasks:changed`/`task:changed` and nothing polls, so the tickets would keep
    * showing a person the database has forgotten until something unrelated redrew them.
    */
   deletePerson(id: string): void;

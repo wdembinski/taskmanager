@@ -200,7 +200,7 @@ export class EventBus {
    *
    * Channels classified `drop` by `@tm/shared/ipcEventFanout` are refused even if a Client
    * forwards them. The forwarder applies the same table, so this is the server declining to
-   * trust that it did: `project:tasksChanged` reaching a browser twice — once here, once
+   * trust that it did: `tasks:changed` reaching a browser twice — once here, once
    * through the mirror — is exactly the stale second copy that table's `drop` reason names.
    */
   publish(accountId: string, envelopes: readonly EventEnvelope[], senderGap = 0): void {

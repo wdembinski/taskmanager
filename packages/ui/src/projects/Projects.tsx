@@ -356,13 +356,9 @@ export function Projects({
 
   const detailPane = (
     <TaskDetailHost
+      // No `task`: the list holds card summaries (F29.2), and the pane needs the ticket's
+      // heavy text — `TaskDetailHost` reads it, with the parent and steps, through `task:get`.
       taskId={viewState.selectedId}
-      // Already loaded (`ticketsLoad.tickets`, same row the clicked `IssueRow` came from) —
-      // passing it directly skips `TaskDetailHost`'s own `board:tasks` fetch for it, the same
-      // way `BoardScreen` already does for its own peek. On the web host that fetch relays
-      // over HTTP and is polled for, so skipping it is what keeps the peek from opening on
-      // the empty "select a task" placeholder for the beat before that poll answers.
-      task={selectedTask}
       agentProjects={agentProjects}
       people={registries.people}
       milestones={registries.milestones}

@@ -15,6 +15,7 @@
  * They live in `shared` because both the engine and the UI depend on them.
  */
 import type { Task } from './model';
+import type { TaskSummary } from './taskSummary';
 
 /**
  * Whether a project's queue is actively working (`running`), temporarily halted
@@ -33,9 +34,12 @@ export interface SchedulerChange {
  * Pushed whenever a task's persisted state changes. `runId` is the live run id
  * while the task is executing (so the UI can wire the Phase 1 transcript to it),
  * and `null` once the task has settled or is not currently running.
+ *
+ * `task` is the card's summary (F29.2): the main process maps every full row through
+ * `toTaskSummary` on the way out, and an open card reads the heavy half via `task:get`.
  */
 export interface TaskChange {
-  task: Task;
+  task: TaskSummary;
   runId: string | null;
 }
 

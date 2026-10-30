@@ -103,7 +103,8 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import type { Milestone, Project, Task, TicketLink } from '@tm/shared/model';
+import type { Milestone, Project, TicketLink } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import type { AppSettings } from '@tm/shared/settings';
 import { canLink, LINK_REFUSAL_MESSAGE, type LinkGate, type TaskLink } from '@tm/shared/taskChain';
 import { canLinkTickets, TICKET_LINK_REFUSAL_MESSAGE } from '@tm/shared/ticketLinks';
@@ -115,6 +116,8 @@ import { PaneLoading } from '../PaneLoading';
 import { FLUO_VAR } from '../tokens';
 import { useTransport } from '../transport';
 import { useInitialLoad } from '../useInitialLoad';
+import { patchTaskSummary } from '../taskSummaryStore';
+import { useTaskSummaries } from '../useTaskSummaries';
 import {
   DAY_MS,
   GANTT_ROW_HEIGHT,
@@ -433,7 +436,7 @@ export interface TimelinePaneProps {
   onIncludeArchivedChange?: (includeArchived: boolean) => void;
 }
 
-function rowLabel(ticket: Pick<Task, 'ticketKey' | 'title'>): {
+function rowLabel(ticket: Pick<TaskSummary, 'ticketKey' | 'title'>): {
   key: string | null;
   title: string;
 } {
@@ -451,7 +454,9 @@ export function TimelinePane({
 }: TimelinePaneProps): JSX.Element {
   const styles = useStyles();
   const transport = useTransport();
-  const [tickets, setTickets] = useState<Task[] | null>(null);
+  // Card summaries (F29.2), merged from deltas rather than re-read on every change.
+  const summaries = useTaskSummaries(projectId, { clearOnScopeChange: true });
+  const { tasks: tickets, setTasks: setTickets } = summaries;
   const [links, setLinks] = useState<TicketLink[]>([]);
   const [chainLinks, setChainLinks] = useState<TaskLink[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -471,36 +476,24 @@ export function TimelinePane({
 
   /** Replace one ticket in `tickets` with the server's own copy — `moveTask`'s `patchTask`
    *  in `MyTasks.tsx`, for this pane's own list. */
-  const patchTicket = useCallback((updated: Task) => {
-    setTickets((prev) => (prev ? prev.map((t) => (t.id === updated.id ? updated : t)) : prev));
-  }, []);
+  const patchTicket = useCallback(
+    (updated: TaskSummary) => setTickets((prev) => (prev ? patchTaskSummary(prev, updated) : prev)),
+    [setTickets],
+  );
 
   const seed = useCallback(async () => {
-    const [ownTickets, allSettings] = await Promise.all([
-      transport.invoke('board:tasks', projectId),
-      transport.invoke('settings:get'),
-    ]);
-    setTickets(ownTickets);
-    setSettings(allSettings);
-  }, [transport, projectId]);
-  const initial = useInitialLoad(seed);
+    setSettings(await transport.invoke('settings:get'));
+  }, [transport]);
+  const settingsLoad = useInitialLoad(seed);
+  const initial = {
+    error: settingsLoad.error ?? summaries.error,
+    retry: () => {
+      settingsLoad.retry();
+      summaries.retry();
+    },
+  };
 
-  useEffect(() => {
-    const offTask = transport.on('task:changed', ({ task }) => {
-      if (task.projectId !== projectId) return;
-      patchTicket(task);
-    });
-    const offTasks = transport.on('project:tasksChanged', ({ projectId: changed, tasks }) => {
-      if (changed !== projectId) return;
-      setTickets(tasks);
-    });
-    const offSettings = transport.on('settings:changed', setSettings);
-    return () => {
-      offTask();
-      offTasks();
-      offSettings();
-    };
-  }, [transport, projectId, patchTicket]);
+  useEffect(() => transport.on('settings:changed', setSettings), [transport]);
 
   useEffect(() => {
     let live = true;
@@ -586,7 +579,7 @@ export function TimelinePane({
    * rather than leaving the optimistic (and now possibly wrong) guess on screen.
    */
   const commitReschedule = useCallback(
-    async (ticket: Task, deltaMs: number, edge: RescheduleEdge) => {
+    async (ticket: TaskSummary, deltaMs: number, edge: RescheduleEdge) => {
       const result = rescheduleTo(ticket, deltaMs, edge);
       if (!result) return;
       setDragError(null);
@@ -680,7 +673,7 @@ export function TimelinePane({
   );
 
   const handleBarKeyDown = useCallback(
-    (e: React.KeyboardEvent<SVGRectElement>, ticket: Task) => {
+    (e: React.KeyboardEvent<SVGRectElement>, ticket: TaskSummary) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       e.preventDefault();
       void commitReschedule(ticket, e.key === 'ArrowLeft' ? -DAY_MS : DAY_MS, 'move');

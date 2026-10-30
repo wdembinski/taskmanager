@@ -22,7 +22,8 @@ import {
   CircleRegular,
   PresenceBlockedRegular,
 } from '@fluentui/react-icons';
-import type { BoardColumn, Task } from '@tm/shared/model';
+import type { BoardColumn } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import { AssigneeDisplay } from '../projects/AssigneeDisplay';
 import { issueRowParts, type IssueRowContext } from './issueRowParts';
 
@@ -142,7 +143,7 @@ const useStyles = makeStyles({
 });
 
 export interface IssueRowProps {
-  task: Task;
+  task: TaskSummary;
   ctx: IssueRowContext;
   selected?: boolean;
   /** Whether this row is hidden by default (F14.6) — the caller already decided this with

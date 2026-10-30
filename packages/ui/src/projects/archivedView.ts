@@ -3,8 +3,8 @@
  * with the native tickets under it tallied into done/open — pure, no React, same discipline
  * as `archiveDialog.ts` and `backlogView.ts`.
  */
-import type { Task } from '@tm/shared/model';
 import { parseTicketKey } from '@tm/shared/ticketKey';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import { isNativeTicket, isOpenTicketStatus } from '@tm/shared/tickets';
 import type { ArchivedListing } from '@tm/shared/trackerArchive';
 
@@ -19,7 +19,7 @@ export interface ArchivedRow {
   /** A milestone's own due date; `null` for an epic or a project row. */
   dueAt: number | null;
   /** The native tickets filed under this row, in key order. */
-  tickets: Task[];
+  tickets: TaskSummary[];
   doneCount: number;
   openCount: number;
   /** `openCount > 0` — restoring is not just bookkeeping, something is still unfinished. */
@@ -33,20 +33,23 @@ export interface ArchivedViewModel {
   total: number;
 }
 
-function epicName(epic: Pick<Task, 'ticketKey' | 'title'>): string {
+function epicName(epic: Pick<TaskSummary, 'ticketKey' | 'title'>): string {
   return epic.ticketKey ? `${epic.ticketKey} · ${epic.title}` : epic.title;
 }
 
 /** The ordinal a key sorts by — `TM-9` is 9, `TM-10` is 10 — same reading `backlogView.ts`'s
  *  `sortBacklog('key')` uses, so a row's tickets and the Backlog agree on what "key order"
  *  means. */
-function ticketOrdinal(ticket: Pick<Task, 'ticketKey' | 'ticketNumber'>): number {
+function ticketOrdinal(ticket: Pick<TaskSummary, 'ticketKey' | 'ticketNumber'>): number {
   if (typeof ticket.ticketNumber === 'number') return ticket.ticketNumber;
   return parseTicketKey(ticket.ticketKey ?? '')?.ticketNumber ?? 0;
 }
 
 /** `tickets`, narrowed to the native ones that match `matches`, sorted into key order. */
-function ticketsFor(tickets: readonly Task[], matches: (ticket: Task) => boolean): Task[] {
+function ticketsFor(
+  tickets: readonly TaskSummary[],
+  matches: (ticket: TaskSummary) => boolean,
+): TaskSummary[] {
   return tickets
     .filter((ticket) => isNativeTicket(ticket) && matches(ticket))
     .sort((a, b) => ticketOrdinal(a) - ticketOrdinal(b));
@@ -58,7 +61,7 @@ function rowFor(
   name: string,
   archivedAt: number,
   dueAt: number | null,
-  tickets: Task[],
+  tickets: TaskSummary[],
 ): ArchivedRow {
   const doneCount = tickets.filter((t) => !isOpenTicketStatus(t.status)).length;
   const openCount = tickets.length - doneCount;
@@ -81,10 +84,10 @@ function byArchivedAtDesc(a: { archivedAt: number }, b: { archivedAt: number }):
 
 export function archivedViewModel(
   listing: ArchivedListing,
-  tickets: readonly Task[],
+  tickets: readonly TaskSummary[],
   projectId: string | null,
 ): ArchivedViewModel {
-  const allTickets = tickets as Task[];
+  const allTickets = tickets as TaskSummary[];
 
   const milestones = (listing.milestones ?? [])
     .filter((m) => projectId == null || m.projectId === projectId)

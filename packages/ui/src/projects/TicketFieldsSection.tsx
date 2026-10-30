@@ -15,7 +15,7 @@
  *
  * The picker fields (type, epic, milestone, assignee, reporter) read straight from `ticket`
  * rather than mirroring it into local state — once a save lands, the caller's list is
- * rebroadcast (`project:tasksChanged`) and flows back down as a new `ticket` prop, so the
+ * rebroadcast (`tasks:changed`) and flows back down as a new `ticket` prop, so the
  * dropdown is never out of step with what was actually written and a refused save needs no
  * revert. Only the TEXT fields are a `useDraft` (`../drafts`), keyed on the ticket's id —
  * `TaskDetail`'s own rule: switching to a different row and back must not have eaten

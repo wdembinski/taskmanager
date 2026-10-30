@@ -328,8 +328,8 @@ export function TaskDetailsCell({
    * the failure a human can actually act on — "stop it first" — arrives as a message here
    * rather than as a silently dropped click.
    *
-   * Nothing is called back: the handler broadcasts `project:tasksChanged`, the board
-   * replaces its list, and the pane's selected task resolves to nothing — so the pane
+   * Nothing is called back: the handler broadcasts `tasks:changed`, the board
+   * drops the card, and the pane's selected task resolves to nothing — so the pane
    * empties itself without this component having to know it is being unmounted.
    */
   async function remove(): Promise<void> {

@@ -18,7 +18,8 @@ import {
   tokens,
 } from '@fluentui/react-components';
 import { AddRegular } from '@fluentui/react-icons';
-import type { Person, Task } from '@tm/shared/model';
+import type { Person } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import type { RunPurpose } from '@tm/shared/scheduler';
 import { STATUS_GLYPH } from '../issues/IssueRow';
 import { TaskCard } from './TaskCard';
@@ -135,23 +136,23 @@ export interface KanbanColumnProps {
    */
   layout?: 'compact';
   /** Name of the agent project a delegated card runs in (tooltip on the agent glyph). */
-  agentNameOf: (task: Task) => string | undefined;
+  agentNameOf: (task: TaskSummary) => string | undefined;
   /**
    * A native ticket's parent epic, by NAME (Phase 24) — resolved by whoever holds the whole
    * board (`task.epicTaskId` names another card) and asked per card, the same shape as
    * `agentNameOf`. Absent on a board with no epics to resolve, which is also what leaves the
    * footer's epic chip falling back to a mirrored card's own `externalEpicName`.
    */
-  epicNameOf?: (task: Task) => string | undefined;
+  epicNameOf?: (task: TaskSummary) => string | undefined;
   /** A native ticket's assignee (Phase 24), for the avatar in its footer. Same shape as
    *  `agentNameOf`: asked per card rather than passed as a lookup map. */
-  assigneeOf?: (task: Task) => Pick<Person, 'name' | 'initials' | 'color'> | undefined;
+  assigneeOf?: (task: TaskSummary) => Pick<Person, 'name' | 'initials' | 'color'> | undefined;
   /**
    * What started a card whose `originAutomationId` names an automation (F1.18), same shape
    * as `assigneeOf`. Absent on every caller before the automation list reaches the renderer
    * (F1.11/F1.15), which is also what leaves the glyph's tooltip on its generic fallback.
    */
-  originAutomationOf?: (task: Task) => AutomationOrigin | undefined;
+  originAutomationOf?: (task: TaskSummary) => AutomationOrigin | undefined;
   /** Task ids the inbox holds an item for — the ring's authoritative signal. */
   attentionTaskIds?: ReadonlySet<string>;
   /** Task ids the engine has a live run for, so a spawning run still spins. */
@@ -198,7 +199,7 @@ export interface KanbanColumnProps {
    * colours above are: the column holds no board-wide index of its own, and the board
    * already has one (see `MyTasks`). Undefined for a card nobody chained.
    */
-  chainStateOf?: (task: Task) => ChainState | undefined;
+  chainStateOf?: (task: TaskSummary) => ChainState | undefined;
   /**
    * Turn a card's file hold (`ChainState.fileHold`) into an after-merge arrow from the card it
    * waits for. Absent on a board that cannot draw arrows, which hides the card's button.
@@ -210,7 +211,7 @@ export interface KanbanColumnProps {
    * All switch is not Off, which is also what leaves each card's `chainChip` drawing exactly
    * as it always did.
    */
-  linkChipsOf?: (task: Task) => LinkChips | undefined;
+  linkChipsOf?: (task: TaskSummary) => LinkChips | undefined;
   selectedTaskId: string | null;
   draggingId: string | null;
   /**

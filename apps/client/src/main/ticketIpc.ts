@@ -22,7 +22,6 @@ export interface TicketIpcDeps {
   store: Pick<
     Store,
     | 'getTask'
-    | 'getTasks'
     | 'updateTask'
     | 'listMilestones'
     | 'listPeople'
@@ -32,6 +31,8 @@ export interface TicketIpcDeps {
   >;
   /** `ipc.ts`'s own `send` — the window plus the cloud mirror. */
   send: <K extends keyof IpcEvents>(channel: K, payload: IpcEvents[K]) => void;
+  /** `ipc.ts`'s `pushTaskDelta` — one board's changed cards as `tasks:changed` (F29.2). */
+  pushTasks: (projectId: string) => void;
 }
 
 export interface TicketIpc {
@@ -51,7 +52,7 @@ export interface TicketIpc {
   removeTicketLink(id: string): void;
 }
 
-export function createTicketIpc({ store, send }: TicketIpcDeps): TicketIpc {
+export function createTicketIpc({ store, send, pushTasks }: TicketIpcDeps): TicketIpc {
   /**
    * Validate the cross-references a ticket create/update carries: `epicTaskId` must name an
    * EPIC in the SAME project and not itself; an epic may not itself hang under another epic;
@@ -95,10 +96,7 @@ export function createTicketIpc({ store, send }: TicketIpcDeps): TicketIpc {
     assertTicketRefs(existing.projectId, taskId, issueType, patch);
     const updated = store.updateTask(taskId, patch);
     if (!updated) throw new Error('Could not update that ticket.');
-    send('project:tasksChanged', {
-      projectId: existing.projectId,
-      tasks: store.getTasks(existing.projectId),
-    });
+    pushTasks(existing.projectId);
     return updated;
   }
 

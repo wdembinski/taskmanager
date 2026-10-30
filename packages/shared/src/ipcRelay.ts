@@ -261,6 +261,7 @@ export const RELAY_POLICY: {
   'ticket:create': 'relay',
   'task:delete': 'relay',
   'task:subtasks': 'relay',
+  'task:get': 'relay',
   'task:addSubtask': 'relay',
   'task:updateSubtask': 'relay',
   'task:setStatus': 'relay',

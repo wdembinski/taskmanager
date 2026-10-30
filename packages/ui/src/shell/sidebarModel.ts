@@ -3,7 +3,8 @@
  * the view/archived/machine rows around it — kept pure and apart from the renderer (F13.11) so
  * the placement rules and the "TM-9 before TM-10" sort can be tested without a DOM.
  */
-import type { Milestone, Project, Task, TaskStatus } from '@tm/shared/model';
+import type { Milestone, Project, TaskStatus } from '@tm/shared/model';
+import type { TaskSummary } from '@tm/shared/taskSummary';
 import { columnForStatus } from '@tm/shared/board';
 import { isEpic } from '@tm/shared/tickets';
 import { NO_EPIC_GROUP, sortBacklog } from '../projects/backlogView';
@@ -93,7 +94,7 @@ export interface SidebarInput {
   teamName?: string;
   milestones: readonly Milestone[];
   /** The selected ticket project's tickets, epics included. */
-  tickets: readonly Task[];
+  tickets: readonly TaskSummary[];
   attentionCount: number;
   archivedCount: number;
   /** Folded tree-node ids. */
@@ -120,7 +121,7 @@ function compareMilestones(a: Milestone, b: Milestone): number {
   return a.name.localeCompare(b.name);
 }
 
-function ticketNode(ticket: Task, foldSet: ReadonlySet<string>): SidebarTreeNode {
+function ticketNode(ticket: TaskSummary, foldSet: ReadonlySet<string>): SidebarTreeNode {
   const id = `ticket:${ticket.id}`;
   return {
     id,
@@ -140,19 +141,19 @@ function ticketNode(ticket: Task, foldSet: ReadonlySet<string>): SidebarTreeNode
 
 /** Whether `ticket` is done, failed, stopped or cancelled — the board's `done` column — the
  *  sense of "no open work left" that decides a milestone/epic group's finished/open banding. */
-function isFinishedTicket(ticket: Task): boolean {
+function isFinishedTicket(ticket: TaskSummary): boolean {
   return columnForStatus(ticket.status) === 'done';
 }
 
 /** A group (milestone or epic) is finished when it has at least one ticket and every one of
  *  them is finished — an empty group counts as having open work, not as finished. */
-function isGroupFinished(tickets: readonly Task[]): boolean {
+function isGroupFinished(tickets: readonly TaskSummary[]): boolean {
   return tickets.length > 0 && tickets.every(isFinishedTicket);
 }
 
 /** `tickets`, open ones first then finished ones, `sortBacklog(…, 'key')` order within each
  *  half — the order every group's children (and every milestone's leaf tickets) are shown in. */
-function orderByOpenFirst(tickets: readonly Task[]): Task[] {
+function orderByOpenFirst(tickets: readonly TaskSummary[]): TaskSummary[] {
   const open = sortBacklog(
     tickets.filter((t) => !isFinishedTicket(t)),
     'key',
@@ -180,17 +181,17 @@ function orderByOpenFirst(tickets: readonly Task[]): Task[] {
  */
 function buildEpicGroups(
   milestoneKey: string,
-  nonEpicTickets: readonly Task[],
-  epicsPlacedHere: readonly Task[],
-  epicsById: ReadonlyMap<string, Task>,
+  nonEpicTickets: readonly TaskSummary[],
+  epicsPlacedHere: readonly TaskSummary[],
+  epicsById: ReadonlyMap<string, TaskSummary>,
   foldSet: ReadonlySet<string>,
 ): SidebarTreeNode[] {
-  const childrenByEpicId = new Map<string, Task[]>();
+  const childrenByEpicId = new Map<string, TaskSummary[]>();
   for (const epic of epicsPlacedHere) {
     if (!childrenByEpicId.has(epic.id)) childrenByEpicId.set(epic.id, []);
   }
 
-  const orphans: Task[] = [];
+  const orphans: TaskSummary[] = [];
   for (const ticket of nonEpicTickets) {
     const epic = ticket.epicTaskId ? epicsById.get(ticket.epicTaskId) : undefined;
     if (!epic) {
@@ -257,8 +258,8 @@ function buildMilestoneNode(
   milestoneId: string | null,
   label: string,
   closed: boolean | undefined,
-  bucketTickets: readonly Task[],
-  epicsById: ReadonlyMap<string, Task>,
+  bucketTickets: readonly TaskSummary[],
+  epicsById: ReadonlyMap<string, TaskSummary>,
   foldSet: ReadonlySet<string>,
 ): SidebarTreeNode {
   const milestoneKey = milestoneId ?? 'none';
@@ -308,7 +309,7 @@ function buildMilestoneNode(
  */
 export function buildMilestoneTree(
   milestones: readonly Milestone[],
-  tickets: readonly Task[],
+  tickets: readonly TaskSummary[],
   isMilestoneArchived: (milestone: Milestone) => boolean,
   folds: readonly string[] = [],
 ): SidebarTreeNode[] {
@@ -320,12 +321,12 @@ export function buildMilestoneTree(
     (t) => !t.parentTaskId && !(t.milestoneId && archivedIds.has(t.milestoneId)),
   );
 
-  const epicsById = new Map<string, Task>();
+  const epicsById = new Map<string, TaskSummary>();
   for (const ticket of liveTickets) {
     if (isEpic(ticket)) epicsById.set(ticket.id, ticket);
   }
 
-  const bucketed = new Map<string | null, Task[]>();
+  const bucketed = new Map<string | null, TaskSummary[]>();
   for (const ticket of liveTickets) {
     const key = ticket.milestoneId && liveIds.has(ticket.milestoneId) ? ticket.milestoneId : null;
     if (!bucketed.has(key)) bucketed.set(key, []);
